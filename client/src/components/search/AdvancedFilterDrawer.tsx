@@ -1,0 +1,135 @@
+import React from 'react';
+import { Filter, X } from 'lucide-react';
+
+interface FilterProps {
+  isOpen: boolean;
+  onClose: () => void;
+  selectedRegion: string;
+  onSelectRegion: (r: string) => void;
+  selectedDifficulty: number | null;
+  onSelectDifficulty: (d: number | null) => void;
+  selectedDuration: number | null;
+  onSelectDuration: (d: number | null) => void;
+  campsiteOnly: boolean;
+  onToggleCampsite: (val: boolean) => void;
+  kidFriendlyOnly: boolean;
+  onToggleKidFriendly: (val: boolean) => void;
+  onReset: () => void;
+}
+
+export const AdvancedFilterDrawer: React.FC<FilterProps> = ({
+  isOpen,
+  onClose,
+  selectedRegion,
+  onSelectRegion,
+  selectedDifficulty,
+  onSelectDifficulty,
+  selectedDuration,
+  onSelectDuration,
+  campsiteOnly,
+  onToggleCampsite,
+  kidFriendlyOnly,
+  onToggleKidFriendly,
+  onReset,
+}) => {
+  if (!isOpen) return null;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 500 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Filter size={20} color="var(--color-primary)" />
+            <h3 style={{ fontSize: '1.2rem', color: 'var(--color-text-main)', fontWeight: 800 }}>Bộ Lọc Cung Đường Nâng Cao</h3>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--color-text-dim)', cursor: 'pointer' }}>
+            <X size={20} />
+          </button>
+        </div>
+
+        <div style={{ marginBottom: 20 }}>
+          <label className="form-label" style={{ marginBottom: 8 }}>Vùng Miền</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {['All', 'Miền Bắc', 'Miền Trung', 'Miền Nam'].map((r) => (
+              <button
+                key={r}
+                onClick={() => onSelectRegion(r)}
+                className={`btn ${selectedRegion === r ? 'btn-primary' : 'btn-outline'}`}
+                style={{ flex: 1, padding: '8px 4px', fontSize: '0.82rem', justifyContent: 'center' }}
+              >
+                {r === 'All' ? 'Tất cả' : r}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 20 }}>
+          <label className="form-label" style={{ marginBottom: 8 }}>Mức độ khó (Thang 1 - 5)</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {[1, 2, 3, 4, 5].map((d) => (
+              <button
+                key={d}
+                onClick={() => onSelectDifficulty(selectedDifficulty === d ? null : d)}
+                className={`btn ${selectedDifficulty === d ? 'btn-primary' : 'btn-outline'}`}
+                style={{ flex: 1, padding: '8px 4px', fontSize: '0.85rem', justifyContent: 'center' }}
+              >
+                Cấp {d}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 20 }}>
+          <label className="form-label" style={{ marginBottom: 8 }}>Thời gian hành trình</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {[
+              { val: 1, label: '1 Ngày' },
+              { val: 2, label: '2N1Đ' },
+              { val: 3, label: '3N2Đ+' },
+            ].map((dur) => (
+              <button
+                key={dur.val}
+                onClick={() => onSelectDuration(selectedDuration === dur.val ? null : dur.val)}
+                className={`btn ${selectedDuration === dur.val ? 'btn-primary' : 'btn-outline'}`}
+                style={{ flex: 1, padding: '8px 4px', fontSize: '0.85rem', justifyContent: 'center' }}
+              >
+                {dur.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: '0.9rem', color: 'var(--color-text-muted)' }}>
+            <input
+              type="checkbox"
+              checked={campsiteOnly}
+              onChange={(e) => onToggleCampsite(e.target.checked)}
+              style={{ width: 18, height: 18, accentColor: 'var(--color-primary)' }}
+            />
+            Có bãi cắm trại qua đêm
+          </label>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', fontSize: '0.9rem', color: 'var(--color-text-muted)' }}>
+            <input
+              type="checkbox"
+              checked={kidFriendlyOnly}
+              onChange={(e) => onToggleKidFriendly(e.target.checked)}
+              style={{ width: 18, height: 18, accentColor: 'var(--color-primary)' }}
+            />
+            Phù hợp người mới & trẻ em
+          </label>
+        </div>
+
+        <div style={{ display: 'flex', gap: 12 }}>
+          <button className="btn btn-secondary" onClick={onReset} style={{ flex: 1, justifyContent: 'center' }}>
+            Xóa bộ lọc
+          </button>
+          <button className="btn btn-primary" onClick={onClose} style={{ flex: 2, justifyContent: 'center' }}>
+            Áp dụng bộ lọc
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};

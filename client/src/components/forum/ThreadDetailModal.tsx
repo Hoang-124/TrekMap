@@ -1,0 +1,604 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import type { ForumThread } from '../../types.js';
+import { X, MessageSquare, Send, Loader2, CornerDownRight, Reply } from 'lucide-react';
+import { FacebookReactionPicker } from './FacebookReactionPicker.js';
+import type { ReactionType } from './FacebookReactionPicker.js';
+import { getApiHeaders, notifyForumUpdated } from '../../utils/sessionHeaders.js';
+import { useSocket } from '../../hooks/useSocket.js';
+
+export interface CommentReactions {
+  like: number;
+  love?: number;
+  haha: number;
+  wow: number;
+  buon: number;
+  huhu: number;
+  sad?: number;
+  angry: number;
+  dislike: number;
+}
+
+export interface CommentItem {
+  id: string;
+  parentId?: string | null;
+  authorName: string;
+  authorAvatar: string;
+  content: string;
+  createdAt: string;
+  reactions?: CommentReactions;
+  replies?: CommentItem[];
+}
+
+interface ThreadDetailModalProps {
+  thread: ForumThread | null;
+  onClose: () => void;
+  onOpenAuthorProfile: (author: { name: string; avatar: string }) => void;
+  onUpdateCommentCount?: (threadId: string, count: number) => void;
+  onUpdateThreadUpvotes?: (threadId: string, upvotes: number) => void;
+  onUpdateThreadReaction?: (threadId: string, newReaction: ReactionType, newReactionsSummary: Record<string, number>, newUpvotes: number) => void;
+}
+
+export const ThreadDetailModal: React.FC<ThreadDetailModalProps> = ({
+  thread,
+  onClose,
+  onOpenAuthorProfile,
+  onUpdateCommentCount,
+  onUpdateThreadUpvotes,
+  onUpdateThreadReaction,
+}) => {
+  const [reaction, setReaction] = useState<ReactionType>(thread ? (thread as any).userReaction || null : null);
+  const [threadUpvotes, setThreadUpvotes] = useState<number>(thread ? thread.upvotes : 0);
+  const [commentText, setCommentText] = useState('');
+  const [comments, setComments] = useState<CommentItem[]>([]);
+  const [totalCommentCount, setTotalCommentCount] = useState<number>(0);
+  const [loadingComments, setLoadingComments] = useState<boolean>(false);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+
+  // Reply inline box state
+  const [activeReplyId, setActiveReplyId] = useState<string | null>(null);
+  const [replyInputText, setReplyInputText] = useState<string>('');
+  const [isSubmittingReply, setIsSubmittingReply] = useState<boolean>(false);
+
+  // Per comment reaction state map
+  const [commentReactionsState, setCommentReactionsState] = useState<{ [commentId: string]: ReactionType }>({});
+
+  const { socket } = useSocket();
+  const threadId = thread?.id;
+
+  // Use refs to break infinite re-render loops with parent callbacks
+  const onUpdateCommentCountRef = useRef(onUpdateCommentCount);
+  useEffect(() => {
+    onUpdateCommentCountRef.current = onUpdateCommentCount;
+  }, [onUpdateCommentCount]);
+
+  const loadedThreadIdRef = useRef<string | null>(null);
+
+  const fetchRealComments = useCallback(async (silent = false) => {
+    if (!threadId) return;
+    if (!silent && comments.length === 0) {
+      setLoadingComments(true);
+    }
+    try {
+      const res = await fetch(`http://localhost:5000/api/forum/threads/${threadId}/comments`, {
+        headers: getApiHeaders(),
+      });
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data)) {
+        setComments(json.data);
+        const count = json.totalCount !== undefined ? json.totalCount : json.data.length;
+        setTotalCommentCount(count);
+        if (onUpdateCommentCountRef.current) {
+          onUpdateCommentCountRef.current(threadId, count);
+        }
+      }
+    } catch (err) {
+      console.error('[Fetch Real Comments Error]:', err);
+    } finally {
+      setLoadingComments(false);
+    }
+  }, [threadId, comments.length]);
+
+  // Initial load when opening modal or changing thread
+  useEffect(() => {
+    if (!thread || !threadId) {
+      loadedThreadIdRef.current = null;
+      return;
+    }
+
+    setThreadUpvotes(thread.upvotes);
+    if ((thread as any).userReaction !== undefined) {
+      setReaction((thread as any).userReaction);
+    }
+
+    if (loadedThreadIdRef.current !== threadId) {
+      loadedThreadIdRef.current = threadId;
+      fetchRealComments(false);
+    }
+  }, [threadId]);
+
+  // Real-time socket listener for silent background updates (no spinner flash)
+  useEffect(() => {
+    if (!socket || !threadId) return;
+
+    const handleNewComment = (data: any) => {
+      if (String(data.threadId) === String(threadId)) {
+        fetchRealComments(true); // Silent update (no loading spinner)
+      }
+    };
+
+    const handleCommentReaction = (data: any) => {
+      if (String(data.threadId) === String(threadId)) {
+        fetchRealComments(true); // Silent update (no loading spinner)
+      }
+    };
+
+    const handleThreadReaction = (data: any) => {
+      if (String(data.threadId) === String(threadId)) {
+        if (data.upvotes !== undefined) {
+          setThreadUpvotes(data.upvotes);
+        }
+      }
+    };
+
+    socket.on('newComment', handleNewComment);
+    socket.on('commentReactionUpdate', handleCommentReaction);
+    socket.on('threadReactionUpdate', handleThreadReaction);
+
+    return () => {
+      socket.off('newComment', handleNewComment);
+      socket.off('commentReactionUpdate', handleCommentReaction);
+      socket.off('threadReactionUpdate', handleThreadReaction);
+    };
+  }, [socket, threadId, fetchRealComments]);
+
+  if (!thread) return null;
+
+  // Add Top-level Comment
+  const handleAddComment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSubmitting || !commentText.trim()) return;
+
+    setIsSubmitting(true);
+    const textToSend = commentText.trim();
+    setCommentText(''); // Clear input immediately
+
+    const token = localStorage.getItem('trekmap_token');
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    try {
+      const res = await fetch(`http://localhost:5000/api/forum/threads/${thread.id}/comments`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ content: textToSend }),
+      });
+      const json = await res.json();
+      if (json.success && json.data) {
+        await fetchRealComments();
+      } else {
+        alert(json.message || 'Không thể gửi bình luận.');
+        setCommentText(textToSend);
+      }
+    } catch (err) {
+      alert('Không thể kết nối máy chủ để lưu bình luận.');
+      setCommentText(textToSend);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Add Nested Reply to a specific Comment
+  const handleSendSubReply = async (parentId: string) => {
+    if (isSubmittingReply || !replyInputText.trim()) return;
+
+    setIsSubmittingReply(true);
+    const textToSend = replyInputText.trim();
+    setReplyInputText('');
+
+    const token = localStorage.getItem('trekmap_token');
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    try {
+      const res = await fetch(`http://localhost:5000/api/forum/threads/${thread.id}/comments`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ content: textToSend, parentId }),
+      });
+      const json = await res.json();
+      if (json.success && json.data) {
+        setActiveReplyId(null);
+        await fetchRealComments();
+      } else {
+        alert(json.message || 'Không thể gửi phản hồi.');
+        setReplyInputText(textToSend);
+      }
+    } catch (err) {
+      alert('Không thể kết nối máy chủ để lưu phản hồi.');
+      setReplyInputText(textToSend);
+    } finally {
+      setIsSubmittingReply(false);
+    }
+  };
+
+const updateCommentReactionsInTree = (list: CommentItem[], targetId: string, newReactions: CommentReactions): CommentItem[] => {
+  return list.map((c) => {
+    if (c.id === targetId) {
+      return { ...c, reactions: newReactions };
+    }
+    if (c.replies && c.replies.length > 0) {
+      return { ...c, replies: updateCommentReactionsInTree(c.replies, targetId, newReactions) };
+    }
+    return c;
+  });
+};
+
+const updateCommentReactionsOptimistically = (
+  list: CommentItem[],
+  targetId: string,
+  prevReaction: ReactionType,
+  newReaction: ReactionType
+): CommentItem[] => {
+  return list.map((c) => {
+    if (c.id === targetId) {
+      const reactions: Record<string, number> = {
+        like: 0,
+        dislike: 0,
+        haha: 0,
+        wow: 0,
+        buon: 0,
+        huhu: 0,
+        angry: 0,
+        ...(c.reactions || {}),
+      };
+      if (prevReaction && prevReaction !== newReaction && reactions[prevReaction] !== undefined) {
+        reactions[prevReaction] = Math.max(0, reactions[prevReaction] - 1);
+      }
+      if (newReaction && prevReaction !== newReaction) {
+        reactions[newReaction] = (reactions[newReaction] || 0) + 1;
+      }
+      return { ...c, reactions: reactions as unknown as CommentReactions };
+    }
+    if (c.replies && c.replies.length > 0) {
+      return { ...c, replies: updateCommentReactionsOptimistically(c.replies, targetId, prevReaction, newReaction) };
+    }
+    return c;
+  });
+};
+
+  // Handle Comment Reaction (Instant 0ms Optimistic Update - Zero Scroll Jump)
+  const handleCommentReaction = async (commentId: string, reactionType: ReactionType) => {
+    const prevReaction = commentReactionsState[commentId] || null;
+
+    try {
+      const res = await fetch(`http://localhost:5000/api/forum/comments/${commentId}/reaction`, {
+        method: 'POST',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ reactionType, previousReaction: prevReaction }),
+      });
+      const json = await res.json();
+      if (json.success && json.data) {
+        setComments((prevComments) => updateCommentReactionsInTree(prevComments, commentId, json.data));
+        if (json.userReaction !== undefined) {
+          setCommentReactionsState((prev) => ({ ...prev, [commentId]: json.userReaction }));
+        }
+      }
+    } catch (err) {
+      console.error('[Comment Reaction Error]:', err);
+    }
+  };
+  // Handle Main Discussion Thread Reaction (MongoDB Persistent Sync + Instant 0ms Optimistic Upvotes)
+  const handleThreadReaction = async (r: ReactionType) => {
+    const prev = reaction;
+    const next = prev === r ? null : r;
+
+    // Instant optimistic updates
+    setReaction(next);
+    if (thread) {
+      const summary: Record<string, number> = {
+        ...(thread.reactions || { like: 0, love: 0, haha: 0, wow: 0, sad: 0, angry: 0, dislike: 0 }),
+      };
+      if (prev && summary[prev] !== undefined) {
+        summary[prev] = Math.max(0, summary[prev] - 1);
+      }
+      if (next && summary[next] !== undefined) {
+        summary[next] = (summary[next] || 0) + 1;
+      }
+      (thread as any).reactions = summary;
+      (thread as any).userReaction = next;
+    }
+
+    try {
+      const res = await fetch(`http://localhost:5000/api/forum/threads/${thread.id}/reaction`, {
+        method: 'POST',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ reactionType: r, previousReaction: prev }),
+      });
+      const json = await res.json();
+      if (json.success && json.upvotes !== undefined) {
+        setThreadUpvotes(json.upvotes);
+        if (json.userReaction !== undefined) {
+          setReaction(json.userReaction);
+        }
+        if (thread) {
+          (thread as any).reactions = json.data;
+          (thread as any).userReaction = json.userReaction;
+          (thread as any).upvotes = json.upvotes;
+        }
+        if (onUpdateThreadUpvotes && thread) {
+          onUpdateThreadUpvotes(thread.id, json.upvotes);
+        }
+        if (onUpdateThreadReaction && thread) {
+          onUpdateThreadReaction(thread.id, json.userReaction, json.data, json.upvotes);
+        }
+        notifyForumUpdated({ threadId: thread.id, userReaction: json.userReaction, reactionsSummary: json.data, upvotes: json.upvotes });
+      }
+    } catch (err) {
+      console.error('[Thread Reaction Error]:', err);
+    }
+  };
+
+  // Helper to render individual Comment Card & Nested Sub-Replies
+  const renderCommentCard = (comment: CommentItem, isNested = false) => {
+    const isReplyingThis = activeReplyId === comment.id;
+    const currentCommentReaction = commentReactionsState[comment.id] || (comment as any).userReaction || null;
+
+    const cleanCommentAuthor = comment.authorName.replace(/\(.*\)/, '').trim();
+    const cleanThreadAuthor = (thread?.authorName || '').replace(/\(.*\)/, '').trim();
+    const isPostAuthor = cleanCommentAuthor.toLowerCase() === cleanThreadAuthor.toLowerCase();
+
+    // Total reactions count
+    const totalReactions = comment.reactions
+      ? Object.values(comment.reactions).reduce((a, b) => a + b, 0)
+      : 0;
+
+    return (
+      <div
+        key={comment.id}
+        style={{
+          background: isPostAuthor
+            ? 'rgba(22, 163, 74, 0.08)'
+            : (isNested ? 'var(--color-bg-card)' : 'var(--color-bg-main)'),
+          borderRadius: 16,
+          padding: '14px 16px',
+          border: isPostAuthor
+            ? '1.5px solid var(--color-primary)'
+            : '1px solid var(--color-border)',
+          boxShadow: 'none',
+          marginLeft: isNested ? 24 : 0,
+          marginTop: isNested ? 8 : 0,
+          position: 'relative',
+        }}
+      >
+        {isNested && (
+          <div style={{ position: 'absolute', left: -16, top: 18, color: 'var(--color-primary)' }}>
+            <CornerDownRight size={14} />
+          </div>
+        )}
+
+        {/* Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <div
+            onClick={() => onOpenAuthorProfile({ name: cleanCommentAuthor, avatar: comment.authorAvatar })}
+            style={{ display: 'flex', alignItems: 'center', gap: 9, cursor: 'pointer' }}
+            title="Bấm để xem hồ sơ người bình luận"
+          >
+            <img
+              src={comment.authorAvatar}
+              alt={cleanCommentAuthor}
+              referrerPolicy="no-referrer"
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: '50%',
+                border: isPostAuthor ? '2px solid var(--color-primary)' : '1.5px solid var(--color-sky)',
+                objectFit: 'cover',
+              }}
+            />
+            <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+              {cleanCommentAuthor}
+            </span>
+            {isPostAuthor && (
+              <span style={{
+                background: 'rgba(22, 163, 74, 0.15)',
+                border: '1px solid var(--color-primary)',
+                color: 'var(--color-primary)',
+                fontSize: '0.7rem',
+                fontWeight: 800,
+                padding: '1px 7px',
+                borderRadius: 8,
+              }}>
+                Tác giả
+              </span>
+            )}
+          </div>
+
+          <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)' }}>{comment.createdAt}</span>
+        </div>
+
+        {/* Content */}
+        <div style={{ fontSize: '0.88rem', color: 'var(--color-text-main)', lineHeight: 1.5, marginBottom: 10, paddingLeft: 34 }}>
+          {comment.content}
+        </div>
+
+        {/* Action Row: Facebook Reaction Picker + Reply Button */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, paddingLeft: 34, paddingTop: 4 }}>
+          <FacebookReactionPicker
+            currentReaction={currentCommentReaction}
+            totalLikes={totalReactions}
+            reactionsSummary={comment.reactions as any}
+            onSelectReaction={(r) => handleCommentReaction(comment.id, r)}
+          />
+
+          {!isNested && (
+            <button
+              type="button"
+              onClick={() => {
+                setActiveReplyId(isReplyingThis ? null : comment.id);
+                setReplyInputText('');
+              }}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: isReplyingThis ? '#00ffd5' : '#94a3b8',
+                fontSize: '0.82rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+            >
+              <Reply size={13} /> {isReplyingThis ? 'Hủy trả lời' : 'Trả lời'}
+            </button>
+          )}
+        </div>
+
+        {/* Inline Reply Input Box */}
+        {isReplyingThis && (
+          <div style={{ marginTop: 12, paddingLeft: 34, display: 'flex', gap: 8 }}>
+            <input
+              type="text"
+              className="form-input"
+              placeholder={`Trả lời ${comment.authorName}...`}
+              value={replyInputText}
+              onChange={(e) => setReplyInputText(e.target.value)}
+              disabled={isSubmittingReply}
+              style={{ flex: 1, fontSize: '0.82rem', padding: '6px 12px' }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSendSubReply(comment.id);
+              }}
+            />
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => handleSendSubReply(comment.id)}
+              disabled={isSubmittingReply || !replyInputText.trim()}
+              style={{ padding: '4px 14px', fontSize: '0.82rem' }}
+            >
+              {isSubmittingReply ? <Loader2 size={13} className="spin" /> : 'Gửi'}
+            </button>
+          </div>
+        )}
+
+        {/* Render Nested Sub-replies */}
+        {comment.replies && comment.replies.length > 0 && (
+          <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {comment.replies.map((subReply) => renderCommentCard(subReply, true))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div
+        className="modal-content"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          maxWidth: 680,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+        }}
+      >
+        {/* Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, borderBottom: '1px solid var(--color-border)', paddingBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span className={`badge ${thread.category === 'Cảnh Báo' ? 'badge-error' : 'badge-success'}`}>
+              {thread.category}
+            </span>
+
+            {/* Post Author Clickable Header */}
+            <div
+              onClick={() => onOpenAuthorProfile({ name: thread.authorName.replace(/\(.*\)/, '').trim(), avatar: thread.authorAvatar || '' })}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+              title="Bấm để xem hồ sơ tác giả bài viết"
+            >
+              <img
+                src={thread.authorAvatar}
+                alt={thread.authorName}
+                referrerPolicy="no-referrer"
+                style={{ width: 22, height: 22, borderRadius: '50%', border: '1px solid var(--color-primary)', objectFit: 'cover' }}
+              />
+              <span style={{ fontSize: 'var(--font-size-xs)', fontWeight: 'var(--font-weight-bold)', color: 'var(--color-primary)', textDecoration: 'underline' }}>
+                {thread.authorName.replace(/\(.*\)/, '').trim()}
+              </span>
+            </div>
+
+            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-dim)' }}>• {thread.createdAt}</span>
+          </div>
+
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
+            <X size={22} />
+          </button>
+        </div>
+
+        {/* Scrollable Body */}
+        <div style={{ overflowY: 'auto', flex: 1, paddingRight: 6, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Title */}
+          <h2 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)', margin: 0, lineHeight: 1.4 }}>
+            {thread.title}
+          </h2>
+
+          {/* Full Content */}
+          <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', lineHeight: 'var(--line-height-normal)', margin: 0, background: 'var(--color-bg-main)', padding: 16, borderRadius: 14, border: '1px solid var(--color-border)' }}>
+            {thread.content}
+          </p>
+
+          {/* Action Row: Thread Reaction Picker */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--color-border)', borderBottom: '1px solid var(--color-border)', padding: '12px 0' }}>
+            <FacebookReactionPicker
+              currentReaction={reaction}
+              totalLikes={threadUpvotes}
+              reactionsSummary={thread.reactions as any}
+              onSelectReaction={(r) => handleThreadReaction(r)}
+            />
+
+            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <MessageSquare size={16} color="var(--color-sky)" /> {totalCommentCount} Bình luận
+            </span>
+          </div>
+
+          {/* Comments List Section */}
+          <div>
+            <h4 style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', marginBottom: 12 }}>
+              Cộng đồng thảo luận ({totalCommentCount})
+            </h4>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {loadingComments ? (
+                <div style={{ textAlign: 'center', padding: 20, color: 'var(--color-primary)', fontSize: 'var(--font-size-xs)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                  <Loader2 size={18} className="spin" /> Đang tải bình luận từ MongoDB...
+                </div>
+              ) : comments.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: 20, color: 'var(--color-text-muted)', fontSize: 'var(--font-size-xs)', background: 'var(--color-bg-main)', borderRadius: 14, border: '1px dashed var(--color-border)' }}>
+                  Chưa có bình luận nào. Hãy là người đầu tiên gửi chia sẻ của bạn!
+                </div>
+              ) : (
+                comments.map((c) => renderCommentCard(c, false))
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Top-level Comment Input Box Form */}
+        <form onSubmit={handleAddComment} style={{ display: 'flex', gap: 10, marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--color-border)' }}>
+          <input
+            type="text"
+            className="form-input"
+            placeholder={isSubmitting ? "Đang lưu bình luận..." : "Viết bình luận của bạn vào đây..."}
+            value={commentText}
+            onChange={(e) => setCommentText(e.target.value)}
+            disabled={isSubmitting}
+            style={{ flex: 1, fontSize: 'var(--font-size-sm)' }}
+          />
+          <button type="submit" className="btn btn-primary" disabled={isSubmitting || !commentText.trim()} style={{ padding: '0 16px', display: 'flex', alignItems: 'center', gap: 6, opacity: isSubmitting ? 0.6 : 1 }}>
+            {isSubmitting ? <Loader2 size={15} className="spin" /> : <Send size={15} />} Gửi
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
