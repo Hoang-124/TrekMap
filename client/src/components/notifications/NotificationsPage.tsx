@@ -5,7 +5,17 @@ import {
   markNotificationAsRead,
   markAllNotificationsAsRead,
 } from '../../services/notificationService.js';
-import { CheckCheck, Bell } from 'lucide-react';
+
+const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
+  return ({ size = defaultSize, color = 'currentColor', style }: { size?: number; color?: string; style?: React.CSSProperties }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+      {d}
+    </svg>
+  );
+};
+
+const CheckCheck = createSvgIcon(<><path d="M18 6L7 17l-5-5" /><path d="M22 10l-7.5 7.5L13 16" /></>);
+const Bell = createSvgIcon(<><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></>);
 
 interface NotificationsPageProps {
   currentUser: UserProfile | null;

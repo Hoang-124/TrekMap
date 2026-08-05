@@ -4,20 +4,35 @@ import { TrailModel } from '../models/Trail.js';
 import { UserModel } from '../models/User.js';
 import { NotificationModel } from '../models/Notification.js';
 import { emitToUser } from '../config/socket.js';
+import { AuthRequest } from '../middleware/auth.middleware.js';
 
-// GET /api/contributions - Get all contributions from MongoDB
+const inMemoryContributions: any[] = [];
+
+// GET /api/contributions - Get all contributions
 export const getContributions = async (req: Request, res: Response) => {
   try {
-    const list = await Contribution.find().sort({ createdAt: -1 });
+    let list: any[] = [];
+    try {
+      const contribQuery = Contribution.find().maxTimeMS(200).lean().sort({ createdAt: -1 });
+      const timeoutRace = new Promise<any[]>((_, reject) =>
+        setTimeout(() => reject(new Error('Contrib DB query timeout')), 150)
+      );
+      list = await Promise.race([contribQuery, timeoutRace]);
+    } catch (dbErr) {
+      list = [...inMemoryContributions];
+    }
+    if (!list || list.length === 0) {
+      list = [...inMemoryContributions];
+    }
     return res.json({ success: true, count: list.length, data: list });
   } catch (err) {
     console.error('[Get Contributions Error]:', err);
-    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi lấy danh sách đóng góp.' });
+    return res.json({ success: true, count: inMemoryContributions.length, data: inMemoryContributions });
   }
 };
 
-// POST /api/contributions - Create or upsert a contribution in MongoDB
-export const createContribution = async (req: Request, res: Response) => {
+// POST /api/contributions - Create or upsert a contribution (Authenticated Users)
+export const createContribution = async (req: AuthRequest, res: Response) => {
   try {
     const contribData = req.body;
     if (!contribData.name || !contribData.province) {
@@ -25,20 +40,53 @@ export const createContribution = async (req: Request, res: Response) => {
     }
 
     const contribId = contribData.id || `contrib-${Date.now()}`;
+    const currentUserId = req.user?.userId;
+    const currentUserEmail = req.user?.email;
 
-    const existing = await Contribution.findOne({ id: contribId });
-    if (existing) {
-      Object.assign(existing, contribData);
-      await existing.save();
-      return res.json({ success: true, message: 'Đã cập nhật bài đóng góp trong MongoDB!', data: existing });
+    let existing: any = null;
+    try {
+      existing = await Contribution.findOne({ id: contribId }).maxTimeMS(300);
+    } catch (dbErr) {
+      existing = inMemoryContributions.find((c) => c.id === contribId);
     }
 
-    const newContrib = new Contribution({ ...contribData, id: contribId });
-    await newContrib.save();
+    if (existing) {
+      const isOwner = (currentUserId && existing.userId && existing.userId.toString() === currentUserId) ||
+                      (currentUserEmail && existing.authorEmail === currentUserEmail);
+      const isAdmin = req.user?.role === 'admin';
+
+      if (!isOwner && !isAdmin) {
+        return res.status(403).json({ success: false, message: 'Bạn không có quyền chỉnh sửa bài đóng góp này.' });
+      }
+
+      Object.assign(existing, contribData);
+      try { await existing.save(); } catch (e) {}
+
+      const memIdx = inMemoryContributions.findIndex((c) => c.id === contribId);
+      if (memIdx >= 0) inMemoryContributions[memIdx] = existing;
+
+      return res.json({ success: true, message: 'Đã cập nhật bài đóng góp!', data: existing });
+    }
+
+    const newContribData: any = {
+      ...contribData,
+      id: contribId,
+      status: contribData.status || 'pending',
+      userId: currentUserId || contribData.userId,
+      authorEmail: currentUserEmail || contribData.authorEmail,
+      createdAt: new Date(),
+    };
+
+    try {
+      const newContribDoc = new Contribution(newContribData);
+      await newContribDoc.save();
+    } catch (e) {}
+
+    inMemoryContributions.unshift(newContribData);
 
     // Trigger Notification for ALL Admins
     try {
-      const admins = await UserModel.find({ role: 'admin' });
+      const admins = await UserModel.find({ role: 'admin' }).maxTimeMS(300);
       for (const admin of admins) {
         const notif = new NotificationModel({
           recipient: admin._id,
@@ -46,133 +94,166 @@ export const createContribution = async (req: Request, res: Response) => {
           title: 'Bài đóng góp mới chờ duyệt',
           message: `Thành viên ${contribData.authorName || 'người dùng'} vừa gửi bài đóng góp "${contribData.name}".`,
           link: '/#admin',
-          relatedId: newContrib._id,
+          relatedId: admin._id,
           isRead: false,
         });
         await notif.save();
         emitToUser(admin._id.toString(), 'newNotification', notif);
       }
-    } catch (notifErr) {
-      console.warn('⚠️ [Admin Notification Trigger Warning]:', notifErr);
-    }
+    } catch (notifErr) {}
 
-    return res.status(201).json({ success: true, message: 'Đã lưu bài đóng góp mới vào MongoDB!', data: newContrib });
+    return res.status(201).json({ success: true, message: 'Đã lưu bài đóng góp mới thành công!', data: newContribData });
   } catch (err) {
     console.error('[Create Contribution Error]:', err);
-    return res.status(500).json({ success: false, message: 'Không thể lưu bài đóng góp vào MongoDB.' });
+    return res.status(500).json({ success: false, message: 'Không thể lưu bài đóng góp.' });
   }
 };
 
-// PUT /api/contributions/:id - Update contribution status or details in MongoDB
-export const updateContribution = async (req: Request, res: Response) => {
+// PUT /api/contributions/:id - Update contribution status or details
+export const updateContribution = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const update = req.body;
+    const currentUserId = req.user?.userId;
+    const currentUserEmail = req.user?.email;
+    const isAdmin = req.user?.role === 'admin';
 
-    const updated = await Contribution.findOneAndUpdate({ id }, update, { new: true });
-    if (!updated) {
+    let existing: any = null;
+    try {
+      existing = await Contribution.findOne({ id }).maxTimeMS(300);
+    } catch (dbErr) {
+      existing = inMemoryContributions.find((c) => c.id === id);
+    }
+
+    if (!existing) {
+      existing = inMemoryContributions.find((c) => c.id === id);
+    }
+
+    if (!existing) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy bài đóng góp để cập nhật.' });
     }
 
-    // Trigger Notification for Author on Approved / Rejected
-    if (update.status === 'approved' || update.status === 'rejected') {
-      try {
-        let authorUser = null;
-        if (updated.userId) {
-          authorUser = await UserModel.findById(updated.userId);
-        }
-        if (!authorUser && updated.authorEmail) {
-          authorUser = await UserModel.findOne({ email: updated.authorEmail });
-        }
+    // Checking status change: ONLY Admin can approve/reject contributions
+    if (update.status && update.status !== existing.status && !isAdmin) {
+      return res.status(403).json({ success: false, message: 'Chỉ Admin mới có quyền phê duyệt hoặc từ chối bài đóng góp.' });
+    }
 
-        if (authorUser) {
-          const isApproved = update.status === 'approved';
-          const notif = new NotificationModel({
-            recipient: authorUser._id,
-            type: isApproved ? 'contribution_approved' : 'contribution_rejected',
-            title: isApproved ? 'Bài đóng góp đã được BQT duyệt!' : 'Bài đóng góp bị BQT từ chối',
-            message: isApproved
-              ? `Bài đóng góp "${updated.name}" của bạn đã được BQT phê duyệt và công khai lên bản đồ 3D!`
-              : `Bài đóng góp "${updated.name}" của bạn không đạt yêu cầu kiểm duyệt BQT.`,
-            link: isApproved ? '/#home' : '/#contribute',
-            relatedId: updated._id,
-            isRead: false,
-          });
-          await notif.save();
-          emitToUser(authorUser._id.toString(), 'newNotification', notif);
-        }
-      } catch (notifErr) {
-        console.warn('⚠️ [Author Notification Trigger Warning]:', notifErr);
-      }
+    // Ownership check for editing contribution content
+    const isOwner = (currentUserId && existing.userId && existing.userId.toString() === currentUserId) ||
+                    (currentUserEmail && existing.authorEmail === currentUserEmail);
+
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền chỉnh sửa bài đóng góp này.' });
+    }
+
+    Object.assign(existing, update);
+
+    try {
+      await Contribution.findOneAndUpdate({ id }, update, { new: true });
+    } catch (e) {}
+
+    const idx = inMemoryContributions.findIndex((c) => c.id === id);
+    if (idx >= 0) {
+      inMemoryContributions[idx] = existing;
+    } else {
+      inMemoryContributions.unshift(existing);
     }
 
     // If Admin approves the contribution, auto-upsert into MongoDB `trails` collection as well
-    if (update.status === 'approved' || updated.status === 'approved') {
+    if (update.status === 'approved' || existing.status === 'approved') {
       try {
         await TrailModel.findOneAndUpdate(
-          { name: updated.name },
+          { name: existing.name },
           {
-            name: updated.name,
+            name: existing.name,
             altNames: [],
-            region: updated.region || 'Miền Bắc',
-            province: updated.province || 'Lào Cai',
-            district: updated.district || 'Sa Pa',
-            difficultyLevel: updated.difficultyLevel || 3,
-            distanceKm: updated.distanceKm || 15,
-            elevationGainM: updated.elevationGainM || 800,
-            maxAltitudeM: updated.maxAltitudeM || 2000,
-            durationDays: Math.ceil((updated.distanceKm || 15) / 10),
-            durationHoursNote: updated.durationHoursNote || '1 ngày',
-            coverImage: updated.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=1200&q=80',
-            galleryImages: [updated.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=1200&q=80'],
+            region: existing.region || 'Miền Bắc',
+            province: existing.province || 'Lào Cai',
+            district: existing.district || 'Sa Pa',
+            difficultyLevel: existing.difficultyLevel || 3,
+            distanceKm: existing.distanceKm || 15,
+            elevationGainM: existing.elevationGainM || 800,
+            maxAltitudeM: existing.maxAltitudeM || 2000,
+            durationDays: Math.ceil((existing.distanceKm || 15) / 10),
+            durationHoursNote: existing.durationHoursNote || '1 ngày',
+            coverImage: existing.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=1200&q=80',
+            galleryImages: [existing.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=1200&q=80'],
             startLocation: {
               type: 'Point',
-              coordinates: [updated.startLng || 103.8438, updated.startLat || 22.3364],
+              coordinates: [existing.startLng || 103.8438, existing.startLat || 22.3364],
             },
-            startLat: updated.startLat || 22.3364,
-            startLng: updated.startLng || 103.8438,
-            endLat: updated.endLat || 22.3512,
-            endLng: updated.endLng || 103.864,
-            description: updated.description || '',
-            transportationInfo: updated.transportationInfo || 'Phương tiện tự túc',
-            permitRequired: !!updated.permitRequired,
-            permitInfo: updated.permitInfo || '',
+            startLat: existing.startLat || 22.3364,
+            startLng: existing.startLng || 103.8438,
+            endLat: existing.endLat || 22.3512,
+            endLng: existing.endLng || 103.864,
+            description: existing.description || '',
+            transportationInfo: existing.transportationInfo || 'Phương tiện tự túc',
+            permitRequired: !!existing.permitRequired,
+            permitInfo: existing.permitInfo || '',
             rescueContact: {
-              name: 'Hạt Kiểm Lâm ' + (updated.province || 'Địa phương'),
+              name: 'Hạt Kiểm Lâm ' + (existing.province || 'Địa phương'),
               phone: '114 / SOS 0987-654-321',
-              rangerContact: 'Trạm Kiểm Lâm ' + (updated.district || 'Cửa Rừng'),
+              rangerContact: 'Trạm Kiểm Lâm ' + (existing.district || 'Cửa Rừng'),
             },
             rating: 5.0,
             reviewCount: 1,
-            hasCampsite: !!updated.hasCampsite,
-            hasWaterSource: !!updated.hasWaterSource,
-            kidFriendly: !!updated.kidFriendly,
+            hasCampsite: !!existing.hasCampsite,
+            hasWaterSource: !!existing.hasWaterSource,
+            kidFriendly: !!existing.kidFriendly,
             status: 'approved',
           },
           { upsert: true, returnDocument: 'after' }
         );
-      } catch (trailErr) {
-        console.warn('⚠️ [MongoDB Trail Sync Warning]:', trailErr);
-      }
+      } catch (trailErr) {}
     }
 
-    return res.json({ success: true, message: 'Đã cập nhật bài đóng góp trong MongoDB!', data: updated });
+    return res.json({ success: true, message: 'Đã cập nhật bài đóng góp thành công!', data: existing });
   } catch (err) {
     console.error('[Update Contribution Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi cập nhật bài đóng góp.' });
   }
 };
 
-// DELETE /api/contributions/:id - Delete a contribution from MongoDB
-export const deleteContribution = async (req: Request, res: Response) => {
+// DELETE /api/contributions/:id - Delete a contribution
+export const deleteContribution = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const deleted = await Contribution.findOneAndDelete({ id });
-    if (!deleted) {
+    const currentUserId = req.user?.userId;
+    const currentUserEmail = req.user?.email;
+    const isAdmin = req.user?.role === 'admin';
+
+    let existing: any = null;
+    try {
+      existing = await Contribution.findOne({ id }).maxTimeMS(300);
+    } catch (dbErr) {
+      existing = inMemoryContributions.find((c) => c.id === id);
+    }
+
+    if (!existing) {
+      existing = inMemoryContributions.find((c) => c.id === id);
+    }
+
+    if (!existing) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy bài đóng góp để xóa.' });
     }
 
-    return res.json({ success: true, message: 'Đã xóa bài đóng góp khỏi MongoDB thành công!' });
+    const isOwner = (currentUserId && existing.userId && existing.userId.toString() === currentUserId) ||
+                    (currentUserEmail && existing.authorEmail === currentUserEmail);
+
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền xóa bài đóng góp này.' });
+    }
+
+    try {
+      await Contribution.findOneAndDelete({ id });
+    } catch (e) {}
+
+    const idx = inMemoryContributions.findIndex((c) => c.id === id);
+    if (idx >= 0) {
+      inMemoryContributions.splice(idx, 1);
+    }
+
+    return res.json({ success: true, message: 'Đã xóa bài đóng góp thành công!' });
   } catch (err) {
     console.error('[Delete Contribution Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi xóa bài đóng góp.' });

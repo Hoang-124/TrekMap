@@ -396,31 +396,38 @@ textarea,
 
 /* Modal Overlay */
 .modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
-  background: var(--overlay-bg);
-  backdrop-filter: blur(16px);
-  z-index: 999;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  background: rgba(8, 12, 24, 0.85) !important;
+  backdrop-filter: blur(18px) !important;
+  -webkit-backdrop-filter: blur(18px) !important;
+  z-index: 9999999 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 40px 20px !important;
+  box-sizing: border-box !important;
 }
 
 .modal-content {
-  background: var(--color-bg-card);
-  border: 1.5px solid var(--color-border-glow);
-  border-radius: var(--radius-xl);
-  max-width: 650px;
-  width: 100%;
-  max-height: 90vh;
-  overflow-y: auto;
-  padding: 28px;
-  box-shadow: var(--shadow-card);
-  color: var(--color-text-main);
+  background: var(--color-bg-card) !important;
+  border: 1.5px solid var(--color-border) !important;
+  border-radius: var(--radius-xl) !important;
+  max-width: 620px !important;
+  width: 100% !important;
+  max-height: 82vh !important;
+  overflow-y: auto !important;
+  padding: 28px !important;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.85), 0 0 30px rgba(14, 215, 181, 0.15) !important;
+  color: var(--color-text-main) !important;
+  position: relative !important;
+  z-index: 10000000 !important;
+  margin: auto !important;
 }
 
 /* Global Form Input Typography Reset */
@@ -524,7 +531,6 @@ textarea:focus,
 /* Smooth Global View Transition */
 .view-fade-in {
   animation: viewFadeIn 0.28s var(--ease-out-expo) forwards;
-  will-change: opacity, transform;
 }
 
 @keyframes viewFadeIn {
@@ -535,7 +541,7 @@ textarea:focus,
 
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 
@@ -607,6 +613,39 @@ textarea:focus,
     opacity: 1;
     transform: scale(1) translateY(0);
   }
+}
+
+/* Smooth Tab Content Switch Animations (Directional Slide & Scale) */
+@keyframes authSlideLeft {
+  0% {
+    opacity: 0;
+    transform: translateX(-32px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes authSlideRight {
+  0% {
+    opacity: 0;
+    transform: translateX(32px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+.auth-slide-left {
+  animation: authSlideLeft 0.52s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  width: 100%;
+}
+
+.auth-slide-right {
+  animation: authSlideRight 0.52s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  width: 100%;
 }
 
 /* Smooth Dropdown Menu Pop-Down */

@@ -1,16 +1,30 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { ForumThread } from '../../types.js';
+
+const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
+  return ({ size = defaultSize, color = 'currentColor', style }: { size?: number; color?: string; style?: React.CSSProperties }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+      {d}
+    </svg>
+  );
+};
+
+const ArrowLeft = createSvgIcon(<><line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" /></>);
+const PlusCircle = createSvgIcon(<><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="16" /><line x1="8" y1="12" x2="16" y2="12" /></>);
+const Download = createSvgIcon(<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></>);
+const FileText = createSvgIcon(<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /><polyline points="10 9 9 9 8 9" /></>);
+const Send = createSvgIcon(<><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></>);
 import { TrekkerRadioBasecamp } from './TrekkerRadioBasecamp.js';
 import { AlpineExpeditionFeed } from './AlpineExpeditionFeed.js';
-import { ArrowLeft, PlusCircle, Download, FileText, Send } from 'lucide-react';
 import { getApiHeaders } from '../../utils/sessionHeaders';
 import { useSocket } from '../../hooks/useSocket.js';
 
 interface TrekForumViewProps {
   onBack: () => void;
+  onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
 }
 
-export const TrekForumView: React.FC<TrekForumViewProps> = ({ onBack }) => {
+export const TrekForumView: React.FC<TrekForumViewProps> = ({ onBack, onShowToast }) => {
   const [threads, setThreads] = useState<ForumThread[]>([]);
   const [isNewThreadOpen, setIsNewThreadOpen] = useState(false);
   const { socket } = useSocket();
@@ -96,10 +110,14 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({ onBack }) => {
         setIsNewThreadOpen(false);
         setNewTitle('');
         setNewContent('');
-        alert('Tạo bài đóng góp nhật ký thành công!');
+        if (onShowToast) {
+          onShowToast('Tạo bài đóng góp nhật ký mới thành công!', 'success');
+        }
       }
     } catch (err) {
-      alert('Không thể đăng bài, vui lòng thử lại.');
+      if (onShowToast) {
+        onShowToast('Không thể đăng bài, vui lòng thử lại.', 'error');
+      }
     }
   };
 
@@ -111,7 +129,20 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({ onBack }) => {
           <ArrowLeft size={16} /> Quay lại trang chủ
         </button>
 
-        <button className="btn btn-primary" onClick={() => setIsNewThreadOpen(true)}>
+        <button
+          className="btn btn-primary"
+          onClick={() => {
+            const token = localStorage.getItem('trekmap_token');
+            if (!token) {
+              if (onShowToast) {
+                onShowToast('Vui lòng đăng nhập để tạo bài nhật ký mới trên diễn đàn!', 'info');
+              }
+              window.location.hash = '#login';
+              return;
+            }
+            setIsNewThreadOpen(true);
+          }}
+        >
           <PlusCircle size={16} /> Viết nhật ký mới
         </button>
       </div>
@@ -142,7 +173,17 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({ onBack }) => {
         <div>
           <AlpineExpeditionFeed
             threads={threads}
-            onOpenNewThreadModal={() => setIsNewThreadOpen(true)}
+            onOpenNewThreadModal={() => {
+              const token = localStorage.getItem('trekmap_token');
+              if (!token) {
+                if (onShowToast) {
+                  onShowToast('Vui lòng đăng nhập để tạo bài nhật ký mới trên diễn đàn!', 'info');
+                }
+                window.location.hash = '#login';
+                return;
+              }
+              setIsNewThreadOpen(true);
+            }}
           />
         </div>
 

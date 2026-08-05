@@ -1,6 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import type { ForumThread } from '../../types.js';
-import { Mountain, MessageSquare, PlusCircle, AlertTriangle, ShieldCheck } from 'lucide-react';
+
+const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
+  return ({ size = defaultSize, color = 'currentColor', style }: { size?: number; color?: string; style?: React.CSSProperties }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+      {d}
+    </svg>
+  );
+};
+
+const Mountain = createSvgIcon(<path d="M8 3l4 8 5-5 5 15H2L8 3z" />);
+const MessageSquare = createSvgIcon(<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />);
+const PlusCircle = createSvgIcon(<><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="16" /><line x1="8" y1="12" x2="16" y2="12" /></>);
+const AlertTriangle = createSvgIcon(<><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></>);
+const ShieldCheck = createSvgIcon(<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><polyline points="9 12 11 14 15 10" /></>);
 import { FacebookReactionPicker } from './FacebookReactionPicker.js';
 import type { ReactionType } from './FacebookReactionPicker.js';
 import { AuthorProfileModal } from './AuthorProfileModal.js';
@@ -167,7 +180,19 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
         </div>
 
         <div style={{ display: 'flex', gap: 10 }}>
-          <button className="btn btn-primary" onClick={onOpenNewThreadModal} style={{ borderRadius: 20 }}>
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              const token = localStorage.getItem('trekmap_token');
+              if (!token) {
+                window.dispatchEvent(new CustomEvent('trekmap:show-toast', { detail: { message: 'Vui lòng đăng nhập để tạo bài nhật ký mới trên diễn đàn!', type: 'info' } }));
+                window.location.hash = '#login';
+                return;
+              }
+              onOpenNewThreadModal();
+            }}
+            style={{ borderRadius: 20 }}
+          >
             <PlusCircle size={15} /> Viết bài đóng góp
           </button>
         </div>

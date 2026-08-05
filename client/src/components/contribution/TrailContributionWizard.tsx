@@ -3,7 +3,20 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline, useMapEvents } from '
 import L from 'leaflet';
 import { submitTrailContribution, uploadImageToCloudinary } from '../../services/api.js';
 import type { Region } from '../../types.js';
-import { ArrowLeft, ArrowRight } from 'lucide-react';
+
+const ArrowLeft = ({ size = 18, color = 'currentColor', style }: { size?: number; color?: string; style?: React.CSSProperties }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <line x1="19" y1="12" x2="5" y2="12" />
+    <polyline points="12 19 5 12 12 5" />
+  </svg>
+);
+
+const ArrowRight = ({ size = 18, color = 'currentColor', style }: { size?: number; color?: string; style?: React.CSSProperties }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <line x1="5" y1="12" x2="19" y2="12" />
+    <polyline points="12 5 19 12 12 19" />
+  </svg>
+);
 
 // Custom Green Marker Icon for Start Point
 const greenPinIcon = new L.Icon({
@@ -99,6 +112,39 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
   const [loading, setLoading] = useState(false);
   const [isCustomWard, setIsCustomWard] = useState(false);
   const [customWardText, setCustomWardText] = useState('');
+
+  if (!currentUser) {
+    return (
+      <div style={{ maxWidth: 800, margin: '60px auto', padding: '48px 24px', textAlign: 'center', background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', borderRadius: 24, boxShadow: 'var(--shadow-lg)' }}>
+        <div style={{ background: 'rgba(14, 215, 181, 0.12)', width: 64, height: 64, borderRadius: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px auto' }}>
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+          </svg>
+        </div>
+        <h2 style={{ fontSize: '1.6rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 12 }}>
+          Yêu Cầu Đăng Nhập Để Đóng Góp Cung Đường
+        </h2>
+        <p style={{ color: 'var(--color-text-muted)', fontSize: '0.95rem', marginBottom: 28, maxWidth: 540, margin: '0 auto 28px auto', lineHeight: '1.6' }}>
+          Để đảm bảo chất lượng dữ liệu địa hình 3D và ghi nhận điểm uy tín Trekker chính xác, bạn cần đăng nhập tài khoản trước khi gửi đóng góp cung đường mới cho cộng đồng.
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 14 }}>
+          <button className="btn btn-outline" onClick={onBack} style={{ borderRadius: 12, padding: '12px 24px' }}>
+            Quay lại trang chủ
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              window.location.hash = '#login';
+            }}
+            style={{ borderRadius: 12, padding: '12px 28px', fontWeight: 700 }}
+          >
+            Đăng nhập ngay
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const isEditing = !!localStorage.getItem('trekmap_editing_contribution');
 
@@ -209,7 +255,9 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
         setFormData((prev) => ({ ...prev, coverImage: uploadedUrl }));
       } catch (err) {
         console.error('Upload image error:', err);
-        alert('Không thể tải ảnh lên Cloudinary, vui lòng thử lại.');
+        if (onShowToast) {
+          onShowToast('Không thể tải ảnh lên Cloudinary, vui lòng thử lại.', 'error');
+        }
       } finally {
         setUploadingImage(false);
       }

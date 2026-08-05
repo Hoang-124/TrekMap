@@ -89,12 +89,19 @@ export interface Incident {
   trailName: string;
   userId?: string;
   userName?: string;
+  userAvatar?: string;
   type: 'landslide' | 'flash_flood' | 'lost' | 'bad_weather' | 'flood' | 'weather' | 'wildlife' | 'other';
   description: string;
   severity: 'high' | 'medium' | 'low' | 'critical';
   reportedAt: string;
   resolved: boolean;
   locationNote?: string;
+  images?: string[];
+  verifiedBy?: string;
+  verifiedAt?: string;
+  coordinates?: { lat: number; lng: number };
+  elevationM?: number;
+  rescueContact?: string;
 }
 
 export interface UserProfile {

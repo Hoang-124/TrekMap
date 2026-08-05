@@ -1,10 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
+import { Types } from 'mongoose';
 import { verifyToken } from '../utils/auth.js';
+import { UserModel } from '../models/User.js';
 
 export interface AuthRequest extends Request {
   user?: {
     userId: string;
     email: string;
+    role: 'user' | 'guide' | 'admin';
   };
 }
 
@@ -42,8 +45,10 @@ export const getUserKeys = (req: Request): string[] => {
   return keys;
 };
 
-import { UserModel } from '../models/User.js';
-
+/**
+ * Strict JWT Authentication Middleware
+ * Rejects unauthenticated requests with 401 Unauthorized.
+ */
 export const authMiddleware = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const authHeader = req.headers['authorization'];
@@ -52,45 +57,69 @@ export const authMiddleware = async (req: AuthRequest, res: Response, next: Next
       const token = authHeader.substring(7);
       const decoded = verifyToken(token);
       if (decoded && decoded.userId) {
-        req.user = decoded;
+        let role = decoded.role || 'user';
+        
+        // Safe check for valid Mongo ObjectId before querying DB
+        if (Types.ObjectId.isValid(decoded.userId)) {
+          try {
+            const user = await UserModel.findById(decoded.userId).select('role');
+            if (user) {
+              role = user.role;
+            }
+          } catch (dbErr) {
+            // Ignore DB lookup error and fallback to decoded role
+          }
+        }
+
+        req.user = {
+          userId: decoded.userId,
+          email: decoded.email,
+          role,
+        };
         return next();
       }
     }
 
-    // Fallback for demo accounts or sessions with X-Client-Session-Id
-    const clientSid = req.headers['x-client-session-id'] || (req.headers['X-Client-Session-Id'] as string);
-    if (clientSid && typeof clientSid === 'string' && clientSid.trim()) {
-      // Find or create single canonical 'Thiên Thiên' user document for guest/demo session
-      let user = await UserModel.findOne({
-        $or: [
-          { username: 'thienthien' },
-          { email: 'thienthien@trekmap.vn' },
-          { fullName: 'Thiên Thiên' },
-        ],
-      });
-
-      if (!user) {
-        user = new UserModel({
-          username: 'thienthien',
-          email: 'thienthien@trekmap.vn',
-          passwordHash: 'dummy-password-hash',
-          fullName: 'Thiên Thiên',
-          role: 'user',
-          avatarUrl: 'https://ui-avatars.com/api/?name=Thien+Thien&background=10b981&color=fff',
-        });
-        await user.save();
-      }
-
-      req.user = {
-        userId: String(user._id),
-        email: user.email,
-      };
-      return next();
-    }
-
-    return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để thực hiện.' });
+    return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để thực hiện thao tác này.' });
   } catch (err) {
     console.error('[Auth Middleware Error]:', err);
     return res.status(401).json({ success: false, message: 'Lỗi xác thực người dùng.' });
   }
+};
+
+/**
+ * Optional Authentication Middleware
+ * Attaches req.user if token is present, but allows guests (req.user = undefined).
+ */
+export const optionalAuthMiddleware = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const authHeader = req.headers['authorization'];
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.substring(7);
+      const decoded = verifyToken(token);
+      if (decoded && decoded.userId) {
+        let role = decoded.role || 'user';
+
+        if (Types.ObjectId.isValid(decoded.userId)) {
+          try {
+            const user = await UserModel.findById(decoded.userId).select('role');
+            if (user) {
+              role = user.role;
+            }
+          } catch (dbErr) {
+            // Ignore DB lookup error
+          }
+        }
+
+        req.user = {
+          userId: decoded.userId,
+          email: decoded.email,
+          role,
+        };
+      }
+    }
+  } catch (err) {
+    // Ignore errors for optional auth
+  }
+  return next();
 };

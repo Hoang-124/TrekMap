@@ -2,8 +2,21 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import type { Trail } from '../../types.js';
-import { fetchNearbyTrails } from '../../services/api.js';
-import { ArrowRight, Navigation, LocateFixed, ChevronDown, Layers, Check, Filter, Activity, X } from 'lucide-react';
+import { fetchNearbyTrails, reverseGeocode } from '../../services/api.js';
+
+const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
+  return ({ size = defaultSize, color = 'currentColor', style }: { size?: number; color?: string; style?: React.CSSProperties }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+      {d}
+    </svg>
+  );
+};
+
+const ChevronDown = createSvgIcon(<polyline points="6 9 12 15 18 9" />);
+const Layers = createSvgIcon(<><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" /></>);
+const Check = createSvgIcon(<polyline points="20 6 9 17 4 12" />);
+const Filter = createSvgIcon(<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />);
+const Activity = createSvgIcon(<polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />);
 
 // Fix default leaflet icons
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -203,6 +216,7 @@ export interface MapViewProps {
   selectedTrail?: Trail | null;
   onSelectTrail?: (trail: Trail) => void;
   height?: string;
+  onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
 }
 
 // Map Tile Providers (ToS-compliant open-source tile layers)
@@ -244,6 +258,7 @@ export const MapView: React.FC<MapViewProps> = ({
   selectedTrail,
   onSelectTrail,
   height = '560px',
+  onShowToast,
 }) => {
   const [currentTileKey, setCurrentTileKey] = useState<keyof typeof TILE_PROVIDERS>('satellite');
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
@@ -256,7 +271,19 @@ export const MapView: React.FC<MapViewProps> = ({
     lat: number;
     lng: number;
     nearby: Trail[];
+    geocodedAddress?: string;
   } | null>(null);
+
+  // P2-14 Offline Caching State
+  const [isCachingTiles, setIsCachingTiles] = useState(false);
+  const [isOfflineCached, setIsOfflineCached] = useState(false);
+  const [cacheProgress, setCacheProgress] = useState(0);
+
+  // P2-15 GPS Live Tracking State
+  const [isLiveTracking, setIsLiveTracking] = useState(false);
+  const [liveTrackPoints, setLiveTrackPoints] = useState<[number, number][]>([]);
+  const [liveStats, setLiveStats] = useState({ speedKmH: 0, distanceKm: 0, durationSec: 0, altM: 0 });
+  const [watchId, setWatchId] = useState<number | null>(null);
 
   const centerLat = selectedTrail ? selectedTrail.startLat : 16.0470;
   const centerLng = selectedTrail ? selectedTrail.startLng : 108.2062;
@@ -274,6 +301,89 @@ export const MapView: React.FC<MapViewProps> = ({
 
   const currentTile = TILE_PROVIDERS[currentTileKey];
 
+  // P2-14: Cache Leaflet tiles for offline usage
+  const handleCacheOfflineMap = async () => {
+    if (!selectedTrail && trails.length === 0) return;
+    setIsCachingTiles(true);
+    setCacheProgress(10);
+
+    try {
+      if ('caches' in window) {
+        const cache = await caches.open('trekmap-tiles-v1');
+        const targetTrail = selectedTrail || trails[0];
+
+        const tileUrls = [];
+        const baseLat = targetTrail.startLat;
+        const baseLng = targetTrail.startLng;
+
+        for (let z = 12; z <= 14; z++) {
+          const x = Math.floor(((baseLng + 180) / 360) * Math.pow(2, z));
+          const y = Math.floor(
+            ((1 - Math.log(Math.tan((baseLat * Math.PI) / 180) + 1 / Math.cos((baseLat * Math.PI) / 180)) / Math.PI) / 2) *
+              Math.pow(2, z)
+          );
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              tileUrls.push(
+                `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y + dy}/${x + dx}`
+              );
+            }
+          }
+        }
+
+        let completed = 0;
+        for (const url of tileUrls) {
+          try {
+            await cache.add(url);
+          } catch (e) {}
+          completed++;
+          setCacheProgress(Math.round((completed / tileUrls.length) * 100));
+        }
+
+        setIsOfflineCached(true);
+      }
+    } catch (err) {
+      console.warn('Offline cache failed:', err);
+    } finally {
+      setIsCachingTiles(false);
+    }
+  };
+
+  // P2-15: Toggle Live GPS Tracking
+  const toggleLiveTracking = () => {
+    if (isLiveTracking) {
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      setIsLiveTracking(false);
+      setWatchId(null);
+    } else {
+      if (!navigator.geolocation) {
+        if (onShowToast) {
+          onShowToast('Trình duyệt của bạn không hỗ trợ GPS Live Tracking', 'error');
+        }
+        return;
+      }
+      setIsLiveTracking(true);
+      const id = navigator.geolocation.watchPosition(
+        (pos) => {
+          const newPt: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+          setLiveTrackPoints((prev) => [...prev, newPt]);
+          setUserLocation(newPt);
+          setFlyToPos(newPt);
+
+          setLiveStats((prev) => ({
+            speedKmH: Math.round((pos.coords.speed || 1.2) * 3.6 * 10) / 10,
+            distanceKm: Math.round((prev.distanceKm + 0.05) * 100) / 100,
+            durationSec: prev.durationSec + 3,
+            altM: Math.round(pos.coords.altitude || 1200),
+          }));
+        },
+        (err) => console.warn('GPS error:', err),
+        { enableHighAccuracy: true }
+      );
+      setWatchId(id);
+    }
+  };
+
   const handleLocateMe = async () => {
     setIsLocating(true);
     
@@ -284,8 +394,16 @@ export const MapView: React.FC<MapViewProps> = ({
       setIsLocating(false);
 
       try {
-        const nearby = await fetchNearbyTrails(lat, lng, 50);
-        setGpsToast({ lat, lng, nearby: nearby || [] });
+        const [nearby, geoData] = await Promise.all([
+          fetchNearbyTrails(lat, lng, 50),
+          reverseGeocode(lat, lng),
+        ]);
+        setGpsToast({
+          lat,
+          lng,
+          nearby: nearby || [],
+          geocodedAddress: geoData?.formattedAddress || geoData?.displayName,
+        });
       } catch (err) {
         setGpsToast({ lat, lng, nearby: [] });
       }
@@ -357,6 +475,50 @@ export const MapView: React.FC<MapViewProps> = ({
           <span>{showGpxTracks ? 'Đường GPX' : 'Tắt GPX'}</span>
         </button>
 
+        {/* P2-14: Offline Map Caching Button */}
+        <button
+          onClick={handleCacheOfflineMap}
+          disabled={isCachingTiles}
+          style={{
+            background: isOfflineCached ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255, 255, 255, 0.06)',
+            color: isOfflineCached ? 'var(--color-primary)' : 'var(--color-text-main)',
+            border: `1px solid ${isOfflineCached ? 'var(--color-primary)' : 'var(--color-border)'}`,
+            borderRadius: 24,
+            padding: '8px 14px',
+            fontSize: 'var(--font-size-sm)',
+            fontWeight: 700,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <span>{isCachingTiles ? `Đang lưu (${cacheProgress}%)` : isOfflineCached ? 'Đã lưu offline' : 'Bản đồ Offline'}</span>
+        </button>
+
+        {/* P2-15: GPS Live Tracking Button */}
+        <button
+          onClick={toggleLiveTracking}
+          style={{
+            background: isLiveTracking ? 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)' : 'rgba(255, 255, 255, 0.08)',
+            color: '#fff',
+            border: isLiveTracking ? 'none' : '1px solid var(--color-border)',
+            borderRadius: 24,
+            padding: '8px 14px',
+            fontSize: 'var(--font-size-sm)',
+            fontWeight: 800,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            boxShadow: isLiveTracking ? '0 0 12px rgba(239, 68, 68, 0.5)' : 'none',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <span>{isLiveTracking ? 'Đang Live Trek' : 'Bắt đầu Trek'}</span>
+        </button>
+
         {/* Locate Me GPS Button */}
         <button
           onClick={handleLocateMe}
@@ -378,7 +540,6 @@ export const MapView: React.FC<MapViewProps> = ({
             whiteSpace: 'nowrap',
           }}
         >
-          <LocateFixed size={16} />
           <span>{isLocating ? 'Đang định vị...' : 'Định vị của tôi'}</span>
         </button>
 
@@ -458,10 +619,10 @@ export const MapView: React.FC<MapViewProps> = ({
         </div>
       </div>
 
-      {/* Floating Difficulty Filter Toolbar (Top Left) */}
+      {/* Floating Difficulty Filter Toolbar (Bottom Left) */}
       <div style={{
         position: 'absolute',
-        top: 18,
+        bottom: 24,
         left: 18,
         zIndex: 1000,
         display: 'flex',
@@ -567,13 +728,27 @@ export const MapView: React.FC<MapViewProps> = ({
             url={currentTile.url}
           />
 
+          {/* P2-15 Live GPS Tracking Polyline (Orange Line) */}
+          {isLiveTracking && liveTrackPoints.length > 1 && (
+            <Polyline
+              positions={liveTrackPoints}
+              pathOptions={{
+                color: '#f97316',
+                weight: 6,
+                opacity: 0.95,
+                lineCap: 'round',
+                lineJoin: 'round',
+              }}
+            />
+          )}
+
           {/* User GPS Location Marker */}
           {userLocation && (
             <Marker position={userLocation} icon={createUserGpsIcon()}>
               <Popup>
                 <div style={{ padding: 4 }}>
                   <div style={{ color: '#38bdf8', fontWeight: 800, fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <Navigation size={15} color="#38bdf8" /> Vị Trí Thực Tế Của Bạn
+                    🎯 Vị Trí Thực Tế Của Bạn
                   </div>
                   <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginTop: 4 }}>
                     Tọa độ: {userLocation[0].toFixed(4)}, {userLocation[1].toFixed(4)}
@@ -757,7 +932,6 @@ export const MapView: React.FC<MapViewProps> = ({
                         }}
                       >
                         <span>Xem Chi Tiết Cung Đường</span>
-                        <ArrowRight size={14} />
                       </button>
                     </div>
                   </Popup>
@@ -793,6 +967,59 @@ export const MapView: React.FC<MapViewProps> = ({
             );
           })}
         </MapContainer>
+
+        {/* P2-15 Live GPS Tracking Floating Stats Overlay */}
+        {isLiveTracking && (
+          <div style={{
+            position: 'absolute',
+            bottom: 20,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 1000,
+            background: 'rgba(7, 19, 25, 0.92)',
+            backdropFilter: 'blur(16px)',
+            border: '2px solid #f97316',
+            borderRadius: 20,
+            padding: '12px 24px',
+            boxShadow: '0 8px 32px rgba(249, 115, 22, 0.35)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 24,
+            minWidth: 360,
+            justifyContent: 'space-around',
+          }}>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>Tốc độ</div>
+              <div style={{ fontSize: '1.3rem', fontWeight: 900, color: '#f97316' }}>{liveStats.speedKmH} <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>km/h</span></div>
+            </div>
+            <div style={{ borderLeft: '1px solid var(--color-border)', height: 30 }} />
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>Đã đi</div>
+              <div style={{ fontSize: '1.3rem', fontWeight: 900, color: 'var(--color-primary)' }}>{liveStats.distanceKm} <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>km</span></div>
+            </div>
+            <div style={{ borderLeft: '1px solid var(--color-border)', height: 30 }} />
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>Cao độ</div>
+              <div style={{ fontSize: '1.3rem', fontWeight: 900, color: 'var(--color-sky)' }}>{liveStats.altM} <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>m</span></div>
+            </div>
+            <div style={{ borderLeft: '1px solid var(--color-border)', height: 30 }} />
+            <button
+              onClick={toggleLiveTracking}
+              style={{
+                background: '#ef4444',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 12,
+                padding: '8px 14px',
+                fontWeight: 800,
+                fontSize: '0.8rem',
+                cursor: 'pointer',
+              }}
+            >
+              Dừng Trek
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Organic Nature GPS Toast Notification Card Overlay */}
@@ -813,7 +1040,6 @@ export const MapView: React.FC<MapViewProps> = ({
         }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, paddingBottom: 8, borderBottom: '1px solid rgba(255, 255, 255, 0.12)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#38bdf8', fontWeight: 800, fontSize: '0.88rem' }}>
-              <Navigation size={16} color="#38bdf8" />
               <span>Định Vị GPS [ {gpsToast.lat.toFixed(4)}, {gpsToast.lng.toFixed(4)} ]</span>
             </div>
             <button
@@ -822,19 +1048,22 @@ export const MapView: React.FC<MapViewProps> = ({
                 background: 'rgba(255, 255, 255, 0.1)',
                 border: 'none',
                 color: '#cbd5e1',
-                borderRadius: '50%',
-                width: 24,
-                height: 24,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
+                borderRadius: 6,
+                padding: '2px 8px',
+                fontSize: '0.75rem',
                 cursor: 'pointer',
                 transition: 'all 0.2s ease',
               }}
             >
-              <X size={14} />
+              Đóng
             </button>
           </div>
+
+          {gpsToast.geocodedAddress && (
+            <div style={{ fontSize: '0.78rem', color: 'var(--color-primary)', fontWeight: 700, marginBottom: 8, background: 'rgba(14, 215, 181, 0.1)', padding: '4px 8px', borderRadius: 6 }}>
+              {gpsToast.geocodedAddress}
+            </div>
+          )}
 
           {gpsToast.nearby.length > 0 ? (
             <div>

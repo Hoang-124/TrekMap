@@ -59,4 +59,7 @@ const threadSchema = new Schema<IThread>(
   { timestamps: true }
 );
 
+threadSchema.index({ category: 1, createdAt: -1 });
+threadSchema.index({ userId: 1 });
+
 export const ThreadModel = model<IThread>('Thread', threadSchema);

@@ -1,21 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import {
-  Compass,
-  PlusCircle,
-  Search,
-  ShieldAlert,
-  MessageSquare,
-  LogIn,
-  Radio,
-  Navigation,
-  MessageCircle,
-  User,
-  LogOut,
-  ShieldCheck,
-  ChevronDown,
-  Menu,
-} from 'lucide-react';
-import type { UserProfile, Message } from '../../types.js';
+import type { UserProfile } from '../../types.js';
 import { ThemeToggle } from '../common/ThemeToggle.js';
 import { NotificationBell } from '../notifications/NotificationBell.js';
 import { fetchConversations } from '../../services/messageService.js';
@@ -58,28 +42,15 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   useEffect(() => {
     loadUnreadMessages();
-  }, [loadUnreadMessages]);
 
-  useEffect(() => {
     if (!socket || !currentUser) return;
-
-    const handleNewMessage = (msg: Message) => {
-      const senderId = typeof msg.sender === 'string' ? msg.sender : msg.sender?._id;
-      const myId = currentUser.id || (currentUser as any)._id;
-      if (String(senderId) !== String(myId)) {
-        if (currentView !== 'messages') {
-          loadUnreadMessages();
-        }
-      }
-    };
-
-    socket.on('newMessage', handleNewMessage);
+    const handleNewMsg = () => loadUnreadMessages();
+    socket.on('newMessage', handleNewMsg);
     return () => {
-      socket.off('newMessage', handleNewMessage);
+      socket.off('newMessage', handleNewMsg);
     };
   }, [socket, currentUser, currentView, loadUnreadMessages]);
 
-  // Click outside listener for User Menu Dropdown
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
@@ -129,55 +100,77 @@ export const Navbar: React.FC<NavbarProps> = ({
         }}
       >
         {/* LEFT ZONE: Brand Logo & Title */}
-        <div
-          onClick={() => onNavigate('home')}
-          style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', flexShrink: 0 }}
-        >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+          {/* Brand Logo & Title */}
           <div
-            style={{
-              background: 'linear-gradient(135deg, var(--color-primary) 0%, #16a34a 100%)',
-              padding: 8,
-              borderRadius: 10,
+            onClick={() => onNavigate('home')}
+            style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}
+          >
+            <div style={{
+              background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+              width: 36,
+              height: 36,
+              borderRadius: 12,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              boxShadow: 'var(--shadow-sprout)',
-            }}
-          >
-            <Compass size={22} color="#041108" />
-          </div>
+              boxShadow: '0 4px 14px rgba(16, 185, 129, 0.4)',
+            }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" fill="#ffffff" fillOpacity="0.3" />
+              </svg>
+            </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span
-              style={{
-                fontSize: '1.25rem',
-                fontWeight: 900,
-                color: 'var(--color-text-main)',
-                letterSpacing: '-0.5px',
-                fontFamily: 'var(--font-family)',
-              }}
-            >
-              Trek<span style={{ color: 'var(--color-primary)' }}>Map</span>
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span
+                style={{
+                  fontSize: '1.25rem',
+                  fontWeight: 900,
+                  color: 'var(--color-text-main)',
+                  letterSpacing: '-0.5px',
+                  fontFamily: 'var(--font-family)',
+                }}
+              >
+                Trek<span style={{ color: 'var(--color-primary)' }}>Map</span>
+              </span>
 
-            <span
-              className="badge badge-info"
-              style={{
-                fontSize: '0.65rem',
-                fontWeight: 800,
-                letterSpacing: '0.5px',
-                padding: '2px 7px',
-              }}
-            >
-              <Radio size={9} /> VÔ TUYẾN 24/7
-            </span>
+              <span
+                className="badge badge-info"
+                style={{
+                  fontSize: '0.65rem',
+                  fontWeight: 800,
+                  letterSpacing: '0.5px',
+                  padding: '3px 8px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 5,
+                }}
+              >
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 8px #10b981' }} />
+                VÔ TUYẾN 24/7
+              </span>
+            </div>
           </div>
         </div>
 
-        {/* MIDDLE ZONE: Sleek Search Bar */}
+        {/* MIDDLE ZONE: Search Bar */}
         <form onSubmit={handleSearch} style={{ flex: 1, maxWidth: 420, margin: '0 10px' }}>
           <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-            <Search size={16} color="var(--color-primary)" style={{ position: 'absolute', left: 14 }} />
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="var(--color-primary)"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{ position: 'absolute', left: 14, pointerEvents: 'none' }}
+            >
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
             <input
               type="text"
               placeholder="Tìm kiếm cung đường, địa danh..."
@@ -198,9 +191,8 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </form>
 
-        {/* RIGHT ZONE: SOS, Icons Cluster & User Dropdown */}
+        {/* RIGHT ZONE: SOS, Messages & User Menu */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-          {/* SOS Emergency Button */}
           <button
             className="btn btn-danger"
             onClick={onOpenIncidentModal}
@@ -209,50 +201,60 @@ export const Navbar: React.FC<NavbarProps> = ({
               padding: '7px 14px',
               borderRadius: 20,
               fontWeight: 700,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              boxShadow: '0 4px 14px rgba(239, 68, 68, 0.4)',
             }}
           >
-            <ShieldAlert size={15} />
-            Cứu hộ SOS
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <span>Cứu hộ SOS</span>
           </button>
 
           <div style={{ width: 1, height: 22, background: 'var(--color-border)', margin: '0 2px' }} />
 
-          {/* Action Icon Cluster (Tin nhắn, Thông báo, Theme Toggle) */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            {/* Messages Icon Button */}
             {currentUser && (
               <button
                 type="button"
                 className={`btn ${currentView === 'messages' ? 'btn-primary' : 'btn-outline'}`}
                 onClick={handleMessageClick}
-                title="Tin nhắn"
                 style={{
                   position: 'relative',
-                  width: 38,
-                  height: 38,
+                  width: 36,
+                  height: 36,
                   padding: 0,
                   borderRadius: '50%',
+                  fontSize: '0.8rem',
+                  fontWeight: 700,
+                  flexShrink: 0,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  flexShrink: 0,
                 }}
+                title="Tin nhắn"
               >
-                <MessageCircle size={18} color={currentView === 'messages' ? '#041108' : 'var(--color-primary)'} />
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+                  <polyline points="22,6 12,13 2,6" />
+                </svg>
                 {unreadMessageCount > 0 && (
                   <span
                     style={{
                       position: 'absolute',
-                      top: -3,
-                      right: -3,
+                      top: -2,
+                      right: -2,
                       background: '#ef4444',
                       color: '#ffffff',
-                      fontSize: '0.65rem',
+                      fontSize: '0.62rem',
                       fontWeight: 800,
                       borderRadius: 10,
                       padding: '2px 5px',
                       lineHeight: 1,
-                      boxShadow: '0 2px 5px rgba(239, 68, 68, 0.4)',
                     }}
                   >
                     {unreadMessageCount > 99 ? '99+' : unreadMessageCount}
@@ -261,72 +263,56 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
 
-            {/* Notifications Bell */}
             <NotificationBell currentUser={currentUser || null} onNavigate={onNavigate} />
-
-            {/* Theme Toggle */}
             <ThemeToggle />
           </div>
 
           <div style={{ width: 1, height: 22, background: 'var(--color-border)', margin: '0 2px' }} />
 
-          {/* User Menu Dropdown (Gom toàn bộ Bản đồ, Diễn đàn, Đóng góp, Profile, Admin, Logout) */}
           <div style={{ position: 'relative' }} ref={userMenuRef}>
             <button
               type="button"
               onClick={() => setIsUserMenuOpen((prev) => !prev)}
               className="btn btn-outline"
               style={{
-                padding: currentUser ? '4px 10px 4px 5px' : '6px 12px',
+                padding: currentUser ? '4px 8px' : '7px 14px',
                 borderRadius: 24,
                 display: 'flex',
                 alignItems: 'center',
-                gap: 8,
+                gap: 6,
                 borderColor: isUserMenuOpen ? 'var(--color-primary)' : 'var(--color-border)',
                 background: isUserMenuOpen ? 'rgba(14, 215, 181, 0.08)' : 'transparent',
               }}
+              aria-label="Toggle Menu"
+              title={currentUser ? (currentUser.fullName || currentUser.username) : 'Menu'}
             >
+              {/* 3-Dash Hamburger Icon */}
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                <line x1="3" y1="6" x2="21" y2="6" />
+                <line x1="3" y1="12" x2="21" y2="12" />
+                <line x1="3" y1="18" x2="21" y2="18" />
+              </svg>
               {currentUser ? (
-                <>
-                  <img
-                    src={
-                      currentUser.avatarUrl ||
-                      currentUser.avatar ||
-                      'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80'
-                    }
-                    alt={currentUser.fullName}
-                    style={{
-                      width: 28,
-                      height: 28,
-                      borderRadius: '50%',
-                      objectFit: 'cover',
-                      border: '1.5px solid var(--color-primary)',
-                    }}
-                  />
-                  <span
-                    style={{
-                      fontSize: '0.85rem',
-                      fontWeight: 700,
-                      color: 'var(--color-text-main)',
-                      maxWidth: 110,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {currentUser.fullName || currentUser.username}
-                  </span>
-                  <ChevronDown size={14} color="var(--color-text-muted)" />
-                </>
+                <img
+                  src={
+                    currentUser.avatarUrl ||
+                    currentUser.avatar ||
+                    'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80'
+                  }
+                  alt={currentUser.fullName}
+                  style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: '50%',
+                    objectFit: 'cover',
+                    border: '1.5px solid var(--color-primary)',
+                  }}
+                />
               ) : (
-                <>
-                  <Menu size={16} color="var(--color-primary)" />
-                  <span style={{ fontSize: '0.85rem', fontWeight: 700 }}>Menu</span>
-                </>
+                <span style={{ fontSize: '0.85rem', fontWeight: 700 }}>Menu</span>
               )}
             </button>
 
-            {/* Dropdown Menu Card */}
             {isUserMenuOpen && (
               <div
                 style={{
@@ -343,7 +329,6 @@ export const Navbar: React.FC<NavbarProps> = ({
                   animation: 'fadeIn 0.2s ease',
                 }}
               >
-                {/* Header User Info (if logged in) */}
                 {currentUser && (
                   <div
                     style={{
@@ -363,13 +348,12 @@ export const Navbar: React.FC<NavbarProps> = ({
                         className="badge badge-primary"
                         style={{ fontSize: '0.68rem', fontWeight: 800, padding: '2px 8px' }}
                       >
-                        ⭐ {currentUser.reputationScore || 100} Điểm uy tín
+                        {currentUser.reputationScore || 100} Điểm uy tín
                       </span>
                     </div>
                   </div>
                 )}
 
-                {/* Section 1: Main Navigation (Bản đồ, Diễn đàn, Đóng góp) */}
                 <div style={{ padding: '4px 8px 2px 8px', fontSize: '0.7rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
                   Danh Mục Chính
                 </div>
@@ -389,18 +373,19 @@ export const Navbar: React.FC<NavbarProps> = ({
                     color: currentView === 'home' || currentView === 'explore' ? 'var(--color-primary)' : 'var(--color-text-main)',
                     fontSize: '0.85rem',
                     fontWeight: 700,
+                    cursor: 'pointer',
+                    textAlign: 'left',
                     display: 'flex',
                     alignItems: 'center',
                     gap: 10,
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    transition: 'background 0.2s ease',
                   }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = currentView === 'home' || currentView === 'explore' ? 'rgba(14, 215, 181, 0.12)' : 'transparent')}
                 >
-                  <Navigation size={16} color="var(--color-primary)" />
-                  Bản đồ thám hiểm
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polygon points="12 2 2 7 12 12 22 7 12 2" />
+                    <polyline points="2 17 12 22 22 17" />
+                    <polyline points="2 12 12 17 22 12" />
+                  </svg>
+                  <span>Bản đồ thám hiểm</span>
                 </button>
 
                 <button
@@ -418,24 +403,28 @@ export const Navbar: React.FC<NavbarProps> = ({
                     color: currentView === 'forum' ? 'var(--color-primary)' : 'var(--color-text-main)',
                     fontSize: '0.85rem',
                     fontWeight: 700,
+                    cursor: 'pointer',
+                    textAlign: 'left',
                     display: 'flex',
                     alignItems: 'center',
                     gap: 10,
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    transition: 'background 0.2s ease',
                   }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = currentView === 'forum' ? 'rgba(14, 215, 181, 0.12)' : 'transparent')}
                 >
-                  <MessageSquare size={16} color="var(--color-primary)" />
-                  Diễn đàn Trekkers
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                  </svg>
+                  <span>Diễn đàn Trekkers</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => {
                     setIsUserMenuOpen(false);
+                    if (!currentUser) {
+                      window.location.hash = '#login';
+                      onOpenAuthModal();
+                      return;
+                    }
                     onNavigate('contribute');
                   }}
                   style={{
@@ -447,21 +436,21 @@ export const Navbar: React.FC<NavbarProps> = ({
                     color: currentView === 'contribute' ? 'var(--color-primary)' : 'var(--color-text-main)',
                     fontSize: '0.85rem',
                     fontWeight: 700,
+                    cursor: 'pointer',
+                    textAlign: 'left',
                     display: 'flex',
                     alignItems: 'center',
                     gap: 10,
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    transition: 'background 0.2s ease',
                   }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = currentView === 'contribute' ? 'rgba(14, 215, 181, 0.12)' : 'transparent')}
                 >
-                  <PlusCircle size={16} color="var(--color-primary)" />
-                  Đóng góp cung đường
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="16" />
+                    <line x1="8" y1="12" x2="16" y2="12" />
+                  </svg>
+                  <span>Đóng góp cung đường</span>
                 </button>
 
-                {/* Section 2: Account & Admin (If Logged In) */}
                 {currentUser && (
                   <>
                     <div style={{ height: 1, background: 'var(--color-border)', margin: '6px 0' }} />
@@ -485,18 +474,18 @@ export const Navbar: React.FC<NavbarProps> = ({
                         color: currentView === 'profile' ? 'var(--color-primary)' : 'var(--color-text-main)',
                         fontSize: '0.85rem',
                         fontWeight: 600,
+                        cursor: 'pointer',
+                        textAlign: 'left',
                         display: 'flex',
                         alignItems: 'center',
                         gap: 10,
-                        cursor: 'pointer',
-                        textAlign: 'left',
-                        transition: 'background 0.2s ease',
                       }}
-                      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = currentView === 'profile' ? 'rgba(14, 215, 181, 0.12)' : 'transparent')}
                     >
-                      <User size={16} color="var(--color-primary)" />
-                      Hồ sơ cá nhân
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                        <circle cx="12" cy="7" r="4" />
+                      </svg>
+                      <span>Hồ sơ cá nhân</span>
                     </button>
 
                     {isAdmin && (
@@ -515,24 +504,22 @@ export const Navbar: React.FC<NavbarProps> = ({
                           color: '#f59e0b',
                           fontSize: '0.85rem',
                           fontWeight: 600,
+                          cursor: 'pointer',
+                          textAlign: 'left',
                           display: 'flex',
                           alignItems: 'center',
                           gap: 10,
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                          transition: 'background 0.2s ease',
                         }}
-                        onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(245, 158, 11, 0.12)')}
-                        onMouseLeave={(e) => (e.currentTarget.style.background = currentView === 'admin' ? 'rgba(245, 158, 11, 0.15)' : 'transparent')}
                       >
-                        <ShieldCheck size={16} color="#f59e0b" />
-                        Bảng quản trị Admin
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                        </svg>
+                        <span>Bảng quản trị Admin</span>
                       </button>
                     )}
                   </>
                 )}
 
-                {/* Section 3: Auth Actions */}
                 <div style={{ height: 1, background: 'var(--color-border)', margin: '6px 0' }} />
 
                 {currentUser ? (
@@ -552,18 +539,19 @@ export const Navbar: React.FC<NavbarProps> = ({
                         color: 'var(--color-error, #ef4444)',
                         fontSize: '0.85rem',
                         fontWeight: 600,
+                        cursor: 'pointer',
+                        textAlign: 'left',
                         display: 'flex',
                         alignItems: 'center',
                         gap: 10,
-                        cursor: 'pointer',
-                        textAlign: 'left',
-                        transition: 'background 0.2s ease',
                       }}
-                      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)')}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                     >
-                      <LogOut size={16} color="#ef4444" />
-                      Đăng xuất
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                        <polyline points="16 17 21 12 16 7" />
+                        <line x1="21" y1="12" x2="9" y2="12" />
+                      </svg>
+                      <span>Đăng xuất</span>
                     </button>
                   )
                 ) : (
@@ -582,15 +570,19 @@ export const Navbar: React.FC<NavbarProps> = ({
                       color: 'var(--color-primary)',
                       fontSize: '0.85rem',
                       fontWeight: 700,
+                      cursor: 'pointer',
+                      textAlign: 'left',
                       display: 'flex',
                       alignItems: 'center',
                       gap: 10,
-                      cursor: 'pointer',
-                      textAlign: 'left',
                     }}
                   >
-                    <LogIn size={16} color="var(--color-primary)" />
-                    Đăng nhập tài khoản
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+                      <polyline points="10 17 15 12 10 7" />
+                      <line x1="15" y1="12" x2="3" y2="12" />
+                    </svg>
+                    <span>Đăng nhập tài khoản</span>
                   </button>
                 )}
               </div>

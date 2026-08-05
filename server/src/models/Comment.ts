@@ -51,4 +51,6 @@ const commentSchema = new Schema<IComment>(
   { timestamps: true }
 );
 
+commentSchema.index({ threadId: 1, createdAt: 1 });
+
 export const CommentModel = model<IComment>('Comment', commentSchema);

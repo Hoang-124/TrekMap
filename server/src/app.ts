@@ -50,6 +50,6 @@ app.use('/api', uploadRoutes);
 app.use('/api', contributionRoutes);
 app.use('/api', messageRoutes);
 app.use('/api', notificationRoutes);
-app.use('/', trailRoutes);
-app.use('/', incidentRoutes);
+app.use('/api', trailRoutes);
+app.use('/api', incidentRoutes);
 

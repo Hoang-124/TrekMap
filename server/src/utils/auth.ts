@@ -20,10 +20,10 @@ export const verifyPassword = (password: string, storedHash: string): boolean =>
 /**
  * JWT Token Generation with HMAC SHA-256 Signature
  */
-export const generateToken = (userId: string, email: string): string => {
+export const generateToken = (userId: string, email: string, role: 'user' | 'guide' | 'admin' = 'user'): string => {
   const secret = process.env.JWT_SECRET || 'trekmap-jwt-secret-key-2026';
   const payload = Buffer.from(
-    JSON.stringify({ userId, email, exp: Date.now() + 7 * 24 * 60 * 60 * 1000 })
+    JSON.stringify({ userId, email, role, exp: Date.now() + 7 * 24 * 60 * 60 * 1000 })
   ).toString('base64');
   const signature = crypto.createHmac('sha256', secret).update(payload).digest('hex');
   return `${payload}.${signature}`;
@@ -32,7 +32,7 @@ export const generateToken = (userId: string, email: string): string => {
 /**
  * JWT Token Verification & Expiration Checking
  */
-export const verifyToken = (token: string): { userId: string; email: string } | null => {
+export const verifyToken = (token: string): { userId: string; email: string; role: 'user' | 'guide' | 'admin' } | null => {
   if (!token || !token.includes('.')) return null;
   const [payloadStr, signature] = token.split('.');
   const secret = process.env.JWT_SECRET || 'trekmap-jwt-secret-key-2026';
@@ -42,7 +42,11 @@ export const verifyToken = (token: string): { userId: string; email: string } | 
   try {
     const payload = JSON.parse(Buffer.from(payloadStr, 'base64').toString('utf8'));
     if (payload.exp && Date.now() > payload.exp) return null; // Token Expired
-    return { userId: payload.userId, email: payload.email };
+    return {
+      userId: payload.userId,
+      email: payload.email,
+      role: payload.role || 'user',
+    };
   } catch (err) {
     return null;
   }
@@ -52,7 +56,7 @@ export const verifyToken = (token: string): { userId: string; email: string } | 
  * Express Middleware for Protected Auth Routes
  */
 export interface AuthRequest extends Request {
-  user?: { userId: string; email: string };
+  user?: { userId: string; email: string; role: 'user' | 'guide' | 'admin' };
 }
 
 export const authenticateToken = (req: AuthRequest, res: Response, next: NextFunction) => {

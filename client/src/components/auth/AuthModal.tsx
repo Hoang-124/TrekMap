@@ -1,6 +1,91 @@
 import React, { useState, useEffect } from 'react';
-import { User, Lock, Mail, ShieldCheck, X, Compass, ArrowLeft, AlertTriangle, Eye, EyeOff, Sparkles, RotateCw } from 'lucide-react';
 import type { UserProfile } from '../../types.js';
+
+const UserIcon: React.FC<{ size?: number; color?: string; style?: React.CSSProperties }> = ({ size = 18, color = 'currentColor', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+    <circle cx="12" cy="7" r="4" />
+  </svg>
+);
+
+const LockIcon: React.FC<{ size?: number; color?: string; style?: React.CSSProperties }> = ({ size = 18, color = 'currentColor', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  </svg>
+);
+
+const MailIcon: React.FC<{ size?: number; color?: string; style?: React.CSSProperties }> = ({ size = 18, color = 'currentColor', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+    <polyline points="22,6 12,13 2,6" />
+  </svg>
+);
+
+const ShieldCheckIcon: React.FC<{ size?: number; color?: string; style?: React.CSSProperties }> = ({ size = 18, color = 'currentColor', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    <polyline points="9 12 11 14 15 10" />
+  </svg>
+);
+
+const XIcon: React.FC<{ size?: number; color?: string; style?: React.CSSProperties }> = ({ size = 18, color = 'currentColor', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <line x1="18" y1="6" x2="6" y2="18" />
+    <line x1="6" y1="6" x2="18" y2="18" />
+  </svg>
+);
+
+const CompassIcon: React.FC<{ size?: number; color?: string; style?: React.CSSProperties }> = ({ size = 28, color = '#ffffff', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <circle cx="12" cy="12" r="10" />
+    <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" fill={color} fillOpacity="0.25" />
+  </svg>
+);
+
+const ArrowLeftIcon: React.FC<{ size?: number; color?: string; style?: React.CSSProperties }> = ({ size = 18, color = 'currentColor', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <line x1="19" y1="12" x2="5" y2="12" />
+    <polyline points="12 19 5 12 12 5" />
+  </svg>
+);
+
+const AlertTriangleIcon: React.FC<{ size?: number; color?: string; style?: React.CSSProperties }> = ({ size = 18, color = 'currentColor', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+    <line x1="12" y1="9" x2="12" y2="13" />
+    <line x1="12" y1="17" x2="12.01" y2="17" />
+  </svg>
+);
+
+const EyeIcon: React.FC<{ size?: number; color?: string; style?: React.CSSProperties }> = ({ size = 18, color = 'currentColor', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+
+const EyeOffIcon: React.FC<{ size?: number; color?: string; style?: React.CSSProperties }> = ({ size = 18, color = 'currentColor', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+    <line x1="1" y1="1" x2="23" y2="23" />
+  </svg>
+);
+
+const SparklesIcon: React.FC<{ size?: number; color?: string; style?: React.CSSProperties }> = ({ size = 18, color = 'currentColor', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <path d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z" />
+  </svg>
+);
+
+const RotateCwIcon: React.FC<{ size?: number; color?: string; style?: React.CSSProperties }> = ({ size = 18, color = 'currentColor', style }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <polyline points="23 4 23 10 17 10" />
+    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+  </svg>
+);
+
+const User = UserIcon, Lock = LockIcon, Mail = MailIcon, ShieldCheck = ShieldCheckIcon, X = XIcon, Compass = CompassIcon, ArrowLeft = ArrowLeftIcon, AlertTriangle = AlertTriangleIcon, Eye = EyeIcon, EyeOff = EyeOffIcon, Sparkles = SparklesIcon, RotateCw = RotateCwIcon;
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -436,16 +521,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         className="modal-content"
         onClick={(e) => e.stopPropagation()}
         style={{
-          maxWidth: 480,
+          maxWidth: 450,
           width: '100%',
-          padding: '36px 32px',
-          borderRadius: 24,
+          padding: '24px 26px',
+          borderRadius: 22,
           position: 'relative',
           background: 'var(--color-bg-card)',
           border: '1px solid var(--color-border-glow)',
-          boxShadow: 'var(--shadow-card)',
+          boxShadow: '0 20px 50px rgba(0,0,0,0.6), 0 0 30px rgba(14, 215, 181, 0.15)',
           boxSizing: 'border-box',
           margin: '0 auto',
+          transition: 'all 0.52s cubic-bezier(0.22, 1, 0.36, 1)',
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'space-between',
+          maxHeight: '94vh',
+          overflowY: 'auto',
         }}
       >
         {/* Close Button Inside Modal Box */}
@@ -453,19 +544,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           onClick={handleClose}
           style={{
             position: 'absolute',
-            top: 20,
-            right: 20,
+            top: 16,
+            right: 16,
             background: 'var(--color-bg-main)',
             border: 'none',
             color: 'var(--color-text-muted)',
             borderRadius: '50%',
-            width: 34,
-            height: 34,
+            width: 32,
+            height: 32,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             cursor: 'pointer',
             transition: 'all 0.2s ease',
+            zIndex: 10,
           }}
           onMouseEnter={(e) => {
             e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)';
@@ -476,103 +568,133 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             e.currentTarget.style.color = 'var(--color-text-muted)';
           }}
         >
-          <X size={18} />
+          <X size={16} />
         </button>
 
-        {/* Brand Symmetrical Header */}
-        <div style={{ textAlign: 'center', marginBottom: 22, width: '100%' }}>
-          <div style={{
-            background: 'linear-gradient(135deg, #16a34a 0%, #059669 100%)',
-            width: 52,
-            height: 52,
-            borderRadius: 18,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            margin: '0 auto 14px auto',
-            boxShadow: 'var(--shadow-sprout)',
-          }}>
-            <Compass size={30} color="#ffffff" />
+        <div key={mode} className={mode === 'register' ? 'auth-slide-left' : 'auth-slide-right'} style={{ display: 'flex', flexDirection: 'column', height: '100%', flex: 1 }}>
+          {/* Brand Symmetrical Header */}
+          <div style={{ textAlign: 'center', marginBottom: 14, width: '100%' }}>
+            <div style={{
+              background: 'linear-gradient(135deg, #16a34a 0%, #059669 100%)',
+              width: 44,
+              height: 44,
+              borderRadius: 14,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 8px auto',
+              boxShadow: 'var(--shadow-sprout)',
+            }}>
+              <Compass size={24} color="#ffffff" />
+            </div>
+
+            <h2 style={{ fontSize: '1.2rem', fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)', margin: 0, letterSpacing: '-0.3px', textAlign: 'center' }}>
+              {mode === 'register'
+                ? 'Tạo Tài Khoản TrekMap'
+                : mode === 'login'
+                ? 'Đăng Nhập Hệ Thống'
+                : mode === 'forgot-password'
+                ? 'Khôi Phục Mật Khẩu Qua Email'
+                : mode === 'verify-code'
+                ? 'Nhập Mã Xác Thực Kích Hoạt'
+                : 'Đặt Lại Mật Khẩu Mới'}
+            </h2>
+            <p style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', marginTop: 2, textAlign: 'center' }}>
+              {mode === 'register'
+                ? 'Gia nhập cộng đồng người leo núi & bản đồ 3D'
+                : mode === 'login'
+                ? 'Chào mừng bạn quay trở lại với TrekMap'
+                : mode === 'forgot-password'
+                ? 'Dành cho tài khoản Email cá nhân (Outlook, Yahoo,...)'
+                : mode === 'verify-code'
+                ? `Điền mã 6 số đã được gửi tới email ${email}`
+                : 'Nhập mật khẩu mới cho tài khoản của bạn'}
+            </p>
           </div>
 
-          <h2 style={{ fontSize: 'var(--font-size-xl)', fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)', margin: 0, letterSpacing: '-0.3px', textAlign: 'center' }}>
-            {mode === 'register'
-              ? 'Tạo Tài Khoản TrekMap'
-              : mode === 'login'
-              ? 'Đăng Nhập Hệ Thống'
-              : mode === 'forgot-password'
-              ? 'Khôi Phục Mật Khẩu Qua Email'
-              : mode === 'verify-code'
-              ? 'Nhập Mã Xác Thực Kích Hoạt'
-              : 'Đặt Lại Mật Khẩu Mới'}
-          </h2>
-          <p style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', marginTop: 4, textAlign: 'center' }}>
-            {mode === 'register'
-              ? 'Gia nhập cộng đồng người leo núi & bản đồ 3D'
-              : mode === 'login'
-              ? 'Chào mừng bạn quay trở lại với TrekMap'
-              : mode === 'forgot-password'
-              ? 'Dành cho tài khoản Email cá nhân (Outlook, Yahoo,...)'
-              : mode === 'verify-code'
-              ? `Điền mã 6 số đã được gửi tới email ${email}`
-              : 'Nhập mật khẩu mới cho tài khoản của bạn'}
-          </p>
-        </div>
+          {/* Mode Switch Tabs (Only show for register & login modes) */}
+          {(mode === 'register' || mode === 'login') && (
+            <div style={{
+              background: 'var(--color-bg-main)',
+              padding: 3,
+              borderRadius: 14,
+              display: 'flex',
+              position: 'relative',
+              width: '100%',
+              marginBottom: 14,
+              border: '1px solid var(--color-border)',
+              boxSizing: 'border-box',
+            }}>
+              {/* Sliding Highlight Pill Background */}
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 3,
+                  left: 3,
+                  width: 'calc(50% - 3px)',
+                  height: 'calc(100% - 6px)',
+                  borderRadius: 11,
+                  background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                  boxShadow: '0 4px 14px rgba(16, 185, 129, 0.4)',
+                  transform: mode === 'register' ? 'translateX(0%)' : 'translateX(100%)',
+                  transition: 'transform 0.52s cubic-bezier(0.22, 1, 0.36, 1)',
+                  zIndex: 1,
+                }}
+              />
 
-        {/* Mode Switch Tabs (Only show for register & login modes) */}
-        {(mode === 'register' || mode === 'login') && (
-          <div style={{
-            background: 'var(--color-bg-main)',
-            padding: 4,
-            borderRadius: 16,
-            display: 'flex',
-            width: '100%',
-            marginBottom: 22,
-            border: '1px solid var(--color-border)',
-            boxSizing: 'border-box',
-          }}>
-            <button
-              type="button"
-              onClick={() => handleSwitchMode('register')}
-              style={{
-                flex: 1,
-                padding: '10px 12px',
-                borderRadius: 12,
-                border: 'none',
-                fontSize: 'var(--font-size-sm)',
-                fontWeight: 'var(--font-weight-extrabold)',
-                cursor: 'pointer',
-                background: mode === 'register' ? 'var(--color-primary)' : 'transparent',
-                color: mode === 'register' ? '#ffffff' : 'var(--color-text-muted)',
-                boxShadow: mode === 'register' ? 'var(--shadow-sprout)' : 'none',
-                transition: 'all 0.2s ease',
-                textAlign: 'center',
-              }}
-            >
-              Đăng ký
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSwitchMode('login')}
-              style={{
-                flex: 1,
-                padding: '10px 12px',
-                borderRadius: 12,
-                border: 'none',
-                fontSize: 'var(--font-size-sm)',
-                fontWeight: 'var(--font-weight-extrabold)',
-                cursor: 'pointer',
-                background: mode === 'login' ? 'var(--color-primary)' : 'transparent',
-                color: mode === 'login' ? '#ffffff' : 'var(--color-text-muted)',
-                boxShadow: mode === 'login' ? 'var(--shadow-sprout)' : 'none',
-                transition: 'all 0.2s ease',
-                textAlign: 'center',
-              }}
-            >
-              Đăng nhập
-            </button>
-          </div>
-        )}
+              <button
+                type="button"
+                onClick={() => handleSwitchMode('register')}
+                style={{
+                  flex: 1,
+                  padding: '8px 10px',
+                  borderRadius: 11,
+                  border: 'none',
+                  fontSize: '0.82rem',
+                  fontWeight: 'var(--font-weight-extrabold)',
+                  cursor: 'pointer',
+                  background: 'transparent',
+                  color: mode === 'register' ? '#ffffff' : 'var(--color-text-muted)',
+                  transition: 'color 0.25s ease',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  position: 'relative',
+                  zIndex: 2,
+                }}
+              >
+                <User size={16} color={mode === 'register' ? '#ffffff' : 'var(--color-text-muted)'} />
+                <span>Đăng ký</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSwitchMode('login')}
+                style={{
+                  flex: 1,
+                  padding: '8px 10px',
+                  borderRadius: 11,
+                  border: 'none',
+                  fontSize: '0.82rem',
+                  fontWeight: 'var(--font-weight-extrabold)',
+                  cursor: 'pointer',
+                  background: 'transparent',
+                  color: mode === 'login' ? '#ffffff' : 'var(--color-text-muted)',
+                  transition: 'color 0.25s ease',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  position: 'relative',
+                  zIndex: 2,
+                }}
+              >
+                <Lock size={16} color={mode === 'login' ? '#ffffff' : 'var(--color-text-muted)'} />
+                <span>Đăng nhập</span>
+              </button>
+            </div>
+          )}
 
         {/* Error Alert */}
         {errorMessage && (
@@ -601,22 +723,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         {/* 1. Register & Login Form */}
         {(mode === 'register' || mode === 'login') && (
-          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16, width: '100%' }}>
+          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
             {mode === 'register' && (
               <div style={{ width: '100%' }}>
-                <label style={{ fontSize: '0.84rem', fontWeight: 700, marginBottom: 6, display: 'block', color: '#cbd5e1', textAlign: 'left' }}>Tên tài khoản (Username duy nhất)</label>
+                <label style={{ fontSize: '0.78rem', fontWeight: 700, marginBottom: 4, display: 'block', color: '#cbd5e1', textAlign: 'left' }}>Tên tài khoản (Username duy nhất)</label>
                 <div style={{ position: 'relative', width: '100%' }}>
-                  <User size={18} color="#0ed7b5" style={{ position: 'absolute', left: 14, top: 14 }} />
+                  <User size={16} color="#0ed7b5" style={{ position: 'absolute', left: 12, top: 12 }} />
                   <input
                     type="text"
                     placeholder="hoang_trekker"
                     style={{
                       width: '100%',
-                      paddingLeft: 44,
-                      paddingRight: 16,
-                      height: 46,
-                      borderRadius: 14,
-                      fontSize: '0.9rem',
+                      paddingLeft: 38,
+                      paddingRight: 14,
+                      height: 40,
+                      borderRadius: 12,
+                      fontSize: '0.86rem',
                       background: 'var(--color-bg-main)',
                       border: '1px solid var(--color-border)',
                       color: 'var(--color-text-main)',
@@ -634,11 +756,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
                 {/* Username Suggestions Pill Badges */}
                 {usernameSuggestions.length > 0 && (
-                  <div style={{ marginTop: 8, textAlign: 'left' }}>
-                    <div style={{ fontSize: '0.78rem', color: '#00ffd5', fontWeight: 700, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <Sparkles size={14} color="#00ffd5" /> Gợi ý tên hợp lệ (chạm vào để chọn):
+                  <div style={{ marginTop: 6, textAlign: 'left' }}>
+                    <div style={{ fontSize: '0.75rem', color: '#00ffd5', fontWeight: 700, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Sparkles size={13} color="#00ffd5" /> Gợi ý tên hợp lệ (chạm vào để chọn):
                     </div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
                       {usernameSuggestions.map((sug) => (
                         <button
                           key={sug}
@@ -652,9 +774,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                             background: 'rgba(0, 255, 213, 0.12)',
                             border: '1px solid rgba(0, 255, 213, 0.4)',
                             color: '#00ffd5',
-                            borderRadius: 20,
-                            padding: '4px 12px',
-                            fontSize: '0.8rem',
+                            borderRadius: 18,
+                            padding: '3px 10px',
+                            fontSize: '0.76rem',
                             fontWeight: 700,
                             cursor: 'pointer',
                             transition: 'all 0.2s ease',
@@ -672,19 +794,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             )}
 
             <div style={{ width: '100%' }}>
-              <label style={{ fontSize: '0.84rem', fontWeight: 700, marginBottom: 6, display: 'block', color: '#cbd5e1', textAlign: 'left' }}>Địa chỉ Email</label>
+              <label style={{ fontSize: '0.78rem', fontWeight: 700, marginBottom: 4, display: 'block', color: '#cbd5e1', textAlign: 'left' }}>Địa chỉ Email</label>
               <div style={{ position: 'relative', width: '100%' }}>
-                <Mail size={18} color="#0ed7b5" style={{ position: 'absolute', left: 14, top: 14 }} />
+                <Mail size={16} color="#0ed7b5" style={{ position: 'absolute', left: 12, top: 12 }} />
                 <input
                   type="email"
                   placeholder="name@gmail.com"
                   style={{
                     width: '100%',
-                    paddingLeft: 44,
-                    paddingRight: 16,
-                    height: 46,
-                    borderRadius: 14,
-                    fontSize: '0.9rem',
+                    paddingLeft: 38,
+                    paddingRight: 14,
+                    height: 40,
+                    borderRadius: 12,
+                    fontSize: '0.86rem',
                     background: 'var(--color-bg-main)',
                     border: '1px solid var(--color-border)',
                     color: 'var(--color-text-main)',
@@ -700,8 +822,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
 
             <div style={{ width: '100%' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <label style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--color-text-muted)' }}>Mật khẩu</label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--color-text-muted)' }}>Mật khẩu</label>
                 {mode === 'login' && (
                   <button
                     type="button"
@@ -710,7 +832,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       background: 'none',
                       border: 'none',
                       color: 'var(--color-primary)',
-                      fontSize: '0.82rem',
+                      fontSize: '0.78rem',
                       fontWeight: 700,
                       cursor: 'pointer',
                       padding: 0,
@@ -723,17 +845,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 )}
               </div>
               <div style={{ position: 'relative', width: '100%' }}>
-                <Lock size={18} color="var(--color-primary)" style={{ position: 'absolute', left: 14, top: 14 }} />
+                <Lock size={16} color="var(--color-primary)" style={{ position: 'absolute', left: 12, top: 12 }} />
                 <input
                   type={showPassword ? 'text' : 'password'}
                   placeholder="••••••••"
                   style={{
                     width: '100%',
-                    paddingLeft: 44,
-                    paddingRight: 44,
-                    height: 46,
-                    borderRadius: 14,
-                    fontSize: '0.9rem',
+                    paddingLeft: 38,
+                    paddingRight: 38,
+                    height: 40,
+                    borderRadius: 12,
+                    fontSize: '0.86rem',
                     background: 'var(--color-bg-main)',
                     border: '1px solid var(--color-border)',
                     color: 'var(--color-text-main)',
@@ -750,8 +872,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   onClick={() => setShowPassword(!showPassword)}
                   style={{
                     position: 'absolute',
-                    right: 14,
-                    top: 13,
+                    right: 12,
+                    top: 11,
                     background: 'none',
                     border: 'none',
                     color: showPassword ? '#00ffd5' : '#64748b',
@@ -762,20 +884,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   }}
                   title={showPassword ? 'Ẩn mật khẩu' : 'Hiển thị mật khẩu'}
                 >
-                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
 
               {/* Password Strength Meter UI Bar */}
               {mode === 'register' && password && (
-                <div style={{ marginTop: 8, textAlign: 'left' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.78rem', marginBottom: 4 }}>
+                <div style={{ marginTop: 6, textAlign: 'left' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.74rem', marginBottom: 3 }}>
                     <span style={{ color: '#94a3b8', fontWeight: 600 }}>Độ mạnh mật khẩu:</span>
                     <span style={{ fontWeight: 800, color: getPasswordStrength(password).color }}>
                       {getPasswordStrength(password).label}
                     </span>
                   </div>
-                  <div style={{ width: '100%', height: 5, background: 'var(--color-bg-main)', borderRadius: 10, overflow: 'hidden' }}>
+                  <div style={{ width: '100%', height: 4, background: 'var(--color-bg-main)', borderRadius: 10, overflow: 'hidden' }}>
                     <div style={{
                       width: `${getPasswordStrength(password).percent}%`,
                       height: '100%',
@@ -784,28 +906,25 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       borderRadius: 10,
                     }} />
                   </div>
-                  <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: 4 }}>
-                    * Yêu cầu Mức Khá trở lên: từ 8 ký tự, có chữ hoa (A-Z), chữ thường (a-z) và chữ số (0-9).
-                  </div>
                 </div>
               )}
             </div>
 
             {mode === 'register' && (
               <div style={{ width: '100%' }}>
-                <label style={{ fontSize: '0.84rem', fontWeight: 700, marginBottom: 6, display: 'block', color: '#cbd5e1', textAlign: 'left' }}>Nhập lại mật khẩu</label>
+                <label style={{ fontSize: '0.78rem', fontWeight: 700, marginBottom: 4, display: 'block', color: '#cbd5e1', textAlign: 'left' }}>Nhập lại mật khẩu</label>
                 <div style={{ position: 'relative', width: '100%' }}>
-                  <ShieldCheck size={18} color="#0ed7b5" style={{ position: 'absolute', left: 14, top: 14 }} />
+                  <ShieldCheck size={16} color="#0ed7b5" style={{ position: 'absolute', left: 12, top: 12 }} />
                   <input
                     type={showConfirmPassword ? 'text' : 'password'}
                     placeholder="••••••••"
                     style={{
                       width: '100%',
-                      paddingLeft: 44,
-                      paddingRight: 44,
-                      height: 46,
-                      borderRadius: 14,
-                      fontSize: '0.9rem',
+                      paddingLeft: 38,
+                      paddingRight: 38,
+                      height: 40,
+                      borderRadius: 12,
+                      fontSize: '0.86rem',
                       background: 'var(--color-bg-main)',
                       border: '1px solid var(--color-border)',
                       color: 'var(--color-text-main)',
@@ -821,8 +940,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     onClick={() => setShowConfirmPassword(!showConfirmPassword)}
                     style={{
                       position: 'absolute',
-                      right: 14,
-                      top: 13,
+                      right: 12,
+                      top: 11,
                       background: 'none',
                       border: 'none',
                       color: showConfirmPassword ? '#00ffd5' : '#64748b',
@@ -833,7 +952,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     }}
                     title={showConfirmPassword ? 'Ẩn mật khẩu' : 'Hiển thị mật khẩu'}
                   >
-                    {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    {showConfirmPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                   </button>
                 </div>
               </div>
@@ -843,7 +962,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               type="submit"
               className="btn btn-primary"
               disabled={isLoading}
-              style={{ width: '100%', height: 48, borderRadius: 14, fontSize: '0.94rem', fontWeight: 800, marginTop: 4, boxSizing: 'border-box' }}
+              style={{ width: '100%', height: 42, borderRadius: 12, fontSize: '0.9rem', fontWeight: 800, marginTop: 4, boxSizing: 'border-box' }}
             >
               {isLoading ? 'Đang xử lý...' : mode === 'register' ? 'Đăng Ký Tài Khoản' : 'Đăng Nhập'}
             </button>
@@ -1131,8 +1250,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               display: 'flex',
               alignItems: 'center',
               gap: 12,
-              margin: '20px 0 16px 0',
-              fontSize: '0.78rem',
+              margin: '10px 0 8px 0',
+              fontSize: '0.74rem',
               color: '#64748b',
               width: '100%',
             }}>
@@ -1151,9 +1270,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 background: '#ffffff',
                 color: '#1f2937',
                 border: isGoogleWarning ? '2px solid #00ffd5' : 'none',
-                borderRadius: 14,
-                height: 46,
-                fontSize: '0.9rem',
+                borderRadius: 12,
+                height: 40,
+                fontSize: '0.86rem',
                 fontWeight: 800,
                 cursor: 'pointer',
                 display: 'flex',
@@ -1180,6 +1299,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </button>
           </>
         )}
+        </div>
       </div>
     </div>
   );

@@ -1,4 +1,5 @@
 import { Response } from 'express';
+import mongoose from 'mongoose';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { NotificationModel } from '../models/Notification.js';
 
@@ -13,6 +14,15 @@ export const getNotifications = async (req: AuthRequest, res: Response) => {
 
     if (!currentUserId) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(currentUserId)) {
+      return res.json({
+        success: true,
+        data: [],
+        unreadCount: 0,
+        pagination: { page: 1, limit: Number(limit) || 20, total: 0, pages: 0 },
+      });
     }
 
     const pageNum = Math.max(Number(page) || 1, 1);
@@ -62,6 +72,10 @@ export const getUnreadCount = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
     }
 
+    if (!mongoose.Types.ObjectId.isValid(currentUserId)) {
+      return res.json({ success: true, count: 0 });
+    }
+
     const count = await NotificationModel.countDocuments({
       recipient: currentUserId,
       type: { $nin: ['new_message', 'message'] },
@@ -91,7 +105,7 @@ export const markNotificationAsRead = async (req: AuthRequest, res: Response) =>
     const notification = await NotificationModel.findOneAndUpdate(
       { _id: id as any, recipient: currentUserId as any },
       { isRead: true },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!notification) {

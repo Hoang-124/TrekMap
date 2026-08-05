@@ -1,7 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { Conversation, Message } from '../../types.js';
-import { Send, ArrowLeft } from 'lucide-react';
 import { useSocket } from '../../hooks/useSocket.js';
+
+const Send = ({ size = 18, color = 'currentColor', style }: { size?: number; color?: string; style?: React.CSSProperties }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <line x1="22" y1="2" x2="11" y2="13" />
+    <polygon points="22 2 15 22 11 13 2 9 22 2" />
+  </svg>
+);
+
+const ArrowLeft = ({ size = 18, color = 'currentColor', style }: { size?: number; color?: string; style?: React.CSSProperties }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <line x1="19" y1="12" x2="5" y2="12" />
+    <polyline points="12 19 5 12 12 5" />
+  </svg>
+);
 
 interface ChatWindowProps {
   conversation: Conversation | null;

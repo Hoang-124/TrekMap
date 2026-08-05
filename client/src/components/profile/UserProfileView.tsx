@@ -4,12 +4,43 @@ import { fetchTrails } from '../../services/api.js';
 import { ThreadDetailModal } from '../forum/ThreadDetailModal.js';
 import { AuthorProfileModal } from '../forum/AuthorProfileModal.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
-import {
-  ArrowLeft, Award, MapPin, User, Mail, Phone, Edit3, Save, CheckCircle2, Lock, Upload, AlertTriangle,
-  QrCode, Sparkles, Compass, ShieldCheck, Mountain, Tent, Zap, ShieldAlert, Package, MessageSquare, ThumbsUp, X, Check
-} from 'lucide-react';
+
+const createSvgIcon = (d: string | React.ReactNode, defaultSize = 18) => {
+  return ({ size = defaultSize, color = 'currentColor', style, className }: { size?: number; color?: string; style?: React.CSSProperties; className?: string }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style} className={className}>
+      {typeof d === 'string' ? <path d={d} /> : d}
+    </svg>
+  );
+};
+
+const ArrowLeft = createSvgIcon('M19 12H5M12 19l-7-7 7-7');
+const Award = createSvgIcon(<><circle cx="12" cy="8" r="7" /><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88" /></>);
+const MapPin = createSvgIcon(<><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" /></>);
+const User = createSvgIcon(<><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></>);
+const Mail = createSvgIcon(<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></>);
+const Phone = createSvgIcon('M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z');
+const Edit3 = createSvgIcon('M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z');
+const Save = createSvgIcon(<><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" /><polyline points="17 21 17 13 7 13 7 21" /><polyline points="7 3 7 8 15 8" /></>);
+const CheckCircle2 = createSvgIcon(<><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></>);
+const Lock = createSvgIcon(<><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></>);
+const Upload = createSvgIcon(<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></>);
+const AlertTriangle = createSvgIcon(<><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></>);
+const QrCode = createSvgIcon(<><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></>);
+const Sparkles = createSvgIcon(<><path d="M12 3v3m0 12v3M3 12h3m12 0h3m-4.5-6.5l-2 2m-7 7l-2 2m0-11l2 2m7 7l2 2" /></>);
+const Compass = createSvgIcon(<><circle cx="12" cy="12" r="10" /><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" /></>);
+const ShieldCheck = createSvgIcon(<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><polyline points="9 12 11 14 15 10" /></>);
+const Mountain = createSvgIcon(<><path d="M8 3l4 8 5-5 5 15H2L8 3z" /></>);
+const Tent = createSvgIcon(<><path d="M19 21L12 3 5 21" /><path d="M12 13l3 8H9l3-8z" /></>);
+const Zap = createSvgIcon('M13 2L3 14h9l-1 8 10-12h-9l1-8z');
+const ShieldAlert = createSvgIcon(<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></>);
+const Package = createSvgIcon(<><line x1="16.5" y1="9.4" x2="7.5" y2="4.21" /><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" /><polyline points="3.27 6.96 12 12.01 20.73 6.96" /><line x1="12" y1="22.08" x2="12" y2="12" /></>);
+const MessageSquare = createSvgIcon('M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z');
+const ThumbsUp = createSvgIcon('M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3');
+const X = createSvgIcon('M18 6L6 18M6 6l12 12');
+const Check = createSvgIcon('M20 6L9 17l-5-5');
 
 interface ProfileProps {
+  currentUser?: UserProfile | null;
   onBack: () => void;
   onSelectTrail: (trail: Trail) => void;
   onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
@@ -147,8 +178,8 @@ const TRAIL_CARD_THEMES = [
 
 
 
-export const UserProfileView: React.FC<ProfileProps> = ({ onBack, onSelectTrail, onShowToast, onProfileUpdate, onNavigateToContribute }) => {
-  const [profile, setProfile] = useState<UserProfile | null>(null);
+export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, onSelectTrail, onShowToast, onProfileUpdate, onNavigateToContribute }) => {
+  const [profile, setProfile] = useState<UserProfile | null>(currentUser || null);
   const [checkedTrails, setCheckedTrails] = useState<Trail[]>([]);
   const [allAvailableTrails, setAllAvailableTrails] = useState<Trail[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -198,7 +229,6 @@ export const UserProfileView: React.FC<ProfileProps> = ({ onBack, onSelectTrail,
 
   const handleEditContribution = (contrib: any) => {
     localStorage.setItem('trekmap_editing_contribution', JSON.stringify(contrib));
-    window.location.hash = '#contribute';
     if (onNavigateToContribute) {
       onNavigateToContribute();
     }
@@ -489,20 +519,20 @@ export const UserProfileView: React.FC<ProfileProps> = ({ onBack, onSelectTrail,
     return <div style={{ padding: '60px 20px', textAlign: 'center', color: '#94a3b8' }}>Đang tải thông tin hồ sơ...</div>;
   }
 
-  const activeProfile = profile || {
+  const activeProfile: UserProfile = profile || currentUser || {
     id: 'user-8848',
-    username: 'Hoang',
-    email: 'ht20041975@outlook.com.vn',
-    fullName: 'Hoàng',
-    avatarUrl: 'https://api.dicebear.com/7.x/bottts/svg?seed=Hoang',
-    role: 'user' as const,
-    reputationScore: 50,
+    username: 'Trekker',
+    email: 'user@trekmap.vn',
+    fullName: 'Nhà Thám Hiểm',
+    avatarUrl: 'https://api.dicebear.com/7.x/bottts/svg?seed=Trekker',
+    role: 'user',
+    reputationScore: 100,
     badges: ['Trekker Mới', 'Verified Trekker'],
     checkedInTrails: [],
     contributedTrails: [],
-    phone: '09876453261',
+    phone: 'Chưa cập nhật',
     bio: 'Đam mê leo núi và khám phá bản đồ địa hình 3D.',
-    emergencyContact: '0988 776 655 (Người thân)',
+    emergencyContact: 'Chưa cập nhật',
     preferredStyle: 'Trekking & Camping',
     authProvider: 'local',
     isEmailVerified: true,
@@ -1343,7 +1373,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ onBack, onSelectTrail,
           </h3>
           <button
             className="btn btn-primary"
-            onClick={() => { window.location.hash = '#contribute'; }}
+            onClick={() => { if (onNavigateToContribute) onNavigateToContribute(); }}
             style={{ padding: '6px 14px', fontSize: '0.78rem' }}
           >
             + Đóng Góp Cung Đường Mới
@@ -1525,7 +1555,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ onBack, onSelectTrail,
         const computedBadges = SYSTEM_BADGES.map((b) => {
           const isUnlocked = Boolean(
             activeProfile.badges?.some(
-              (ub) => ub.toLowerCase().includes(b.name.toLowerCase()) || b.name.toLowerCase().includes(ub.toLowerCase())
+              (ub: string) => ub.toLowerCase().includes(b.name.toLowerCase()) || b.name.toLowerCase().includes(ub.toLowerCase())
             ) || b.id === 'b-1'
           );
           return { ...b, unlocked: isUnlocked };

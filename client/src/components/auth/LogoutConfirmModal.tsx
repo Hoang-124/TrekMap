@@ -1,153 +1,131 @@
 import React from 'react';
-import { LogOut, X } from 'lucide-react';
 
 interface LogoutConfirmModalProps {
   isOpen: boolean;
   onClose: () => void;
   onConfirm: () => void;
-  username?: string;
+  userName?: string;
 }
 
 export const LogoutConfirmModal: React.FC<LogoutConfirmModalProps> = ({
   isOpen,
   onClose,
   onConfirm,
-  username,
+  userName = 'thành viên',
 }) => {
   if (!isOpen) return null;
 
   return (
-    <>
-      {/* Click-away transparent overlay */}
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 999999,
+        background: 'rgba(0, 0, 0, 0.25)',
+      }}
+      onClick={onClose}
+    >
       <div
-        onClick={onClose}
+        onClick={(e) => e.stopPropagation()}
         style={{
           position: 'fixed',
-          inset: 0,
-          zIndex: 9998,
-          background: 'rgba(0, 0, 0, 0.25)',
-        }}
-      />
-
-      {/* Floating Tactical Popover Box - Positioned right below the Navbar Logout button */}
-      <div
-        style={{
-          position: 'fixed',
-          top: 74,
-          right: 24,
-          zIndex: 9999,
-          maxWidth: 320,
-          width: 'calc(100vw - 48px)',
+          top: 64,
+          right: 20,
+          width: 280,
+          padding: '16px 18px',
+          borderRadius: 18,
           background: 'var(--color-bg-card)',
-          border: '1px solid var(--color-border)',
-          borderRadius: 20,
-          padding: '18px 20px',
-          boxShadow: 'var(--shadow-card)',
-          backdropFilter: 'blur(24px)',
-          animation: 'slideInRight 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+          border: '1px solid rgba(239, 68, 68, 0.45)',
+          boxShadow: '0 12px 36px rgba(0,0,0,0.65), 0 0 20px rgba(239, 68, 68, 0.25)',
+          boxSizing: 'border-box',
+          animation: 'authSlideLeft 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
         }}
       >
-        {/* Top Pointer Arrow */}
-        <div
-          style={{
-            position: 'absolute',
-            top: -7,
-            right: 22,
-            width: 12,
-            height: 12,
-            background: 'var(--color-bg-card)',
-            borderLeft: '1px solid var(--color-border)',
-            borderTop: '1px solid var(--color-border)',
-            transform: 'rotate(45deg)',
-          }}
-        />
-
-        {/* Popover Header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{
-              padding: 6,
-              borderRadius: 10,
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+          <div
+            style={{
               background: 'rgba(239, 68, 68, 0.15)',
+              border: '1px solid rgba(239, 68, 68, 0.4)',
+              width: 36,
+              height: 36,
+              borderRadius: 12,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-            }}>
-              <LogOut size={16} color="var(--color-error)" />
-            </div>
-            <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)' }}>
-              Đăng xuất tài khoản?
-            </span>
-          </div>
-
-          <button
-            onClick={onClose}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: 'var(--color-text-muted)',
-              cursor: 'pointer',
-              padding: 4,
-              display: 'flex',
-              alignItems: 'center',
+              flexShrink: 0,
+              boxShadow: '0 2px 10px rgba(239, 68, 68, 0.3)',
             }}
           >
-            <X size={16} />
-          </button>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+          </div>
+
+          <div style={{ textAlign: 'left', flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)', lineHeight: 1.2 }}>
+              Xác nhận đăng xuất?
+            </div>
+            <div
+              style={{
+                fontSize: '0.74rem',
+                color: 'var(--color-text-muted)',
+                marginTop: 3,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {userName}
+            </div>
+          </div>
         </div>
 
-        {/* Popover Body Description */}
-        <p style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', margin: '0 0 16px 0', lineHeight: 1.45, textAlign: 'left' }}>
-          Bạn có muốn đăng xuất khỏi <strong style={{ color: 'var(--color-primary)' }}>{username || 'TrekMap'}</strong> không?
-        </p>
-
-        {/* Compact Action Buttons */}
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 8 }}>
           <button
             type="button"
             onClick={onClose}
             style={{
               flex: 1,
-              height: 38,
-              borderRadius: 12,
+              height: 32,
+              borderRadius: 10,
               border: '1px solid var(--color-border)',
               background: 'var(--color-bg-main)',
-              color: 'var(--color-text-main)',
-              fontSize: 'var(--font-size-xs)',
+              color: 'var(--color-text-muted)',
+              fontSize: '0.78rem',
               fontWeight: 700,
               cursor: 'pointer',
               transition: 'all 0.2s ease',
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.borderColor = '#00ffd5')}
-            onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'rgba(0, 255, 213, 0.25)')}
+            onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--color-text-main)')}
+            onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--color-text-muted)')}
           >
             Hủy
           </button>
-
           <button
             type="button"
             onClick={onConfirm}
             style={{
               flex: 1,
-              height: 38,
-              borderRadius: 12,
+              height: 32,
+              borderRadius: 10,
               border: 'none',
               background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
               color: '#ffffff',
-              fontSize: '0.82rem',
+              fontSize: '0.78rem',
               fontWeight: 800,
               cursor: 'pointer',
-              boxShadow: '0 4px 14px rgba(239, 68, 68, 0.35)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 6,
+              boxShadow: '0 3px 10px rgba(239, 68, 68, 0.45)',
+              transition: 'all 0.2s ease',
             }}
+            onMouseEnter={(e) => (e.currentTarget.style.transform = 'scale(1.02)')}
+            onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
           >
-            <LogOut size={14} /> Đăng xuất
+            Đăng xuất
           </button>
         </div>
       </div>
-    </>
+    </div>
   );
 };

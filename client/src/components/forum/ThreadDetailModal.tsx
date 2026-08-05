@@ -1,6 +1,20 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { ForumThread } from '../../types.js';
-import { X, MessageSquare, Send, Loader2, CornerDownRight, Reply } from 'lucide-react';
+
+const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
+  return ({ size = defaultSize, color = 'currentColor', style, className }: { size?: number; color?: string; style?: React.CSSProperties; className?: string }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style} className={className}>
+      {d}
+    </svg>
+  );
+};
+
+const X = createSvgIcon(<><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></>);
+const MessageSquare = createSvgIcon(<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />);
+const Send = createSvgIcon(<><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></>);
+const Loader2 = createSvgIcon(<><line x1="12" y1="2" x2="12" y2="6" /><line x1="12" y1="18" x2="12" y2="22" /><line x1="4.93" y1="4.93" x2="7.76" y2="7.76" /><line x1="16.24" y1="16.24" x2="19.07" y2="19.07" /><line x1="2" y1="12" x2="6" y2="12" /><line x1="18" y1="12" x2="22" y2="12" /><line x1="4.93" y1="19.07" x2="7.76" y2="16.24" /><line x1="16.24" y1="7.76" x2="19.07" y2="4.93" /></>);
+const CornerDownRight = createSvgIcon(<><polyline points="15 10 20 15 15 20" /><path d="M4 4v7a4 4 0 0 0 4 4h12" /></>);
+const Reply = createSvgIcon(<><polyline points="9 17 4 12 9 7" /><path d="M20 18v-2a4 4 0 0 0-4-4H4" /></>);
 import { FacebookReactionPicker } from './FacebookReactionPicker.js';
 import type { ReactionType } from './FacebookReactionPicker.js';
 import { getApiHeaders, notifyForumUpdated } from '../../utils/sessionHeaders.js';
@@ -36,6 +50,7 @@ interface ThreadDetailModalProps {
   onUpdateCommentCount?: (threadId: string, count: number) => void;
   onUpdateThreadUpvotes?: (threadId: string, upvotes: number) => void;
   onUpdateThreadReaction?: (threadId: string, newReaction: ReactionType, newReactionsSummary: Record<string, number>, newUpvotes: number) => void;
+  onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
 }
 
 export const ThreadDetailModal: React.FC<ThreadDetailModalProps> = ({
@@ -45,6 +60,7 @@ export const ThreadDetailModal: React.FC<ThreadDetailModalProps> = ({
   onUpdateCommentCount,
   onUpdateThreadUpvotes,
   onUpdateThreadReaction,
+  onShowToast,
 }) => {
   const [reaction, setReaction] = useState<ReactionType>(thread ? (thread as any).userReaction || null : null);
   const [threadUpvotes, setThreadUpvotes] = useState<number>(thread ? thread.upvotes : 0);
@@ -176,11 +192,15 @@ export const ThreadDetailModal: React.FC<ThreadDetailModalProps> = ({
       if (json.success && json.data) {
         await fetchRealComments();
       } else {
-        alert(json.message || 'Không thể gửi bình luận.');
+        if (onShowToast) {
+          onShowToast(json.message || 'Không thể gửi bình luận.', 'error');
+        }
         setCommentText(textToSend);
       }
     } catch (err) {
-      alert('Không thể kết nối máy chủ để lưu bình luận.');
+      if (onShowToast) {
+        onShowToast('Không thể kết nối máy chủ để lưu bình luận.', 'error');
+      }
       setCommentText(textToSend);
     } finally {
       setIsSubmitting(false);
@@ -210,11 +230,15 @@ export const ThreadDetailModal: React.FC<ThreadDetailModalProps> = ({
         setActiveReplyId(null);
         await fetchRealComments();
       } else {
-        alert(json.message || 'Không thể gửi phản hồi.');
+        if (onShowToast) {
+          onShowToast(json.message || 'Không thể gửi phản hồi.', 'error');
+        }
         setReplyInputText(textToSend);
       }
     } catch (err) {
-      alert('Không thể kết nối máy chủ để lưu phản hồi.');
+      if (onShowToast) {
+        onShowToast('Không thể kết nối máy chủ để lưu phản hồi.', 'error');
+      }
       setReplyInputText(textToSend);
     } finally {
       setIsSubmittingReply(false);

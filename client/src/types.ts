@@ -92,12 +92,19 @@ export interface Incident {
   trailName: string;
   userId?: string;
   userName?: string;
+  userAvatar?: string;
   type: 'landslide' | 'flash_flood' | 'lost' | 'bad_weather' | 'flood' | 'weather' | 'wildlife' | 'other';
   description: string;
   severity: 'high' | 'medium' | 'low' | 'critical';
   reportedAt: string;
   resolved: boolean;
   locationNote?: string;
+  images?: string[];
+  verifiedBy?: string;
+  verifiedAt?: string;
+  coordinates?: { lat: number; lng: number };
+  elevationM?: number;
+  rescueContact?: string;
 }
 
 export interface UserProfile {
@@ -173,6 +180,46 @@ export interface Message {
   readBy: string[];
   createdAt: string;
   updatedAt?: string;
+}
+
+export interface WeatherForecastDay {
+  forecastDate: string;
+  tempMinC: number;
+  tempMaxC: number;
+  humidityPercent: number;
+  windSpeedKmH: number;
+  cloudCoverPercent: number;
+  seaOfCloudsIndex: number;
+  weatherCondition: 'clear' | 'cloudy' | 'foggy' | 'rainy' | 'storm';
+}
+
+export interface WeatherForecastResponse {
+  success: boolean;
+  data: WeatherForecastDay[];
+  hasWarning: boolean;
+  warningMessage?: string | null;
+}
+
+export interface ItineraryStep {
+  day: number;
+  time: string;
+  title: string;
+  description: string;
+  locationNote?: string;
+}
+
+export interface ItineraryData {
+  _id?: string;
+  id?: string;
+  creatorId?: string;
+  trailId: string;
+  title: string;
+  startDate: string;
+  endDate?: string;
+  memberCount: number;
+  timelineSteps: ItineraryStep[];
+  shareToken?: string;
+  status?: string;
 }
 
 export type NotificationType =

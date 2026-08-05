@@ -1,5 +1,4 @@
 import React from 'react';
-import { Compass, ShieldAlert, Radio, Mountain, PhoneCall, Heart, ShieldCheck } from 'lucide-react';
 
 export const Footer: React.FC = () => {
   return (
@@ -15,7 +14,6 @@ export const Footer: React.FC = () => {
         overflow: 'hidden',
       }}
     >
-      {/* Top Glowing Gradient Accent Bar */}
       <div
         style={{
           position: 'absolute',
@@ -39,24 +37,9 @@ export const Footer: React.FC = () => {
           marginBottom: 48,
         }}
       >
-        {/* Column 1: Brand & Radio Beacon Status */}
+        {/* Column 1: Brand */}
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-            <div
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: '50%',
-                background: 'rgba(16, 185, 129, 0.15)',
-                border: '1px solid var(--color-primary)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: '0 0 12px rgba(16, 185, 129, 0.3)',
-              }}
-            >
-              <Compass size={20} color="var(--color-primary)" />
-            </div>
             <span style={{ fontSize: '1.25rem', fontWeight: 900, color: '#ffffff', letterSpacing: '-0.02em' }}>
               Trek<span style={{ color: 'var(--color-primary)' }}>Map</span> Việt Nam
             </span>
@@ -66,7 +49,6 @@ export const Footer: React.FC = () => {
             Nền tảng bản đồ trekking cộng đồng phi lợi nhuận lớn nhất Việt Nam. Tra cứu dữ liệu GPX đường đi thực tế, thông tin Porter bản địa & cứu hộ khẩn cấp 24/7.
           </p>
 
-          {/* Live Radio Beacon Status Card */}
           <div
             style={{
               display: 'inline-flex',
@@ -81,21 +63,11 @@ export const Footer: React.FC = () => {
               color: 'var(--color-primary)',
             }}
           >
-            <span
-              className="radar-pulse-dot"
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                background: '#10b981',
-              }}
-            />
-            <Radio size={14} />
             <span>VÔ TUYẾN 24/7 - TRẠM PHÁT TÍN HIỆU CỘNG ĐỒNG</span>
           </div>
         </div>
 
-        {/* Column 2: Featured Trails Quick Access */}
+        {/* Column 2: Featured Trails */}
         <div>
           <h4
             style={{
@@ -103,12 +75,8 @@ export const Footer: React.FC = () => {
               fontSize: '0.95rem',
               fontWeight: 800,
               marginBottom: 16,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
             }}
           >
-            <Mountain size={17} color="var(--color-primary)" />
             Cung Đường Trọng Điểm
           </h4>
           <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -131,14 +99,6 @@ export const Footer: React.FC = () => {
                     alignItems: 'center',
                     gap: 6,
                   }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.color = 'var(--color-primary)';
-                    e.currentTarget.style.transform = 'translateX(4px)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.color = 'var(--color-text-muted)';
-                    e.currentTarget.style.transform = 'translateX(0)';
-                  }}
                 >
                   <span style={{ color: 'var(--color-primary)', fontSize: '0.75rem' }}>›</span>
                   {item.name}
@@ -156,12 +116,8 @@ export const Footer: React.FC = () => {
               fontSize: '0.95rem',
               fontWeight: 800,
               marginBottom: 16,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
             }}
           >
-            <ShieldAlert size={18} color="#ef4444" />
             Cứu Hộ Khẩn Cấp (SOS 24/7)
           </h4>
           <div
@@ -178,23 +134,23 @@ export const Footer: React.FC = () => {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: '0.82rem', color: '#f8fafc' }}>PCCC & Cứu nạn:</span>
               <a href="tel:114" style={{ color: '#ef4444', fontWeight: 900, fontSize: '1rem', textDecoration: 'none' }}>
-                <PhoneCall size={13} style={{ display: 'inline', marginRight: 4 }} /> 114
+                114
               </a>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: '0.82rem', color: '#f8fafc' }}>Cấp cứu Y tế Khẩn:</span>
               <a href="tel:115" style={{ color: '#ef4444', fontWeight: 900, fontSize: '1rem', textDecoration: 'none' }}>
-                <PhoneCall size={13} style={{ display: 'inline', marginRight: 4 }} /> 115
+                115
               </a>
             </div>
             <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', paddingTop: 6, borderTop: '1px dashed rgba(239, 68, 68, 0.2)' }}>
-              <div>• <strong>Kiểm Lâm Hoàng Liên (Sapa):</strong> 0214.3871.234</div>
-              <div style={{ marginTop: 2 }}>• <strong>Cứu Hộ Tà Năng - Phan Dũng:</strong> 0918.999.111</div>
+              <div>- <strong>Kiểm Lâm Hoàng Liên (Sapa):</strong> 0214.3871.234</div>
+              <div style={{ marginTop: 2 }}>- <strong>Cứu Hộ Tà Năng - Phan Dũng:</strong> 0918.999.111</div>
             </div>
           </div>
         </div>
 
-        {/* Column 4: Safety Policy & Community Notice */}
+        {/* Column 4: Safety Policy */}
         <div>
           <h4
             style={{
@@ -202,12 +158,8 @@ export const Footer: React.FC = () => {
               fontSize: '0.95rem',
               fontWeight: 800,
               marginBottom: 16,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
             }}
           >
-            <ShieldCheck size={18} color="#38bdf8" />
             An Toàn Là Trên Hết
           </h4>
           <p style={{ fontSize: '0.82rem', lineHeight: 1.65, color: 'var(--color-text-muted)', margin: 0 }}>
@@ -233,9 +185,7 @@ export const Footer: React.FC = () => {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span>© 2026 TrekMap Việt Nam. Phát triển với</span>
-          <Heart size={13} color="#ef4444" fill="#ef4444" />
-          <span>bởi Cộng đồng Trekker Việt Nam.</span>
+          <span>© 2026 TrekMap Việt Nam. Phát triển bởi Cộng đồng Trekker Việt Nam.</span>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>

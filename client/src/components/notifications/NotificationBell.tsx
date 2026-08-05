@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Bell, CheckCheck } from 'lucide-react';
 import type { NotificationItem, UserProfile } from '../../types.js';
 import {
   fetchNotifications,
@@ -91,40 +90,49 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
 
   return (
     <div style={{ position: 'relative' }} ref={dropdownRef}>
-      {/* Bell Button Icon */}
+      {/* Circular Bell SVG Icon Button */}
       <button
         type="button"
-        className="btn btn-outline"
         onClick={handleToggle}
         title="Thông báo hệ thống"
+        aria-label="Notifications"
         style={{
           position: 'relative',
           width: 38,
           height: 38,
-          padding: 0,
           borderRadius: '50%',
+          background: isOpen ? 'rgba(14, 215, 181, 0.12)' : 'rgba(255, 255, 255, 0.06)',
+          border: `1px solid ${isOpen ? 'var(--color-primary)' : 'var(--color-border)'}`,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
+          cursor: 'pointer',
+          color: isOpen ? 'var(--color-primary)' : 'var(--color-text-main)',
+          transition: 'all 0.2s ease',
+          padding: 0,
           flexShrink: 0,
         }}
       >
-        <Bell size={18} />
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+          <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+        </svg>
         {unreadCount > 0 && (
           <span
             style={{
               position: 'absolute',
-              top: -4,
-              right: -4,
+              top: -2,
+              right: -2,
               background: '#ef4444',
               color: '#ffffff',
-              fontSize: '0.68rem',
+              fontSize: '0.62rem',
               fontWeight: 800,
               borderRadius: 10,
-              padding: '2px 6px',
+              padding: '2px 5px',
               minWidth: 16,
               textAlign: 'center',
-              boxShadow: '0 2px 6px rgba(239, 68, 68, 0.4)',
+              lineHeight: 1,
+              boxShadow: '0 0 6px rgba(239, 68, 68, 0.6)',
             }}
           >
             {unreadCount > 99 ? '99+' : unreadCount}
@@ -175,12 +183,9 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
                   fontSize: '0.78rem',
                   fontWeight: 700,
                   cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 4,
                 }}
               >
-                <CheckCheck size={14} /> Đánh dấu đã đọc
+                Đánh dấu đã đọc
               </button>
             )}
           </div>

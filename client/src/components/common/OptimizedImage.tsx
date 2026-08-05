@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { getOptimizedImageUrl } from '../../utils/cloudinary.js';
-import type { ImageOptimizationOptions } from '../../utils/cloudinary.js';
+import type { ImageOptimizeOptions } from '../../utils/cloudinary.js';
 
 export interface OptimizedImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   src: string;
   alt: string;
   targetWidth?: number;
-  optimizationOptions?: ImageOptimizationOptions;
+  optimizationOptions?: ImageOptimizeOptions;
   fallbackSrc?: string;
 }
 

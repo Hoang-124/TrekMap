@@ -61,10 +61,14 @@ const ContributionSchema = new Schema<IContribution>(
     authorName: { type: String, default: '' },
     authorAvatar: { type: String, default: '' },
     userId: { type: String, default: '' },
-    status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+    status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending', index: true },
     createdAt: { type: String, default: () => new Date().toLocaleDateString('vi-VN') },
   },
   { timestamps: true }
 );
+
+ContributionSchema.index({ status: 1, createdAt: -1 });
+ContributionSchema.index({ userId: 1 });
+ContributionSchema.index({ authorEmail: 1 });
 
 export const Contribution = mongoose.model<IContribution>('Contribution', ContributionSchema);

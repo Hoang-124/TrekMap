@@ -21,7 +21,7 @@ export function calculateHaversineDistanceKm(lat1: number, lon1: number, lat2: n
 }
 
 export const getTrails = async (req: Request, res: Response) => {
-  const { region, difficulty, search, duration, campsite, kidFriendly, lat, lng, radiusKm } = req.query;
+  const { region, difficulty, search, duration, campsite, kidFriendly, lat, lng, radiusKm, sortBy } = req.query;
 
   // Handle spatial search if GPS lat & lng are provided
   if (lat && lng) {
@@ -50,7 +50,24 @@ export const getTrails = async (req: Request, res: Response) => {
       query.$or = [{ name: regex }, { province: regex }, { description: regex }];
     }
 
-    const dbTrails = await TrailModel.find(query).exec();
+    const sortOptions: any = {};
+    if (sortBy === 'rating_desc' || sortBy === 'rating') {
+      sortOptions.rating = -1;
+    } else if (sortBy === 'distance_asc') {
+      sortOptions.distanceKm = 1;
+    } else if (sortBy === 'distance_desc') {
+      sortOptions.distanceKm = -1;
+    } else if (sortBy === 'difficulty_asc') {
+      sortOptions.difficultyLevel = 1;
+    } else if (sortBy === 'difficulty_desc') {
+      sortOptions.difficultyLevel = -1;
+    } else if (sortBy === 'duration_asc') {
+      sortOptions.durationDays = 1;
+    } else if (sortBy === 'duration_desc') {
+      sortOptions.durationDays = -1;
+    }
+
+    const dbTrails = await TrailModel.find(query).sort(sortOptions).exec();
     if (dbTrails && dbTrails.length > 0) {
       return res.json({ success: true, count: dbTrails.length, data: dbTrails });
     }
@@ -93,6 +110,23 @@ export const getTrails = async (req: Request, res: Response) => {
     );
   }
 
+  // In-memory Sorting
+  if (sortBy === 'rating_desc' || sortBy === 'rating') {
+    filtered.sort((a, b) => b.rating - a.rating);
+  } else if (sortBy === 'distance_asc') {
+    filtered.sort((a, b) => a.distanceKm - b.distanceKm);
+  } else if (sortBy === 'distance_desc') {
+    filtered.sort((a, b) => b.distanceKm - a.distanceKm);
+  } else if (sortBy === 'difficulty_asc') {
+    filtered.sort((a, b) => a.difficultyLevel - b.difficultyLevel);
+  } else if (sortBy === 'difficulty_desc') {
+    filtered.sort((a, b) => b.difficultyLevel - a.difficultyLevel);
+  } else if (sortBy === 'duration_asc') {
+    filtered.sort((a, b) => a.durationDays - b.durationDays);
+  } else if (sortBy === 'duration_desc') {
+    filtered.sort((a, b) => b.durationDays - a.durationDays);
+  }
+
   return res.json({ success: true, count: filtered.length, data: filtered });
 };
 
@@ -113,8 +147,8 @@ export const getNearbyTrails = async (req: Request, res: Response) => {
   const startTimeMs = performance.now();
 
   try {
-    // 1. High-Speed MongoDB 2dsphere Spatial Query ($near)
-    const dbTrails = await TrailModel.find({
+    // 1. High-Speed MongoDB 2dsphere Spatial Query ($near) with 150ms timeout race
+    const mongoPromise = TrailModel.find({
       startLocation: {
         $near: {
           $geometry: {
@@ -124,7 +158,13 @@ export const getNearbyTrails = async (req: Request, res: Response) => {
           $maxDistance: radiusMeters,
         },
       },
-    }).lean().exec();
+    }).maxTimeMS(200).lean().exec();
+
+    const timeoutPromise = new Promise<any[]>((_, reject) =>
+      setTimeout(() => reject(new Error('Spatial DB query timeout')), 150)
+    );
+
+    const dbTrails = await Promise.race([mongoPromise, timeoutPromise]);
 
     const queryExecutionTimeMs = Math.round((performance.now() - startTimeMs) * 100) / 100;
 

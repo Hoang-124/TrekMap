@@ -1,4 +1,5 @@
 import { Response } from 'express';
+import mongoose from 'mongoose';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { ConversationModel } from '../models/Conversation.js';
 import { MessageModel } from '../models/Message.js';
@@ -15,6 +16,10 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
     const currentUserId = req.user?.userId;
     if (!currentUserId) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(currentUserId)) {
+      return res.json({ success: true, count: 0, data: [] });
     }
 
     const conversations = await ConversationModel.find({

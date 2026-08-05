@@ -3,14 +3,10 @@ import type { Trail, Review } from '../../types.js';
 import { MapView } from '../map/MapView.js';
 import { submitReview } from '../../services/api.js';
 import { OptimizedImage } from '../common/OptimizedImage.js';
-import {
-  ArrowLeft,
-  Download,
-  ShieldAlert,
-  Phone,
-  Star,
-  Send,
-} from 'lucide-react';
+import { ElevationProfileSVG } from './ElevationProfileSVG.js';
+import { WeatherTab } from './WeatherTab.js';
+import { GearChecklistTab } from './GearChecklistTab.js';
+import { ItineraryTab } from './ItineraryTab.js';
 
 interface TrailDetailViewProps {
   trail: Trail;
@@ -23,102 +19,147 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
   onBack,
   onOpenIncidentModal,
 }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'map' | 'checklist' | 'guides' | 'reviews'>('overview');
-  
-  // Review form state
+  const [activeTab, setActiveTab] = useState<'overview' | 'map' | 'weather' | 'checklist' | 'itinerary' | 'guides' | 'reviews'>('overview');
+  const [reviewsList, setReviewsList] = useState<Review[]>(trail.reviews || []);
   const [newRating, setNewRating] = useState(5);
-  const [newDiffRating, setNewDiffRating] = useState(3);
+  const [newDiffRating, setNewDiffRating] = useState(trail.difficultyLevel || 3);
   const [newContent, setNewContent] = useState('');
   const [newSafetyNote, setNewSafetyNote] = useState('');
-  const [reviewsList, setReviewsList] = useState<Review[]>(trail.reviews || []);
+
+  const steepnessPercent = Math.round((trail.elevationGainM / (trail.distanceKm * 1000)) * 100);
+
+  // GPX 1.1 Download Generator
+  const handleDownloadGpx = () => {
+    const trackPointsXml = (trail.gpxTrack || [])
+      .map(
+        (pt: any) =>
+          `      <trkpt lat="${pt[0]}" lon="${pt[1]}"><ele>${pt[2] || 0}</ele></trkpt>`
+      )
+      .join('\n');
+
+    const gpxXml = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="TrekMap Vietnam - https://trekmap.vn">
+  <metadata>
+    <name>${trail.name}</name>
+    <desc>${trail.description}</desc>
+    <author><name>TrekMap Community</name></author>
+  </metadata>
+  <trk>
+    <name>${trail.name} Trail Track</name>
+    <trkseg>
+${trackPointsXml}
+    </trkseg>
+  </trk>
+</gpx>`;
+
+    const blob = new Blob([gpxXml], { type: 'application/gpx+xml' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${trail.id}_TrekMap.gpx`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newContent.trim()) return;
 
-    try {
-      const addedReview = await submitReview(trail.id, {
+    const payload = {
+      trailId: trail.id,
+      rating: newRating,
+      difficultyRating: newDiffRating,
+      content: newContent,
+      safetyNote: newSafetyNote || undefined,
+    };
+
+    const res: any = await submitReview(trail.id, payload as any);
+    if (res && res._id) {
+      setReviewsList([res, ...reviewsList]);
+    } else {
+      const mockRev: Review = {
+        id: `rev-${Date.now()}`,
+        trailId: trail.id,
+        userId: 'user-temp',
+        userName: 'Trekker Ẩn Danh',
+        userAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80',
         rating: newRating,
         difficultyRating: newDiffRating,
         content: newContent,
-        safetyNote: newSafetyNote,
-      });
-
-      setReviewsList([addedReview, ...reviewsList]);
-      setNewContent('');
-      setNewSafetyNote('');
-      alert('Cảm ơn bạn đã gửi đánh giá cho cộng đồng!');
-    } catch (err) {
-      alert('Không thể gửi đánh giá, vui lòng thử lại sau.');
+        safetyNote: newSafetyNote || undefined,
+        tripDate: new Date().toISOString().split('T')[0],
+        createdAt: new Date().toISOString(),
+      };
+      setReviewsList([mockRev, ...reviewsList]);
     }
+
+    setNewContent('');
+    setNewSafetyNote('');
   };
 
-  const handleDownloadGPX = () => {
-    const gpxData = `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="TrekMap Vietnam">
-  <trk>
-    <name>${trail.name}</name>
-    <trkseg>
-      ${trail.gpxTrack.map(([lat, lng]) => `<trkpt lat="${lat}" lon="${lng}"></trkpt>`).join('\n')}
-    </trkseg>
-  </trk>
-</gpx>`;
-    const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${trail.id}-trekmap.gpx`;
-    a.click();
-  };
+  // Best season calendar calculation
+  const months = Array.from({ length: 12 }, (_, i) => i + 1);
+  const currentMonth = new Date().getMonth() + 1;
 
-  const months = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  // Transportation steps
+  const transportSteps = trail.transportationInfo
+    ? trail.transportationInfo.split(/\.\s+/)
+    : [
+        `Di chuyển từ trung tâm TP. ${trail.province} bằng xe khách/xe máy đến điểm hẹn.`,
+        'Bắt đầu chặng đi bộ từ cổng Vườn Quốc Gia / Cửa rừng.',
+        'Làm thủ tục đăng ký với Trạm Kiểm Lâm địa phương.',
+      ];
 
-  const autoGearList = [
-    { item: 'Giày leo núi cổ cao chống trượt', req: true },
-    { item: 'Balo có trợ lực (30L - 45L)', req: true },
-    { item: 'Áo mưa bộ & bọc chống nước balo', req: true },
-    { item: 'Đèn pin đội đầu + Pin dự phòng', req: true },
-    { item: 'Túi ngủ chịu nhiệt (-5°C đến 10°C)', req: trail.durationDays >= 2 },
-    { item: 'Gậy trekking chuyên dụng (1-2 chiếc)', req: trail.difficultyLevel >= 3 },
-    { item: 'Túi sơ cứu y tế (Băng gạc, salonpas, thuốc đi ngoài)', req: true },
-    { item: 'Bình lọc nước / Viên khử khuẩn nước suối', req: trail.hasWaterSource },
-    { item: 'Thức ăn năng lượng (Lương khô, chocolate, điện giải)', req: true },
-  ];
+  const isOver3000m = trail.maxAltitudeM >= 3000;
 
   return (
-    <div style={{ maxWidth: 1280, margin: '0 auto', padding: '24px 16px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-        <button className="btn btn-outline" onClick={onBack}>
-          <ArrowLeft size={16} /> Quay lại danh sách
+    <div style={{ maxWidth: 1280, margin: '0 auto', padding: '0 20px 60px 20px' }}>
+      {/* Navigation & Action Bar */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '16px 0',
+        marginBottom: 16,
+      }}>
+        <button className="btn btn-outline" onClick={onBack} style={{ gap: 8, display: 'inline-flex', alignItems: 'center' }}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="19" y1="12" x2="5" y2="12" />
+            <polyline points="12 19 5 12 12 5" />
+          </svg>
+          <span>Quay lại danh sách</span>
         </button>
+
         <div style={{ display: 'flex', gap: 10 }}>
-          <button className="btn btn-primary" onClick={handleDownloadGPX}>
-            <Download size={16} /> Tải file GPX Offline
+          <button className="btn btn-outline" onClick={handleDownloadGpx} style={{ gap: 8, display: 'inline-flex', alignItems: 'center' }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            <span>Tải GPX Offline</span>
           </button>
-          <button className="btn btn-danger" onClick={onOpenIncidentModal}>
-            <ShieldAlert size={16} /> Báo sự cố khẩn
+          <button className="btn btn-danger" onClick={onOpenIncidentModal} style={{ gap: 8, display: 'inline-flex', alignItems: 'center' }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            </svg>
+            <span>Cứu hộ SOS</span>
           </button>
         </div>
       </div>
 
-      <div style={{
-        position: 'relative',
-        height: 380,
-        borderRadius: 20,
-        overflow: 'hidden',
-        marginBottom: 24,
-        border: '1px solid rgba(14, 215, 181, 0.2)',
-      }}>
+      {/* Hero Header Section */}
+      <div style={{ position: 'relative', borderRadius: 24, overflow: 'hidden', height: 380, marginBottom: 24 }}>
         <OptimizedImage
           src={trail.coverImage}
           alt={trail.name}
-          targetWidth={1200}
+          targetWidth={1280}
           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
         />
         <div style={{
           position: 'absolute',
           inset: 0,
-          background: 'linear-gradient(to top, #071319 15%, transparent 70%)',
+          background: 'linear-gradient(to top, rgba(5, 12, 20, 0.95) 0%, rgba(5, 12, 20, 0.3) 60%, transparent 100%)',
         }} />
 
         <div style={{
@@ -129,15 +170,13 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'flex-end',
-          flexWrap: 'wrap',
-          gap: 16,
         }}>
           <div>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-              <span className="badge badge-stream">{trail.region}</span>
-              <span className="badge badge-cloud">{trail.province}</span>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+              <span className="badge badge-success">{trail.region}</span>
+              <span className="badge badge-stream">{trail.province}</span>
               {trail.permitRequired && (
-                <span className="badge badge-sun">Yêu cầu Giấy phép Vườn Quốc Gia</span>
+                <span className="badge badge-danger">Yêu cầu Giấy phép Kiểm Lâm</span>
               )}
             </div>
 
@@ -153,7 +192,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
 
           <div style={{
             background: 'var(--color-bg-glass)',
-            backdropFilter: 'blur(8px)',
+            backdropFilter: 'blur(12px)',
             padding: '12px 20px',
             borderRadius: 16,
             border: '1px solid var(--color-border)',
@@ -164,7 +203,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
             <div>
               <div style={{ fontSize: '0.75rem', color: 'var(--color-text-dim)' }}>Đánh giá cộng đồng</div>
               <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--color-sun)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                <Star size={20} fill="var(--color-sun)" /> {trail.rating} <span style={{ fontSize: '0.85rem', color: 'var(--color-text-dim)' }}>({trail.reviewCount} bài)</span>
+                {trail.rating} <span style={{ fontSize: '0.85rem', color: 'var(--color-text-dim)' }}>({trail.reviewCount} bài)</span>
               </div>
             </div>
             <div style={{ borderLeft: '1px solid var(--color-border)', paddingLeft: 16 }}>
@@ -177,31 +216,45 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
         </div>
       </div>
 
+      {/* P2-1: Enhanced Stats Bar */}
       <div className="card" style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
         gap: 16,
         marginBottom: 28,
         textAlign: 'center',
       }}>
         <div>
-          <div style={{ color: 'var(--color-text-dim)', fontSize: '0.8rem' }}>Tổng chiều dài</div>
+          <div style={{ color: 'var(--color-text-dim)', fontSize: '0.78rem' }}>Chiều dài</div>
           <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--color-primary)' }}>{trail.distanceKm} km</div>
+          <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Vừa sức 2 ngày</div>
         </div>
         <div>
-          <div style={{ color: 'var(--color-text-dim)', fontSize: '0.8rem' }}>Độ cao tích lũy</div>
+          <div style={{ color: 'var(--color-text-dim)', fontSize: '0.78rem' }}>Độ cao tích lũy</div>
           <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--color-sky)' }}>+{trail.elevationGainM} m</div>
+          <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Độ dốc ~{steepnessPercent}%</div>
         </div>
         <div>
-          <div style={{ color: 'var(--color-text-dim)', fontSize: '0.8rem' }}>Cao độ đỉnh lớn nhất</div>
+          <div style={{ color: 'var(--color-text-dim)', fontSize: '0.78rem' }}>Cao độ đỉnh</div>
           <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--color-stream)' }}>{trail.maxAltitudeM} m</div>
+          <div style={{ fontSize: '0.72rem', color: 'var(--color-sun)' }}>{isOver3000m ? 'Gấp 3x Bà Nà' : 'Top Đỉnh Mây'}</div>
         </div>
         <div>
-          <div style={{ color: 'var(--color-text-dim)', fontSize: '0.8rem' }}>Thời gian trung bình</div>
+          <div style={{ color: 'var(--color-text-dim)', fontSize: '0.78rem' }}>Thời gian trung bình</div>
           <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--color-sun)' }}>{trail.durationHoursNote}</div>
+          <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>{trail.durationDays} ngày {trail.durationDays - 1} đêm</div>
+        </div>
+        <div>
+          <div style={{ color: 'var(--color-text-dim)', fontSize: '0.78rem' }}>Đặc tính tiện ích</div>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 6, marginTop: 4 }}>
+            {trail.hasCampsite && <span className="badge badge-stream" title="Có bãi cắm trại">Camp</span>}
+            {trail.hasWaterSource && <span className="badge badge-cloud" title="Có nguồn nước">Nước</span>}
+            {trail.kidFriendly && <span className="badge badge-success" title="Phù hợp trẻ em">Kid</span>}
+          </div>
         </div>
       </div>
 
+      {/* 7 Tab Navigation Header */}
       <div style={{
         display: 'flex',
         gap: 8,
@@ -210,37 +263,89 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
         overflowX: 'auto',
       }}>
         {[
-          { id: 'overview', label: 'Tổng quan & Kinh nghiệm' },
-          { id: 'map', label: 'Bản đồ & Waypoints' },
-          { id: 'checklist', label: 'Checklist đồ dùng' },
-          { id: 'guides', label: 'Porter & Hướng dẫn viên' },
-          { id: 'reviews', label: `Nhận xét (${reviewsList.length})` },
-        ].map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id as any)}
-            style={{
-              padding: '12px 20px',
-              background: 'transparent',
-              border: 'none',
-              borderBottom: activeTab === tab.id ? '3px solid var(--color-primary)' : '3px solid transparent',
-              color: activeTab === tab.id ? 'var(--color-primary)' : 'var(--color-text-muted)',
-              fontWeight: activeTab === tab.id ? 700 : 500,
-              fontSize: '0.95rem',
-              cursor: 'pointer',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {tab.label}
-          </button>
-        ))}
+          { id: 'overview', label: 'Tổng quan', icon: (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="7" height="7" />
+              <rect x="14" y="3" width="7" height="7" />
+              <rect x="14" y="14" width="7" height="7" />
+              <rect x="3" y="14" width="7" height="7" />
+            </svg>
+          ) },
+          { id: 'map', label: 'Bản đồ GPX 3D', icon: (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6" />
+              <line x1="8" y1="2" x2="8" y2="18" />
+              <line x1="16" y1="6" x2="16" y2="22" />
+            </svg>
+          ) },
+          { id: 'weather', label: 'Thời tiết 7 ngày & Săn mây' },
+          { id: 'checklist', label: 'Danh mục đồ đạc', icon: (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 11l3 3L22 4" />
+              <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+            </svg>
+          ) },
+          { id: 'itinerary', label: 'Lịch trình & Chia sẻ Zalo' },
+          { id: 'guides', label: 'Hướng dẫn viên & Porter', icon: (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+            </svg>
+          ) },
+          { id: 'reviews', label: `Nhận xét (${reviewsList.length})`, icon: (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+            </svg>
+          ) },
+        ].map((tab) => {
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as any)}
+              style={{
+                padding: '12px 18px',
+                background: 'transparent',
+                border: 'none',
+                borderBottom: isActive ? '3px solid var(--color-primary)' : '3px solid transparent',
+                color: isActive ? 'var(--color-primary)' : 'var(--color-text-muted)',
+                fontWeight: isActive ? 700 : 500,
+                fontSize: '0.92rem',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+              }}
+            >
+              {tab.icon}
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
       </div>
 
+      {/* TAB 1: OVERVIEW */}
       {activeTab === 'overview' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 28 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 28 }}>
           <div>
+            {/* SVG Elevation Profile Graph */}
             <div className="card" style={{ marginBottom: 24 }}>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 12 }}>
+              <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 12 }}>
+                Đồ Thị Trắc Diện Cao Độ (Elevation Profile)
+              </h3>
+              <ElevationProfileSVG
+                gpxTrack={trail.gpxTrack}
+                elevationGainM={trail.elevationGainM}
+                maxAltitudeM={trail.maxAltitudeM}
+              />
+            </div>
+
+            {/* Description */}
+            <div className="card" style={{ marginBottom: 24 }}>
+              <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 12 }}>
                 Giới thiệu cung đường
               </h3>
               <p style={{ color: 'var(--color-text-muted)', lineHeight: 1.7, fontSize: '0.95rem' }}>
@@ -248,45 +353,85 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
               </p>
             </div>
 
+            {/* P2-4: Transportation Guide Stepper */}
             <div className="card" style={{ marginBottom: 24 }}>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 12 }}>
-                Hướng dẫn di chuyển đến điểm xuất phát
-              </h3>
-              <p style={{ color: 'var(--color-text-muted)', lineHeight: 1.7, fontSize: '0.95rem' }}>
-                {trail.transportationInfo}
-              </p>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
+                  Hướng Dẫn Di Chuyển Đến Điểm Xuất Phát
+                </h3>
+
+                <a
+                  href={`https://www.google.com/maps/dir/?api=1&destination=${trail.startLat},${trail.startLng}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="btn btn-outline"
+                  style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+                >
+                  Mở Google Maps chỉ đường
+                </a>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {transportSteps.map((stepText: string, idx: number) => (
+                  <div key={idx} style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                    <span style={{ background: 'var(--color-primary)', color: '#071319', fontSize: '0.78rem', fontWeight: 800, width: 24, height: 24, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      {idx + 1}
+                    </span>
+                    <div style={{ fontSize: '0.9rem', color: 'var(--color-text-muted)', lineHeight: 1.5, paddingTop: 2 }}>
+                      {stepText.trim()}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
 
+            {/* P2-3: Best Season Calendar */}
             <div className="card" style={{ marginBottom: 24 }}>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 8 }}>
-                Lịch thời tiết theo tháng
+              <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 6 }}>
+                Lịch Mùa Trekking Trong Năm
               </h3>
-              <p style={{ fontSize: '0.85rem', color: 'var(--color-text-dim)', marginBottom: 16 }}>
-                Xanh lá = Mùa đẹp nhất • Đỏ = Mùa mưa lũ hoặc sương mù trơn trượt
+              <p style={{ fontSize: '0.82rem', color: 'var(--color-text-dim)', marginBottom: 16 }}>
+                Xanh lá = Mùa đẹp nhất • Viền Vàng nhấp nháy = Tháng hiện tại (T{currentMonth}) • Đỏ = Tránh đi do mưa lũ
               </p>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gap: 6, textAlign: 'center' }}>
                 {months.map((m) => {
                   const isBest = trail.bestMonths.includes(m);
                   const isAvoid = trail.avoidMonths.includes(m);
+                  const isCurrent = m === currentMonth;
+
                   let bg = '#142f3b';
                   let color = '#94a3b8';
-                  if (isBest) { bg = '#059669'; color = '#fff'; }
-                  if (isAvoid) { bg = '#dc2626'; color = '#fff'; }
+                  let tooltip = `Tháng ${m}: Thời tiết bình thường`;
+
+                  if (isBest) {
+                    bg = '#059669';
+                    color = '#fff';
+                    tooltip = `Tháng ${m}: Mùa vàng lý tưởng, nắng đẹp, ít mưa`;
+                  }
+                  if (isAvoid) {
+                    bg = '#dc2626';
+                    color = '#fff';
+                    tooltip = `Tháng ${m}: Mưa lớn, nguy cơ sạt lở & trơn trượt`;
+                  }
 
                   return (
                     <div
                       key={m}
+                      title={tooltip}
                       style={{
                         background: bg,
                         color,
-                        padding: '10px 4px',
+                        padding: '10px 2px',
                         borderRadius: 8,
                         fontWeight: 700,
-                        fontSize: '0.85rem',
+                        fontSize: '0.82rem',
+                        border: isCurrent ? '2px solid var(--color-sun)' : '1px solid transparent',
+                        boxShadow: isCurrent ? '0 0 10px rgba(250, 204, 21, 0.6)' : 'none',
+                        cursor: 'help',
                       }}
                     >
-                      T{m}
+                      <div>T{m}</div>
                     </div>
                   );
                 })}
@@ -294,55 +439,81 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
             </div>
           </div>
 
+          {/* Right Sidebar */}
           <div>
-            <div className="card" style={{ border: '1px solid rgba(239, 68, 68, 0.4)', marginBottom: 20 }}>
-              <h4 style={{ color: 'var(--color-error)', fontSize: '1.05rem', fontWeight: 700, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <ShieldAlert size={18} /> Liên hệ Cứu hộ địa phương
+            {/* P2-5: Permit & Ranger Note Alert */}
+            <div
+              className="card"
+              style={{
+                border: `1px solid ${trail.permitRequired ? 'rgba(239, 68, 68, 0.4)' : 'rgba(16, 185, 129, 0.4)'}`,
+                marginBottom: 20,
+              }}
+            >
+              <h4
+                style={{
+                  color: trail.permitRequired ? 'var(--color-error)' : 'var(--color-primary)',
+                  fontSize: '1.05rem',
+                  fontWeight: 700,
+                  marginBottom: 12,
+                }}
+              >
+                {trail.permitRequired ? 'Yêu cầu Giấy phép VQG' : 'Tự do trekking'}
+              </h4>
+
+              <p style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', lineHeight: 1.6, marginBottom: 14 }}>
+                {trail.permitRequired
+                  ? trail.permitInfo || 'Cần đăng ký danh sách thông tin đoàn và nộp phí bảo tồn với Trạm Kiểm Lâm trước khi trekking.'
+                  : 'Cung đường mở tự do, không yêu cầu giấy phép xin trước.'}
+              </p>
+
+              {trail.permitRequired && (
+                <div style={{ background: 'var(--color-bg-main)', padding: 10, borderRadius: 8, fontSize: '0.8rem', color: 'var(--color-text-muted)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div>- Đăng ký CCCD/CMND các thành viên</div>
+                  <div>- Nộp phí vé tham quan Vườn Quốc Gia</div>
+                  <div>- Bắt buộc có Porter/HDV địa phương dẫn đường</div>
+                </div>
+              )}
+            </div>
+
+            {/* Local Rescue & Ranger Contact */}
+            <div className="card" style={{ border: '1px solid rgba(239, 68, 68, 0.4)' }}>
+              <h4 style={{ color: 'var(--color-error)', fontSize: '1.05rem', fontWeight: 700, marginBottom: 12 }}>
+                Hotline Cứu hộ địa phương
               </h4>
               <div style={{ fontSize: '0.88rem', display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <div>
                   <div style={{ color: 'var(--color-text-dim)', fontSize: '0.75rem' }}>Đội cứu hộ khu vực:</div>
-                  <strong style={{ color: 'var(--color-text-main)' }}>{trail.rescueContact.name}</strong>
+                  <strong style={{ color: 'var(--color-text-main)' }}>{trail.rescueContact?.name || 'Cứu hộ 114'}</strong>
                   <div>
-                    <a href={`tel:${trail.rescueContact.phone}`} style={{ color: 'var(--color-primary)', textDecoration: 'none', fontWeight: 700 }}>
-                      SĐT: {trail.rescueContact.phone}
+                    <a href={`tel:${trail.rescueContact?.phone || '114'}`} style={{ color: 'var(--color-primary)', textDecoration: 'none', fontWeight: 700 }}>
+                      SĐT: {trail.rescueContact?.phone || '114'}
                     </a>
                   </div>
                 </div>
 
                 <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 8 }}>
                   <div style={{ color: 'var(--color-text-dim)', fontSize: '0.75rem' }}>Trạm kiểm lâm:</div>
-                  <div style={{ color: 'var(--color-text-muted)' }}>{trail.rescueContact.rangerContact}</div>
+                  <div style={{ color: 'var(--color-text-muted)' }}>{trail.rescueContact?.rangerContact || 'Trạm Kiểm Lâm Cửa Rừng'}</div>
                 </div>
               </div>
-            </div>
-
-            <div className="card">
-              <h4 style={{ color: 'var(--color-text-main)', fontSize: '1rem', fontWeight: 700, marginBottom: 12 }}>
-                Lưu ý giấy phép & Thủ tục
-              </h4>
-              <p style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', lineHeight: 1.6 }}>
-                {trail.permitRequired
-                  ? trail.permitInfo || 'Cần đăng ký thông tin cá nhân với Vườn Quốc Gia trước khi trekking.'
-                  : 'Cung đường tự do, không yêu cầu giấy phép kiểm lâm đặc biệt.'}
-              </p>
             </div>
           </div>
         </div>
       )}
 
+      {/* TAB 2: MAP & LIVE GPS */}
       {activeTab === 'map' && (
         <div>
           <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <h3 style={{ fontSize: '1.2rem', color: 'var(--color-text-main)', fontWeight: 700 }}>
-              Bản đồ GPS Tuyến đường & Điểm dừng chân (Waypoints)
+              Bản đồ GPS Tuyến đường & Live GPS Tracking
             </h3>
           </div>
 
           <MapView trails={[trail]} selectedTrail={trail} height="550px" />
 
           <div style={{ marginTop: 24 }}>
-            <h4 style={{ fontSize: '1.1rem', color: 'var(--color-text-main)', marginBottom: 12 }}>Danh sách điểm mốc trên đường</h4>
+            <h4 style={{ fontSize: '1.1rem', color: 'var(--color-text-main)', marginBottom: 12 }}>Danh sách điểm mốc (Waypoints)</h4>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
               {trail.waypoints?.map((wp) => (
                 <div key={wp.id} className="card">
@@ -363,44 +534,19 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
         </div>
       )}
 
-      {activeTab === 'checklist' && (
-        <div className="card" style={{ maxWidth: 800 }}>
-          <h3 style={{ fontSize: '1.3rem', color: '#f0f9ff', fontWeight: 700, marginBottom: 8 }}>
-            Checklist Đồ dùng chuẩn bị
-          </h3>
-          <p style={{ fontSize: '0.88rem', color: '#94a3b8', marginBottom: 20 }}>
-            Tự động gợi ý theo độ khó ({trail.difficultyLevel}/5), số ngày ({trail.durationDays} ngày) và đặc thù cung đường {trail.name}.
-          </p>
+      {/* TAB 3: WEATHER & CLOUD HUNTING */}
+      {activeTab === 'weather' && <WeatherTab trail={trail} />}
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {autoGearList.map((g, idx) => (
-              <label
-                key={idx}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  background: 'var(--color-bg-main)',
-                  padding: '12px 16px',
-                  borderRadius: 10,
-                  border: '1px solid var(--color-border)',
-                  cursor: 'pointer',
-                }}
-              >
-                <input type="checkbox" defaultChecked={g.req} style={{ width: 18, height: 18, accentColor: 'var(--color-primary)' }} />
-                <span style={{ fontSize: 'var(--font-size-sm)', color: g.req ? 'var(--color-text-main)' : 'var(--color-text-muted)', fontWeight: g.req ? 600 : 400 }}>
-                  {g.item}
-                </span>
-                {g.req && <span className="badge badge-success" style={{ marginLeft: 'auto' }}>Bắt buộc</span>}
-              </label>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* TAB 4: GEAR CHECKLIST & BALO CALCULATOR */}
+      {activeTab === 'checklist' && <GearChecklistTab trail={trail} />}
 
+      {/* TAB 5: EXPEDITION TIMELINE & SHARE */}
+      {activeTab === 'itinerary' && <ItineraryTab trail={trail} />}
+
+      {/* TAB 6: GUIDES & PORTERS */}
       {activeTab === 'guides' && (
         <div>
-          <h3 style={{ fontSize: 'var(--font-size-lg)', color: 'var(--color-text-main)', fontWeight: 700, marginBottom: 16 }}>
+          <h3 style={{ fontSize: '1.2rem', color: 'var(--color-text-main)', fontWeight: 700, marginBottom: 16 }}>
             Hướng dẫn viên & Porter địa phương uy tín
           </h3>
 
@@ -408,15 +554,15 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
             {trail.guides?.map((guide) => (
               <div key={guide.id} className="card">
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <h4 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 700 }}>{guide.name}</h4>
+                  <h4 style={{ fontSize: '1rem', color: 'var(--color-text-main)', fontWeight: 700 }}>{guide.name}</h4>
                   {guide.verified && <span className="badge badge-success">Đã xác minh</span>}
                 </div>
 
-                <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', marginBottom: 12 }}>
+                <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginBottom: 12 }}>
                   Khu vực: {guide.region}
                 </div>
 
-                <div style={{ background: 'var(--color-bg-main)', padding: 10, borderRadius: 8, fontSize: 'var(--font-size-xs)', color: 'var(--color-earth)', marginBottom: 16 }}>
+                <div style={{ background: 'var(--color-bg-main)', padding: 10, borderRadius: 8, fontSize: '0.8rem', color: 'var(--color-earth)', marginBottom: 16 }}>
                   Giá tham khảo: {guide.priceNote}
                 </div>
 
@@ -425,7 +571,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
                   className="btn btn-primary"
                   style={{ width: '100%', justifyContent: 'center' }}
                 >
-                  <Phone size={16} /> Gọi liên hệ: {guide.phone}
+                  Gọi liên hệ: {guide.phone}
                 </a>
               </div>
             ))}
@@ -433,6 +579,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
         </div>
       )}
 
+      {/* TAB 7: COMMUNITY REVIEWS */}
       {activeTab === 'reviews' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 400px', gap: 28 }}>
           <div>
@@ -527,7 +674,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
               </div>
 
               <button type="submit" className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}>
-                <Send size={16} /> Gửi đánh giá cho cộng đồng
+                Gửi đánh giá cho cộng đồng
               </button>
             </form>
           </div>

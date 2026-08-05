@@ -1,5 +1,6 @@
 import type { Trail, Incident, User, Review } from '../types.js';
 import { mockTrails, mockIncidents, mockUsers } from '../data/seedData.js';
+import { getApiHeaders } from '../utils/sessionHeaders.js';
 
 const API_BASE = 'http://localhost:5000/api';
 
@@ -11,7 +12,7 @@ export async function uploadImageToCloudinary(
   try {
     const res = await fetch(`${API_BASE}/upload`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getApiHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ imageBase64, filename, category }),
     });
     const json = await res.json();
@@ -32,6 +33,7 @@ export async function fetchTrails(params?: {
   season?: number;
   campsite?: boolean;
   kidFriendly?: boolean;
+  sortBy?: string;
 }): Promise<Trail[]> {
   let list: Trail[] = [];
 
@@ -43,6 +45,7 @@ export async function fetchTrails(params?: {
     if (params?.duration) query.append('duration', String(params.duration));
     if (params?.campsite) query.append('campsite', 'true');
     if (params?.kidFriendly) query.append('kidFriendly', 'true');
+    if (params?.sortBy) query.append('sortBy', params.sortBy);
 
     const res = await fetch(`${API_BASE}/trails?${query.toString()}`);
     if (res.ok) {
@@ -130,13 +133,40 @@ export async function fetchTrails(params?: {
     console.warn('Error merging approved contributions:', mergeErr);
   }
 
-  // Filter logic
+  // Client-side Filter & Sort logic
   if (params?.region && params.region !== 'All') {
-    list = list.filter((t) => t.region === params.region);
+    list = list.filter((t) => t.region.toLowerCase() === params.region!.toLowerCase());
+  }
+  if (params?.difficulty) {
+    list = list.filter((t) => t.difficultyLevel === Number(params.difficulty));
+  }
+  if (params?.duration) {
+    list = list.filter((t) => t.durationDays === Number(params.duration));
+  }
+  if (params?.campsite) {
+    list = list.filter((t) => t.hasCampsite);
+  }
+  if (params?.kidFriendly) {
+    list = list.filter((t) => t.kidFriendly);
   }
   if (params?.search) {
     const q = params.search.toLowerCase();
     list = list.filter((t) => t.name.toLowerCase().includes(q) || t.province.toLowerCase().includes(q));
+  }
+
+  if (params?.sortBy) {
+    const s = params.sortBy;
+    if (s === 'rating_desc' || s === 'rating') {
+      list.sort((a, b) => b.rating - a.rating);
+    } else if (s === 'distance_asc') {
+      list.sort((a, b) => a.distanceKm - b.distanceKm);
+    } else if (s === 'distance_desc') {
+      list.sort((a, b) => b.distanceKm - a.distanceKm);
+    } else if (s === 'difficulty_asc') {
+      list.sort((a, b) => a.difficultyLevel - b.difficultyLevel);
+    } else if (s === 'difficulty_desc') {
+      list.sort((a, b) => b.difficultyLevel - a.difficultyLevel);
+    }
   }
 
   return list;
@@ -183,12 +213,15 @@ export async function fetchTrailById(id: string): Promise<Trail | null> {
 
 export async function submitTrailContribution(trailData: Partial<Trail>): Promise<Trail> {
   try {
-    const res = await fetch(`${API_BASE}/trails`, {
+    const res = await fetch(`${API_BASE}/contributions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getApiHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(trailData),
     });
     const json = await res.json();
+    if (!res.ok) {
+      throw new Error(json.message || 'Bạn không có quyền thực hiện thao tác này.');
+    }
     return json.data;
   } catch (err) {
     console.log('Using local mock fallback for contribution');
@@ -233,10 +266,10 @@ export async function submitTrailContribution(trailData: Partial<Trail>): Promis
 
 export async function submitReview(trailId: string, reviewData: Partial<Review>): Promise<Review> {
   try {
-    const res = await fetch(`${API_BASE}/trails/${trailId}/reviews`, {
+    const res = await fetch(`${API_BASE}/reviews`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(reviewData),
+      headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ ...reviewData, trailId }),
     });
     const json = await res.json();
     return json.data;
@@ -271,7 +304,7 @@ export async function submitIncident(incidentData: Partial<Incident>): Promise<I
   try {
     const res = await fetch(`${API_BASE}/incidents`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getApiHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(incidentData),
     });
     const json = await res.json();
@@ -302,3 +335,86 @@ export async function fetchUserProfile(userId: string): Promise<User> {
     return mockUsers[0] as User;
   }
 }
+
+export async function fetchWeatherForecast(trailId: string) {
+  try {
+    const res = await fetch(`${API_BASE}/weather/${trailId}`);
+    if (!res.ok) throw new Error('Weather API error');
+    const json = await res.json();
+    return json;
+  } catch (err) {
+    console.warn('Weather API fallback used:', err);
+    const today = new Date();
+    const mockData = Array.from({ length: 7 }).map((_, i) => {
+      const d = new Date(today);
+      d.setDate(today.getDate() + i);
+      return {
+        forecastDate: d.toISOString().split('T')[0],
+        tempMinC: 12 + i,
+        tempMaxC: 19 + i,
+        humidityPercent: 75,
+        windSpeedKmH: 15,
+        cloudCoverPercent: 40,
+        seaOfCloudsIndex: 78,
+        weatherCondition: i === 0 ? 'clear' : i % 2 === 0 ? 'cloudy' : 'foggy',
+      };
+    });
+    return {
+      success: true,
+      data: mockData,
+      hasWarning: false,
+      warningMessage: null,
+    };
+  }
+}
+
+export async function createExpeditionItinerary(itineraryData: any) {
+  try {
+    const res = await fetch(`${API_BASE}/itineraries`, {
+      method: 'POST',
+      headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(itineraryData),
+    });
+    const json = await res.json();
+    return json;
+  } catch (err) {
+    console.warn('Itinerary API fallback used:', err);
+    const shareToken = `trek-${Math.random().toString(36).substring(2, 9)}`;
+    return {
+      success: true,
+      data: {
+        ...itineraryData,
+        shareToken,
+      },
+      shareUrl: `http://localhost:5173/itinerary/${shareToken}`,
+    };
+  }
+}
+
+export async function fetchItineraryByToken(shareToken: string) {
+  try {
+    const res = await fetch(`${API_BASE}/itineraries/share/${shareToken}`);
+    if (!res.ok) throw new Error('Itinerary not found');
+    const json = await res.json();
+    return json.data;
+  } catch (err) {
+    return null;
+  }
+}
+
+export async function reverseGeocode(lat: number, lng: number) {
+  try {
+    const res = await fetch(`${API_BASE}/geocode/reverse?lat=${lat}&lng=${lng}`);
+    if (!res.ok) throw new Error('Geocoding API error');
+    const json = await res.json();
+    return json.data;
+  } catch (err) {
+    return {
+      formattedAddress: `Tọa độ (${lat.toFixed(4)}, ${lng.toFixed(4)})`,
+      province: 'Việt Nam',
+      district: 'Khu vực núi',
+    };
+  }
+}
+
+

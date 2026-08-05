@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import mongoose, { Types } from 'mongoose';
 import { ThreadModel } from '../models/Thread.js';
 import { UserModel } from '../models/User.js';
 import { verifyToken } from '../utils/auth.js';
@@ -13,7 +14,16 @@ export const getThreads = async (req: Request, res: Response) => {
   try {
     const userKeys = getUserKeys(req);
 
-    const mongoThreads = await ThreadModel.find().populate('userId').sort({ createdAt: -1 });
+    let mongoThreads: any[] = [];
+    try {
+      const threadQuery = ThreadModel.find().maxTimeMS(200).lean().sort({ createdAt: -1 });
+      const timeoutRace = new Promise<any[]>((_, reject) =>
+        setTimeout(() => reject(new Error('Forum DB query timeout')), 150)
+      );
+      mongoThreads = await Promise.race([threadQuery, timeoutRace]);
+    } catch (dbErr) {
+      mongoThreads = [];
+    }
     if (mongoThreads && mongoThreads.length > 0) {
       return res.json({
         success: true,
@@ -103,20 +113,22 @@ export const createThread = async (req: Request, res: Response) => {
     const decoded = verifyToken(token);
     if (decoded?.userId) {
       try {
-        const user = await UserModel.findById(decoded.userId);
-        if (user) {
-          userIdObj = user._id;
-          reputationReward = await awardReputationPoints(
-            user._id.toString(),
-            REPUTATION_POINTS.CREATE_FORUM_THREAD,
-            'Đăng bài nhật ký băng rừng'
-          );
+        if (Types.ObjectId.isValid(decoded.userId)) {
+          const user = await UserModel.findById(decoded.userId);
+          if (user) {
+            userIdObj = user._id;
+            reputationReward = await awardReputationPoints(
+              user._id.toString(),
+              REPUTATION_POINTS.CREATE_FORUM_THREAD,
+              'Đăng bài nhật ký băng rừng'
+            );
 
-          authorName = user.fullName;
-          if (user.avatarUrl) {
-            authorAvatar = user.avatarUrl;
-          } else {
-            authorAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(user.fullName)}&background=0ed7b5&color=041217&bold=true`;
+            authorName = user.fullName;
+            if (user.avatarUrl) {
+              authorAvatar = user.avatarUrl;
+            } else {
+              authorAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(user.fullName)}&background=0ed7b5&color=041217&bold=true`;
+            }
           }
         }
       } catch (err) {
@@ -142,20 +154,22 @@ export const createThread = async (req: Request, res: Response) => {
   };
 
   try {
-    await ThreadModel.create({
-      id: threadId,
-      title,
-      authorName,
-      authorAvatar,
-      userId: userIdObj,
-      category: category || 'Kinh Nghiệm',
-      content,
-      upvotes: 0,
-      reactions: { like: 0, love: 0, haha: 0, wow: 0, buon: 0, huhu: 0, sad: 0, angry: 0, dislike: 0 },
-      userReactionsMap: {},
-      repliesCount: 0,
-      viewsCount: 1,
-    });
+    if (mongoose.connection.readyState === 1) {
+      await ThreadModel.create({
+        id: threadId,
+        title,
+        authorName,
+        authorAvatar,
+        userId: userIdObj,
+        category: category || 'Kinh Nghiệm',
+        content,
+        upvotes: 0,
+        reactions: { like: 0, love: 0, haha: 0, wow: 0, buon: 0, huhu: 0, sad: 0, angry: 0, dislike: 0 },
+        userReactionsMap: {},
+        repliesCount: 0,
+        viewsCount: 1,
+      });
+    }
   } catch (err) {
     console.error('[MongoDB Thread Save Error]:', err);
   }

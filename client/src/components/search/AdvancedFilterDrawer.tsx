@@ -1,5 +1,4 @@
 import React from 'react';
-import { Filter, X } from 'lucide-react';
 
 interface FilterProps {
   isOpen: boolean;
@@ -14,6 +13,8 @@ interface FilterProps {
   onToggleCampsite: (val: boolean) => void;
   kidFriendlyOnly: boolean;
   onToggleKidFriendly: (val: boolean) => void;
+  sortBy?: string;
+  onSelectSortBy?: (sort: string) => void;
   onReset: () => void;
 }
 
@@ -30,22 +31,40 @@ export const AdvancedFilterDrawer: React.FC<FilterProps> = ({
   onToggleCampsite,
   kidFriendlyOnly,
   onToggleKidFriendly,
+  sortBy = 'rating_desc',
+  onSelectSortBy,
   onReset,
 }) => {
   if (!isOpen) return null;
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 500 }}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Filter size={20} color="var(--color-primary)" />
-            <h3 style={{ fontSize: '1.2rem', color: 'var(--color-text-main)', fontWeight: 800 }}>Bộ Lọc Cung Đường Nâng Cao</h3>
-          </div>
+          <h3 style={{ fontSize: '1.2rem', color: 'var(--color-text-main)', fontWeight: 800 }}>Bộ Lọc & Sắp Xếp Nâng Cao</h3>
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--color-text-dim)', cursor: 'pointer' }}>
-            <X size={20} />
+            Đóng
           </button>
         </div>
+
+        {/* Sort Selector */}
+        {onSelectSortBy && (
+          <div style={{ marginBottom: 20 }}>
+            <label className="form-label" style={{ marginBottom: 8 }}>Sắp Xếp Theo</label>
+            <select
+              className="form-select"
+              value={sortBy}
+              onChange={(e) => onSelectSortBy(e.target.value)}
+              style={{ width: '100%', background: 'var(--color-bg-main)', color: 'var(--color-text-main)', borderColor: 'var(--color-border)', borderRadius: 10, padding: '10px 14px' }}
+            >
+              <option value="rating_desc">Đánh giá cao nhất (Default)</option>
+              <option value="distance_asc">Độ dài: Ngắn nhất - Dài nhất</option>
+              <option value="distance_desc">Độ dài: Dài nhất - Ngắn nhất</option>
+              <option value="difficulty_asc">Độ khó: Dễ - Thử thách</option>
+              <option value="difficulty_desc">Độ khó: Thử thách - Dễ</option>
+            </select>
+          </div>
+        )}
 
         <div style={{ marginBottom: 20 }}>
           <label className="form-label" style={{ marginBottom: 8 }}>Vùng Miền</label>

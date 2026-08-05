@@ -1,73 +1,55 @@
 /**
- * Cloudinary & Image CDN Auto-Optimization Helper Utility
- * Enforces automatic format (f_auto: WebP/AVIF), quality (q_auto), and responsive resizing (default: w_800)
+ * Cloudinary CDN & Unsplash Image Auto-Optimization Utility
+ * Automatically injects responsive widths, modern formats (WebP/AVIF), and quality optimizations.
  */
 
-export interface ImageOptimizationOptions {
+export interface ImageOptimizeOptions {
   width?: number;
   height?: number;
-  quality?: string | number; // 'auto', 'auto:eco', 80, etc.
-  format?: string; // 'auto', 'webp', 'avif'
-  crop?: string; // 'limit', 'fill', 'scale', 'thumb'
+  quality?: 'auto' | 'good' | 'best' | number;
+  format?: 'auto' | 'webp' | 'jpg' | 'png';
+  crop?: 'limit' | 'fill' | 'scale' | 'thumb';
 }
 
 /**
- * Returns optimized image URL using Cloudinary CDN transformations (f_auto, q_auto, w_800)
- * Works for Cloudinary URLs, Unsplash URLs, and generic image links.
+ * Returns an optimized image URL for fast loading on desktop/mobile
  */
-export function getOptimizedImageUrl(
-  originalUrl: string | undefined | null,
-  options: ImageOptimizationOptions = {}
-): string {
-  if (!originalUrl) {
+export function getOptimizedImageUrl(url: string, options: ImageOptimizeOptions = {}): string {
+  if (!url || typeof url !== 'string') {
     return 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=800&q=80';
   }
 
-  const {
-    width = 800,
-    height,
-    quality = 'auto',
-    format = 'auto',
-    crop = 'limit',
-  } = options;
+  const width = options.width || 800;
+  const quality = options.quality || 'auto';
+  const format = options.format || 'auto';
+  const crop = options.crop || 'limit';
 
-  const url = originalUrl.trim();
-
-  // 1. Cloudinary CDN Transformation Injection
-  if (url.includes('res.cloudinary.com')) {
-    const uploadIndex = url.indexOf('/upload/');
-    if (uploadIndex !== -1) {
-      const transformParams = [
-        `f_${format}`,
-        `q_${quality}`,
-        `w_${width}`,
-        height ? `h_${height}` : null,
-        `c_${crop}`,
-      ]
-        .filter(Boolean)
-        .join(',');
-
-      const prefix = url.substring(0, uploadIndex + 8); // includes '/upload/'
-      const suffix = url.substring(uploadIndex + 8);
-      return `${prefix}${transformParams}/${suffix}`;
+  // 1. Cloudinary CDN Transformation
+  if (url.includes('cloudinary.com') && url.includes('/upload/')) {
+    // Avoid double transforming if transformations are already present
+    if (url.includes('/f_auto,q_auto')) {
+      return url;
     }
+    const transformStr = `f_${format},q_${quality},w_${width},c_${crop}/`;
+    return url.replace('/upload/', `/upload/${transformStr}`);
   }
 
-  // 2. Unsplash Auto-Optimization Transformation
+  // 2. Unsplash Image Optimization
   if (url.includes('images.unsplash.com')) {
     try {
       const parsedUrl = new URL(url);
+      parsedUrl.searchParams.set('auto', 'format');
+      parsedUrl.searchParams.set('fit', options.height ? 'crop' : 'max');
       parsedUrl.searchParams.set('w', width.toString());
-      if (height) parsedUrl.searchParams.set('h', height.toString());
+      if (options.height) {
+        parsedUrl.searchParams.set('h', options.height.toString());
+      }
       parsedUrl.searchParams.set('q', typeof quality === 'number' ? quality.toString() : '80');
-      parsedUrl.searchParams.set('auto', 'format,compress');
-      parsedUrl.searchParams.set('fm', 'webp');
       return parsedUrl.toString();
     } catch (e) {
       return url;
     }
   }
 
-  // 3. Generic Cloudinary Helper CDN Proxy Fallback
   return url;
 }

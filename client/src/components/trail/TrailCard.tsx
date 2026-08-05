@@ -1,6 +1,5 @@
 import React from 'react';
 import type { Trail } from '../../types.js';
-import { MapPin, Star, ArrowRight } from 'lucide-react';
 import { OptimizedImage } from '../common/OptimizedImage.js';
 
 interface TrailCardProps {
@@ -59,21 +58,18 @@ export const TrailCard: React.FC<TrailCardProps> = ({ trail, onSelect }) => {
           padding: '4px 12px',
           borderRadius: 20,
           border: '1px solid var(--color-border)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 4,
           fontSize: 'var(--font-size-xs)',
           fontWeight: 'var(--font-weight-bold)',
           color: 'var(--color-sun)',
         }}>
-          <Star size={14} fill="var(--color-sun)" /> {trail.rating} ({trail.reviewCount})
+          {trail.rating} ({trail.reviewCount})
         </div>
       </div>
 
       {/* Info Section */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--font-size-xs)', color: 'var(--color-stream)', marginBottom: 4, fontWeight: 'var(--font-weight-bold)' }}>
-          <MapPin size={14} color="var(--color-stream)" /> {trail.province}, {trail.district}
+        <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-stream)', marginBottom: 4, fontWeight: 'var(--font-weight-bold)' }}>
+          {trail.province}, {trail.district}
         </div>
 
         <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 'var(--font-weight-bold)', color: 'var(--color-text-main)', marginBottom: 8, lineHeight: 'var(--line-height-tight)' }}>
@@ -126,7 +122,7 @@ export const TrailCard: React.FC<TrailCardProps> = ({ trail, onSelect }) => {
           onClick={() => onSelect(trail)}
           style={{ width: '100%', marginTop: 'auto', justifyContent: 'center' }}
         >
-          Xem bản đồ & Chi tiết <ArrowRight size={16} />
+          Xem bản đồ & Chi tiết
         </button>
       </div>
     </div>

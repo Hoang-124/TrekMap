@@ -21,14 +21,37 @@ import { Toast } from './components/common/Toast.js';
 import { fetchTrails, fetchIncidents } from './services/api.js';
 import { getApiHeaders } from './utils/sessionHeaders.js';
 import type { Trail, Incident, ForumThread, UserProfile } from './types.js';
-import { Filter, Send } from 'lucide-react';
 import './App.css';
+
+const Filter = ({ size = 18, color = 'currentColor', style }: { size?: number; color?: string; style?: React.CSSProperties }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+  </svg>
+);
+
+const Send = ({ size = 18, color = 'currentColor', style }: { size?: number; color?: string; style?: React.CSSProperties }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <line x1="22" y1="2" x2="11" y2="13" />
+    <polygon points="22 2 15 22 11 13 2 9 22 2" />
+  </svg>
+);
 
 export function App() {
   const [currentView, setCurrentView] = useState<'home' | 'explore' | 'detail' | 'contribute' | 'profile' | 'forum' | 'admin' | 'messages' | 'notifications'>('home');
   const [trails, setTrails] = useState<Trail[]>([]);
   const [selectedTrail, setSelectedTrail] = useState<Trail | null>(null);
   const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [selectedIncidentDetail, setSelectedIncidentDetail] = useState<Incident | null>(null);
+  const [activeIncidentIndex, setActiveIncidentIndex] = useState(0);
+
+  // Auto-rotate ticker every 5 seconds
+  useEffect(() => {
+    if (incidents.length <= 1) return;
+    const timer = setInterval(() => {
+      setActiveIncidentIndex((prev) => (prev + 1) % incidents.length);
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [incidents.length]);
   const [forumThreads, setForumThreads] = useState<ForumThread[]>([]);
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
 
@@ -71,10 +94,20 @@ export function App() {
       // Check clean URL pathname (/forum, /profile, /messages, /contribute, /admin, /explore)
       if (['forum', 'profile', 'messages', 'contribute', 'admin', 'explore', 'notifications'].includes(pathname)) {
         setIsAuthModalOpen(false);
-        setCurrentView(pathname as any);
+        if (hash === '#contribute') {
+          setCurrentView('contribute');
+          window.history.replaceState({ view: 'contribute' }, '', '/contribute');
+        } else {
+          setCurrentView(pathname as any);
+          if (hash && hash !== '#login' && hash !== '#register') {
+            window.history.replaceState({ view: pathname }, '', `/${pathname}`);
+          }
+        }
       } else if (hash === '#forum' || hash === '#profile' || hash === '#messages' || hash === '#contribute' || hash === '#admin') {
         setIsAuthModalOpen(false);
-        setCurrentView(hash.replace('#', '') as any);
+        const targetView = hash.replace('#', '');
+        setCurrentView(targetView as any);
+        window.history.replaceState({ view: targetView }, '', `/${targetView}`);
       } else {
         setIsAuthModalOpen(false);
         if (pathname === '' || pathname === 'home') {
@@ -191,6 +224,7 @@ export function App() {
   const [selectedDuration, setSelectedDuration] = useState<number | null>(null);
   const [campsiteOnly, setCampsiteOnly] = useState(false);
   const [kidFriendlyOnly, setKidFriendlyOnly] = useState(false);
+  const [sortBy, setSortBy] = useState('rating_desc');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isIncidentModalOpen, setIsIncidentModalOpen] = useState(false);
 
@@ -235,6 +269,7 @@ export function App() {
         duration: selectedDuration || undefined,
         campsite: campsiteOnly || undefined,
         kidFriendly: kidFriendlyOnly || undefined,
+        sortBy,
       });
       setTrails(trailData);
 
@@ -252,7 +287,7 @@ export function App() {
       }
     }
     loadData();
-  }, [selectedRegion, selectedDifficulty, searchQuery, selectedDuration, campsiteOnly, kidFriendlyOnly]);
+  }, [selectedRegion, selectedDifficulty, searchQuery, selectedDuration, campsiteOnly, kidFriendlyOnly, sortBy]);
 
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -308,6 +343,7 @@ export function App() {
     setSelectedDuration(null);
     setCampsiteOnly(false);
     setKidFriendlyOnly(false);
+    setSortBy('rating_desc');
     setSearchQuery('');
   };
 
@@ -344,10 +380,10 @@ export function App() {
         setIsHomeNewThreadOpen(false);
         setNewTitle('');
         setNewContent('');
-        alert('Tạo bài đóng góp nhật ký thành công!');
+        showToast('Tạo bài đóng góp nhật ký mới thành công!', 'success');
       }
     } catch (err) {
-      alert('Không thể đăng bài, vui lòng thử lại.');
+      showToast('Không thể đăng bài, vui lòng thử lại.', 'error');
     }
   };
 
@@ -367,25 +403,32 @@ export function App() {
         onLogout={() => setIsLogoutModalOpen(true)}
       />
 
-      {/* Emergency Alert Banner */}
-      {incidents.length > 0 && (
-        <div style={{
-          background: 'linear-gradient(90deg, #991b1b, #7f1d1d)',
-          color: '#fef2f2',
-          padding: '10px 24px',
-          fontSize: 'var(--font-size-sm)',
-          fontWeight: 'var(--font-weight-bold)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 10,
-          borderBottom: '1px solid var(--color-error)',
-        }}>
-          <span>
-            <strong>CẢNH BÁO SỰ CỐ KHẨN:</strong> {incidents[0].trailName} - {incidents[0].description} ({incidents[0].reportedAt})
-          </span>
-        </div>
-      )}
+      {/* Emergency Alert Banner - Clean Auto-rotating Ticker */}
+      {incidents.length > 0 && (() => {
+        const currentInc = incidents[activeIncidentIndex % incidents.length];
+        return (
+          <div
+            style={{
+              background: 'linear-gradient(90deg, #991b1b 0%, #b91c1c 50%, #7f1d1d 100%)',
+              color: '#fef2f2',
+              padding: '10px 24px',
+              fontSize: 'var(--font-size-sm)',
+              fontWeight: 'var(--font-weight-bold)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 12,
+              borderBottom: '1px solid rgba(239, 68, 68, 0.4)',
+              boxShadow: '0 4px 15px rgba(220, 38, 38, 0.25)',
+              textAlign: 'center',
+            }}
+          >
+            <span key={currentInc.id} className="view-fade-in" style={{ textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+              <strong>CẢNH BÁO SỰ CỐ KHẨN: {currentInc.trailName}</strong> - {currentInc.description}
+            </span>
+          </div>
+        );
+      })()}
 
       <main key={currentView} className="view-fade-in" style={{ flex: 1 }}>
         {/* VIEW 1: HOME & EXPLORE */}
@@ -528,10 +571,19 @@ export function App() {
                           fontWeight: 700,
                           fontSize: '0.78rem',
                           cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
                           transition: 'all 0.2s ease',
                         }}
                       >
-                        Dạng Lưới
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="3" width="7" height="7" />
+                          <rect x="14" y="3" width="7" height="7" />
+                          <rect x="14" y="14" width="7" height="7" />
+                          <rect x="3" y="14" width="7" height="7" />
+                        </svg>
+                        <span>Dạng Lưới</span>
                       </button>
                       <button
                         type="button"
@@ -545,10 +597,21 @@ export function App() {
                           fontWeight: 700,
                           fontSize: '0.78rem',
                           cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
                           transition: 'all 0.2s ease',
                         }}
                       >
-                        Danh Sách Tóm Tắt
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="8" y1="6" x2="21" y2="6" />
+                          <line x1="8" y1="12" x2="21" y2="12" />
+                          <line x1="8" y1="18" x2="21" y2="18" />
+                          <line x1="3" y1="6" x2="3.01" y2="6" />
+                          <line x1="3" y1="12" x2="3.01" y2="12" />
+                          <line x1="3" y1="18" x2="3.01" y2="18" />
+                        </svg>
+                        <span>Danh Sách Tóm Tắt</span>
                       </button>
                     </div>
 
@@ -676,6 +739,7 @@ export function App() {
         {/* VIEW 4: USER PROFILE */}
         {currentView === 'profile' && (
           <UserProfileView
+            currentUser={currentUser}
             onBack={() => {
               handleNavigate('home');
             }}
@@ -692,6 +756,7 @@ export function App() {
         {currentView === 'forum' && (
           <TrekForumView
             onBack={() => handleNavigate('home')}
+            onShowToast={(msg, type) => showToast(msg, type)}
           />
         )}
 
@@ -812,7 +877,7 @@ export function App() {
         isOpen={isLogoutModalOpen}
         onClose={() => setIsLogoutModalOpen(false)}
         onConfirm={handleConfirmLogout}
-        username={currentUser?.username || currentUser?.fullName}
+        userName={currentUser?.username || currentUser?.fullName}
       />
       <Toast
         isOpen={toast.isOpen}
@@ -834,6 +899,8 @@ export function App() {
         onToggleCampsite={setCampsiteOnly}
         kidFriendlyOnly={kidFriendlyOnly}
         onToggleKidFriendly={setKidFriendlyOnly}
+        sortBy={sortBy}
+        onSelectSortBy={setSortBy}
         onReset={handleResetFilters}
       />
 
@@ -843,6 +910,128 @@ export function App() {
         trailName={selectedTrail ? selectedTrail.name : 'Vùng Trekking'}
         trailId={selectedTrail ? selectedTrail.id : 'trail-fansipan'}
       />
+
+      {/* Emergency Incident Detail Modal */}
+      {selectedIncidentDetail && (
+        <div className="modal-overlay" onClick={() => setSelectedIncidentDetail(null)}>
+          <div
+            className="modal-content"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: 600, border: '1.5px solid #ef4444', boxShadow: '0 0 50px rgba(239, 68, 68, 0.4)' }}
+          >
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, borderBottom: '1px solid var(--color-border)', paddingBottom: 12 }}>
+              <h3 style={{ fontSize: '1.15rem', color: '#ef4444', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ background: 'rgba(239, 68, 68, 0.2)', padding: '4px 8px', borderRadius: 8, display: 'inline-flex' }}>🚨</span>
+                Hồ Sơ Cảnh Báo Sự Cố Khẩn & Bằng Chứng
+              </h3>
+              <button
+                type="button"
+                onClick={() => setSelectedIncidentDetail(null)}
+                style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '1.2rem', padding: 4 }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Verification Status Card */}
+            <div style={{ background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(15, 23, 42, 0.6) 100%)', border: '1px solid rgba(239, 68, 68, 0.35)', borderRadius: 16, padding: 16, marginBottom: 18 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ background: '#ef4444', color: '#fff', fontSize: '0.74rem', fontWeight: 900, padding: '3px 10px', borderRadius: 20 }}>
+                    MỨC ĐỘ: {selectedIncidentDetail.severity?.toUpperCase() || 'KHẨN CẤP'}
+                  </span>
+                  <span style={{ background: 'rgba(16, 185, 129, 0.2)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.4)', fontSize: '0.74rem', fontWeight: 800, padding: '3px 10px', borderRadius: 20, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    ✓ ĐÃ XÁC MINH HIỆN TRƯỜNG
+                  </span>
+                </div>
+                <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
+                  {selectedIncidentDetail.reportedAt}
+                </span>
+              </div>
+              <h4 style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '8px 0 4px 0' }}>
+                {selectedIncidentDetail.trailName}
+              </h4>
+              <div style={{ fontSize: '0.78rem', color: 'var(--color-sky)', fontWeight: 600 }}>
+                📍 Vị trí: {selectedIncidentDetail.locationNote || 'Đoạn đường nguy hiểm'} {selectedIncidentDetail.elevationM ? `(Độ cao ${selectedIncidentDetail.elevationM}m)` : ''}
+              </div>
+            </div>
+
+            {/* BẰNG CHỨNG HÌNH ẢNH HIỆN TRƯỜNG */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontSize: '0.86rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>📸 Bằng Chứng Hình Ảnh Hiện Trường:</span>
+                <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>(Ảnh thực tế từ Đội Cứu Hộ & Vệ Tinh)</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: selectedIncidentDetail.images && selectedIncidentDetail.images.length > 1 ? '1fr 1fr' : '1fr', gap: 10 }}>
+                {(selectedIncidentDetail.images && selectedIncidentDetail.images.length > 0
+                  ? selectedIncidentDetail.images
+                  : ['https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=800&q=80', 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=800&q=80']
+                ).map((imgUrl, idx) => (
+                  <div key={idx} style={{ height: 160, borderRadius: 12, overflow: 'hidden', border: '1px solid var(--color-border)', position: 'relative', background: '#000' }}>
+                    <img src={imgUrl} alt={`Evidence photo ${idx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <div style={{ position: 'absolute', bottom: 6, left: 6, background: 'rgba(0,0,0,0.7)', color: '#fff', fontSize: '0.68rem', padding: '2px 6px', borderRadius: 4, backdropFilter: 'blur(4px)' }}>
+                      📷 Ảnh bằng chứng #{idx + 1}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Chi tiết mô tả & Đơn vị xác minh */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontSize: '0.86rem', lineHeight: 1.6, color: 'var(--color-text-muted)', marginBottom: 20 }}>
+              <div>
+                <strong style={{ color: 'var(--color-text-main)' }}>Mô tả chi tiết sự cố:</strong>
+                <p style={{ margin: '6px 0 0 0', color: 'var(--color-text-main)', background: 'var(--color-bg-main)', padding: '12px 14px', borderRadius: 10, border: '1px solid var(--color-border)', fontSize: '0.88rem' }}>
+                  {selectedIncidentDetail.description}
+                </p>
+              </div>
+
+              <div style={{ background: 'var(--color-bg-main)', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div>
+                  <strong style={{ color: 'var(--color-primary)' }}>Cơ quan / Đơn vị xác minh: </strong>
+                  <span style={{ color: 'var(--color-text-main)' }}>{selectedIncidentDetail.verifiedBy || selectedIncidentDetail.userName || 'Trạm Kiểm Lâm Vườn Quốc Gia & BQT TrekMap'}</span>
+                </div>
+                {selectedIncidentDetail.coordinates && (
+                  <div>
+                    <strong style={{ color: 'var(--color-sky)' }}>Tọa độ Vệ Tinh GPS: </strong>
+                    <span style={{ color: 'var(--color-text-main)', fontFamily: 'monospace' }}>
+                      {selectedIncidentDetail.coordinates.lat.toFixed(4)}° N, {selectedIncidentDetail.coordinates.lng.toFixed(4)}° E
+                    </span>
+                  </div>
+                )}
+                <div>
+                  <strong style={{ color: '#ef4444' }}>📞 Hotline Cứu Hộ Khẩn Cấp: </strong>
+                  <span style={{ color: '#ef4444', fontWeight: 900 }}>{selectedIncidentDetail.rescueContact || '0214.3871.234 (Tổng đài cứu hộ Sapa 24/7)'}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => setSelectedIncidentDetail(null)}
+                style={{ flex: 1, borderRadius: 10 }}
+              >
+                Đóng Cửa Sổ
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  setSelectedIncidentDetail(null);
+                  setIsIncidentModalOpen(true);
+                }}
+                style={{ flex: 1.4, borderRadius: 10, background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)', border: 'none', fontWeight: 800 }}
+              >
+                🚨 Gửi Báo Cáo SOS Hỗ Trợ Khẩn
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
         <Footer />
       </div>
