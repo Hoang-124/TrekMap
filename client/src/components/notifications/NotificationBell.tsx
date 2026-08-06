@@ -1,54 +1,45 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { NotificationItem, UserProfile } from '../../types.js';
-import {
-  fetchNotifications,
-  markNotificationAsRead,
-  markAllNotificationsAsRead,
-} from '../../services/notificationService.js';
-import { useSocket } from '../../hooks/useSocket.js';
+import React, { useState, useEffect, useRef } from 'react';
+import { IconBell, IconCheckCircle } from '../common/SvgIcons';
 
-interface NotificationBellProps {
-  currentUser: UserProfile | null;
-  onNavigate?: (link: string) => void;
+interface NotificationItem {
+  _id: string;
+  type: string;
+  title: string;
+  message: string;
+  isRead: boolean;
+  createdAt: string;
 }
 
-export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser, onNavigate }) => {
+export const NotificationBell: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
-  const [unreadCount, setUnreadCount] = useState<number>(0);
+  const [unreadCount, setUnreadCount] = useState(0);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const { socket } = useSocket();
+  const fetchNotifications = async () => {
+    try {
+      const token = localStorage.getItem('trekmap_token');
+      if (!token) return;
 
-  const loadNotificationsData = useCallback(async () => {
-    if (!currentUser) return;
-    const { notifications: list, unreadCount: unread } = await fetchNotifications(1, 10);
-    setNotifications(list);
-    setUnreadCount(unread);
-  }, [currentUser]);
+      const res = await fetch('http://localhost:5000/api/notifications', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (data.success) {
+        setNotifications(data.data || []);
+        setUnreadCount(data.unreadCount || 0);
+      }
+    } catch (err) {
+      // Fail silently
+    }
+  };
 
   useEffect(() => {
-    loadNotificationsData();
-  }, [loadNotificationsData]);
+    fetchNotifications();
+    const interval = setInterval(fetchNotifications, 15000);
+    return () => clearInterval(interval);
+  }, []);
 
-  // Real-time socket listener for newNotification
-  useEffect(() => {
-    if (!socket || !currentUser) return;
-
-    const handleNewNotif = (notif: NotificationItem) => {
-      if (notif.type === 'new_message' || (notif.type as string) === 'message') return;
-      setNotifications((prev) => [notif, ...prev.slice(0, 9)]);
-      setUnreadCount((prev) => prev + 1);
-    };
-
-    socket.on('newNotification', handleNewNotif);
-
-    return () => {
-      socket.off('newNotification', handleNewNotif);
-    };
-  }, [socket, currentUser]);
-
-  // Click outside to close dropdown
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
@@ -59,222 +50,72 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handleToggle = () => {
-    setIsOpen((prev) => !prev);
-    if (!isOpen) {
-      loadNotificationsData();
-    }
-  };
-
-  const handleItemClick = async (notif: NotificationItem) => {
-    if (!notif.isRead) {
-      await markNotificationAsRead(notif._id);
-      setNotifications((prev) =>
-        prev.map((n) => (n._id === notif._id ? { ...n, isRead: true } : n))
-      );
-      setUnreadCount((prev) => Math.max(0, prev - 1));
-    }
-    setIsOpen(false);
-    if (notif.link && onNavigate) {
-      onNavigate(notif.link);
-    }
-  };
-
   const handleMarkAllRead = async () => {
-    await markAllNotificationsAsRead();
-    setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
-    setUnreadCount(0);
-  };
+    try {
+      const token = localStorage.getItem('trekmap_token');
+      if (!token) return;
 
-  if (!currentUser) return null;
+      await fetch('http://localhost:5000/api/notifications/read-all', {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+      setUnreadCount(0);
+    } catch (err) {
+      // Fail silently
+    }
+  };
 
   return (
-    <div style={{ position: 'relative' }} ref={dropdownRef}>
-      {/* Circular Bell SVG Icon Button */}
+    <div className="relative" ref={dropdownRef}>
       <button
-        type="button"
-        onClick={handleToggle}
-        title="Thông báo hệ thống"
-        aria-label="Notifications"
-        style={{
-          position: 'relative',
-          width: 38,
-          height: 38,
-          borderRadius: '50%',
-          background: isOpen ? 'rgba(14, 215, 181, 0.12)' : 'rgba(255, 255, 255, 0.06)',
-          border: `1px solid ${isOpen ? 'var(--color-primary)' : 'var(--color-border)'}`,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: 'pointer',
-          color: isOpen ? 'var(--color-primary)' : 'var(--color-text-main)',
-          transition: 'all 0.2s ease',
-          padding: 0,
-          flexShrink: 0,
-        }}
+        onClick={() => setIsOpen(!isOpen)}
+        className="relative p-2 text-slate-300 hover:text-emerald-400 transition-colors rounded-full hover:bg-slate-800/60 focus:outline-none"
+        title="Thông báo cộng đồng"
       >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-          <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-        </svg>
+        <IconBell size={20} />
         {unreadCount > 0 && (
-          <span
-            style={{
-              position: 'absolute',
-              top: -2,
-              right: -2,
-              background: '#ef4444',
-              color: '#ffffff',
-              fontSize: '0.62rem',
-              fontWeight: 800,
-              borderRadius: 10,
-              padding: '2px 5px',
-              minWidth: 16,
-              textAlign: 'center',
-              lineHeight: 1,
-              boxShadow: '0 0 6px rgba(239, 68, 68, 0.6)',
-            }}
-          >
-            {unreadCount > 99 ? '99+' : unreadCount}
+          <span className="absolute top-1 right-1 px-1.5 py-0.5 text-[10px] font-bold text-white bg-rose-500 rounded-full animate-pulse">
+            {unreadCount > 9 ? '9+' : unreadCount}
           </span>
         )}
       </button>
 
-      {/* Notification Dropdown Panel */}
       {isOpen && (
-        <div
-          style={{
-            position: 'absolute',
-            right: 0,
-            top: 'calc(100% + 8px)',
-            width: 360,
-            maxWidth: '90vw',
-            background: 'var(--color-bg-card)',
-            border: '1.5px solid var(--color-border)',
-            borderRadius: 16,
-            boxShadow: '0 12px 36px rgba(0, 0, 0, 0.25)',
-            zIndex: 9999,
-            overflow: 'hidden',
-          }}
-        >
-          {/* Panel Header */}
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              padding: '12px 16px',
-              borderBottom: '1px solid var(--color-border)',
-              background: 'var(--color-bg-main)',
-            }}
-          >
-            <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-              Thông Báo {unreadCount > 0 ? `(${unreadCount})` : ''}
+        <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl z-50 overflow-hidden backdrop-blur-xl animate-fadeIn">
+          <div className="flex items-center justify-between px-4 py-3 bg-slate-800/80 border-b border-slate-700/50">
+            <div className="flex items-center space-x-2">
+              <IconBell size={18} className="text-emerald-400" />
+              <span className="font-semibold text-white text-sm">Thông Báo Cộng Đồng</span>
             </div>
-
             {unreadCount > 0 && (
               <button
-                type="button"
                 onClick={handleMarkAllRead}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--color-primary)',
-                  fontSize: '0.78rem',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                }}
+                className="flex items-center space-x-1 text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
               >
-                Đánh dấu đã đọc
+                <IconCheckCircle size={14} />
+                <span>Đọc hết</span>
               </button>
             )}
           </div>
 
-          {/* List Items */}
-          <div style={{ maxHeight: 380, overflowY: 'auto' }}>
+          <div className="max-h-80 overflow-y-auto divide-y divide-slate-800">
             {notifications.length === 0 ? (
-              <div style={{ padding: 24, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
-                Không có thông báo nào.
-              </div>
+              <div className="p-6 text-center text-slate-400 text-xs">Chưa có thông báo mới nào.</div>
             ) : (
-              notifications.map((notif) => (
+              notifications.map((n) => (
                 <div
-                  key={notif._id}
-                  onClick={() => handleItemClick(notif)}
-                  style={{
-                    padding: '12px 16px',
-                    borderBottom: '1px solid var(--color-border)',
-                    cursor: 'pointer',
-                    background: notif.isRead ? 'transparent' : 'rgba(16, 185, 129, 0.06)',
-                    transition: 'all 0.2s ease',
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--color-bg-main)')}
-                  onMouseLeave={(e) =>
-                    (e.currentTarget.style.background = notif.isRead ? 'transparent' : 'rgba(16, 185, 129, 0.06)')
-                  }
+                  key={n._id}
+                  className={`p-3.5 transition-colors ${n.isRead ? 'bg-slate-900/60 text-slate-400' : 'bg-slate-800/40 text-slate-200 font-medium'}`}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                    <div
-                      style={{
-                        fontSize: '0.88rem',
-                        fontWeight: notif.isRead ? 700 : 900,
-                        color: 'var(--color-text-main)',
-                      }}
-                    >
-                      {notif.title}
-                    </div>
-
-                    {!notif.isRead && (
-                      <span
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: '50%',
-                          background: 'var(--color-primary)',
-                          marginTop: 4,
-                          flexShrink: 0,
-                        }}
-                      />
-                    )}
-                  </div>
-
-                  <div
-                    style={{
-                      fontSize: '0.8rem',
-                      color: 'var(--color-text-muted)',
-                      marginTop: 4,
-                      lineHeight: 1.35,
-                    }}
-                  >
-                    {notif.message}
-                  </div>
-
-                  <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', marginTop: 6 }}>
-                    {new Date(notif.createdAt).toLocaleDateString('vi-VN')} {new Date(notif.createdAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
+                  <div className="text-xs font-semibold text-emerald-400 mb-0.5">{n.title}</div>
+                  <div className="text-xs text-slate-300 leading-snug">{n.message}</div>
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    {new Date(n.createdAt).toLocaleDateString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
                   </div>
                 </div>
               ))
             )}
-          </div>
-
-          {/* Footer View All Link */}
-          <div
-            onClick={() => {
-              setIsOpen(false);
-              onNavigate?.('/#notifications');
-            }}
-            style={{
-              padding: '10px 16px',
-              textAlign: 'center',
-              fontSize: '0.82rem',
-              fontWeight: 800,
-              color: 'var(--color-primary)',
-              cursor: 'pointer',
-              background: 'var(--color-bg-main)',
-              borderTop: '1px solid var(--color-border)',
-            }}
-          >
-            Xem tất cả lịch sử thông báo →
           </div>
         </div>
       )}

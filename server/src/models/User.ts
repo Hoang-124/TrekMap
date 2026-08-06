@@ -21,6 +21,10 @@ export interface IUser extends Document {
   activationToken?: string;
   activationExpires?: Date;
   otpFailedAttempts?: number;
+  followersCount?: number;
+  followingCount?: number;
+  tripReportsCount?: number;
+  savedTrails?: Schema.Types.ObjectId[];
   resetOtpCode?: string;
   resetOtpExpires?: Date;
   resetPasswordToken?: string;
@@ -51,6 +55,10 @@ const userSchema = new Schema<IUser>(
     reputationScore: { type: Number, default: 50, index: true },
     badges: { type: [String], default: ['Trekker Mới', 'Verified Trekker'] },
     checkedInTrails: [{ type: Schema.Types.ObjectId, ref: 'Trail' }],
+    followersCount: { type: Number, default: 0 },
+    followingCount: { type: Number, default: 0 },
+    tripReportsCount: { type: Number, default: 0 },
+    savedTrails: [{ type: Schema.Types.ObjectId, ref: 'Trail' }],
     resetOtpCode: { type: String },
     resetOtpExpires: { type: Date },
     resetPasswordToken: { type: String },

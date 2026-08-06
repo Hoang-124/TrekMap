@@ -5,6 +5,7 @@ import { UserModel } from '../models/User.js';
 import { NotificationModel } from '../models/Notification.js';
 import { emitToUser } from '../config/socket.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
+import { awardReputationPoints, REPUTATION_POINTS } from '../utils/reputation.js';
 
 const inMemoryContributions: any[] = [];
 
@@ -160,7 +161,7 @@ export const updateContribution = async (req: AuthRequest, res: Response) => {
     }
 
     // If Admin approves the contribution, auto-upsert into MongoDB `trails` collection as well
-    if (update.status === 'approved' || existing.status === 'approved') {
+    if (update.status === 'approved' && existing.status !== 'approved') {
       try {
         await TrailModel.findOneAndUpdate(
           { name: existing.name },
@@ -186,6 +187,7 @@ export const updateContribution = async (req: AuthRequest, res: Response) => {
             startLng: existing.startLng || 103.8438,
             endLat: existing.endLat || 22.3512,
             endLng: existing.endLng || 103.864,
+            gpxTrack: existing.gpxTrack || [],
             description: existing.description || '',
             transportationInfo: existing.transportationInfo || 'Phương tiện tự túc',
             permitRequired: !!existing.permitRequired,
@@ -205,6 +207,57 @@ export const updateContribution = async (req: AuthRequest, res: Response) => {
           { upsert: true, returnDocument: 'after' }
         );
       } catch (trailErr) {}
+
+      // Award +50 reputation points & add "Người Đóng Góp" badge to author
+      try {
+        const authorUser = await UserModel.findOne({
+          $or: [
+            ...(existing.userId ? [{ _id: existing.userId }] : []),
+            ...(existing.authorEmail ? [{ email: existing.authorEmail }] : []),
+          ],
+        });
+        if (authorUser) {
+          await awardReputationPoints(authorUser._id.toString(), REPUTATION_POINTS.CONTRIBUTE_TRAIL, 'Bài đóng góp cung đường được duyệt');
+          if (!authorUser.badges.includes('Người Đóng Góp')) {
+            authorUser.badges.push('Người Đóng Góp');
+            await authorUser.save();
+          }
+
+          // Send approval notification
+          const notif = new NotificationModel({
+            recipient: authorUser._id,
+            type: 'contribution_approved',
+            title: 'Bài đóng góp được duyệt!',
+            message: `Chúc mừng! Bài đóng góp "${existing.name}" của bạn đã được Admin phê duyệt và nhận +50 điểm uy tín.`,
+            link: '/#explore',
+            isRead: false,
+          });
+          await notif.save();
+          emitToUser(authorUser._id.toString(), 'newNotification', notif);
+        }
+      } catch (repErr) {}
+    } else if (update.status === 'rejected' && existing.status !== 'rejected') {
+      // Send rejection notification
+      try {
+        const authorUser = await UserModel.findOne({
+          $or: [
+            ...(existing.userId ? [{ _id: existing.userId }] : []),
+            ...(existing.authorEmail ? [{ email: existing.authorEmail }] : []),
+          ],
+        });
+        if (authorUser) {
+          const notif = new NotificationModel({
+            recipient: authorUser._id,
+            type: 'contribution_rejected',
+            title: 'Bài đóng góp chưa đạt yêu cầu',
+            message: `Rất tiếc, bài đóng góp "${existing.name}" chưa thể công khai. Vui lòng kiểm tra lại thông tin.`,
+            link: '/#contribute',
+            isRead: false,
+          });
+          await notif.save();
+          emitToUser(authorUser._id.toString(), 'newNotification', notif);
+        }
+      } catch (rejErr) {}
     }
 
     return res.json({ success: true, message: 'Đã cập nhật bài đóng góp thành công!', data: existing });

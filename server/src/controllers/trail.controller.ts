@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { mockTrails, mockGuides } from '../data/seedData.js';
 import { Trail } from '../types.js';
 import { TrailModel } from '../models/Trail.js';
+import { ReviewModel } from '../models/Review.js';
+import { AuthRequest } from '../middleware/auth.middleware.js';
 import { verifyToken } from '../utils/auth.js';
 import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
 import { awardReputationPoints, deductReputationPoints, REPUTATION_POINTS, PENALTY_POINTS } from '../utils/reputation.js';
@@ -334,12 +336,7 @@ export const createContribution = async (req: Request, res: Response) => {
 };
 
 export const createReview = async (req: Request, res: Response) => {
-  const { trailId, rating, difficultyRating, content } = req.body;
-
-  const trail = inMemoryTrails.find((t) => t.id === trailId);
-  if (!trail) {
-    return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường.' });
-  }
+  const { trailId, rating, difficultyRating, content, safetyNote, photos, tripDate } = req.body;
 
   // Check automated profanity & toxic content filter
   if (content && containsProfanity(content)) {
@@ -367,11 +364,16 @@ export const createReview = async (req: Request, res: Response) => {
   }
 
   let reputationReward = null;
+  let userId = null;
+  let userName = 'Trekker Ẩn Danh';
+  let userAvatar = 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
+
   const authHeader = req.headers['authorization'];
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.substring(7);
     const decoded = verifyToken(token);
     if (decoded?.userId) {
+      userId = decoded.userId;
       reputationReward = await awardReputationPoints(
         decoded.userId,
         REPUTATION_POINTS.CONTRIBUTE_REVIEW,
@@ -380,16 +382,44 @@ export const createReview = async (req: Request, res: Response) => {
     }
   }
 
-  const review = {
+  let newReviewDoc = null;
+  try {
+    newReviewDoc = await ReviewModel.create({
+      trailId: trailId as any,
+      userId: userId as any,
+      userName: req.body.userName || userName,
+      userAvatar: req.body.userAvatar || userAvatar,
+      rating: rating || 5,
+      difficultyRating: difficultyRating || 3,
+      content: content || 'Bài đánh giá hữu ích!',
+      safetyNote: safetyNote || '',
+      photos: photos || [],
+      tripDate: tripDate || new Date().toISOString().split('T')[0],
+    });
+
+    // Recalculate average rating & update reviewCount on Trail document in MongoDB
+    const trailReviews = await ReviewModel.find({ trailId: trailId as any });
+    if (trailReviews.length > 0) {
+      const avgRating = Math.round((trailReviews.reduce((acc, r) => acc + r.rating, 0) / trailReviews.length) * 10) / 10;
+      await TrailModel.findByIdAndUpdate(trailId, {
+        rating: avgRating,
+        reviewCount: trailReviews.length,
+      }).catch(() => {});
+    }
+  } catch (err) {
+    console.warn('[MongoDB Review Save Warning]:', err);
+  }
+
+  const review = newReviewDoc ? newReviewDoc.toObject() : {
     id: `rev-${Date.now()}`,
     trailId,
-    userId: 'user-1',
-    userName: 'MinhTrekker (Verified)',
-    userAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=250&q=80',
+    userName: req.body.userName || userName,
+    userAvatar: req.body.userAvatar || userAvatar,
     rating: rating || 5,
     difficultyRating: difficultyRating || 3,
     content: content || 'Bài viết rất hữu ích!',
-    tripDate: new Date().toISOString().split('T')[0],
+    safetyNote,
+    tripDate: tripDate || new Date().toISOString().split('T')[0],
     createdAt: new Date().toISOString(),
   };
 
@@ -399,4 +429,118 @@ export const createReview = async (req: Request, res: Response) => {
     data: review,
     reputationReward,
   });
+};
+
+// GET /api/trails/:id/reviews - Fetch reviews for a specific trail
+export const getTrailReviews = async (req: Request, res: Response) => {
+  const { id } = req.params;
+  try {
+    const reviews = await ReviewModel.find({ trailId: id as any }).sort({ createdAt: -1 }).lean().exec();
+    return res.json({ success: true, count: reviews.length, data: reviews });
+  } catch (err) {
+    return res.json({ success: true, count: 0, data: [] });
+  }
+};
+
+// Admin POST /api/admin/trails - Create new Trail directly
+export const createTrailAdmin = async (req: AuthRequest, res: Response) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Chỉ Admin mới có quyền tạo Trail.' });
+    }
+    const data = req.body;
+    if (!data.name || !data.province || !data.region) {
+      return res.status(400).json({ success: false, message: 'Thiếu thông tin tên cung đường, tỉnh hoặc vùng miền.' });
+    }
+
+    const startLat = data.startLat || data.startLocation?.lat || 22.3364;
+    const startLng = data.startLng || data.startLocation?.lng || 103.8438;
+
+    const newTrail = await TrailModel.create({
+      district: data.district || data.province || 'Chưa xác định',
+      durationHoursNote: data.durationHoursNote || `${(data.durationDays || 2) * 8}-${(data.durationDays || 2) * 10} giờ`,
+      coverImage: data.coverImage || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329089/trekmap/trails/default.jpg',
+      transportationInfo: data.transportationInfo || 'Liên hệ ban tổ chức để biết thêm thông tin.',
+      ...data,
+      startLat,
+      startLng,
+      startLocation: {
+        type: 'Point',
+        coordinates: [startLng, startLat],
+      },
+      status: 'approved',
+    });
+
+    inMemoryTrails.unshift(newTrail.toObject() as any);
+    return res.status(201).json({ success: true, message: 'Tạo cung đường mới thành công!', data: newTrail });
+  } catch (err) {
+    console.error('[Create Trail Admin Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi tạo cung đường.' });
+  }
+};
+
+// Admin PUT /api/admin/trails/:id - Update existing Trail
+export const updateTrailAdmin = async (req: AuthRequest, res: Response) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Chỉ Admin mới có quyền cập nhật Trail.' });
+    }
+    const { id } = req.params;
+    const update = req.body;
+
+    if (update.startLat || update.startLng) {
+      update.startLocation = {
+        type: 'Point',
+        coordinates: [update.startLng || 103.8438, update.startLat || 22.3364],
+      };
+    }
+
+    const updated = await TrailModel.findByIdAndUpdate(id, update, { new: true });
+    if (!updated) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường để cập nhật.' });
+    }
+
+    return res.json({ success: true, message: 'Cập nhật thông tin cung đường thành công!', data: updated });
+  } catch (err) {
+    console.error('[Update Trail Admin Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi cập nhật cung đường.' });
+  }
+};
+
+// Admin DELETE /api/admin/trails/:id - Delete Trail
+export const deleteTrailAdmin = async (req: AuthRequest, res: Response) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Chỉ Admin mới có quyền xóa Trail.' });
+    }
+    const { id } = req.params;
+    await TrailModel.findByIdAndDelete(id);
+    await ReviewModel.deleteMany({ trailId: id as any }).catch(() => {});
+
+    const idx = inMemoryTrails.findIndex((t) => t.id === id);
+    if (idx >= 0) inMemoryTrails.splice(idx, 1);
+
+    return res.json({ success: true, message: 'Đã xóa cung đường thành công!' });
+  } catch (err) {
+    console.error('[Delete Trail Admin Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi xóa cung đường.' });
+  }
+};
+
+// Admin DELETE /api/reviews/:id - Delete review
+export const deleteReview = async (req: AuthRequest, res: Response) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Chỉ Admin mới có quyền xóa đánh giá.' });
+    }
+    const { id } = req.params;
+    const review = await ReviewModel.findByIdAndDelete(id);
+    if (review && review.trailId) {
+      await TrailModel.findByIdAndUpdate(review.trailId, { $inc: { reviewCount: -1 } }).catch(() => {});
+    }
+    return res.json({ success: true, message: 'Đã xóa đánh giá thành công!' });
+  } catch (err) {
+    console.error('[Delete Review Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi xóa đánh giá.' });
+  }
 };

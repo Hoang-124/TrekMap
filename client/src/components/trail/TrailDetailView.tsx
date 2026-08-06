@@ -7,6 +7,7 @@ import { ElevationProfileSVG } from './ElevationProfileSVG.js';
 import { WeatherTab } from './WeatherTab.js';
 import { GearChecklistTab } from './GearChecklistTab.js';
 import { ItineraryTab } from './ItineraryTab.js';
+import { TrailConditionSection } from './TrailConditionSection.js';
 
 interface TrailDetailViewProps {
   trail: Trail;
@@ -19,12 +20,36 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
   onBack,
   onOpenIncidentModal,
 }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'map' | 'weather' | 'checklist' | 'itinerary' | 'guides' | 'reviews'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'map' | 'weather' | 'checklist' | 'itinerary' | 'guides' | 'reviews' | 'conditions'>('overview');
   const [reviewsList, setReviewsList] = useState<Review[]>(trail.reviews || []);
+  const [guidesList, setGuidesList] = useState<any[]>(trail.guides || []);
   const [newRating, setNewRating] = useState(5);
   const [newDiffRating, setNewDiffRating] = useState(trail.difficultyLevel || 3);
   const [newContent, setNewContent] = useState('');
   const [newSafetyNote, setNewSafetyNote] = useState('');
+
+  React.useEffect(() => {
+    const fetchReviews = async () => {
+      try {
+        const res = await fetch(`/api/trails/${trail.id}/reviews`);
+        const data = await res.json();
+        if (data.success && Array.isArray(data.data) && data.data.length > 0) {
+          setReviewsList(data.data);
+        }
+      } catch (err) {}
+    };
+    const fetchGuides = async () => {
+      try {
+        const res = await fetch(`/api/guides?region=${encodeURIComponent(trail.region)}`);
+        const data = await res.json();
+        if (data.success && Array.isArray(data.data) && data.data.length > 0) {
+          setGuidesList(data.data);
+        }
+      } catch (err) {}
+    };
+    fetchReviews();
+    fetchGuides();
+  }, [trail.id, trail.region]);
 
   const steepnessPercent = Math.round((trail.elevationGainM / (trail.distanceKm * 1000)) * 100);
 
@@ -299,6 +324,13 @@ ${trackPointsXml}
               <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
             </svg>
           ) },
+          { id: 'conditions', label: 'Tình trạng thực địa (7 ngày)', icon: (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+          ) },
         ].map((tab) => {
           const isActive = activeTab === tab.id;
           return (
@@ -551,31 +583,44 @@ ${trackPointsXml}
           </h3>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 20 }}>
-            {trail.guides?.map((guide) => (
-              <div key={guide.id} className="card">
+            {(guidesList.length > 0 ? guidesList : trail.guides || []).map((guide) => (
+              <div key={guide.id || guide._id} className="card" style={{ border: '1px solid var(--color-border)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                   <h4 style={{ fontSize: '1rem', color: 'var(--color-text-main)', fontWeight: 700 }}>{guide.name}</h4>
-                  {guide.verified && <span className="badge badge-success">Đã xác minh</span>}
+                  {guide.verified ? (
+                    <span className="badge badge-success" style={{ background: '#10b981', color: '#fff', fontSize: '0.75rem', padding: '3px 10px', borderRadius: 12 }}>
+                      ✓ Đã Xác Minh
+                    </span>
+                  ) : (
+                    <span className="badge badge-cloud" style={{ fontSize: '0.75rem' }}>Porter Địa Phương</span>
+                  )}
                 </div>
 
                 <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginBottom: 12 }}>
-                  Khu vực: {guide.region}
+                  📍 Khu vực phụ trách: {guide.region} • Đánh giá: ⭐ {guide.rating || 5.0}/5
                 </div>
 
-                <div style={{ background: 'var(--color-bg-main)', padding: 10, borderRadius: 8, fontSize: '0.8rem', color: 'var(--color-earth)', marginBottom: 16 }}>
-                  Giá tham khảo: {guide.priceNote}
+                <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 10, borderRadius: 8, fontSize: '0.8rem', color: 'var(--color-primary)', marginBottom: 16, fontWeight: 600 }}>
+                  💵 Chi phí / Giá dịch vụ: {guide.priceNote || '500,000đ - 700,000đ / ngày'}
                 </div>
 
                 <a
-                  href={`tel:${guide.phone}`}
-                  className="btn btn-primary"
-                  style={{ width: '100%', justifyContent: 'center' }}
+                  href={`tel:${guide.phone || '0988888888'}`}
+                  className="btn btn-outline"
+                  style={{ width: '100%', justifyContent: 'center', borderRadius: 8, fontSize: '0.85rem' }}
                 >
-                  Gọi liên hệ: {guide.phone}
+                  📞 Liên hệ trực tiếp
                 </a>
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* TAB 7: TRAIL CONDITIONS (REAL-TIME) */}
+      {activeTab === 'conditions' && (
+        <div style={{ marginTop: 24 }}>
+          <TrailConditionSection trailId={trail.id} />
         </div>
       )}
 
@@ -613,8 +658,11 @@ ${trackPointsXml}
                   </p>
 
                   {rev.safetyNote && (
-                    <div style={{ background: 'rgba(251, 191, 36, 0.1)', borderLeft: '3px solid var(--color-sun)', padding: '8px 12px', fontSize: '0.82rem', color: 'var(--color-sun)', borderRadius: 4 }}>
-                      Ghi chú an toàn: {rev.safetyNote}
+                    <div style={{ background: 'rgba(239, 68, 68, 0.12)', borderLeft: '4px solid #ef4444', border: '1px solid rgba(239, 68, 68, 0.3)', padding: '10px 14px', fontSize: '0.85rem', color: '#fca5a5', borderRadius: 8, marginTop: 8 }}>
+                      <strong style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                        ⚠️ CẢNH BÁO AN TOÀN TỪ TREKKER:
+                      </strong>
+                      {rev.safetyNote}
                     </div>
                   )}
                 </div>

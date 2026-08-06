@@ -332,6 +332,18 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
     if (!formData.hamlet.trim()) {
       errs.hamlet = 'Vui lòng nhập điểm căn cứ xuất phát (Thôn/Bản/Trạm cửa rừng).';
     }
+    setErrors(errs);
+    if (Object.keys(errs).length > 0) {
+      if (onShowToast) {
+        onShowToast('Vui lòng hoàn thành tên & địa điểm tại Bước 1!', 'error');
+      }
+      return false;
+    }
+    return true;
+  };
+
+  const validateStep2 = (): boolean => {
+    const errs: Record<string, string> = {};
     if (!formData.distanceKm || formData.distanceKm <= 0) {
       errs.distanceKm = 'Độ dài cung đường phải lớn hơn 0 km.';
     }
@@ -344,14 +356,14 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
     setErrors(errs);
     if (Object.keys(errs).length > 0) {
       if (onShowToast) {
-        onShowToast('Vui lòng hoàn thành đầy đủ các thông tin bắt buộc tại Bước 1!', 'error');
+        onShowToast('Vui lòng kiểm tra lại thông số kỹ thuật tại Bước 2!', 'error');
       }
       return false;
     }
     return true;
   };
 
-  const validateStep2 = (): boolean => {
+  const validateStep3 = (): boolean => {
     const errs: Record<string, string> = {};
     if (isNaN(formData.startLat) || formData.startLat < -90 || formData.startLat > 90) {
       errs.startLat = 'Vĩ độ xuất phát không hợp lệ.';
@@ -368,14 +380,14 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
     setErrors(errs);
     if (Object.keys(errs).length > 0) {
       if (onShowToast) {
-        onShowToast('Vui lòng kiểm tra lại tọa độ GPS tại Bước 2!', 'error');
+        onShowToast('Vui lòng kiểm tra lại tọa độ GPS tại Bước 3!', 'error');
       }
       return false;
     }
     return true;
   };
 
-  const validateStep3 = (): boolean => {
+  const validateStep4 = (): boolean => {
     const errs: Record<string, string> = {};
     if (!formData.coverImage.trim()) {
       errs.coverImage = 'Vui lòng chọn hoặc dán đường dẫn ảnh bìa cung đường.';
@@ -392,7 +404,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
     setErrors(errs);
     if (Object.keys(errs).length > 0) {
       if (onShowToast) {
-        onShowToast('Vui lòng điền đủ ảnh bìa và mô tả tại Bước 3!', 'error');
+        onShowToast('Vui lòng điền đủ ảnh bìa và mô tả tại Bước 4!', 'error');
       }
       return false;
     }
@@ -411,7 +423,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
   };
 
   const handleSubmit = async () => {
-    if (!validateStep1() || !validateStep2() || !validateStep3()) return;
+    if (!validateStep1() || !validateStep2() || !validateStep3() || !validateStep4()) return;
     setLoading(true);
     try {
       const editingStr = localStorage.getItem('trekmap_editing_contribution');
@@ -471,9 +483,15 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
       if (!authorEmail) authorEmail = 'ht20041975@outlook.com.vn';
       if (!authorAvatar) authorAvatar = 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
 
+      const finalGpxTrack: [number, number][] = gpxTrack.length > 0 ? gpxTrack : [
+        [formData.startLat, formData.startLng],
+        [formData.endLat, formData.endLng],
+      ];
+
       const newContribution = {
         ...formData,
         coverImage: finalCoverImage,
+        gpxTrack: finalGpxTrack,
         id: contribId,
         authorEmail,
         authorName,
@@ -498,28 +516,10 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
 
       localStorage.setItem('trekmap_contributions', JSON.stringify(updatedContributions));
 
-      // Persist directly to MongoDB Database
-      try {
-        await fetch('http://localhost:5000/api/contributions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify(newContribution),
-        });
-      } catch (mongoErr) {
-        console.warn('⚠️ [MongoDB Contribution Notice]: Saved locally, backend sync pending.', mongoErr);
-      }
-
       await submitTrailContribution({
         ...formData,
         altNames: formData.altNames.split(',').map((s) => s.trim()).filter(Boolean),
-        gpxTrack: [
-          [formData.startLat, formData.startLng],
-          [formData.startLat + 0.01, formData.startLng + 0.01],
-          [formData.startLat + 0.02, formData.startLng + 0.02],
-        ],
+        gpxTrack: finalGpxTrack,
       });
       setLoading(false);
       if (onShowToast) {
@@ -549,7 +549,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
         </h2>
 
         <div style={{ display: 'flex', justifyContent: 'space-between', position: 'relative' }}>
-          {['1. Thông tin cơ bản', '2. Bản đồ & Tọa độ', '3. Hình ảnh & Chi tiết', '4. Xem trước & Gửi'].map((label, idx) => {
+          {['1. Vị trí & Tên', '2. Thông số kỹ thuật', '3. Bản đồ & Tọa độ', '4. Ảnh & Mô tả', '5. Xem trước & Gửi'].map((label, idx) => {
             const stepNum = idx + 1;
             const isActive = step === stepNum;
             const isDone = step > stepNum;
@@ -689,6 +689,18 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
             {errors.hamlet && <div style={{ color: '#ef4444', fontSize: '0.78rem', marginTop: 4, fontWeight: 600 }}>{errors.hamlet}</div>}
           </div>
 
+          <button className="btn btn-primary" onClick={() => { if (validateStep1()) setStep(2); }} style={{ width: '100%', justifyContent: 'center', marginTop: 12 }}>
+            Tiếp theo: Thông số kỹ thuật <ArrowRight size={16} />
+          </button>
+        </div>
+      )}
+
+      {step === 2 && (
+        <div className="card">
+          <h3 style={{ fontSize: '1.1rem', color: '#fff', marginBottom: 16 }}>
+            {isEditing ? 'Bước 2: Chỉnh sửa thông số kỹ thuật' : 'Bước 2: Thông số kỹ thuật cung đường'}
+          </h3>
+
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
             <div className="form-group">
               <label className="form-label" style={{ height: 24, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>Độ dài (km) *</label>
@@ -760,15 +772,20 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
             </select>
           </div>
 
-          <button className="btn btn-primary" onClick={() => { if (validateStep1()) setStep(2); }} style={{ width: '100%', justifyContent: 'center', marginTop: 12 }}>
-            Tiếp theo: Bản đồ & Tọa độ <ArrowRight size={16} />
-          </button>
+          <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+            <button className="btn btn-secondary" onClick={() => setStep(1)} style={{ flex: 1, justifyContent: 'center' }}>
+              <ArrowLeft size={16} /> Quay lại
+            </button>
+            <button className="btn btn-primary" onClick={() => { if (validateStep2()) setStep(3); }} style={{ flex: 1, justifyContent: 'center' }}>
+              Tiếp theo: Bản đồ & Tọa độ <ArrowRight size={16} />
+            </button>
+          </div>
         </div>
       )}
 
-      {step === 2 && (
+      {step === 3 && (
         <div className="card">
-          <h3 style={{ fontSize: '1.1rem', color: 'var(--color-text-main)', marginBottom: 16 }}>Bước 2: Đánh dấu Tọa độ & Tuyến đường</h3>
+          <h3 style={{ fontSize: '1.1rem', color: 'var(--color-text-main)', marginBottom: 16 }}>Bước 3: Đánh dấu Tọa độ & Tuyến đường</h3>
 
           {/* 2-Column Grid: Map/Inputs on Left + Guide Panel on Right */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 20, alignItems: 'start' }}>
@@ -1042,19 +1059,19 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
 
           {/* Action Buttons */}
           <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
-            <button className="btn btn-secondary" onClick={() => setStep(1)} style={{ flex: 1, justifyContent: 'center' }}>
+            <button className="btn btn-secondary" onClick={() => setStep(2)} style={{ flex: 1, justifyContent: 'center' }}>
               <ArrowLeft size={16} /> Quay lại
             </button>
-            <button className="btn btn-primary" onClick={() => { if (validateStep2()) setStep(3); }} style={{ flex: 1, justifyContent: 'center' }}>
-              Tiếp theo: Mô tả & Ảnh <ArrowRight size={16} />
+            <button className="btn btn-primary" onClick={() => { if (validateStep3()) setStep(4); }} style={{ flex: 1, justifyContent: 'center' }}>
+              Tiếp theo: Ảnh & Mô tả <ArrowRight size={16} />
             </button>
           </div>
         </div>
       )}
 
-      {step === 3 && (
+      {step === 4 && (
         <div className="card">
-          <h3 style={{ fontSize: '1.1rem', color: 'var(--color-text-main)', marginBottom: 16 }}>Bước 3: Mô tả chi tiết & Ảnh bìa cung đường</h3>
+          <h3 style={{ fontSize: '1.1rem', color: 'var(--color-text-main)', marginBottom: 16 }}>Bước 4: Mô tả chi tiết & Ảnh bìa cung đường</h3>
 
           {/* Cover Image Selection Block */}
           <div className="form-group" style={{ marginBottom: 20 }}>
@@ -1202,28 +1219,50 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
           </div>
 
           <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
-            <button className="btn btn-secondary" onClick={() => setStep(2)} style={{ flex: 1, justifyContent: 'center' }}>
+            <button className="btn btn-secondary" onClick={() => setStep(3)} style={{ flex: 1, justifyContent: 'center' }}>
               <ArrowLeft size={16} /> Quay lại
             </button>
-            <button className="btn btn-primary" onClick={() => { if (validateStep3()) setStep(4); }} style={{ flex: 1, justifyContent: 'center' }}>
+            <button className="btn btn-primary" onClick={() => { if (validateStep4()) setStep(5); }} style={{ flex: 1, justifyContent: 'center' }}>
               Xem trước bài đóng góp <ArrowRight size={16} />
             </button>
           </div>
         </div>
       )}
 
-      {step === 4 && (
+      {step === 5 && (
         <div className="card">
           <h3 style={{ fontSize: '1.2rem', color: 'var(--color-text-main)', marginBottom: 6, textAlign: 'center' }}>
-            {isEditing ? 'Xem trước thông tin bài đóng góp (Đang chỉnh sửa)' : 'Xem trước thông tin bài đóng góp'}
+            {isEditing ? 'Bước 5: Xem trước bài đóng góp (Đang chỉnh sửa)' : 'Bước 5: Xem trước & Xác nhận gửi bài đóng góp'}
           </h3>
           <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', textAlign: 'center', marginBottom: 20 }}>
             {isEditing ? 'Vui lòng kiểm tra kỹ các thay đổi trước khi lưu' : 'Vui lòng kiểm tra kỹ các thông tin bên dưới trước khi gửi cho Ban Quản Trị duyệt'}
           </p>
 
+          {/* Author Badge & Pending Status Header */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(14, 215, 181, 0.08)', border: '1px solid rgba(14, 215, 181, 0.2)', padding: '12px 16px', borderRadius: 12, marginBottom: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <img
+                src={currentUser?.avatarUrl || currentUser?.avatar || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
+                alt="Author avatar"
+                style={{ width: 40, height: 40, borderRadius: '50%', border: '2px solid var(--color-primary)', objectFit: 'cover' }}
+              />
+              <div>
+                <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                  {currentUser?.fullName || currentUser?.name || 'Trekker Đóng Góp'}
+                </div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+                  Đóng góp lúc: {new Date().toLocaleDateString('vi-VN')}
+                </div>
+              </div>
+            </div>
+            <span style={{ background: 'rgba(245, 158, 11, 0.2)', color: '#f59e0b', border: '1px solid rgba(245, 158, 11, 0.4)', padding: '4px 12px', borderRadius: 20, fontSize: '0.78rem', fontWeight: 700 }}>
+              ⏳ Trạng thái: Chờ BQT Duyệt
+            </span>
+          </div>
+
           {/* Hero Cover Image Banner */}
           {formData.coverImage && (
-            <div style={{ height: 260, borderRadius: 12, overflow: 'hidden', marginBottom: 20, position: 'relative', border: '1px solid var(--color-border)', background: '#0b1319', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ height: 240, borderRadius: 12, overflow: 'hidden', marginBottom: 20, position: 'relative', border: '1px solid var(--color-border)', background: '#0b1319', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <img
                 src={formData.coverImage}
                 alt={formData.name}
@@ -1247,7 +1286,31 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
             </div>
           )}
 
-          {/* Structured Preview Container */}
+          {/* Mini Leaflet Preview Map */}
+          <div style={{ height: 220, borderRadius: 12, overflow: 'hidden', border: '1px solid var(--color-border)', marginBottom: 20 }}>
+            <MapContainer
+              center={[formData.startLat, formData.startLng]}
+              zoom={12}
+              scrollWheelZoom={false}
+              style={{ height: '100%', width: '100%' }}
+            >
+              <TileLayer
+                url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+                attribution="Esri World Imagery"
+              />
+              <Marker position={[formData.startLat, formData.startLng]} icon={greenPinIcon}>
+                <Popup>Điểm xuất phát: {formData.hamlet || formData.name}</Popup>
+              </Marker>
+              <Marker position={[formData.endLat, formData.endLng]} icon={redPinIcon}>
+                <Popup>Điểm kết thúc / Đỉnh</Popup>
+              </Marker>
+              {gpxTrack.length > 0 && (
+                <Polyline positions={gpxTrack} pathOptions={{ color: '#00ffd5', weight: 4, opacity: 0.9 }} />
+              )}
+            </MapContainer>
+          </div>
+
+          {/* Structured Preview Details */}
           <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 20, borderRadius: 12, marginBottom: 20 }}>
             {!formData.coverImage && (
               <h4 style={{ fontSize: '1.2rem', color: 'var(--color-primary)', fontWeight: 800, marginBottom: 8 }}>
@@ -1257,7 +1320,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
 
             {/* Location Tag */}
             <div style={{ color: 'var(--color-text-main)', fontSize: '0.85rem', fontWeight: 600, marginBottom: 16 }}>
-              Vị trí: {formData.hamlet ? formData.hamlet + ', ' : ''}{formData.district}, {formData.province} ({formData.region})
+              📍 Vị trí: {formData.hamlet ? formData.hamlet + ', ' : ''}{formData.district}, {formData.province} ({formData.region})
             </div>
 
             {/* 4 Metric Badges Grid */}
@@ -1283,7 +1346,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
             {/* Coordinates Section */}
             <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 14, marginBottom: 16 }}>
               <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 6 }}>
-                Tọa độ GPS đã đánh dấu:
+                Tọa độ GPS đã đánh dấu ({gpxTrack.length > 0 ? `${gpxTrack.length} điểm track` : 'Tọa độ ghim'}):
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
                 <div>• Xuất phát (Start): <code>{formData.startLat}, {formData.startLng}</code></div>
@@ -1313,18 +1376,25 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
               </div>
             )}
 
-            {/* Facilities & Permit Info */}
-            <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 14, display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
-              <span>Giấy phép: <strong>{formData.permitRequired ? (formData.permitInfo || 'Cần giấy phép') : 'Không cần giấy phép'}</strong></span>
-              <span>Bãi cắm trại: <strong>{formData.hasCampsite ? 'Có' : 'Không'}</strong></span>
-              <span>Nguồn nước: <strong>{formData.hasWaterSource ? 'Có' : 'Không'}</strong></span>
-              <span>Trẻ em: <strong>{formData.kidFriendly ? 'Phù hợp' : 'Không phù hợp'}</strong></span>
+            {/* Facilities Badges */}
+            <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 14, display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+              <span style={{ background: formData.permitRequired ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)', color: formData.permitRequired ? '#ef4444' : '#10b981', border: `1px solid ${formData.permitRequired ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`, padding: '4px 12px', borderRadius: 8, fontSize: '0.78rem', fontWeight: 700 }}>
+                📋 Giấy phép: {formData.permitRequired ? (formData.permitInfo || 'Cần cấp phép') : 'Không cần'}
+              </span>
+              <span style={{ background: formData.hasCampsite ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255, 255, 255, 0.05)', color: formData.hasCampsite ? '#10b981' : 'var(--color-text-muted)', border: '1px solid var(--color-border)', padding: '4px 12px', borderRadius: 8, fontSize: '0.78rem', fontWeight: 700 }}>
+                ⛺ Bãi cắm trại: {formData.hasCampsite ? 'Có' : 'Không'}
+              </span>
+              <span style={{ background: formData.hasWaterSource ? 'rgba(56, 189, 248, 0.15)' : 'rgba(255, 255, 255, 0.05)', color: formData.hasWaterSource ? '#38bdf8' : 'var(--color-text-muted)', border: '1px solid var(--color-border)', padding: '4px 12px', borderRadius: 8, fontSize: '0.78rem', fontWeight: 700 }}>
+                💧 Nguồn nước: {formData.hasWaterSource ? 'Có' : 'Không'}
+              </span>
+              <span style={{ background: formData.kidFriendly ? 'rgba(245, 158, 11, 0.15)' : 'rgba(255, 255, 255, 0.05)', color: formData.kidFriendly ? '#f59e0b' : 'var(--color-text-muted)', border: '1px solid var(--color-border)', padding: '4px 12px', borderRadius: 8, fontSize: '0.78rem', fontWeight: 700 }}>
+                👶 Trẻ em: {formData.kidFriendly ? 'Phù hợp' : 'Không phù hợp'}
+              </span>
             </div>
-
           </div>
 
           <div style={{ display: 'flex', gap: 12 }}>
-            <button className="btn btn-secondary" onClick={() => setStep(3)} style={{ flex: 1, justifyContent: 'center' }}>
+            <button className="btn btn-secondary" onClick={() => setStep(4)} style={{ flex: 1, justifyContent: 'center' }}>
               <ArrowLeft size={16} /> Quay lại sửa thông tin
             </button>
             <button

@@ -87,6 +87,8 @@ export const authMiddleware = async (req: AuthRequest, res: Response, next: Next
   }
 };
 
+export const requireAuth = authMiddleware;
+
 /**
  * Optional Authentication Middleware
  * Attaches req.user if token is present, but allows guests (req.user = undefined).

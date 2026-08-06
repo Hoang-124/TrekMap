@@ -20,6 +20,11 @@ import { AuthorProfileModal } from './AuthorProfileModal.js';
 import type { AuthorProfileData } from './AuthorProfileModal.js';
 import { ThreadDetailModal } from './ThreadDetailModal.js';
 import { getApiHeaders, notifyForumUpdated } from '../../utils/sessionHeaders.js';
+import { TripPlanCard } from '../trips/TripPlanCard.js';
+import type { TripPlanItem } from '../trips/TripPlanCard.js';
+import { CreateTripModal } from '../trips/CreateTripModal.js';
+import { TripReportCard } from '../trip-reports/TripReportCard.js';
+import type { TripReportItem } from '../trip-reports/TripReportCard.js';
 
 interface AlpineExpeditionFeedProps {
   threads: ForumThread[];
@@ -31,6 +36,9 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
   onOpenNewThreadModal,
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
+  const [trips, setTrips] = useState<TripPlanItem[]>([]);
+  const [tripReports, setTripReports] = useState<TripReportItem[]>([]);
+  const [isCreateTripOpen, setIsCreateTripOpen] = useState(false);
 
   // Modals state
   const [activeAuthor, setActiveAuthor] = useState<AuthorProfileData | null>(null);
@@ -44,6 +52,27 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
   const [threadUpvotesMap, setThreadUpvotesMap] = useState<{ [threadId: string]: number }>({});
   // Per thread reactions summary map
   const [threadReactionsSummaryMap, setThreadReactionsSummaryMap] = useState<{ [threadId: string]: Record<string, number> }>({});
+
+  const loadTrips = async () => {
+    try {
+      const res = await fetch('http://localhost:5000/api/trips');
+      const data = await res.json();
+      if (data.success) setTrips(data.data || []);
+    } catch (err) {}
+  };
+
+  const loadTripReports = async () => {
+    try {
+      const res = await fetch('http://localhost:5000/api/trip-reports');
+      const data = await res.json();
+      if (data.success) setTripReports(data.data || []);
+    } catch (err) {}
+  };
+
+  useEffect(() => {
+    if (selectedCategory === 'Ghép Đoàn') loadTrips();
+    if (selectedCategory === 'Nhật Ký') loadTripReports();
+  }, [selectedCategory]);
 
   useEffect(() => {
     const initialMap: Record<string, ReactionType> = {};
@@ -180,32 +209,57 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
         </div>
 
         <div style={{ display: 'flex', gap: 10 }}>
-          <button
-            className="btn btn-primary"
-            onClick={() => {
-              const token = localStorage.getItem('trekmap_token');
-              if (!token) {
-                window.dispatchEvent(new CustomEvent('trekmap:show-toast', { detail: { message: 'Vui lòng đăng nhập để tạo bài nhật ký mới trên diễn đàn!', type: 'info' } }));
-                window.location.hash = '#login';
-                return;
-              }
-              onOpenNewThreadModal();
-            }}
-            style={{ borderRadius: 20 }}
-          >
-            <PlusCircle size={15} /> Viết bài đóng góp
-          </button>
+          {selectedCategory === 'Ghép Đoàn' ? (
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                const token = localStorage.getItem('trekmap_token');
+                if (!token) {
+                  window.dispatchEvent(new CustomEvent('trekmap:show-toast', { detail: { message: 'Vui lòng đăng nhập để mở chuyến ghép đoàn!', type: 'info' } }));
+                  window.location.hash = '#login';
+                  return;
+                }
+                setIsCreateTripOpen(true);
+              }}
+              style={{ borderRadius: 20 }}
+            >
+              <PlusCircle size={15} /> Mở chuyến ghép đoàn
+            </button>
+          ) : (
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                const token = localStorage.getItem('trekmap_token');
+                if (!token) {
+                  window.dispatchEvent(new CustomEvent('trekmap:show-toast', { detail: { message: 'Vui lòng đăng nhập để tạo bài nhật ký mới trên diễn đàn!', type: 'info' } }));
+                  window.location.hash = '#login';
+                  return;
+                }
+                onOpenNewThreadModal();
+              }}
+              style={{ borderRadius: 20 }}
+            >
+              <PlusCircle size={15} /> Viết bài đóng góp
+            </button>
+          )}
         </div>
       </div>
+
+      <CreateTripModal
+        isOpen={isCreateTripOpen}
+        onClose={() => setIsCreateTripOpen(false)}
+        onSuccess={loadTrips}
+      />
 
       {/* Category Filter Pills (Nature Theme) */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 24 }}>
         {[
-          { name: 'All', label: 'Tất cả nhật ký' },
+          { name: 'All', label: 'Tất cả diễn đàn' },
+          { name: 'Ghép Đoàn', label: '🎒 Ghép đoàn & Tìm bạn' },
+          { name: 'Nhật Ký', label: '📖 Nhật ký chuyến đi' },
           { name: 'Kinh Nghiệm', label: 'Cẩm nang & Kinh nghiệm' },
           { name: 'Hỏi Đáp', label: 'Hỏi đáp kỹ thuật' },
-          { name: 'Tìm Đồng Đội', label: 'Ghép đoàn & Tìm Porter' },
-          { name: 'Cảnh Báo', label: 'Radar an toàn đường đi' },
+          { name: 'Cảnh Báo', label: 'Radar an toàn' },
         ].map((item) => (
           <button
             key={item.name}
@@ -224,8 +278,30 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
         ))}
       </div>
 
-      {/* Expedition Log Grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 24 }}>
+      {/* Conditional rendering for Ghép Đoàn & Nhật Ký vs Standard Threads */}
+      {selectedCategory === 'Ghép Đoàn' ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 24 }}>
+          {trips.length === 0 ? (
+            <div className="col-span-full p-8 text-center text-slate-400 bg-slate-900/60 rounded-2xl border border-slate-800">
+              Chưa có chuyến ghép đoàn nào. Hãy mở chuyến đầu tiên!
+            </div>
+          ) : (
+            trips.map((t) => <TripPlanCard key={t._id} trip={t} onJoinSuccess={loadTrips} />)
+          )}
+        </div>
+      ) : selectedCategory === 'Nhật Ký' ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 24 }}>
+          {tripReports.length === 0 ? (
+            <div className="col-span-full p-8 text-center text-slate-400 bg-slate-900/60 rounded-2xl border border-slate-800">
+              Chưa có bài viết nhật ký chuyến đi nào.
+            </div>
+          ) : (
+            tripReports.map((r) => <TripReportCard key={r._id} report={r} />)
+          )}
+        </div>
+      ) : (
+        /* Expedition Log Grid */
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 24 }}>
         {filtered.map((thread) => (
           <div
             key={thread.id}
@@ -246,18 +322,28 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
             <div>
               {/* Header Badges */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span className={`badge ${thread.category === 'Hỏi Đáp' ? 'badge-info' : thread.category === 'Cảnh Báo' ? 'badge-error' : 'badge-success'}`}>
                     {thread.category}
                   </span>
-
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: 4, background: 'rgba(74, 222, 128, 0.12)', padding: '2px 8px', borderRadius: 10 }}>
-                    {thread.category === 'Cảnh Báo' ? <AlertTriangle size={12} color="var(--color-error)" /> : <ShieldCheck size={12} />}
-                    {thread.category === 'Cảnh Báo' ? 'Cảnh báo mưa trượt' : 'Đã xác minh GPS'}
-                  </span>
+                  {thread.isPinned && <span className="badge badge-amber">📌 Ghim</span>}
                 </div>
 
-                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-dim)' }}>{thread.createdAt}</span>
+                <span style={{
+                  fontSize: '0.72rem',
+                  fontWeight: 800,
+                  padding: '3px 9px',
+                  borderRadius: 12,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  background: thread.category === 'Cảnh Báo' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                  color: thread.category === 'Cảnh Báo' ? '#ef4444' : '#10b981',
+                  border: `1px solid ${thread.category === 'Cảnh Báo' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`,
+                }}>
+                  {thread.category === 'Cảnh Báo' ? <AlertTriangle size={12} color="#ef4444" /> : <ShieldCheck size={12} color="#10b981" />}
+                  {thread.category === 'Cảnh Báo' ? 'Radar: Cảnh báo mưa trượt' : 'Radar: Tuyến đường an toàn'}
+                </span>
               </div>
 
               {/* Title */}
@@ -310,6 +396,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
           </div>
         ))}
       </div>
+      )}
     </div>
   );
 };

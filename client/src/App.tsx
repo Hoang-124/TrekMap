@@ -20,6 +20,8 @@ import { LogoutConfirmModal } from './components/auth/LogoutConfirmModal.js';
 import { Toast } from './components/common/Toast.js';
 import { fetchTrails, fetchIncidents } from './services/api.js';
 import { getApiHeaders } from './utils/sessionHeaders.js';
+import { EmergencyBanner } from './components/common/EmergencyBanner.js';
+import { EmergencyContactsModal } from './components/common/EmergencyContactsModal.js';
 import type { Trail, Incident, ForumThread, UserProfile } from './types.js';
 import './App.css';
 
@@ -390,18 +392,22 @@ export function App() {
   const featuredTrails = trails.filter((t) => t.rating >= 4.8);
   const bestSeasonTrails = trails.filter((t) => t.bestMonths.includes(new Date().getMonth() + 1));
 
+  const [isEmergencyContactsOpen, setIsEmergencyContactsOpen] = useState(false);
+
   return (
     <SocketProvider currentUser={currentUser}>
       <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--color-bg-main)' }}>
-      <Navbar
-        currentView={currentView}
-        currentUser={currentUser}
-        onNavigate={handleNavigate}
-        onOpenIncidentModal={() => setIsIncidentModalOpen(true)}
-        onOpenAuthModal={() => handleNavigate('login')}
-        onSearchChange={(q) => setSearchQuery(q)}
-        onLogout={() => setIsLogoutModalOpen(true)}
-      />
+        <EmergencyBanner onOpenContacts={() => setIsEmergencyContactsOpen(true)} />
+        <EmergencyContactsModal isOpen={isEmergencyContactsOpen} onClose={() => setIsEmergencyContactsOpen(false)} />
+        <Navbar
+          currentView={currentView}
+          currentUser={currentUser}
+          onNavigate={handleNavigate}
+          onOpenIncidentModal={() => setIsIncidentModalOpen(true)}
+          onOpenAuthModal={() => handleNavigate('login')}
+          onSearchChange={(q) => setSearchQuery(q)}
+          onLogout={() => setIsLogoutModalOpen(true)}
+        />
 
       {/* Emergency Alert Banner - Clean Auto-rotating Ticker */}
       {incidents.length > 0 && (() => {

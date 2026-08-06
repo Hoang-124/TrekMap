@@ -41,6 +41,21 @@ export const initSocketServer = (httpServer: HttpServer): Server => {
       }
     });
 
+    // Join Radio Basecamp Channel Room
+    socket.on('joinRadioChannel', (channel: string) => {
+      if (channel) {
+        socket.join(`radio:${channel}`);
+        console.log(`📻 [Radio Socket] Socket ${socket.id} joined channel radio:${channel}`);
+      }
+    });
+
+    // Broadcast Radio Transmit Message to channel room & all listeners
+    socket.on('radioMessage', (msgData: any) => {
+      const ch = msgData.channel || 'Channel 1';
+      io?.to(`radio:${ch}`).emit('radioMessage', msgData);
+      io?.emit('radioMessage', msgData);
+    });
+
     socket.on('disconnect', () => {
       console.log(`🔌 [Socket.io] Client disconnected: ${socket.id}`);
 

@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { getSocket } from '../../utils/socket.js';
 
 const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
   return ({ size = defaultSize, color = 'currentColor', style }: { size?: number; color?: string; style?: React.CSSProperties }) => (
@@ -25,6 +26,7 @@ interface RadioMessage {
   message: string;
   timestamp: string;
   isUrgent?: boolean;
+  coords?: { lat: number; lng: number };
 }
 
 const initialRadioMessages: RadioMessage[] = [
@@ -41,12 +43,12 @@ const initialRadioMessages: RadioMessage[] = [
   },
   {
     id: 'rad-2',
-    callsign: 'A Páo (Porter Trưởng Y Tý)',
+    callsign: 'Hùng Porter (Bản Xín Chải)',
     avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=100&q=80',
-    channel: 'Channel 2 • Lảo Thẩn',
-    altitudeM: 2200,
-    location: 'Lán Phìn Hồ',
-    signalQuality: 'Stable',
+    channel: 'Channel 1 • Tần Số Chung',
+    altitudeM: 1950,
+    location: 'Lán 2200m Pu Ta Leng',
+    signalQuality: 'Medium VHF',
     message: 'Lán nghỉ Phìn Hồ đã đun sẵn nước nóng cho anh em. Đoàn nào lên nhớ ghé lấy củi khô nhé.',
     timestamp: '18:47',
   },
@@ -69,25 +71,77 @@ export const TrekkerRadioBasecamp: React.FC = () => {
   const [activeChannel, setActiveChannel] = useState('All');
   const [inputText, setInputText] = useState('');
   const [myAltitude, setMyAltitude] = useState(2400);
+  const [myGps, setMyGps] = useState<{ lat: number; lng: number } | null>(null);
+
+  // Auto attach GPS Location
+  useEffect(() => {
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          setMyGps({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+          if (pos.coords.altitude) setMyAltitude(Math.round(pos.coords.altitude));
+        },
+        () => {}
+      );
+    }
+  }, []);
+
+  // Listen to Socket.io radioMessage realtime
+  useEffect(() => {
+    const socket = getSocket();
+    if (socket) {
+      socket.emit('joinRadioChannel', activeChannel);
+      const handleRadioMsg = (incoming: RadioMessage) => {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === incoming.id)) return prev;
+          return [incoming, ...prev];
+        });
+      };
+      socket.on('radioMessage', handleRadioMsg);
+      return () => {
+        socket.off('radioMessage', handleRadioMsg);
+      };
+    }
+  }, [activeChannel]);
 
   const handleTransmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputText.trim()) return;
 
+    const userStr = localStorage.getItem('trekmap_user');
+    let callsign = 'Bạn (Basecamp Operator)';
+    let avatar = 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
+    if (userStr) {
+      try {
+        const u = JSON.parse(userStr);
+        callsign = u.fullName || u.name || callsign;
+        avatar = u.avatarUrl || u.avatar || avatar;
+      } catch (e) {}
+    }
+
     const newRadio: RadioMessage = {
       id: `rad-${Date.now()}`,
-      callsign: 'Bạn (Basecamp Operator)',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80',
+      callsign,
+      avatar,
       channel: activeChannel === 'All' ? 'Channel 1 • Tần Số Chung' : activeChannel,
       altitudeM: myAltitude,
-      location: 'Trạm Xuất Phát',
-      signalQuality: 'Strong',
+      location: myGps ? `GPS: ${myGps.lat.toFixed(4)}, ${myGps.lng.toFixed(4)}` : 'Trạm Xuất Phát',
+      signalQuality: 'Strong Realtime',
       message: inputText,
       timestamp: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
+      coords: myGps || undefined,
     };
 
-    setMessages([newRadio, ...messages]);
+    setMessages((prev) => [newRadio, ...prev]);
     setInputText('');
+
+    // Emit via Socket.io to all online users
+    try {
+      const socket = getSocket();
+      if (socket) {
+        socket.emit('radioMessage', newRadio);
+      }
+    } catch (err) {}
   };
 
   const filtered = activeChannel === 'All'

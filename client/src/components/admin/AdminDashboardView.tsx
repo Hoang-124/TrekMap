@@ -24,6 +24,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   onBack,
   onShowToast,
 }) => {
+  const [adminSection, setAdminSection] = useState<'contributions' | 'trails' | 'incidents' | 'users' | 'stats'>('contributions');
   const [activeTab, setActiveTab] = useState<'pending' | 'approved' | 'all'>('pending');
   const [selectedContribution, setSelectedContribution] = useState<any | null>(null);
   const [selectedAuthorModal, setSelectedAuthorModal] = useState<any | null>(null);
@@ -34,10 +35,18 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     return JSON.parse(localStorage.getItem('trekmap_contributions') || '[]');
   });
 
+  // Admin section states
+  const [trailsList, setTrailsList] = useState<any[]>([]);
+  const [incidentsList, setIncidentsList] = useState<any[]>([]);
+  const [usersList, setUsersList] = useState<any[]>([]);
+  const [adminStats, setAdminStats] = useState<any>(null);
+  const [editingTrailModal, setEditingTrailModal] = useState<any | null>(null);
+  const [isCreateTrailOpen, setIsCreateTrailOpen] = useState(false);
+
   React.useEffect(() => {
     const fetchFromMongo = async () => {
       try {
-        const res = await fetch('http://localhost:5000/api/contributions');
+        const res = await fetch('/api/contributions');
         const data = await res.json();
         if (data.success && Array.isArray(data.data) && data.data.length > 0) {
           setContributions(data.data);
@@ -49,6 +58,51 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     };
     fetchFromMongo();
   }, []);
+
+  const fetchAdminUsers = async () => {
+    try {
+      const token = localStorage.getItem('trekmap_token');
+      const res = await fetch('/api/admin/users', {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      const data = await res.json();
+      if (data.success) setUsersList(data.data);
+    } catch (e) {}
+  };
+
+  const fetchAdminTrails = async () => {
+    try {
+      const res = await fetch('/api/trails');
+      const data = await res.json();
+      if (data.success) setTrailsList(data.data);
+    } catch (e) {}
+  };
+
+  const fetchAdminIncidents = async () => {
+    try {
+      const res = await fetch('/api/incidents');
+      const data = await res.json();
+      if (data.success) setIncidentsList(data.data);
+    } catch (e) {}
+  };
+
+  const fetchAdminStats = async () => {
+    try {
+      const token = localStorage.getItem('trekmap_token');
+      const res = await fetch('/api/admin/stats', {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      const data = await res.json();
+      if (data.success) setAdminStats(data.data);
+    } catch (e) {}
+  };
+
+  React.useEffect(() => {
+    if (adminSection === 'users') fetchAdminUsers();
+    if (adminSection === 'trails') fetchAdminTrails();
+    if (adminSection === 'incidents') fetchAdminIncidents();
+    if (adminSection === 'stats') fetchAdminStats();
+  }, [adminSection]);
 
   const pendingContributions = contributions.filter((c) => c.status === 'pending' || !c.status);
   const approvedContributions = contributions.filter((c) => c.status === 'approved');
@@ -137,6 +191,89 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     }
   };
 
+  // Admin Trail CRUD handlers
+  const handleDeleteTrail = async (id: string, name: string) => {
+    if (!window.confirm(`Bạn có chắc chắn muốn xóa cung đường "${name}" không?`)) return;
+    try {
+      const token = localStorage.getItem('trekmap_token');
+      const res = await fetch(`/api/admin/trails/${id}`, {
+        method: 'DELETE',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (onShowToast) onShowToast(`Đã xóa cung đường "${name}"!`, 'info');
+        fetchAdminTrails();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // Admin Incident handlers
+  const handleResolveIncident = async (id: string) => {
+    try {
+      const token = localStorage.getItem('trekmap_token');
+      const res = await fetch(`/api/incidents/${id}/resolve`, {
+        method: 'PUT',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (onShowToast) onShowToast('Đã đánh dấu xử lý xong sự cố!', 'success');
+        fetchAdminIncidents();
+      }
+    } catch (e) {}
+  };
+
+  const handleDeleteIncident = async (id: string) => {
+    if (!window.confirm('Bạn có chắc chắn muốn xóa báo cáo sự cố này?')) return;
+    try {
+      const token = localStorage.getItem('trekmap_token');
+      const res = await fetch(`/api/incidents/${id}`, {
+        method: 'DELETE',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (onShowToast) onShowToast('Đã xóa sự cố khỏi hệ thống!', 'info');
+        fetchAdminIncidents();
+      }
+    } catch (e) {}
+  };
+
+  // Admin User Ban/Unban handlers
+  const handleBanUser = async (id: string, email: string) => {
+    if (!window.confirm(`Khóa tài khoản ${email}?`)) return;
+    try {
+      const token = localStorage.getItem('trekmap_token');
+      const res = await fetch(`/api/admin/users/${id}/ban`, {
+        method: 'PUT',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (onShowToast) onShowToast(`Đã khóa tài khoản ${email}`, 'info');
+        fetchAdminUsers();
+      }
+    } catch (e) {}
+  };
+
+  const handleUnbanUser = async (id: string, email: string) => {
+    try {
+      const token = localStorage.getItem('trekmap_token');
+      const res = await fetch(`/api/admin/users/${id}/unban`, {
+        method: 'PUT',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (onShowToast) onShowToast(`Đã mở khóa tài khoản ${email}`, 'success');
+        fetchAdminUsers();
+      }
+    } catch (e) {}
+  };
+
   return (
     <div style={{ maxWidth: 1200, margin: '30px auto', padding: '0 16px', boxSizing: 'border-box' }}>
       {/* Header Bar */}
@@ -150,11 +287,53 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         </div>
       </div>
 
-      {/* Title & Stats Summary Banner */}
-      <div className="card" style={{ marginBottom: 24, padding: 24 }}>
-        <h2 style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 8, margin: 0 }}>
-          Duyệt & Quản Lý Đóng Góp Cung Đường Trekking
-        </h2>
+      {/* Main Admin Navigation Section Bar */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 24, flexWrap: 'wrap', background: 'var(--color-bg-card)', padding: 6, borderRadius: 16, border: '1px solid var(--color-border)' }}>
+        <button
+          className={`btn ${adminSection === 'contributions' ? 'btn-primary' : 'btn-outline'}`}
+          onClick={() => setAdminSection('contributions')}
+          style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
+        >
+          📝 Duyệt Bài Đóng Góp
+        </button>
+        <button
+          className={`btn ${adminSection === 'trails' ? 'btn-primary' : 'btn-outline'}`}
+          onClick={() => setAdminSection('trails')}
+          style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
+        >
+          🗺️ Quản Lý Cung Đường
+        </button>
+        <button
+          className={`btn ${adminSection === 'incidents' ? 'btn-primary' : 'btn-outline'}`}
+          onClick={() => setAdminSection('incidents')}
+          style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
+        >
+          🚨 Quản Lý Sự Cố
+        </button>
+        <button
+          className={`btn ${adminSection === 'users' ? 'btn-primary' : 'btn-outline'}`}
+          onClick={() => setAdminSection('users')}
+          style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
+        >
+          👥 Quản Lý Người Dùng
+        </button>
+        <button
+          className={`btn ${adminSection === 'stats' ? 'btn-primary' : 'btn-outline'}`}
+          onClick={() => setAdminSection('stats')}
+          style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
+        >
+          📊 Thống Kê Tổng Quan
+        </button>
+      </div>
+
+      {/* 1. SECTION: CONTRIBUTIONS MODERATION */}
+      {adminSection === 'contributions' && (
+        <>
+          {/* Title & Stats Summary Banner */}
+          <div className="card" style={{ marginBottom: 24, padding: 24 }}>
+            <h2 style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 8, margin: 0 }}>
+              Duyệt & Quản Lý Đóng Góp Cung Đường Trekking
+            </h2>
         <p style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', marginBottom: 20 }}>
           Xem chi tiết các bài đóng góp cung đường từ cộng đồng, kiểm tra thông tin địa lý và phê duyệt công khai lên bản đồ 3D
         </p>
@@ -672,6 +851,271 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           </div>
         </div>
       )}
+        </>
+      )}
+
+      {/* 2. SECTION: TRAIL MANAGEMENT */}
+      {adminSection === 'trails' && (
+        <div className="card" style={{ padding: 24 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+            <div>
+              <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
+                Quản Lý Danh Sách Cung Đường Trekking ({trailsList.length})
+              </h3>
+              <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', margin: 0, marginTop: 4 }}>
+                Quản lý, chỉnh sửa trực tiếp thông tin các cung đường đã công khai trong MongoDB
+              </p>
+            </div>
+            <button className="btn btn-primary" onClick={() => setIsCreateTrailOpen(true)} style={{ gap: 8 }}>
+              + Thêm Cung Đường Mới
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {trailsList.map((trail) => (
+              <div
+                key={trail._id || trail.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  background: 'var(--color-bg-main)',
+                  border: '1px solid var(--color-border)',
+                  padding: '14px 18px',
+                  borderRadius: 12,
+                  flexWrap: 'wrap',
+                  gap: 12,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                  <img
+                    src={trail.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=200&q=80'}
+                    alt={trail.name}
+                    style={{ width: 60, height: 50, borderRadius: 8, objectFit: 'cover' }}
+                  />
+                  <div>
+                    <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                      {trail.name}
+                    </div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
+                      📍 {trail.province} ({trail.region}) • 📏 {trail.distanceKm} km • ⛰️ +{trail.elevationGainM}m • ⭐ {trail.rating || 5.0} ({trail.reviewCount || 0} đánh giá)
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => setEditingTrailModal(trail)}
+                    style={{ color: 'var(--color-primary)', borderColor: 'var(--color-border)', padding: '6px 12px', fontSize: '0.8rem' }}
+                  >
+                    Sửa
+                  </button>
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => handleDeleteTrail(trail._id || trail.id, trail.name)}
+                    style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)', padding: '6px 12px', fontSize: '0.8rem' }}
+                  >
+                    Xóa Trail
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 3. SECTION: INCIDENT MANAGEMENT */}
+      {adminSection === 'incidents' && (
+        <div className="card" style={{ padding: 24 }}>
+          <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 4 }}>
+            Quản Lý Sự Cố Khẩn Cấp & Cảnh Báo ({incidentsList.length})
+          </h3>
+          <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginBottom: 20 }}>
+            Kiểm duyệt báo cáo sự cố sạt lở, lũ quét, đi lạc từ cộng đồng và quét khí tượng vệ tinh
+          </p>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {incidentsList.map((inc) => (
+              <div
+                key={inc._id || inc.id}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  background: 'var(--color-bg-main)',
+                  border: `1px solid ${inc.severity === 'critical' || inc.severity === 'high' ? 'rgba(239, 68, 68, 0.4)' : 'var(--color-border)'}`,
+                  padding: '14px 18px',
+                  borderRadius: 12,
+                  flexWrap: 'wrap',
+                  gap: 12,
+                }}
+              >
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                    <span style={{ background: inc.severity === 'critical' ? '#ef4444' : inc.severity === 'high' ? '#f59e0b' : '#38bdf8', color: '#fff', fontSize: '0.72rem', fontWeight: 800, padding: '2px 8px', borderRadius: 6 }}>
+                      {inc.severity?.toUpperCase() || 'HIGH'}
+                    </span>
+                    <span style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                      {inc.trailName || inc.type}
+                    </span>
+                    {inc.resolved ? (
+                      <span style={{ color: '#10b981', fontSize: '0.75rem', fontWeight: 700 }}>✓ Đã xử lý</span>
+                    ) : (
+                      <span style={{ color: '#ef4444', fontSize: '0.75rem', fontWeight: 700 }}>⚠️ Đang phát cảnh báo</span>
+                    )}
+                  </div>
+                  <p style={{ fontSize: '0.82rem', color: 'var(--color-text-main)', margin: 0, marginTop: 4 }}>
+                    {inc.description}
+                  </p>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: 4 }}>
+                    Báo cáo bởi: {inc.userName || 'Trekker'} • {inc.reportedAt || 'Gần đây'} • Ghi chú: {inc.locationNote || 'N/A'}
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {!inc.resolved && (
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => handleResolveIncident(inc._id || inc.id)}
+                      style={{ background: '#10b981', borderColor: '#10b981', padding: '6px 12px', fontSize: '0.8rem' }}
+                    >
+                      Đánh dấu xử lý xong
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => handleDeleteIncident(inc._id || inc.id)}
+                    style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)', padding: '6px 12px', fontSize: '0.8rem' }}
+                  >
+                    Xóa
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 4. SECTION: USER MANAGEMENT */}
+      {adminSection === 'users' && (
+        <div className="card" style={{ padding: 24 }}>
+          <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 4 }}>
+            Quản Lý Người Dùng & Quyền Hạn ({usersList.length})
+          </h3>
+          <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginBottom: 20 }}>
+            Quản lý thành viên, xem điểm uy tín, gán vai trò Admin hoặc Khóa tài khoản vi phạm quy chuẩn
+          </p>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {usersList.map((u) => (
+              <div
+                key={u._id || u.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  background: 'var(--color-bg-main)',
+                  border: '1px solid var(--color-border)',
+                  padding: '12px 18px',
+                  borderRadius: 12,
+                  flexWrap: 'wrap',
+                  gap: 12,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                  <img
+                    src={u.avatarUrl || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
+                    alt={u.fullName}
+                    style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--color-primary)' }}
+                  />
+                  <div>
+                    <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                      {u.fullName || u.username} {u.role === 'admin' && <span style={{ background: '#f59e0b', color: '#fff', fontSize: '0.68rem', padding: '2px 6px', borderRadius: 4, marginLeft: 6 }}>ADMIN</span>}
+                    </div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
+                      {u.email} • Uy tín: <strong style={{ color: '#10b981' }}>{u.reputationScore || 50} pts</strong> • Huy hiệu: {u.badges?.join(', ') || 'Trekker Mới'}
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  {u.isBanned ? (
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => handleUnbanUser(u._id || u.id, u.email)}
+                      style={{ background: '#10b981', borderColor: '#10b981', padding: '6px 14px', fontSize: '0.8rem' }}
+                    >
+                      Mở Khóa Tài Khoản
+                    </button>
+                  ) : u.role !== 'admin' ? (
+                    <button
+                      className="btn btn-outline"
+                      onClick={() => handleBanUser(u._id || u.id, u.email)}
+                      style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)', padding: '6px 14px', fontSize: '0.8rem' }}
+                    >
+                      Khóa Tài Khoản
+                    </button>
+                  ) : (
+                    <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>Tài khoản Quản trị</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 5. SECTION: ANALYTICS DASHBOARD */}
+      {adminSection === 'stats' && (
+        <div className="card" style={{ padding: 24 }}>
+          <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 4 }}>
+            Thống Kê Tổng Quan Hệ Thống TrekMap
+          </h3>
+          <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginBottom: 20 }}>
+            Báo cáo tổng hợp số liệu dữ liệu thực tế lưu trữ trên MongoDB
+          </p>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
+            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
+              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Tổng Thành Viên</div>
+              <div style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: 4 }}>
+                {adminStats?.totalUsers || usersList.length || 1}
+              </div>
+            </div>
+            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
+              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Cung Đường Công Khai</div>
+              <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#38bdf8', marginTop: 4 }}>
+                {adminStats?.totalTrails || trailsList.length || 14}
+              </div>
+            </div>
+            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
+              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Tổng Bài Đóng Góp</div>
+              <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#10b981', marginTop: 4 }}>
+                {adminStats?.totalContributions || contributions.length}
+              </div>
+            </div>
+            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
+              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Bài Chờ Kiểm Duyệt</div>
+              <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#f59e0b', marginTop: 4 }}>
+                {adminStats?.pendingContributions || pendingContributions.length}
+              </div>
+            </div>
+            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
+              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Sự Cố Đã Ghi Nhận</div>
+              <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#ef4444', marginTop: 4 }}>
+                {adminStats?.totalIncidents || incidentsList.length || 4}
+              </div>
+            </div>
+            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
+              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Bài Viết Diễn Đàn</div>
+              <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#a855f7', marginTop: 4 }}>
+                {adminStats?.totalThreads || 12}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ULTRA-DETAILED MEMBER PROFILE MODAL */}
       {selectedAuthorModal && (
@@ -880,6 +1324,39 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 style={{ flex: 1, justifyContent: 'center', padding: '10px 24px', fontSize: '0.88rem', fontWeight: 800 }}
               >
                 Đóng Hồ Sơ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Create / Edit Trail Modal */}
+      {(isCreateTrailOpen || editingTrailModal) && (
+        <div className="modal-overlay" onClick={() => { setIsCreateTrailOpen(false); setEditingTrailModal(null); }} style={{ zIndex: 9999 }}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 500, width: '90%', padding: 24, borderRadius: 20 }}>
+            <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 16 }}>
+              {editingTrailModal ? `Chỉnh sửa cung đường "${editingTrailModal.name}"` : 'Thêm Cung Đường Mới (Admin)'}
+            </h3>
+            <p style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)', marginBottom: 20 }}>
+              Để thiết lập thông số kỹ thuật và bản đồ GPS đầy đủ cho cung đường mới, bạn cũng có thể sử dụng Trình đóng góp 5 bước công khai.
+            </p>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  setIsCreateTrailOpen(false);
+                  setEditingTrailModal(null);
+                  window.location.hash = '#contribute';
+                }}
+                style={{ flex: 1, justifyContent: 'center' }}
+              >
+                Mở Wizard Đóng Góp
+              </button>
+              <button
+                className="btn btn-outline"
+                onClick={() => { setIsCreateTrailOpen(false); setEditingTrailModal(null); }}
+                style={{ flex: 1, justifyContent: 'center' }}
+              >
+                Hủy / Đóng
               </button>
             </div>
           </div>

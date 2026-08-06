@@ -15,6 +15,11 @@ import uploadRoutes from './routes/upload.routes.js';
 import contributionRoutes from './routes/contribution.routes.js';
 import messageRoutes from './routes/message.routes.js';
 import notificationRoutes from './routes/notification.routes.js';
+import adminRoutes from './routes/admin.routes.js';
+import followRoutes from './routes/follow.routes.js';
+import trailConditionRoutes from './routes/trailCondition.routes.js';
+import tripReportRoutes from './routes/tripReport.routes.js';
+import tripRoutes from './routes/trip.routes.js';
 
 dotenv.config();
 
@@ -52,4 +57,10 @@ app.use('/api', messageRoutes);
 app.use('/api', notificationRoutes);
 app.use('/api', trailRoutes);
 app.use('/api', incidentRoutes);
+app.use('/api', adminRoutes);
+app.use('/api', followRoutes);
+app.use('/api', trailConditionRoutes);
+app.use('/api', tripReportRoutes);
+app.use('/api', tripRoutes);
+
 

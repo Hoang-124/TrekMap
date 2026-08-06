@@ -28,6 +28,7 @@ export interface IContribution extends Document {
   authorName?: string;
   authorAvatar?: string;
   userId?: string;
+  gpxTrack?: [number, number][];
   status: 'pending' | 'approved' | 'rejected';
   createdAt: string;
 }
@@ -61,6 +62,7 @@ const ContributionSchema = new Schema<IContribution>(
     authorName: { type: String, default: '' },
     authorAvatar: { type: String, default: '' },
     userId: { type: String, default: '' },
+    gpxTrack: { type: [[Number]], default: [] },
     status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending', index: true },
     createdAt: { type: String, default: () => new Date().toLocaleDateString('vi-VN') },
   },
