@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { getSocket } from '../../utils/socket.js';
+import { IconShieldAlert, IconPhone } from './SvgIcons.js';
 
 export const EmergencyBanner: React.FC<{ onOpenContacts: () => void }> = ({ onOpenContacts }) => {
   const [criticalIncident, setCriticalIncident] = useState<any | null>(null);
@@ -56,8 +57,9 @@ export const EmergencyBanner: React.FC<{ onOpenContacts: () => void }> = ({ onOp
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <span style={{ background: '#ffffff', color: '#dc2626', padding: '3px 8px', borderRadius: 6, fontWeight: 900, fontSize: '0.78rem' }}>
-          🚨 SOS CỨU HỘ KHẨN CẤP
+        <span style={{ background: '#ffffff', color: '#dc2626', padding: '3px 8px', borderRadius: 6, fontWeight: 900, fontSize: '0.78rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <IconShieldAlert size={14} color="#dc2626" />
+          SOS CỨU HỘ KHẨN CẤP
         </span>
         <span style={{ fontSize: '0.88rem', fontWeight: 700 }}>
           {criticalIncident.trailName || 'Khu Vực Trekking'}: {criticalIncident.description}
@@ -77,9 +79,13 @@ export const EmergencyBanner: React.FC<{ onOpenContacts: () => void }> = ({ onOp
             fontSize: '0.8rem',
             cursor: 'pointer',
             boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
           }}
         >
-          📞 Gọi Đội Cứu Hộ Khẩn Cấp
+          <IconPhone size={14} color="#dc2626" />
+          Gọi Đội Cứu Hộ Khẩn Cấp
         </button>
         <button
           onClick={() => setCriticalIncident(null)}

@@ -177,7 +177,7 @@ export const CompactDiscussionTable: React.FC<CompactDiscussionTableProps> = ({
 
                 {/* Forum Category */}
                 <td style={{ padding: '12px 14px', color: '#94a3b8', fontSize: '0.82rem' }}>
-                  💬 {thread.category}
+                  {thread.category}
                 </td>
 
                 {/* Replies Count */}

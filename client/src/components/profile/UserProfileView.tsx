@@ -725,7 +725,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
               <div style={{ marginTop: 12, display: 'flex', justifyContent: 'center', gap: 10 }}>
                 <span className={selectedBadge.unlocked ? 'badge badge-success' : 'badge badge-amber'} style={{ borderColor: selectedBadge.color, color: selectedBadge.color }}>
-                  {selectedBadge.unlocked ? '✓ Đã Mở Khóa' : '🔒 Chưa Mở Khóa'}
+                  {selectedBadge.unlocked ? 'Đã Mở Khóa' : 'Chưa Mở Khóa'}
                 </span>
                 <span className="badge badge-amber" style={{ borderColor: selectedBadge.color }}>Độ Hiếm: {selectedBadge.rarity}</span>
               </div>

@@ -71,6 +71,17 @@ export const GearChecklistTab: React.FC<GearChecklistTabProps> = ({ trail }) => 
   const [userBodyWeightKg, setUserBodyWeightKg] = useState<number>(65);
 
   useEffect(() => {
+    const saved = localStorage.getItem(storageKey);
+    if (saved) {
+      try {
+        setItems(JSON.parse(saved));
+        return;
+      } catch (e) {}
+    }
+    setItems(generateDefaultItems());
+  }, [trail.id]);
+
+  useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify(items));
   }, [items, storageKey]);
 

@@ -34,22 +34,89 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   isLoading = false,
 }) => {
   const [inputContent, setInputContent] = useState('');
+  const [isOtherTyping, setIsOtherTyping] = useState(false);
   const messageListRef = useRef<HTMLDivElement>(null);
-  const { isUserOnline } = useSocket();
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const typingTimeoutRef = useRef<any>(null);
+  const { socket, isUserOnline } = useSocket();
+
+  const convId = conversation?._id;
+
+  // Join direct conversation room & listen to typing status
+  useEffect(() => {
+    if (!socket || !convId) return;
+
+    socket.emit('joinConversation', convId);
+
+    const handleUserTyping = (data: { conversationId: string; userId: string; userName?: string }) => {
+      if (data.conversationId === convId && String(data.userId) !== String(currentUserId)) {
+        setIsOtherTyping(true);
+      }
+    };
+
+    const handleUserStoppedTyping = (data: { conversationId: string; userId: string }) => {
+      if (data.conversationId === convId && String(data.userId) !== String(currentUserId)) {
+        setIsOtherTyping(false);
+      }
+    };
+
+    socket.on('userTyping', handleUserTyping);
+    socket.on('userStoppedTyping', handleUserStoppedTyping);
+
+    return () => {
+      socket.emit('leaveConversation', convId);
+      socket.off('userTyping', handleUserTyping);
+      socket.off('userStoppedTyping', handleUserStoppedTyping);
+      setIsOtherTyping(false);
+    };
+  }, [socket, convId, currentUserId]);
 
   const scrollToBottom = () => {
-    if (messageListRef.current) {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    } else if (messageListRef.current) {
       messageListRef.current.scrollTop = messageListRef.current.scrollHeight;
     }
   };
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, isOtherTyping]);
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setInputContent(val);
+
+    if (socket && convId) {
+      socket.emit('typing', {
+        conversationId: convId,
+        userId: currentUserId,
+      });
+
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+
+      typingTimeoutRef.current = setTimeout(() => {
+        socket.emit('stopTyping', {
+          conversationId: convId,
+          userId: currentUserId,
+        });
+      }, 2000);
+    }
+  };
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputContent.trim()) return;
+
+    if (socket && convId) {
+      socket.emit('stopTyping', {
+        conversationId: convId,
+        userId: currentUserId,
+      });
+    }
+
     onSendMessage(inputContent.trim());
     setInputContent('');
   };
@@ -308,6 +375,33 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             });
           })()
         )}
+
+        {isOtherTyping && (
+          <div
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '6px 14px',
+              background: 'var(--color-bg-card)',
+              borderRadius: 16,
+              border: '1px solid var(--color-border)',
+              fontSize: '0.78rem',
+              color: 'var(--color-text-dim)',
+              marginTop: 6,
+              width: 'fit-content',
+            }}
+          >
+            <span style={{ display: 'inline-flex', gap: 3, alignItems: 'center' }}>
+              <span style={{ width: 4, height: 4, borderRadius: '50%', background: 'var(--color-primary)' }} />
+              <span style={{ width: 4, height: 4, borderRadius: '50%', background: 'var(--color-primary)' }} />
+              <span style={{ width: 4, height: 4, borderRadius: '50%', background: 'var(--color-primary)' }} />
+            </span>
+            <span>{otherName} đang soạn tin nhắn...</span>
+          </div>
+        )}
+
+        <div ref={messagesEndRef} style={{ height: 1 }} />
       </div>
 
       {/* Input Bar */}
@@ -330,7 +424,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           className="input"
           placeholder="Nhập tin nhắn..."
           value={inputContent}
-          onChange={(e) => setInputContent(e.target.value)}
+          onChange={handleInputChange}
           style={{ flex: 1, padding: '10px 14px', fontSize: '0.88rem', borderRadius: 24 }}
         />
         <button

@@ -287,7 +287,7 @@ export const TrekkerRadioBasecamp: React.FC = () => {
                 <div>
                   <strong style={{ color: 'var(--color-text-main)', fontSize: 'var(--font-size-sm)' }}>{msg.callsign}</strong>
                   <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-stream)' }}>
-                    📍 {msg.location} • Độ cao: <strong style={{ color: 'var(--color-sky)' }}>{msg.altitudeM}m</strong>
+                    {msg.location} • Độ cao: <strong style={{ color: 'var(--color-sky)' }}>{msg.altitudeM}m</strong>
                   </div>
                 </div>
               </div>

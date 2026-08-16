@@ -655,7 +655,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                     {w}
                   </option>
                 ))}
-                <option value="CUSTOM_WARD_OPTION">✏️ + Nhập tên Phường / Xã khác...</option>
+                <option value="CUSTOM_WARD_OPTION">+ Nhập tên Phường / Xã khác...</option>
               </select>
 
               {isCustomWard && (
@@ -1320,7 +1320,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
 
             {/* Location Tag */}
             <div style={{ color: 'var(--color-text-main)', fontSize: '0.85rem', fontWeight: 600, marginBottom: 16 }}>
-              📍 Vị trí: {formData.hamlet ? formData.hamlet + ', ' : ''}{formData.district}, {formData.province} ({formData.region})
+              Vị trí: {formData.hamlet ? formData.hamlet + ', ' : ''}{formData.district}, {formData.province} ({formData.region})
             </div>
 
             {/* 4 Metric Badges Grid */}
@@ -1379,16 +1379,16 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
             {/* Facilities Badges */}
             <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 14, display: 'flex', flexWrap: 'wrap', gap: 12 }}>
               <span style={{ background: formData.permitRequired ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)', color: formData.permitRequired ? '#ef4444' : '#10b981', border: `1px solid ${formData.permitRequired ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`, padding: '4px 12px', borderRadius: 8, fontSize: '0.78rem', fontWeight: 700 }}>
-                📋 Giấy phép: {formData.permitRequired ? (formData.permitInfo || 'Cần cấp phép') : 'Không cần'}
+                Giấy phép: {formData.permitRequired ? (formData.permitInfo || 'Cần cấp phép') : 'Không cần'}
               </span>
               <span style={{ background: formData.hasCampsite ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255, 255, 255, 0.05)', color: formData.hasCampsite ? '#10b981' : 'var(--color-text-muted)', border: '1px solid var(--color-border)', padding: '4px 12px', borderRadius: 8, fontSize: '0.78rem', fontWeight: 700 }}>
-                ⛺ Bãi cắm trại: {formData.hasCampsite ? 'Có' : 'Không'}
+                Bãi cắm trại: {formData.hasCampsite ? 'Có' : 'Không'}
               </span>
               <span style={{ background: formData.hasWaterSource ? 'rgba(56, 189, 248, 0.15)' : 'rgba(255, 255, 255, 0.05)', color: formData.hasWaterSource ? '#38bdf8' : 'var(--color-text-muted)', border: '1px solid var(--color-border)', padding: '4px 12px', borderRadius: 8, fontSize: '0.78rem', fontWeight: 700 }}>
-                💧 Nguồn nước: {formData.hasWaterSource ? 'Có' : 'Không'}
+                Nguồn nước: {formData.hasWaterSource ? 'Có' : 'Không'}
               </span>
               <span style={{ background: formData.kidFriendly ? 'rgba(245, 158, 11, 0.15)' : 'rgba(255, 255, 255, 0.05)', color: formData.kidFriendly ? '#f59e0b' : 'var(--color-text-muted)', border: '1px solid var(--color-border)', padding: '4px 12px', borderRadius: 8, fontSize: '0.78rem', fontWeight: 700 }}>
-                👶 Trẻ em: {formData.kidFriendly ? 'Phù hợp' : 'Không phù hợp'}
+                Trẻ em: {formData.kidFriendly ? 'Phù hợp' : 'Không phù hợp'}
               </span>
             </div>
           </div>

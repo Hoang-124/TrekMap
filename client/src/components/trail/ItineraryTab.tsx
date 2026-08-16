@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import type { Trail, ItineraryStep } from '../../types.js';
 import { createExpeditionItinerary } from '../../services/api.js';
 
@@ -7,9 +7,32 @@ interface ItineraryTabProps {
 }
 
 export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
-  const [title, setTitle] = useState(`Hành trình thám hiểm ${trail.name}`);
-  const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
-  const [memberCount, setMemberCount] = useState(4);
+  const storageKey = `trekmap_itinerary_${trail.id}`;
+
+  const [title, setTitle] = useState(() => {
+    const saved = localStorage.getItem(storageKey);
+    if (saved) {
+      try { return JSON.parse(saved).title || `Hành trình thám hiểm ${trail.name}`; } catch (e) {}
+    }
+    return `Hành trình thám hiểm ${trail.name}`;
+  });
+
+  const [startDate, setStartDate] = useState(() => {
+    const saved = localStorage.getItem(storageKey);
+    if (saved) {
+      try { return JSON.parse(saved).startDate || new Date().toISOString().split('T')[0]; } catch (e) {}
+    }
+    return new Date().toISOString().split('T')[0];
+  });
+
+  const [memberCount, setMemberCount] = useState<number>(() => {
+    const saved = localStorage.getItem(storageKey);
+    if (saved) {
+      try { return JSON.parse(saved).memberCount || 4; } catch (e) {}
+    }
+    return 4;
+  });
+
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -34,7 +57,31 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
     return steps;
   };
 
-  const [steps, setSteps] = useState<ItineraryStep[]>(defaultSteps);
+  const [steps, setSteps] = useState<ItineraryStep[]>(() => {
+    const saved = localStorage.getItem(storageKey);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed.steps) && parsed.steps.length > 0) {
+          return parsed.steps;
+        }
+      } catch (e) {}
+    }
+    return defaultSteps();
+  });
+
+  // Auto-save itinerary to localStorage on changes
+  useEffect(() => {
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        title,
+        startDate,
+        memberCount,
+        steps,
+      })
+    );
+  }, [storageKey, title, startDate, memberCount, steps]);
 
   const handleAddStep = () => {
     const lastStep = steps[steps.length - 1];

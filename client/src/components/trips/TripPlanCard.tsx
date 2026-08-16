@@ -88,7 +88,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, onJoinSuccess 
             </div>
             <div>
               <div className="text-xs font-semibold text-white">{trip.creatorId?.fullName || 'Trekker'}</div>
-              <div className="text-[10px] text-emerald-400 font-mono">⭐ {trip.creatorId?.reputationScore || 50} uy tín</div>
+              <div className="text-[10px] text-emerald-400 font-mono">{trip.creatorId?.reputationScore || 50} Điểm uy tín</div>
             </div>
           </div>
 

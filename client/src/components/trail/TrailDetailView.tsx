@@ -8,6 +8,7 @@ import { WeatherTab } from './WeatherTab.js';
 import { GearChecklistTab } from './GearChecklistTab.js';
 import { ItineraryTab } from './ItineraryTab.js';
 import { TrailConditionSection } from './TrailConditionSection.js';
+import { IconPhone, IconAlertTriangle } from '../common/SvgIcons.js';
 
 interface TrailDetailViewProps {
   trail: Trail;
@@ -589,7 +590,7 @@ ${trackPointsXml}
                   <h4 style={{ fontSize: '1rem', color: 'var(--color-text-main)', fontWeight: 700 }}>{guide.name}</h4>
                   {guide.verified ? (
                     <span className="badge badge-success" style={{ background: '#10b981', color: '#fff', fontSize: '0.75rem', padding: '3px 10px', borderRadius: 12 }}>
-                      ✓ Đã Xác Minh
+                      Đã Xác Minh
                     </span>
                   ) : (
                     <span className="badge badge-cloud" style={{ fontSize: '0.75rem' }}>Porter Địa Phương</span>
@@ -597,19 +598,20 @@ ${trackPointsXml}
                 </div>
 
                 <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginBottom: 12 }}>
-                  📍 Khu vực phụ trách: {guide.region} • Đánh giá: ⭐ {guide.rating || 5.0}/5
+                  Khu vực phụ trách: {guide.region} • Đánh giá: {guide.rating || 5.0}/5
                 </div>
 
                 <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 10, borderRadius: 8, fontSize: '0.8rem', color: 'var(--color-primary)', marginBottom: 16, fontWeight: 600 }}>
-                  💵 Chi phí / Giá dịch vụ: {guide.priceNote || '500,000đ - 700,000đ / ngày'}
+                  Chi phí / Giá dịch vụ: {guide.priceNote || '500,000đ - 700,000đ / ngày'}
                 </div>
 
                 <a
                   href={`tel:${guide.phone || '0988888888'}`}
                   className="btn btn-outline"
-                  style={{ width: '100%', justifyContent: 'center', borderRadius: 8, fontSize: '0.85rem' }}
+                  style={{ width: '100%', justifyContent: 'center', borderRadius: 8, fontSize: '0.85rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
                 >
-                  📞 Liên hệ trực tiếp
+                  <IconPhone size={14} color="var(--color-primary)" />
+                  Liên hệ trực tiếp
                 </a>
               </div>
             ))}
@@ -660,7 +662,8 @@ ${trackPointsXml}
                   {rev.safetyNote && (
                     <div style={{ background: 'rgba(239, 68, 68, 0.12)', borderLeft: '4px solid #ef4444', border: '1px solid rgba(239, 68, 68, 0.3)', padding: '10px 14px', fontSize: '0.85rem', color: '#fca5a5', borderRadius: 8, marginTop: 8 }}>
                       <strong style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                        ⚠️ CẢNH BÁO AN TOÀN TỪ TREKKER:
+                        <IconAlertTriangle size={15} color="#ef4444" />
+                        CẢNH BÁO AN TOÀN TỪ TREKKER:
                       </strong>
                       {rev.safetyNote}
                     </div>

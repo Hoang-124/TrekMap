@@ -255,8 +255,8 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 24 }}>
         {[
           { name: 'All', label: 'Tất cả diễn đàn' },
-          { name: 'Ghép Đoàn', label: '🎒 Ghép đoàn & Tìm bạn' },
-          { name: 'Nhật Ký', label: '📖 Nhật ký chuyến đi' },
+          { name: 'Ghép Đoàn', label: 'Ghép đoàn & Tìm bạn' },
+          { name: 'Nhật Ký', label: 'Nhật ký chuyến đi' },
           { name: 'Kinh Nghiệm', label: 'Cẩm nang & Kinh nghiệm' },
           { name: 'Hỏi Đáp', label: 'Hỏi đáp kỹ thuật' },
           { name: 'Cảnh Báo', label: 'Radar an toàn' },
@@ -326,7 +326,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                   <span className={`badge ${thread.category === 'Hỏi Đáp' ? 'badge-info' : thread.category === 'Cảnh Báo' ? 'badge-error' : 'badge-success'}`}>
                     {thread.category}
                   </span>
-                  {thread.isPinned && <span className="badge badge-amber">📌 Ghim</span>}
+                  {thread.isPinned && <span className="badge badge-amber">Đã Ghim</span>}
                 </div>
 
                 <span style={{

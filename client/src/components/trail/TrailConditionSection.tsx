@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { IconAlertTriangle, IconShieldCheck, IconPlus, IconCheckCircle } from '../common/SvgIcons';
+import { IconAlertTriangle, IconShieldCheck, IconPlus } from '../common/SvgIcons';
 
 export interface ConditionItem {
   _id: string;
@@ -120,13 +120,13 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ tr
   const getConditionLabel = (type: string) => {
     switch (type) {
       case 'safe':
-        return '🟢 AN TOÀN';
+        return 'AN TOÀN';
       case 'caution':
-        return '🟡 THẬN TRỌNG';
+        return 'THẬN TRỌNG';
       case 'dangerous':
-        return '🔴 NGUY HIỂM';
+        return 'NGUY HIỂM';
       case 'closed':
-        return '🟣 TẠM ĐÓNG';
+        return 'TẠM ĐÓNG';
       default:
         return type;
     }
@@ -160,10 +160,10 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ tr
                 onChange={(e) => setCondition(e.target.value as any)}
                 className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-emerald-500"
               >
-                <option value="safe">🟢 An toàn / Thời tiết tốt</option>
-                <option value="caution">🟡 Thận trọng / Cây đổ, trơn</option>
-                <option value="dangerous">🔴 Nguy hiểm / Sạt lở</option>
-                <option value="closed">🟣 Tạm đóng / Cấm đi</option>
+                <option value="safe">An toàn / Thời tiết tốt</option>
+                <option value="caution">Thận trọng / Cây đổ, trơn</option>
+                <option value="dangerous">Nguy hiểm / Sạt lở</option>
+                <option value="closed">Tạm đóng / Cấm đi</option>
               </select>
             </div>
             <div>

@@ -135,6 +135,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     if (selectedContribution?.id === id) {
       setSelectedContribution(null);
     }
+    fetchAdminStats();
   };
 
   // Handle Reject Contribution in MongoDB
@@ -165,6 +166,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     if (selectedContribution?.id === id) {
       setSelectedContribution(null);
     }
+    fetchAdminStats();
   };
 
   // Handle Delete Contribution in MongoDB
@@ -188,6 +190,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       if (selectedContribution?.id === id) {
         setSelectedContribution(null);
       }
+      fetchAdminStats();
     }
   };
 
@@ -204,6 +207,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       if (data.success) {
         if (onShowToast) onShowToast(`Đã xóa cung đường "${name}"!`, 'info');
         fetchAdminTrails();
+        fetchAdminStats();
       }
     } catch (e) {
       console.error(e);
@@ -222,6 +226,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       if (data.success) {
         if (onShowToast) onShowToast('Đã đánh dấu xử lý xong sự cố!', 'success');
         fetchAdminIncidents();
+        fetchAdminStats();
       }
     } catch (e) {}
   };
@@ -238,6 +243,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       if (data.success) {
         if (onShowToast) onShowToast('Đã xóa sự cố khỏi hệ thống!', 'info');
         fetchAdminIncidents();
+        fetchAdminStats();
       }
     } catch (e) {}
   };
@@ -255,6 +261,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       if (data.success) {
         if (onShowToast) onShowToast(`Đã khóa tài khoản ${email}`, 'info');
         fetchAdminUsers();
+        fetchAdminStats();
       }
     } catch (e) {}
   };
@@ -270,6 +277,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       if (data.success) {
         if (onShowToast) onShowToast(`Đã mở khóa tài khoản ${email}`, 'success');
         fetchAdminUsers();
+        fetchAdminStats();
       }
     } catch (e) {}
   };
@@ -294,35 +302,35 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           onClick={() => setAdminSection('contributions')}
           style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
         >
-          📝 Duyệt Bài Đóng Góp
+          Duyệt Bài Đóng Góp
         </button>
         <button
           className={`btn ${adminSection === 'trails' ? 'btn-primary' : 'btn-outline'}`}
           onClick={() => setAdminSection('trails')}
           style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
         >
-          🗺️ Quản Lý Cung Đường
+          Quản Lý Cung Đường
         </button>
         <button
           className={`btn ${adminSection === 'incidents' ? 'btn-primary' : 'btn-outline'}`}
           onClick={() => setAdminSection('incidents')}
           style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
         >
-          🚨 Quản Lý Sự Cố
+          Quản Lý Sự Cố
         </button>
         <button
           className={`btn ${adminSection === 'users' ? 'btn-primary' : 'btn-outline'}`}
           onClick={() => setAdminSection('users')}
           style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
         >
-          👥 Quản Lý Người Dùng
+          Quản Lý Người Dùng
         </button>
         <button
           className={`btn ${adminSection === 'stats' ? 'btn-primary' : 'btn-outline'}`}
           onClick={() => setAdminSection('stats')}
           style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
         >
-          📊 Thống Kê Tổng Quan
+          Thống Kê Tổng Quan
         </button>
       </div>
 
@@ -760,7 +768,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       6. THÔNG TIN THÀNH VIÊN ĐÓNG GÓP
                     </div>
                     <span style={{ fontSize: '0.72rem', color: 'var(--color-sky)', fontWeight: 700 }}>
-                      Bấm vào Avatar để xem hồ sơ chi tiết 🔍
+                      Bấm vào Avatar để xem hồ sơ chi tiết
                     </span>
                   </div>
                   
@@ -898,7 +906,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       {trail.name}
                     </div>
                     <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-                      📍 {trail.province} ({trail.region}) • 📏 {trail.distanceKm} km • ⛰️ +{trail.elevationGainM}m • ⭐ {trail.rating || 5.0} ({trail.reviewCount || 0} đánh giá)
+                      {trail.province} ({trail.region}) • {trail.distanceKm} km • +{trail.elevationGainM}m • Đánh giá: {trail.rating || 5.0} ({trail.reviewCount || 0} nhận xét)
                     </div>
                   </div>
                 </div>
@@ -962,7 +970,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     {inc.resolved ? (
                       <span style={{ color: '#10b981', fontSize: '0.75rem', fontWeight: 700 }}>✓ Đã xử lý</span>
                     ) : (
-                      <span style={{ color: '#ef4444', fontSize: '0.75rem', fontWeight: 700 }}>⚠️ Đang phát cảnh báo</span>
+                      <span style={{ color: '#ef4444', fontSize: '0.75rem', fontWeight: 700 }}>Đang phát cảnh báo</span>
                     )}
                   </div>
                   <p style={{ fontSize: '0.82rem', color: 'var(--color-text-main)', margin: 0, marginTop: 4 }}>

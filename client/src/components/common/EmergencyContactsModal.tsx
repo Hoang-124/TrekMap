@@ -1,4 +1,5 @@
 import React from 'react';
+import { IconShieldAlert, IconPhone } from './SvgIcons.js';
 
 interface EmergencyContactsModalProps {
   isOpen: boolean;
@@ -34,7 +35,8 @@ export const EmergencyContactsModal: React.FC<EmergencyContactsModalProps> = ({ 
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <h3 style={{ fontSize: '1.2rem', fontWeight: 900, color: '#ef4444', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-            🚨 DANH BẠ HOTLINE CỨU HỘ KHẨN CẤP
+            <IconShieldAlert size={20} color="#ef4444" />
+            DANH BẠ HOTLINE CỨU HỘ KHẨN CẤP
           </h3>
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', fontSize: '1.2rem', cursor: 'pointer' }}>
             ✕
@@ -80,9 +82,13 @@ export const EmergencyContactsModal: React.FC<EmergencyContactsModalProps> = ({ 
                   fontWeight: 800,
                   borderRadius: 10,
                   whiteSpace: 'nowrap',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
                 }}
               >
-                📞 Gọi {item.phone}
+                <IconPhone size={13} color="#ffffff" />
+                Gọi {item.phone}
               </a>
             </div>
           ))}

@@ -109,38 +109,64 @@
   /* ==========================================
    * COLOR TOKENS - LIGHT MODE (WCAG AA COMPLIANT)
    * ========================================== */
-  --color-primary: #16a34a;
-  /* Deep sprout green for high contrast */
+  --color-primary: #059669;
+  /* Rich emerald green */
   --color-sky: #0284c7;
   /* Deep sky blue */
   --color-earth: #ea580c;
   /* Rich terracotta earth */
   --color-stream: #0891b2;
   /* Deep stream cyan */
-  --color-bg-main: #f8fafc;
-  /* Crisp light slate background */
+  --color-bg-main: #f1f5f9;
+  /* Modern light slate background */
   --color-bg-card: #ffffff;
   /* Pure white card surface */
   --color-text-main: #0f172a;
   /* Deep slate main text */
   --color-text-muted: #334155;
-  /* Crisp slate muted text */
-
-  --color-sun: #d97706;
+  /* Slate-700 readable muted text */
   --color-text-dim: #64748b;
+  /* Slate-500 secondary text */
+  --color-sun: #d97706;
   --color-bg-glass: rgba(255, 255, 255, 0.94);
   --color-border: rgba(15, 23, 42, 0.12);
-  --color-border-glow: rgba(22, 163, 74, 0.35);
+  --color-border-glow: rgba(5, 150, 105, 0.35);
 
-  --color-success: var(--color-primary);
-  --color-info: var(--color-sky);
-  --color-warning: var(--color-earth);
+  --color-success: #059669;
+  --color-info: #0284c7;
+  --color-warning: #ea580c;
   --color-error: #dc2626;
 
-  --hero-overlay: linear-gradient(180deg, rgba(248, 250, 252, 0.9) 0%, var(--color-bg-main) 100%);
-  --shadow-header: 0 4px 20px rgba(15, 23, 42, 0.06);
-  --shadow-card: 0 10px 30px rgba(15, 23, 42, 0.06);
-  --overlay-bg: rgba(15, 23, 42, 0.5);
+  --hero-overlay: linear-gradient(180deg, rgba(241, 245, 249, 0.88) 0%, var(--color-bg-main) 100%);
+  --shadow-header: 0 4px 20px rgba(15, 23, 42, 0.08);
+  --shadow-card: 0 8px 30px rgba(15, 23, 42, 0.06);
+  --shadow-3d: 0 12px 32px rgba(15, 23, 42, 0.08);
+  --overlay-bg: rgba(15, 23, 42, 0.6);
+}
+
+[data-theme="light"] body {
+  background-color: var(--color-bg-main);
+  background-image:
+    radial-gradient(circle at 12% 15%, rgba(5, 150, 105, 0.05) 0%, transparent 40%),
+    radial-gradient(circle at 88% 18%, rgba(2, 132, 199, 0.05) 0%, transparent 45%),
+    radial-gradient(circle at 50% 85%, rgba(234, 88, 12, 0.04) 0%, transparent 50%);
+  color: var(--color-text-main);
+}
+
+[data-theme="light"] .card {
+  box-shadow: var(--shadow-card);
+}
+
+[data-theme="light"] .card:hover {
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.12);
+}
+
+[data-theme="light"] input,
+[data-theme="light"] select,
+[data-theme="light"] textarea {
+  background-color: var(--color-bg-card);
+  color: var(--color-text-main);
+  border-color: var(--color-border);
 }
 
 * {
@@ -748,4 +774,216 @@ textarea:focus,
 
 .badge-live-pulse {
   animation: badgeGlowPulse 2.5s infinite ease-in-out;
+}
+
+/* ==========================================
+ * 4. TACTILE CLICK & MICRO-INTERACTION SUITE
+ * ========================================== */
+
+/* Click scale feedback on buttons, cards and pills */
+.interactive-click {
+  will-change: transform;
+  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.18s ease, filter 0.18s ease !important;
+}
+
+.interactive-click:hover {
+  transform: translateY(-2px);
+}
+
+.interactive-click:active {
+  transform: scale(0.95) translateY(0) !important;
+}
+
+/* Card Interactive Lift & Pop */
+.card-hover-lift {
+  will-change: transform, box-shadow;
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s ease, border-color 0.22s ease !important;
+}
+
+.card-hover-lift:hover {
+  transform: translateY(-4px);
+  border-color: var(--color-border-glow) !important;
+}
+
+.card-hover-lift:active {
+  transform: scale(0.98) translateY(-1px) !important;
+}
+
+/* Equalizer Bars for Basecamp Radio */
+@keyframes waveBarBounce {
+  0%, 100% {
+    height: 4px;
+  }
+  50% {
+    height: 18px;
+  }
+}
+
+.audio-bar-1 { animation: waveBarBounce 0.8s infinite ease-in-out; }
+.audio-bar-2 { animation: waveBarBounce 0.6s infinite ease-in-out 0.2s; }
+.audio-bar-3 { animation: waveBarBounce 0.9s infinite ease-in-out 0.4s; }
+.audio-bar-4 { animation: waveBarBounce 0.7s infinite ease-in-out 0.1s; }
+
+/* Sonar Wave for SOS & Radars */
+@keyframes sonarWave {
+  0% {
+    transform: scale(0.97);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+  }
+  100% {
+    transform: scale(0.97);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+}
+
+.sonar-sos {
+  animation: sonarWave 2.2s infinite cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Month Button Pop Animation */
+@keyframes monthPop {
+  0% {
+    transform: scale(0.92);
+  }
+  60% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.month-active-pop {
+  animation: monthPop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Smooth Ripple Background Flash on Click */
+.ripple-fx {
+  position: relative;
+  overflow: hidden;
+}
+
+.ripple-fx::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.3) 10%, transparent 10.01%);
+  background-repeat: no-repeat;
+  background-position: 50%;
+  transform: scale(10, 10);
+  opacity: 0;
+  transition: transform 0.4s, opacity 0.6s;
+}
+
+.ripple-fx:active::after {
+  transform: scale(0, 0);
+  opacity: 0.3;
+  transition: 0s;
+}
+
+/* Theme Toggle Button Spin/Wobble */
+.theme-spin:active svg {
+  transform: rotate(45deg) scale(0.9);
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Custom Sleek Dark Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-bg-main);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-primary);
+}
+
+/* Shimmer Loading Animation */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(15, 24, 46, 0.6) 25%,
+    rgba(30, 41, 59, 0.8) 50%,
+    rgba(15, 24, 46, 0.6) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s infinite ease-in-out;
+  border-radius: 8px;
+}
+
+/* Badge Pulse Animation */
+@keyframes pulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+  }
+}
+
+.badge-pulse-danger {
+  animation: pulseGlow 2s infinite ease-in-out;
+}
+
+/* Ultra-Lightweight SVG Mountain Pin & Hover Tooltip */
+.trail-pin-node {
+  position: relative;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.trail-pin-hover-tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(6px);
+  background: rgba(7, 13, 30, 0.96);
+  border: 1.5px solid var(--color-primary);
+  border-radius: 10px;
+  padding: 5px 10px;
+  white-space: nowrap;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.8), 0 0 12px rgba(74, 222, 128, 0.35);
+  backdrop-filter: blur(12px);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.2s;
+  z-index: 9999;
+  text-align: center;
+}
+
+.trail-pin-node:hover {
+  z-index: 10000 !important;
+}
+
+.trail-pin-node:hover .trail-pin-hover-tooltip {
+  opacity: 1 !important;
+  visibility: visible !important;
+  transform: translateX(-50%) translateY(0) !important;
+}
+
+.trail-pin-node:hover .trail-teardrop-svg {
+  transform: scale(1.22) translateY(-4px) !important;
+}
+
+.trail-pin-node:hover .trail-pin-icon-circle {
+  transform: scale(1.22) !important;
+  box-shadow: 0 0 16px var(--color-primary), 0 6px 14px rgba(0, 0, 0, 0.8) !important;
 }

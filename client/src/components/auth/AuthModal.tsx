@@ -328,7 +328,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }
 
       if (onShowToast) {
-        onShowToast(`📩 Thư khôi phục đã gửi đến ${email}. Vui lòng mở hòm thư email cá nhân của bạn!`, 'info');
+        onShowToast(`Thư khôi phục đã gửi đến ${email}. Vui lòng mở hòm thư email cá nhân của bạn!`, 'info');
       }
       setMode('login');
     } catch (err) {
@@ -447,7 +447,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setOtpCode('');
       setResendCooldown(60);
       if (onShowToast) {
-        onShowToast(`🎉 Mã OTP 6 số mới đã được gửi tới email ${email}!`, 'success');
+        onShowToast(`Mã OTP 6 số mới đã được gửi tới email ${email}!`, 'success');
       }
     } catch (err) {
       setIsLoading(false);

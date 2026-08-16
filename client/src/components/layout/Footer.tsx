@@ -1,19 +1,22 @@
 import React from 'react';
+import { IconShieldAlert, IconRadio } from '../common/SvgIcons.js';
 
 export const Footer: React.FC = () => {
   return (
     <footer
       style={{
         position: 'relative',
-        background: 'linear-gradient(180deg, var(--color-bg-card) 0%, #030812 100%)',
+        background: 'var(--color-bg-card)',
         borderTop: '1px solid var(--color-border)',
         padding: '60px 24px 28px 24px',
         marginTop: 80,
         color: 'var(--color-text-muted)',
         fontSize: 'var(--font-size-sm)',
+        boxShadow: 'var(--shadow-header)',
         overflow: 'hidden',
       }}
     >
+      {/* Top Ambient Glow Line */}
       <div
         style={{
           position: 'absolute',
@@ -22,8 +25,8 @@ export const Footer: React.FC = () => {
           transform: 'translateX(-50%)',
           width: '70%',
           height: 1,
-          background: 'linear-gradient(90deg, transparent 0%, #10b981 50%, transparent 100%)',
-          boxShadow: '0 0 12px rgba(16, 185, 129, 0.8)',
+          background: 'linear-gradient(90deg, transparent 0%, var(--color-primary) 50%, transparent 100%)',
+          boxShadow: '0 0 12px var(--color-border-glow)',
         }}
       />
 
@@ -40,7 +43,7 @@ export const Footer: React.FC = () => {
         {/* Column 1: Brand */}
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-            <span style={{ fontSize: '1.25rem', fontWeight: 900, color: '#ffffff', letterSpacing: '-0.02em' }}>
+            <span style={{ fontSize: '1.25rem', fontWeight: 900, color: 'var(--color-text-main)', letterSpacing: '-0.02em' }}>
               Trek<span style={{ color: 'var(--color-primary)' }}>Map</span> Việt Nam
             </span>
           </div>
@@ -54,8 +57,8 @@ export const Footer: React.FC = () => {
               display: 'inline-flex',
               alignItems: 'center',
               gap: 8,
-              background: 'rgba(16, 185, 129, 0.08)',
-              border: '1px solid rgba(16, 185, 129, 0.25)',
+              background: 'rgba(5, 150, 105, 0.08)',
+              border: '1px solid var(--color-border-glow)',
               padding: '6px 14px',
               borderRadius: 20,
               fontSize: '0.78rem',
@@ -63,6 +66,7 @@ export const Footer: React.FC = () => {
               color: 'var(--color-primary)',
             }}
           >
+            <IconRadio size={14} color="var(--color-primary)" />
             <span>VÔ TUYẾN 24/7 - TRẠM PHÁT TÍN HIỆU CỘNG ĐỒNG</span>
           </div>
         </div>
@@ -71,7 +75,7 @@ export const Footer: React.FC = () => {
         <div>
           <h4
             style={{
-              color: '#ffffff',
+              color: 'var(--color-text-main)',
               fontSize: '0.95rem',
               fontWeight: 800,
               marginBottom: 16,
@@ -100,7 +104,7 @@ export const Footer: React.FC = () => {
                     gap: 6,
                   }}
                 >
-                  <span style={{ color: 'var(--color-primary)', fontSize: '0.75rem' }}>›</span>
+                  <span style={{ color: 'var(--color-primary)', fontSize: '0.75rem', fontWeight: 900 }}>›</span>
                   {item.name}
                 </a>
               </li>
@@ -112,18 +116,22 @@ export const Footer: React.FC = () => {
         <div>
           <h4
             style={{
-              color: '#ef4444',
+              color: 'var(--color-error)',
               fontSize: '0.95rem',
               fontWeight: 800,
               marginBottom: 16,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
             }}
           >
+            <IconShieldAlert size={16} color="var(--color-error)" />
             Cứu Hộ Khẩn Cấp (SOS 24/7)
           </h4>
           <div
             style={{
-              background: 'rgba(239, 68, 68, 0.06)',
-              border: '1px solid rgba(239, 68, 68, 0.2)',
+              background: 'rgba(239, 68, 68, 0.08)',
+              border: '1px solid rgba(239, 68, 68, 0.25)',
               borderRadius: 14,
               padding: 16,
               display: 'flex',
@@ -132,19 +140,19 @@ export const Footer: React.FC = () => {
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: '0.82rem', color: '#f8fafc' }}>PCCC & Cứu nạn:</span>
-              <a href="tel:114" style={{ color: '#ef4444', fontWeight: 900, fontSize: '1rem', textDecoration: 'none' }}>
+              <span style={{ fontSize: '0.82rem', color: 'var(--color-text-main)', fontWeight: 600 }}>PCCC & Cứu nạn:</span>
+              <a href="tel:114" style={{ color: 'var(--color-error)', fontWeight: 900, fontSize: '1rem', textDecoration: 'none' }}>
                 114
               </a>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: '0.82rem', color: '#f8fafc' }}>Cấp cứu Y tế Khẩn:</span>
-              <a href="tel:115" style={{ color: '#ef4444', fontWeight: 900, fontSize: '1rem', textDecoration: 'none' }}>
+              <span style={{ fontSize: '0.82rem', color: 'var(--color-text-main)', fontWeight: 600 }}>Cấp cứu Y tế Khẩn:</span>
+              <a href="tel:115" style={{ color: 'var(--color-error)', fontWeight: 900, fontSize: '1rem', textDecoration: 'none' }}>
                 115
               </a>
             </div>
-            <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', paddingTop: 6, borderTop: '1px dashed rgba(239, 68, 68, 0.2)' }}>
-              <div>- <strong>Kiểm Lâm Hoàng Liên (Sapa):</strong> 0214.3871.234</div>
+            <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', paddingTop: 6, borderTop: '1px dashed rgba(239, 68, 68, 0.25)' }}>
+              <div>- <strong>Kiểm Lâm Hoàng Liên:</strong> 0214.3871.234</div>
               <div style={{ marginTop: 2 }}>- <strong>Cứu Hộ Tà Năng - Phan Dũng:</strong> 0918.999.111</div>
             </div>
           </div>
@@ -154,7 +162,7 @@ export const Footer: React.FC = () => {
         <div>
           <h4
             style={{
-              color: '#ffffff',
+              color: 'var(--color-text-main)',
               fontSize: '0.95rem',
               fontWeight: 800,
               marginBottom: 16,
@@ -189,7 +197,7 @@ export const Footer: React.FC = () => {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
-          <span style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: '2px 8px', borderRadius: 6, fontSize: '0.72rem', color: 'var(--color-primary)' }}>
+          <span style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: '4px 10px', borderRadius: 8, fontSize: '0.72rem', color: 'var(--color-primary)', fontWeight: 700 }}>
             Phiên bản 2.5.0 (Pro GIS Engine)
           </span>
           <span style={{ color: 'var(--color-text-muted)' }}>Cộng đồng Trekking Việt Nam</span>

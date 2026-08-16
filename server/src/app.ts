@@ -21,6 +21,10 @@ import trailConditionRoutes from './routes/trailCondition.routes.js';
 import tripReportRoutes from './routes/tripReport.routes.js';
 import tripRoutes from './routes/trip.routes.js';
 
+import mongoose from 'mongoose';
+import { globalRateLimiter, authRateLimiter, uploadRateLimiter } from './middleware/rateLimiter.middleware.js';
+import { errorHandler } from './middleware/errorHandler.middleware.js';
+
 dotenv.config();
 
 export const app = express();
@@ -34,21 +38,68 @@ connectDB().then(async () => {
   await seedAll13Collections();
 });
 
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-
-// Health Check Endpoint
-app.get('/', (_req: Request, res: Response) => {
-  res.json({
-    app: 'TrekMap API Server',
-    status: 'Online',
-    version: '2.5.0 (Socket.io Real-time Enabled)',
-    timestamp: new Date().toISOString(),
-  });
+// Security Headers Middleware
+app.use((_req: Request, res: Response, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
 });
 
-// Modular Express Routers
-app.use('/api/auth', authRoutes);
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:4173',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:4173',
+  'https://trekmap.vn',
+  'https://www.trekmap.vn',
+];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error('Không được phép truy cập từ origin: ' + origin), false);
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    credentials: true,
+  })
+);
+app.use(express.json({ limit: '10mb' }));
+
+// Global Rate Limiter
+app.use(globalRateLimiter);
+
+// Comprehensive Health Check Endpoints
+const healthHandler = (_req: Request, res: Response) => {
+  const dbState = mongoose.connection.readyState;
+  const dbStatusMap: Record<number, string> = {
+    0: 'Disconnected',
+    1: 'Connected',
+    2: 'Connecting',
+    3: 'Disconnecting',
+  };
+
+  res.json({
+    app: 'TrekMap API Server',
+    status: dbState === 1 ? 'Online' : 'Degraded',
+    version: '2.5.0 (Socket.io Real-time Enabled)',
+    database: dbStatusMap[dbState] || 'Unknown',
+    uptimeSeconds: Math.floor(process.uptime()),
+    memoryUsageMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+    timestamp: new Date().toISOString(),
+  });
+};
+
+app.get('/', healthHandler);
+app.get('/api/health', healthHandler);
+
+// Modular Express Routers with Specific Protections
+app.use('/api/auth', authRateLimiter, authRoutes);
 app.use('/api/forum', forumRoutes);
 app.use('/api/forum', commentRoutes);
 app.use('/api', uploadRoutes);
@@ -62,5 +113,8 @@ app.use('/api', followRoutes);
 app.use('/api', trailConditionRoutes);
 app.use('/api', tripReportRoutes);
 app.use('/api', tripRoutes);
+
+// Global Error Handler Middleware (Must be last)
+app.use(errorHandler);
 
 

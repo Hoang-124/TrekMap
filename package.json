@@ -1,14 +1,17 @@
 {
-  "name": "trekmap",
-  "version": "1.0.0",
+  "name": "trekmap-vietnam",
   "private": true,
+  "version": "1.0.0",
+  "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm --prefix client run dev\" \"npm --prefix server run dev\"",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\" --names \"SERVER,CLIENT\" --prefix-colors \"magenta,cyan\"",
     "dev:client": "npm --prefix client run dev",
     "dev:server": "npm --prefix server run dev",
-    "build": "npm --prefix client run build && npm --prefix server run build"
+    "build": "npm --prefix client run build",
+    "build:server": "npm --prefix server run build",
+    "preview": "npm --prefix client run preview"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "concurrently": "^9.2.4"
   }
 }

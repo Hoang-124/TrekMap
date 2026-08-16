@@ -27,9 +27,15 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    // Connect to server socket
+    // Connect to server socket with automatic robust reconnection & exponential backoff
     const socketInstance = io('http://localhost:5000', {
       transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: 15,
+      reconnectionDelay: 2000,
+      reconnectionDelayMax: 30000,
+      randomizationFactor: 0.5,
+      timeout: 10000,
     });
 
     socketInstance.on('connect', () => {
@@ -41,6 +47,13 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
         socketInstance.emit('join', String(userId));
       }
     });
+
+    // Heartbeat Interval
+    const pingInterval = setInterval(() => {
+      if (socketInstance.connected) {
+        socketInstance.emit('ping');
+      }
+    }, 25000);
 
     socketInstance.on('onlineUsersList', (users: string[]) => {
       setOnlineUsers(new Set(users.map(String)));
@@ -66,6 +79,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
     setSocket(socketInstance);
 
     return () => {
+      clearInterval(pingInterval);
       socketInstance.disconnect();
     };
   }, []);
