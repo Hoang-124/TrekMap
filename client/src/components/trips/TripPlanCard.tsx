@@ -1,5 +1,13 @@
 import React, { useState } from 'react';
-import { IconCalendar, IconUsers, IconMapPin, IconUserPlus, IconCheckCircle } from '../common/SvgIcons';
+import {
+  IconCalendar,
+  IconUsers,
+  IconMapPin,
+  IconUserPlus,
+  IconCheckCircle,
+  IconMountain,
+  IconFlame,
+} from '../common/SvgIcons.js';
 
 export interface TripPlanItem {
   _id: string;
@@ -41,7 +49,10 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, onJoinSuccess 
     year: 'numeric',
   });
 
-  const isFull = trip.status === 'full' || trip.currentMembers.length >= trip.maxMembers;
+  const memberCount = Array.isArray(trip.currentMembers) ? trip.currentMembers.length : 1;
+  const maxCount = trip.maxMembers || 8;
+  const isFull = trip.status === 'full' || memberCount >= maxCount;
+  const fillRatioPercent = Math.min(100, Math.round((memberCount / maxCount) * 100));
 
   const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -53,7 +64,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, onJoinSuccess 
         return;
       }
 
-      const res = await fetch(`http://localhost:5000/api/trips/${trip._id}/join`, {
+      const res = await fetch(`/api/trips/${trip._id}/join`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -75,93 +86,171 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, onJoinSuccess 
   };
 
   return (
-    <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 hover:border-emerald-500/40 transition-all duration-300 shadow-xl flex flex-col justify-between">
+    <div
+      className="card interactive-click card-hover-lift"
+      style={{
+        background: 'var(--color-bg-card)',
+        border: isFull ? '1px solid var(--color-border)' : '1px solid var(--color-border)',
+        borderRadius: 20,
+        padding: '20px 22px',
+        boxShadow: 'var(--shadow-card)',
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'space-between',
+        transition: 'all 0.22s cubic-bezier(0.16, 1, 0.3, 1)',
+      }}
+    >
       <div>
-        <div className="flex items-center justify-between gap-3 mb-3">
-          <div className="flex items-center space-x-2.5">
-            <div className="w-9 h-9 rounded-full bg-emerald-950 border border-emerald-500/40 overflow-hidden flex items-center justify-center text-emerald-400 font-bold text-sm">
-              {trip.creatorId?.avatarUrl ? (
-                <img src={trip.creatorId.avatarUrl} alt="" className="w-full h-full object-cover" />
-              ) : (
-                trip.creatorId?.fullName?.charAt(0) || 'T'
-              )}
-            </div>
+        {/* Creator & Status Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <img
+              src={trip.creatorId?.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80'}
+              alt={trip.creatorId?.fullName || 'Trekker'}
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: '50%',
+                border: '2px solid var(--color-primary)',
+                objectFit: 'cover',
+                flexShrink: 0,
+              }}
+            />
             <div>
-              <div className="text-xs font-semibold text-white">{trip.creatorId?.fullName || 'Trekker'}</div>
-              <div className="text-[10px] text-emerald-400 font-mono">{trip.creatorId?.reputationScore || 50} Điểm uy tín</div>
+              <div style={{ fontSize: '0.86rem', fontWeight: 800, color: 'var(--color-text-main)', lineHeight: 1.2 }}>
+                {trip.creatorId?.fullName || 'Hoàng Trekker (Leader)'}
+              </div>
+              <div style={{ fontSize: '0.7rem', color: 'var(--color-primary)', fontWeight: 700, marginTop: 2 }}>
+                ★ {trip.creatorId?.reputationScore || 1430} Điểm uy tín
+              </div>
             </div>
           </div>
 
           <span
-            className={`px-2.5 py-1 text-[11px] font-semibold rounded-full border ${
-              isFull
-                ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
-                : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-            }`}
+            style={{
+              fontSize: '0.72rem',
+              fontWeight: 800,
+              padding: '3px 10px',
+              borderRadius: 20,
+              background: isFull ? 'rgba(239, 68, 68, 0.14)' : 'rgba(5, 150, 105, 0.14)',
+              color: isFull ? 'var(--color-error)' : 'var(--color-primary)',
+              border: `1px solid ${isFull ? 'rgba(239, 68, 68, 0.3)' : 'rgba(5, 150, 105, 0.3)'}`,
+            }}
           >
-            {isFull ? 'ĐÃ ĐỦ NGUỜI' : 'ĐANG TUYỂN'}
+            {isFull ? '● Đã Đủ Chỗ' : '● Đang Tuyển'}
           </span>
         </div>
 
-        <h4 className="text-base font-bold text-white mb-2 leading-snug hover:text-emerald-400 transition-colors">
-          {trip.title}
-        </h4>
-
+        {/* Trail Destination Tag */}
         {trip.trailName && (
-          <div className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-md bg-slate-800 text-[11px] text-slate-300 mb-3">
-            <IconMapPin size={12} className="text-emerald-400" />
-            <span>{trip.trailName}</span>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'rgba(56, 189, 248, 0.12)', border: '1px solid rgba(56, 189, 248, 0.25)', padding: '2px 8px', borderRadius: 6, fontSize: '0.72rem', color: 'var(--color-sky)', fontWeight: 700, marginBottom: 8 }}>
+            <IconMountain size={12} color="var(--color-sky)" />
+            {trip.trailName}
           </div>
         )}
 
-        <p className="text-xs text-slate-400 mb-4 line-clamp-2 leading-relaxed">{trip.description}</p>
+        {/* Trip Title */}
+        <h3 style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 8px 0', lineHeight: 1.35 }}>
+          {trip.title}
+        </h3>
 
-        <div className="grid grid-cols-2 gap-2 text-[11px] bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 mb-4">
-          <div className="flex items-center space-x-1.5 text-slate-300">
-            <IconCalendar size={14} className="text-emerald-400 shrink-0" />
+        {/* Description */}
+        <p style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)', lineHeight: 1.5, margin: '0 0 14px 0' }}>
+          {trip.description}
+        </p>
+
+        {/* Telemetry Grid */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, 1fr)',
+            gap: 8,
+            background: 'var(--color-bg-main)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 14,
+            padding: '10px 12px',
+            marginBottom: 14,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.76rem', color: 'var(--color-text-main)' }}>
+            <IconCalendar size={14} color="var(--color-primary)" />
             <span>Khởi hành: <strong>{formattedStartDate}</strong></span>
           </div>
-          <div className="flex items-center space-x-1.5 text-slate-300">
-            <IconUsers size={14} className="text-emerald-400 shrink-0" />
-            <span>
-              Thành viên: <strong>{trip.currentMembers.length}/{trip.maxMembers}</strong>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.76rem', color: 'var(--color-text-main)' }}>
+            <IconUsers size={14} color="var(--color-sky)" />
+            <span>Thành viên: <strong>{memberCount}/{maxCount} ({maxCount - memberCount} chỗ)</strong></span>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.76rem', color: 'var(--color-text-main)', gridColumn: '1 / -1' }}>
+            <IconMapPin size={14} color="var(--color-earth)" />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              Điểm hẹn: <strong>{trip.meetingPoint}</strong>
             </span>
           </div>
-          <div className="col-span-2 flex items-center space-x-1.5 text-slate-400 text-[10px] mt-1 border-t border-slate-800/60 pt-1">
-            <IconMapPin size={12} className="text-slate-500 shrink-0" />
-            <span className="truncate">Điểm hẹn: {trip.meetingPoint}</span>
+
+          {trip.estimatedCost && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.76rem', color: 'var(--color-text-main)', gridColumn: '1 / -1' }}>
+              <IconFlame size={14} color="var(--color-sun)" />
+              <span>Dự toán: <strong style={{ color: 'var(--color-sun)' }}>{trip.estimatedCost}</strong></span>
+            </div>
+          )}
+        </div>
+
+        {/* Member Fill Ratio Progress Bar */}
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', color: 'var(--color-text-dim)', marginBottom: 4 }}>
+            <span>Tiến độ ghép đoàn</span>
+            <span>{fillRatioPercent}%</span>
+          </div>
+          <div style={{ width: '100%', height: 6, background: 'var(--color-bg-main)', borderRadius: 3, overflow: 'hidden', border: '1px solid var(--color-border)' }}>
+            <div
+              style={{
+                width: `${fillRatioPercent}%`,
+                height: '100%',
+                background: isFull ? 'var(--color-error)' : 'var(--color-primary)',
+                borderRadius: 3,
+                transition: 'width 0.3s ease',
+              }}
+            />
           </div>
         </div>
       </div>
 
+      {/* Action / Join Form Section */}
       <div>
         {submitted ? (
-          <div className="flex items-center justify-center space-x-1.5 text-emerald-400 text-xs font-semibold py-2 bg-emerald-950/40 border border-emerald-500/30 rounded-xl">
-            <IconCheckCircle size={16} />
-            <span>Đã gửi yêu cầu ghép đoàn!</span>
+          <div style={{ background: 'rgba(5, 150, 105, 0.12)', border: '1px solid var(--color-primary)', borderRadius: 12, padding: '10px 14px', textAlign: 'center', color: 'var(--color-primary)', fontSize: '0.82rem', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+            <IconCheckCircle size={16} color="var(--color-primary)" />
+            Đã gửi yêu cầu ghép đoàn tới Leader!
           </div>
         ) : isJoining ? (
-          <form onSubmit={handleJoin} className="space-y-2">
+          <form onSubmit={handleJoin} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <input
               type="text"
-              placeholder="Lời nhắn tới trưởng đoàn (kinh nghiệm, đồ dùng...)"
+              className="form-input"
+              placeholder="Lời nhắn (kinh nghiệm, thể lực của bạn)..."
               value={joinMsg}
               onChange={(e) => setJoinMsg(e.target.value)}
-              className="w-full px-3 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-              required
+              style={{ fontSize: '0.8rem', padding: '8px 12px', borderRadius: 10 }}
+              autoFocus
             />
-            {errorMsg && <div className="text-[10px] text-rose-400">{errorMsg}</div>}
-            <div className="flex space-x-2">
+            {errorMsg && (
+              <div style={{ fontSize: '0.72rem', color: 'var(--color-error)' }}>{errorMsg}</div>
+            )}
+            <div style={{ display: 'flex', gap: 6 }}>
               <button
                 type="submit"
-                className="flex-1 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-lg transition-colors"
+                className="btn btn-primary interactive-click"
+                style={{ flex: 1, padding: '8px 12px', fontSize: '0.8rem', fontWeight: 800, borderRadius: 10 }}
               >
-                Gửi yêu cầu
+                Gửi Yêu Cầu
               </button>
               <button
                 type="button"
+                className="btn btn-outline interactive-click"
                 onClick={() => setIsJoining(false)}
-                className="px-3 py-1.5 bg-slate-800 text-slate-300 text-xs rounded-lg hover:bg-slate-700"
+                style={{ padding: '8px 12px', fontSize: '0.8rem', borderRadius: 10 }}
               >
                 Hủy
               </button>
@@ -169,16 +258,27 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, onJoinSuccess 
           </form>
         ) : (
           <button
+            type="button"
             disabled={isFull}
             onClick={() => setIsJoining(true)}
-            className={`w-full py-2 px-4 rounded-xl font-bold text-xs flex items-center justify-center space-x-2 transition-all ${
-              isFull
-                ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
-                : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-950'
-            }`}
+            className={`btn ${isFull ? 'btn-outline' : 'btn-primary'} interactive-click ripple-fx`}
+            style={{
+              width: '100%',
+              borderRadius: 12,
+              padding: '10px 14px',
+              fontSize: '0.84rem',
+              fontWeight: 800,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6,
+              opacity: isFull ? 0.6 : 1,
+              cursor: isFull ? 'default' : 'pointer',
+              boxShadow: isFull ? 'none' : '0 4px 14px rgba(5, 150, 105, 0.3)',
+            }}
           >
-            <IconUserPlus size={16} />
-            <span>{isFull ? 'Đoàn đã đủ người' : 'Xin ghép đoàn ngay'}</span>
+            <IconUserPlus size={15} color={isFull ? 'var(--color-text-dim)' : '#041108'} />
+            {isFull ? 'Chuyến Đi Đã Đủ Thành Viên' : 'Xin Ghép Đoàn Ngay'}
           </button>
         )}
       </div>

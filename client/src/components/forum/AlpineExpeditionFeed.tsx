@@ -1,19 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import type { ForumThread } from '../../types.js';
-
-const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
-  return ({ size = defaultSize, color = 'currentColor', style }: { size?: number; color?: string; style?: React.CSSProperties }) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
-      {d}
-    </svg>
-  );
-};
-
-const Mountain = createSvgIcon(<path d="M8 3l4 8 5-5 5 15H2L8 3z" />);
-const MessageSquare = createSvgIcon(<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />);
-const PlusCircle = createSvgIcon(<><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="16" /><line x1="8" y1="12" x2="16" y2="12" /></>);
-const AlertTriangle = createSvgIcon(<><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></>);
-const ShieldCheck = createSvgIcon(<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><polyline points="9 12 11 14 15 10" /></>);
+import {
+  IconMountain,
+  IconMessageSquare,
+  IconPlus,
+  IconAlertTriangle,
+  IconShieldCheck,
+  IconShieldAlert,
+  IconCompass,
+  IconUsers,
+  IconBookOpen,
+  IconLightbulb,
+  IconHelpCircle,
+  IconSparkles,
+  IconEye,
+  IconRadar,
+  IconUserPlus,
+} from '../common/SvgIcons.js';
 import { FacebookReactionPicker } from './FacebookReactionPicker.js';
 import type { ReactionType } from './FacebookReactionPicker.js';
 import { AuthorProfileModal } from './AuthorProfileModal.js';
@@ -46,16 +49,13 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
 
   // Per thread reaction state map
   const [threadReactions, setThreadReactions] = useState<{ [threadId: string]: ReactionType }>({});
-  // Per thread comment count map
   const [threadCommentCounts, setThreadCommentCounts] = useState<{ [threadId: string]: number }>({});
-  // Per thread upvotes count map
   const [threadUpvotesMap, setThreadUpvotesMap] = useState<{ [threadId: string]: number }>({});
-  // Per thread reactions summary map
   const [threadReactionsSummaryMap, setThreadReactionsSummaryMap] = useState<{ [threadId: string]: Record<string, number> }>({});
 
   const loadTrips = async () => {
     try {
-      const res = await fetch('http://localhost:5000/api/trips');
+      const res = await fetch('/api/trips');
       const data = await res.json();
       if (data.success) setTrips(data.data || []);
     } catch (err) {}
@@ -63,7 +63,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
 
   const loadTripReports = async () => {
     try {
-      const res = await fetch('http://localhost:5000/api/trip-reports');
+      const res = await fetch('/api/trip-reports');
       const data = await res.json();
       if (data.success) setTripReports(data.data || []);
     } catch (err) {}
@@ -147,7 +147,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
     setThreadReactionsSummaryMap((prevMap) => ({ ...prevMap, [threadId]: prevSummary }));
 
     try {
-      const res = await fetch(`http://localhost:5000/api/forum/threads/${threadId}/reaction`, {
+      const res = await fetch(`/api/forum/threads/${threadId}/reaction`, {
         method: 'POST',
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ reactionType: reaction, previousReaction: prev }),
@@ -167,6 +167,30 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
       console.error('[Feed Reaction Error]:', err);
     }
   };
+
+  const formatDate = (dateStr?: string) => {
+    if (!dateStr) return 'Gần đây';
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      const diffHours = Math.floor((Date.now() - d.getTime()) / (1000 * 60 * 60));
+      if (diffHours < 1) return 'Vừa xong';
+      if (diffHours < 24) return `${diffHours} giờ trước`;
+      if (diffHours < 48) return 'Hôm qua';
+      return d.toLocaleDateString('vi-VN');
+    } catch {
+      return 'Gần đây';
+    }
+  };
+
+  const CATEGORY_ITEMS = [
+    { name: 'All', label: 'Tất cả diễn đàn', Icon: IconCompass },
+    { name: 'Ghép Đoàn', label: 'Ghép đoàn & Tìm bạn', Icon: IconUsers },
+    { name: 'Nhật Ký', label: 'Nhật ký chuyến đi', Icon: IconBookOpen },
+    { name: 'Kinh Nghiệm', label: 'Cẩm nang & Kinh nghiệm', Icon: IconLightbulb },
+    { name: 'Hỏi Đáp', label: 'Hỏi đáp kỹ thuật', Icon: IconHelpCircle },
+    { name: 'Cảnh Báo', label: 'Radar an toàn', Icon: IconShieldAlert },
+  ];
 
   return (
     <div style={{ marginBottom: 48 }}>
@@ -190,28 +214,64 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
         }}
       />
 
-      {/* Feed Header */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: 24,
-        flexWrap: 'wrap',
-        gap: 16,
-      }}>
+      {/* Modern Feed Header */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: 20,
+          flexWrap: 'wrap',
+          gap: 16,
+        }}
+      >
         <div>
-          <h2 style={{ fontSize: 'var(--font-size-xl)', fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)', display: 'flex', alignItems: 'center', gap: 10, letterSpacing: '-0.3px' }}>
-            <Mountain size={26} color="var(--color-primary)" /> Nhật Ký Băng Rừng & Radar Đường Trek
+          <div
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '3px 12px',
+              borderRadius: 16,
+              background: 'var(--color-bg-card)',
+              border: '1px solid var(--color-border)',
+              fontSize: '0.72rem',
+              fontWeight: 800,
+              color: 'var(--color-primary)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              marginBottom: 6,
+              boxShadow: 'var(--shadow-card)',
+            }}
+          >
+            <IconRadar size={13} color="var(--color-primary)" />
+            DIỄN ĐÀN & VÔ TUYẾN THỰC ĐỊA
+          </div>
+
+          <h2
+            style={{
+              fontSize: 'clamp(1.4rem, 2.5vw, 1.85rem)',
+              fontWeight: 900,
+              color: 'var(--color-text-main)',
+              margin: 0,
+              letterSpacing: '-0.02em',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+            }}
+          >
+            <IconMountain size={24} color="var(--color-primary)" />
+            Nhật Ký Băng Rừng & Radar Đường Trek
           </h2>
-          <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', margin: '4px 0 0 0' }}>
-            Cẩm nang trải nghiệm thực tế, radar tình trạng tuyến đường và tìm đồng đội ghép đoàn từ cộng đồng Trekker
+          <p style={{ fontSize: '0.86rem', color: 'var(--color-text-muted)', margin: '4px 0 0 0' }}>
+            Cẩm nang trải nghiệm thực tế, radar tình trạng tuyến đường và tìm đồng đội ghép đoàn từ cộng đồng Trekker.
           </p>
         </div>
 
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div>
           {selectedCategory === 'Ghép Đoàn' ? (
             <button
-              className="btn btn-primary"
+              className="btn btn-primary interactive-click ripple-fx"
               onClick={() => {
                 const token = localStorage.getItem('trekmap_token');
                 if (!token) {
@@ -221,13 +281,23 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                 }
                 setIsCreateTripOpen(true);
               }}
-              style={{ borderRadius: 20 }}
+              style={{
+                borderRadius: 14,
+                padding: '9px 18px',
+                fontSize: '0.84rem',
+                fontWeight: 800,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                boxShadow: '0 4px 14px rgba(5, 150, 105, 0.35)',
+              }}
             >
-              <PlusCircle size={15} /> Mở chuyến ghép đoàn
+              <IconUserPlus size={16} color="#041108" />
+              Mở Chuyến Ghép Đoàn
             </button>
           ) : (
             <button
-              className="btn btn-primary"
+              className="btn btn-primary interactive-click ripple-fx"
               onClick={() => {
                 const token = localStorage.getItem('trekmap_token');
                 if (!token) {
@@ -237,9 +307,19 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                 }
                 onOpenNewThreadModal();
               }}
-              style={{ borderRadius: 20 }}
+              style={{
+                borderRadius: 14,
+                padding: '9px 18px',
+                fontSize: '0.84rem',
+                fontWeight: 800,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                boxShadow: '0 4px 14px rgba(5, 150, 105, 0.35)',
+              }}
             >
-              <PlusCircle size={15} /> Viết bài đóng góp
+              <IconPlus size={16} color="#041108" />
+              Viết Bài Đóng Góp
             </button>
           )}
         </div>
@@ -251,151 +331,402 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
         onSuccess={loadTrips}
       />
 
-      {/* Category Filter Pills (Nature Theme) */}
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 24 }}>
-        {[
-          { name: 'All', label: 'Tất cả diễn đàn' },
-          { name: 'Ghép Đoàn', label: 'Ghép đoàn & Tìm bạn' },
-          { name: 'Nhật Ký', label: 'Nhật ký chuyến đi' },
-          { name: 'Kinh Nghiệm', label: 'Cẩm nang & Kinh nghiệm' },
-          { name: 'Hỏi Đáp', label: 'Hỏi đáp kỹ thuật' },
-          { name: 'Cảnh Báo', label: 'Radar an toàn' },
-        ].map((item) => (
-          <button
-            key={item.name}
-            onClick={() => setSelectedCategory(item.name)}
-            className={`btn ${selectedCategory === item.name ? 'btn-primary' : 'btn-outline'}`}
-            style={{
-              borderRadius: 24,
-              padding: '8px 20px',
-              fontSize: 'var(--font-size-sm)',
-              borderColor: item.name === 'Cảnh Báo' ? 'var(--color-error)' : undefined,
-              color: item.name === 'Cảnh Báo' && selectedCategory !== item.name ? 'var(--color-error)' : undefined,
-            }}
-          >
-            {item.label}
-          </button>
-        ))}
+      {/* Category Filter Pills (Refined Glassmorphism Bar) */}
+      <div
+        style={{
+          display: 'flex',
+          gap: 8,
+          flexWrap: 'wrap',
+          marginBottom: 22,
+          padding: '6px',
+          background: 'var(--color-bg-card)',
+          borderRadius: 16,
+          border: '1px solid var(--color-border)',
+          boxShadow: 'var(--shadow-card)',
+        }}
+      >
+        {CATEGORY_ITEMS.map((item) => {
+          const isActive = selectedCategory === item.name;
+          const isWarning = item.name === 'Cảnh Báo';
+          const ItemIcon = item.Icon;
+
+          return (
+            <button
+              key={item.name}
+              type="button"
+              onClick={() => setSelectedCategory(item.name)}
+              className="interactive-click"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 7,
+                padding: '8px 16px',
+                borderRadius: 12,
+                fontSize: '0.82rem',
+                fontWeight: isActive ? 800 : 600,
+                cursor: 'pointer',
+                transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                border: isActive
+                  ? isWarning
+                    ? '1.5px solid var(--color-error)'
+                    : '1.5px solid var(--color-primary)'
+                  : '1px solid transparent',
+                background: isActive
+                  ? isWarning
+                    ? 'rgba(239, 68, 68, 0.16)'
+                    : 'rgba(5, 150, 105, 0.16)'
+                  : 'transparent',
+                color: isActive
+                  ? isWarning
+                    ? 'var(--color-error)'
+                    : 'var(--color-primary)'
+                  : isWarning
+                  ? 'var(--color-error)'
+                  : 'var(--color-text-muted)',
+                boxShadow: isActive
+                  ? isWarning
+                    ? '0 0 14px rgba(239, 68, 68, 0.25)'
+                    : '0 0 14px rgba(5, 150, 105, 0.25)'
+                  : 'none',
+              }}
+            >
+              <ItemIcon
+                size={15}
+                color={
+                  isActive
+                    ? isWarning
+                      ? 'var(--color-error)'
+                      : 'var(--color-primary)'
+                    : isWarning
+                    ? 'var(--color-error)'
+                    : 'var(--color-text-dim)'
+                }
+              />
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
       </div>
 
       {/* Conditional rendering for Ghép Đoàn & Nhật Ký vs Standard Threads */}
       {selectedCategory === 'Ghép Đoàn' ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 24 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 20 }}>
           {trips.length === 0 ? (
-            <div className="col-span-full p-8 text-center text-slate-400 bg-slate-900/60 rounded-2xl border border-slate-800">
-              Chưa có chuyến ghép đoàn nào. Hãy mở chuyến đầu tiên!
+            <div
+              style={{
+                gridColumn: '1 / -1',
+                padding: '40px 20px',
+                textAlign: 'center',
+                color: 'var(--color-text-dim)',
+                background: 'var(--color-bg-card)',
+                borderRadius: 18,
+                border: '1px dashed var(--color-border)',
+              }}
+            >
+              <IconUsers size={32} color="var(--color-primary)" style={{ margin: '0 auto 12px', display: 'block', opacity: 0.6 }} />
+              <div style={{ fontSize: '0.94rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 4 }}>
+                Chưa có chuyến ghép đoàn nào đang mở
+              </div>
+              <p style={{ fontSize: '0.82rem', margin: 0 }}>
+                Hãy là người đầu tiên mở chuyến đi và tìm đồng đội leo núi cùng bạn!
+              </p>
             </div>
           ) : (
             trips.map((t) => <TripPlanCard key={t._id} trip={t} onJoinSuccess={loadTrips} />)
           )}
         </div>
       ) : selectedCategory === 'Nhật Ký' ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 24 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 20 }}>
           {tripReports.length === 0 ? (
-            <div className="col-span-full p-8 text-center text-slate-400 bg-slate-900/60 rounded-2xl border border-slate-800">
-              Chưa có bài viết nhật ký chuyến đi nào.
+            <div
+              style={{
+                gridColumn: '1 / -1',
+                padding: '40px 20px',
+                textAlign: 'center',
+                color: 'var(--color-text-dim)',
+                background: 'var(--color-bg-card)',
+                borderRadius: 18,
+                border: '1px dashed var(--color-border)',
+              }}
+            >
+              <IconBookOpen size={32} color="var(--color-sky)" style={{ margin: '0 auto 12px', display: 'block', opacity: 0.6 }} />
+              <div style={{ fontSize: '0.94rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 4 }}>
+                Chưa có bài viết nhật ký chuyến đi nào
+              </div>
+              <p style={{ fontSize: '0.82rem', margin: 0 }}>
+                Hãy bấm "Viết Bài Đóng Góp" để chia sẻ cảm nhận và hình ảnh chuyến đi của bạn!
+              </p>
             </div>
           ) : (
             tripReports.map((r) => <TripReportCard key={r._id} report={r} />)
           )}
         </div>
+      ) : filtered.length === 0 ? (
+        <div
+          style={{
+            padding: '48px 24px',
+            textAlign: 'center',
+            background: 'var(--color-bg-card)',
+            borderRadius: 20,
+            border: '1px dashed var(--color-border)',
+            boxShadow: 'var(--shadow-card)',
+          }}
+        >
+          <IconCompass size={38} color="var(--color-primary)" style={{ margin: '0 auto 12px', display: 'block', opacity: 0.7 }} />
+          <h4 style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 6px 0' }}>
+            Chưa có bài viết nào trong chuyên mục này
+          </h4>
+          <p style={{ fontSize: '0.84rem', color: 'var(--color-text-muted)', margin: '0 0 18px 0', maxWidth: 460, marginLeft: 'auto', marginRight: 'auto' }}>
+            Hãy là người đầu tiên chia sẻ cẩm nang thám hiểm hoặc gửi thông tin thực địa cho cộng đồng!
+          </p>
+          <button
+            type="button"
+            className="btn btn-primary interactive-click ripple-fx"
+            onClick={onOpenNewThreadModal}
+            style={{
+              padding: '9px 18px',
+              fontSize: '0.82rem',
+              fontWeight: 800,
+              borderRadius: 12,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            <IconPlus size={15} color="#041108" />
+            Viết Bài Đóng Góp Đầu Tiên
+          </button>
+        </div>
       ) : (
         /* Expedition Log Grid */
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 24 }}>
-        {filtered.map((thread) => (
-          <div
-            key={thread.id}
-            className="card"
-            style={{
-              padding: 24,
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'space-between',
-              background: 'var(--color-bg-card)',
-              border: thread.category === 'Cảnh Báo' ? '1px solid var(--color-error)' : '1px solid var(--color-border)',
-              boxShadow: '0 10px 30px rgba(0,0,0,0.1)',
-              transition: 'transform 0.2s ease, border-color 0.2s ease',
-              cursor: 'pointer',
-            }}
-            onClick={() => setActiveThread(thread)}
-          >
-            <div>
-              {/* Header Badges */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <span className={`badge ${thread.category === 'Hỏi Đáp' ? 'badge-info' : thread.category === 'Cảnh Báo' ? 'badge-error' : 'badge-success'}`}>
-                    {thread.category}
-                  </span>
-                  {thread.isPinned && <span className="badge badge-amber">Đã Ghim</span>}
-                </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(370px, 1fr))', gap: 20 }}>
+          {filtered.map((thread) => {
+            const isWarning = thread.category === 'Cảnh Báo';
+            const isQA = thread.category === 'Hỏi Đáp';
 
-                <span style={{
-                  fontSize: '0.72rem',
-                  fontWeight: 800,
-                  padding: '3px 9px',
-                  borderRadius: 12,
+            return (
+              <div
+                key={thread.id}
+                className="card interactive-click card-hover-lift"
+                style={{
+                  padding: '20px 22px',
                   display: 'flex',
-                  alignItems: 'center',
-                  gap: 4,
-                  background: thread.category === 'Cảnh Báo' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
-                  color: thread.category === 'Cảnh Báo' ? '#ef4444' : '#10b981',
-                  border: `1px solid ${thread.category === 'Cảnh Báo' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`,
-                }}>
-                  {thread.category === 'Cảnh Báo' ? <AlertTriangle size={12} color="#ef4444" /> : <ShieldCheck size={12} color="#10b981" />}
-                  {thread.category === 'Cảnh Báo' ? 'Radar: Cảnh báo mưa trượt' : 'Radar: Tuyến đường an toàn'}
-                </span>
-              </div>
+                  flexDirection: 'column',
+                  justifyContent: 'space-between',
+                  background: 'var(--color-bg-card)',
+                  border: isWarning ? '1.5px solid var(--color-error)' : '1px solid var(--color-border)',
+                  borderRadius: 18,
+                  boxShadow: 'var(--shadow-card)',
+                  cursor: 'pointer',
+                  transition: 'all 0.22s cubic-bezier(0.16, 1, 0.3, 1)',
+                  position: 'relative',
+                  overflow: 'hidden',
+                }}
+                onClick={() => setActiveThread(thread)}
+              >
+                <div>
+                  {/* Header Badges */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <span
+                        style={{
+                          fontSize: '0.72rem',
+                          fontWeight: 800,
+                          padding: '3px 9px',
+                          borderRadius: 8,
+                          background: isWarning
+                            ? 'rgba(239, 68, 68, 0.14)'
+                            : isQA
+                            ? 'rgba(56, 189, 248, 0.14)'
+                            : 'rgba(5, 150, 105, 0.14)',
+                          color: isWarning
+                            ? 'var(--color-error)'
+                            : isQA
+                            ? 'var(--color-sky)'
+                            : 'var(--color-primary)',
+                          border: `1px solid ${
+                            isWarning
+                              ? 'rgba(239, 68, 68, 0.3)'
+                              : isQA
+                              ? 'rgba(56, 189, 248, 0.3)'
+                              : 'rgba(5, 150, 105, 0.3)'
+                          }`,
+                        }}
+                      >
+                        {thread.category}
+                      </span>
 
-              {/* Title */}
-              <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)', marginBottom: 10, lineHeight: 'var(--line-height-tight)' }}>
-                {thread.title}
-              </h3>
+                      {thread.isPinned && (
+                        <span
+                          style={{
+                            fontSize: '0.7rem',
+                            fontWeight: 800,
+                            padding: '3px 8px',
+                            borderRadius: 8,
+                            background: 'rgba(245, 158, 11, 0.14)',
+                            color: 'var(--color-sun)',
+                            border: '1px solid rgba(245, 158, 11, 0.3)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                          }}
+                        >
+                          <IconSparkles size={11} color="var(--color-sun)" />
+                          Đã Ghim
+                        </span>
+                      )}
+                    </div>
 
-              {/* Snippet Content */}
-              <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', lineHeight: 'var(--line-height-normal)', marginBottom: 16 }}>
-                {thread.content}
-              </p>
-            </div>
+                    {/* Radar Live Chip */}
+                    <span
+                      style={{
+                        fontSize: '0.7rem',
+                        fontWeight: 700,
+                        padding: '3px 8px',
+                        borderRadius: 10,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        background: isWarning ? 'rgba(239, 68, 68, 0.12)' : 'rgba(5, 150, 105, 0.12)',
+                        color: isWarning ? 'var(--color-error)' : 'var(--color-primary)',
+                        border: `1px solid ${isWarning ? 'rgba(239, 68, 68, 0.25)' : 'rgba(5, 150, 105, 0.25)'}`,
+                      }}
+                    >
+                      {isWarning ? <IconAlertTriangle size={12} color="var(--color-error)" /> : <IconShieldCheck size={12} color="var(--color-primary)" />}
+                      {isWarning ? 'Radar: Cảnh báo thời tiết' : 'Radar: Tuyến an toàn'}
+                    </span>
+                  </div>
 
-            {/* Card Footer Info */}
-            <div style={{ borderTop: '1px solid rgba(14, 215, 181, 0.12)', paddingTop: 14 }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.82rem' }}>
-                {/* Author Info - Clickable to open AuthorProfileModal */}
-                <div
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setActiveAuthor({ name: thread.authorName.replace(/\(.*\)/, '').trim(), avatar: thread.authorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80' });
-                  }}
-                  style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
-                  title="Bấm để xem hồ sơ tác giả"
-                >
-                  <img
-                    src={thread.authorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80'}
-                    alt={thread.authorName}
-                    referrerPolicy="no-referrer"
-                    style={{ width: 28, height: 28, borderRadius: '50%', border: '1.5px solid #00ffd5', objectFit: 'cover' }}
-                  />
-                  <span style={{ color: '#00ffd5', fontWeight: 700, textDecoration: 'underline' }}>{thread.authorName.replace(/\(.*\)/, '').trim()}</span>
+                  {/* Title */}
+                  <h3
+                    style={{
+                      fontSize: '1.02rem',
+                      fontWeight: 800,
+                      color: 'var(--color-text-main)',
+                      marginBottom: 8,
+                      lineHeight: 1.4,
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {thread.title}
+                  </h3>
+
+                  {/* Snippet Content */}
+                  <p
+                    style={{
+                      fontSize: '0.83rem',
+                      color: 'var(--color-text-muted)',
+                      lineHeight: 1.55,
+                      marginBottom: 16,
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {thread.content}
+                  </p>
                 </div>
 
-                {/* Metrics & Facebook Reaction Bar */}
-                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                  <FacebookReactionPicker
-                    currentReaction={threadReactions[thread.id] !== undefined ? threadReactions[thread.id] : ((thread as any).userReaction || null)}
-                    totalLikes={threadUpvotesMap[thread.id] !== undefined ? threadUpvotesMap[thread.id] : thread.upvotes}
-                    reactionsSummary={threadReactionsSummaryMap[thread.id] || (thread.reactions as any)}
-                    onSelectReaction={(r) => handleToggleReaction(thread.id, r)}
-                  />
+                {/* Card Footer Info */}
+                <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.8rem', gap: 10 }}>
+                    {/* Author Info */}
+                    <div
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActiveAuthor({
+                          name: thread.authorName.replace(/\(.*\)/, '').trim(),
+                          avatar: thread.authorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80',
+                        });
+                      }}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', minWidth: 0 }}
+                      title="Bấm để xem hồ sơ tác giả"
+                    >
+                      <img
+                        src={thread.authorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80'}
+                        alt={thread.authorName}
+                        referrerPolicy="no-referrer"
+                        style={{
+                          width: 28,
+                          height: 28,
+                          borderRadius: '50%',
+                          border: '1.5px solid var(--color-primary)',
+                          objectFit: 'cover',
+                          flexShrink: 0,
+                        }}
+                      />
+                      <div style={{ minWidth: 0 }}>
+                        <div
+                          style={{
+                            color: 'var(--color-primary)',
+                            fontWeight: 700,
+                            fontSize: '0.8rem',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {thread.authorName.replace(/\(.*\)/, '').trim()}
+                        </div>
+                        <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', lineHeight: 1 }}>
+                          {formatDate(thread.createdAt)}
+                        </div>
+                      </div>
+                    </div>
 
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#94a3b8', fontSize: '0.82rem' }}>
-                    <MessageSquare size={14} color="#38bdf8" /> {threadCommentCounts[thread.id] !== undefined ? threadCommentCounts[thread.id] : (thread.repliesCount || 1)}
-                  </span>
+                    {/* Metrics & Facebook Reaction Bar */}
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
+                      <FacebookReactionPicker
+                        currentReaction={threadReactions[thread.id] !== undefined ? threadReactions[thread.id] : ((thread as any).userReaction || null)}
+                        totalLikes={threadUpvotesMap[thread.id] !== undefined ? threadUpvotesMap[thread.id] : thread.upvotes}
+                        reactionsSummary={threadReactionsSummaryMap[thread.id] || (thread.reactions as any)}
+                        onSelectReaction={(r) => handleToggleReaction(thread.id, r)}
+                      />
+
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          color: 'var(--color-text-muted)',
+                          fontSize: '0.78rem',
+                          background: 'var(--color-bg-main)',
+                          padding: '4px 8px',
+                          borderRadius: 14,
+                          border: '1px solid var(--color-border)',
+                        }}
+                      >
+                        <IconMessageSquare size={13} color="var(--color-sky)" />
+                        <strong>{threadCommentCounts[thread.id] !== undefined ? threadCommentCounts[thread.id] : (thread.repliesCount || 0)}</strong>
+                      </span>
+
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          color: 'var(--color-text-dim)',
+                          fontSize: '0.76rem',
+                          background: 'var(--color-bg-main)',
+                          padding: '4px 8px',
+                          borderRadius: 14,
+                          border: '1px solid var(--color-border)',
+                        }}
+                      >
+                        <IconEye size={13} color="var(--color-text-dim)" />
+                        <span>{thread.viewsCount || 1}</span>
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
-          </div>
-        ))}
-      </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

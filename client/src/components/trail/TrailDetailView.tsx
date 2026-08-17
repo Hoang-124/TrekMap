@@ -14,12 +14,18 @@ interface TrailDetailViewProps {
   trail: Trail;
   onBack: () => void;
   onOpenIncidentModal: () => void;
+  incidents?: any[];
+  currentUser?: any;
+  onRequireLogin?: (actionName: string) => void;
 }
 
 export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
   trail,
   onBack,
   onOpenIncidentModal,
+  incidents = [],
+  currentUser,
+  onRequireLogin,
 }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'map' | 'weather' | 'checklist' | 'itinerary' | 'guides' | 'reviews' | 'conditions'>('overview');
   const [reviewsList, setReviewsList] = useState<Review[]>(trail.reviews || []);
@@ -41,7 +47,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
     };
     const fetchGuides = async () => {
       try {
-        const res = await fetch(`/api/guides?region=${encodeURIComponent(trail.region)}`);
+        const res = await fetch(`/api/trails/${trail.id}/guides`);
         const data = await res.json();
         if (data.success && Array.isArray(data.data) && data.data.length > 0) {
           setGuidesList(data.data);
@@ -50,17 +56,29 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
     };
     fetchReviews();
     fetchGuides();
-  }, [trail.id, trail.region]);
+  }, [trail.id]);
 
   const steepnessPercent = Math.round((trail.elevationGainM / (trail.distanceKm * 1000)) * 100);
 
   // GPX 1.1 Download Generator
   const handleDownloadGpx = () => {
+    if (!currentUser && !localStorage.getItem('trekmap_token')) {
+      if (onRequireLogin) onRequireLogin('tải file GPX Offline');
+      return;
+    }
+
+    if (!trail.gpxTrack || trail.gpxTrack.length === 0) {
+      alert('Tuyến đường này chưa có dữ liệu GPS Tracklog chi tiết để xuất file.');
+      return;
+    }
+
     const trackPointsXml = (trail.gpxTrack || [])
-      .map(
-        (pt: any) =>
-          `      <trkpt lat="${pt[0]}" lon="${pt[1]}"><ele>${pt[2] || 0}</ele></trkpt>`
-      )
+      .map((pt: any) => {
+        const lat = Array.isArray(pt) ? pt[0] : pt.lat;
+        const lng = Array.isArray(pt) ? pt[1] : pt.lng;
+        const ele = Array.isArray(pt) ? (pt[2] || 0) : (pt.elevationM || 0);
+        return `      <trkpt lat="${lat}" lon="${lng}"><ele>${ele}</ele></trkpt>`;
+      })
       .join('\n');
 
     const gpxXml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -89,6 +107,10 @@ ${trackPointsXml}
 
   const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!currentUser && !localStorage.getItem('trekmap_token')) {
+      if (onRequireLogin) onRequireLogin('gửi đánh giá chuyến đi');
+      return;
+    }
     if (!newContent.trim()) return;
 
     const payload = {
@@ -166,10 +188,12 @@ ${trackPointsXml}
             <span>Tải GPX Offline</span>
           </button>
           <button className="btn btn-danger" onClick={onOpenIncidentModal} style={{ gap: 8, display: 'inline-flex', alignItems: 'center' }}>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
             </svg>
-            <span>Cứu hộ SOS</span>
+            <span>Báo cáo nguy hiểm</span>
           </button>
         </div>
       </div>
@@ -228,8 +252,24 @@ ${trackPointsXml}
           }}>
             <div>
               <div style={{ fontSize: '0.75rem', color: 'var(--color-text-dim)' }}>Đánh giá cộng đồng</div>
-              <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--color-sun)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                {trail.rating} <span style={{ fontSize: '0.85rem', color: 'var(--color-text-dim)' }}>({trail.reviewCount} bài)</span>
+              <div style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--color-sun)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                {reviewsList.length > 0 ? (
+                  <>
+                    <span>★</span> {(reviewsList.reduce((acc, r) => acc + (r.rating || 5), 0) / reviewsList.length).toFixed(1)}{' '}
+                    <span style={{ fontSize: '0.85rem', color: 'var(--color-text-dim)', fontWeight: 500 }}>
+                      ({reviewsList.length} bài)
+                    </span>
+                  </>
+                ) : (trail.reviewCount && trail.reviewCount > 0 && trail.rating && trail.rating > 0 && trail.reviewCount !== 1) ? (
+                  <>
+                    <span>★</span> {Number(trail.rating).toFixed(1)}{' '}
+                    <span style={{ fontSize: '0.85rem', color: 'var(--color-text-dim)', fontWeight: 500 }}>
+                      ({trail.reviewCount} bài)
+                    </span>
+                  </>
+                ) : (
+                  <span style={{ fontSize: '0.88rem', color: 'var(--color-text-muted)', fontWeight: 600 }}>Chưa có đánh giá</span>
+                )}
               </div>
             </div>
             <div style={{ borderLeft: '1px solid var(--color-border)', paddingLeft: 16 }}>
@@ -543,7 +583,7 @@ ${trackPointsXml}
             </h3>
           </div>
 
-          <MapView trails={[trail]} selectedTrail={trail} height="550px" />
+          <MapView trails={[trail]} selectedTrail={trail} incidents={incidents} height="550px" />
 
           <div style={{ marginTop: 24 }}>
             <h4 style={{ fontSize: '1.1rem', color: 'var(--color-text-main)', marginBottom: 12 }}>Danh sách điểm mốc (Waypoints)</h4>

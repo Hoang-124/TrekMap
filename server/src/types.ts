@@ -81,6 +81,10 @@ export interface Trail {
   waypoints: Waypoint[];
   reviews?: Review[];
   guides?: Guide[];
+  distanceFromUserKm?: number;
+  roadDistanceKm?: number;
+  travelDurationFormatted?: string;
+  travelDurationMin?: number;
 }
 
 export interface Incident {
@@ -90,11 +94,17 @@ export interface Incident {
   userId?: string;
   userName?: string;
   userAvatar?: string;
+  reportedBy?: string;
+  reporterName?: string;
+  reporterEmail?: string;
+  reporterAvatar?: string;
+  reporterRole?: string;
   type: 'landslide' | 'flash_flood' | 'lost' | 'bad_weather' | 'flood' | 'weather' | 'wildlife' | 'other';
   description: string;
   severity: 'high' | 'medium' | 'low' | 'critical';
   reportedAt: string;
   resolved: boolean;
+  active?: boolean;
   locationNote?: string;
   images?: string[];
   verifiedBy?: string;
@@ -102,6 +112,32 @@ export interface Incident {
   coordinates?: { lat: number; lng: number };
   elevationM?: number;
   rescueContact?: string;
+  confirmations?: number;
+  coReporters?: Array<{
+    userId?: any;
+    userName: string;
+    userEmail?: string;
+    userAvatar?: string;
+    confirmedAt: string;
+    note?: string;
+  }>;
+  timelineUpdates?: Array<{
+    id: string;
+    userId?: any;
+    userName: string;
+    userEmail?: string;
+    userAvatar?: string;
+    content: string;
+    statusNote?: string;
+    createdAt: string;
+  }>;
+  disputes?: Array<{
+    userId?: any;
+    userName: string;
+    userEmail?: string;
+    disputedAt: string;
+    reason: string;
+  }>;
 }
 
 export interface UserProfile {

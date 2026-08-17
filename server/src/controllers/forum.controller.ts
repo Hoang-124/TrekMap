@@ -58,7 +58,7 @@ export const getThreads = async (req: Request, res: Response) => {
             userReaction: currentUserReaction || null,
             repliesCount: t.repliesCount,
             viewsCount: t.viewsCount,
-            createdAt: new Date(t.createdAt).toLocaleDateString('vi-VN'),
+            createdAt: t.createdAt ? new Date(t.createdAt).toISOString() : new Date().toISOString(),
           };
         }),
       });

@@ -71,6 +71,16 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
       });
     });
 
+    socketInstance.on('userBanned', (data: { userId?: string; email?: string }) => {
+      const myId = currentUser?.id || (currentUser as any)?._id;
+      const myEmail = currentUser?.email?.toLowerCase();
+      if ((data.userId && String(myId) === String(data.userId)) || (data.email && myEmail === data.email?.toLowerCase())) {
+        localStorage.removeItem('trekmap_token');
+        alert('Tài khoản của bạn đã bị Ban Quản Trị khóa vĩnh viễn do vi phạm quy định cộng đồng hoặc báo động sai sự thật.');
+        window.location.href = '/';
+      }
+    });
+
     socketInstance.on('disconnect', () => {
       console.log('🔌 [Socket.io Client] Disconnected from server');
       setIsConnected(false);
@@ -82,7 +92,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
       clearInterval(pingInterval);
       socketInstance.disconnect();
     };
-  }, []);
+  }, [currentUser]);
 
   // When currentUser changes (login/logout/switch), re-emit join with current userId
   useEffect(() => {

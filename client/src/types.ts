@@ -46,6 +46,7 @@ export interface Trail {
   altNames?: string[];
   province: string;
   district: string;
+  hamlet?: string;
   region: Region;
   startLat: number;
   startLng: number;
@@ -84,6 +85,10 @@ export interface Trail {
   waypoints: Waypoint[];
   reviews?: Review[];
   guides?: Guide[];
+  distanceFromUserKm?: number;
+  roadDistanceKm?: number;
+  travelDurationFormatted?: string;
+  travelDurationMin?: number;
 }
 
 export interface Incident {
@@ -93,6 +98,11 @@ export interface Incident {
   userId?: string;
   userName?: string;
   userAvatar?: string;
+  reportedBy?: string;
+  reporterName?: string;
+  reporterEmail?: string;
+  reporterAvatar?: string;
+  reporterRole?: string;
   type: 'landslide' | 'flash_flood' | 'lost' | 'bad_weather' | 'flood' | 'weather' | 'wildlife' | 'other';
   description: string;
   severity: 'high' | 'medium' | 'low' | 'critical';
@@ -105,6 +115,32 @@ export interface Incident {
   coordinates?: { lat: number; lng: number };
   elevationM?: number;
   rescueContact?: string;
+  confirmations?: number;
+  coReporters?: Array<{
+    userId?: string;
+    userName: string;
+    userEmail?: string;
+    userAvatar?: string;
+    confirmedAt: string;
+    note?: string;
+  }>;
+  timelineUpdates?: Array<{
+    id: string;
+    userId?: string;
+    userName: string;
+    userEmail?: string;
+    userAvatar?: string;
+    content: string;
+    statusNote?: string;
+    createdAt: string;
+  }>;
+  disputes?: Array<{
+    userId?: string;
+    userName: string;
+    userEmail?: string;
+    disputedAt: string;
+    reason: string;
+  }>;
 }
 
 export interface UserProfile {
@@ -222,25 +258,81 @@ export interface ItineraryData {
   status?: string;
 }
 
+export type NotificationCategory = 'safety' | 'moderation' | 'social' | 'system';
+
 export type NotificationType =
-  | 'new_contribution_pending'
+  | 'safety_alert'
+  | 'dispute_alert'
+  | 'contribution_pending'
   | 'contribution_approved'
   | 'contribution_rejected'
-  | 'new_message'
-  | 'comment'
-  | 'reaction'
-  | 'system'
-  | 'weather_alert';
+  | 'community_comment'
+  | 'community_reply'
+  | 'direct_message'
+  | 'badge_earned'
+  | 'account_security'
+  | 'system';
 
 export interface NotificationItem {
   _id: string;
   recipient: string;
+  sender?: {
+    id?: string;
+    name?: string;
+    avatarUrl?: string;
+  };
   type: NotificationType;
+  category: NotificationCategory;
   title: string;
   message: string;
   link: string;
-  relatedId?: string;
+  relatedId?: any;
   isRead: boolean;
   createdAt: string;
+  updatedAt?: string;
 }
 
+export interface ContributionItem {
+  id: string;
+  name: string;
+  altNames?: string[];
+  region: Region;
+  province: string;
+  district: string;
+  hamlet?: string;
+  distanceKm: number;
+  elevationGainM: number;
+  maxAltitudeM: number;
+  difficultyLevel: number;
+  difficultyNote?: string;
+  durationDays?: number;
+  durationHoursNote: string;
+  bestMonths?: number[];
+  avoidMonths?: number[];
+  startLat: number;
+  startLng: number;
+  endLat: number;
+  endLng: number;
+  gpxTrack?: [number, number][];
+  waypoints?: Waypoint[];
+  description: string;
+  transportationInfo?: string;
+  coverImage?: string;
+  galleryImages?: string[];
+  permitRequired: boolean;
+  permitInfo?: string;
+  hasCampsite: boolean;
+  hasWaterSource: boolean;
+  kidFriendly: boolean;
+  rescueContact?: {
+    name: string;
+    phone: string;
+    rangerContact: string;
+  };
+  authorEmail?: string;
+  authorName?: string;
+  authorAvatar?: string;
+  userId?: string;
+  status: 'pending' | 'approved' | 'rejected';
+  createdAt: string;
+}

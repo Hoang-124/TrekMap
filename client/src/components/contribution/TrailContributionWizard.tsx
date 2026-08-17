@@ -1,8 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import { submitTrailContribution, uploadImageToCloudinary } from '../../services/api.js';
-import type { Region } from '../../types.js';
+import type { Region, UserProfile, Waypoint } from '../../types.js';
+import {
+  IconCompass,
+  IconMapPin,
+  IconMountain,
+  IconCalendar,
+  IconAlertTriangle,
+  IconShieldCheck,
+  IconSend,
+  IconLightbulb,
+} from '../common/SvgIcons.js';
 
 const ArrowLeft = ({ size = 18, color = 'currentColor', style }: { size?: number; color?: string; style?: React.CSSProperties }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
@@ -18,27 +28,25 @@ const ArrowRight = ({ size = 18, color = 'currentColor', style }: { size?: numbe
   </svg>
 );
 
-// Custom Green Marker Icon for Start Point
+// Custom Leaflet Pin Icons
 const greenPinIcon = new L.Icon({
   iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
+  iconSize: [26, 42],
+  iconAnchor: [13, 42],
   popupAnchor: [1, -34],
-  shadowSize: [41, 41],
+  shadowSize: [42, 42],
 });
 
-// Custom Red Marker Icon for End Point / Summit
 const redPinIcon = new L.Icon({
   iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
+  iconSize: [26, 42],
+  iconAnchor: [13, 42],
   popupAnchor: [1, -34],
-  shadowSize: [41, 41],
+  shadowSize: [42, 42],
 });
 
-// Helper component to capture map clicks and update coordinates
 function MapClickListener({ onSelectCoords }: { onSelectCoords: (lat: number, lng: number) => void }) {
   useMapEvents({
     click(e) {
@@ -53,52 +61,62 @@ interface ProvinceData {
   wards: string[];
 }
 
-// 34 Updated Merged Provinces & Cities of Vietnam (Post Administrative Reform)
 const VIETNAM_ADMINISTRATIVE_DATA: Record<string, ProvinceData[]> = {
   'Miền Bắc': [
-    { name: 'Thành phố Hà Nội', wards: ['Phường Ba Đình', 'Phường Hoàn Kiếm', 'Xã Ba Vì', 'Xã Hương Sơn (Chùa Hương)', 'Xã Mỹ Đức', 'Xã Quốc Oai', 'Xã Sóc Sơn', 'Xã Thạch Thất', 'Phường Sơn Tây'] },
-    { name: 'Tỉnh Lào Cai', wards: ['Phường Sa Pa', 'Xã Y Tý', 'Xã Bát Xát', 'Xã Mường Hum', 'Xã Trịnh Tường', 'Xã Tả Van', 'Xã Bản Hồ', 'Xã Ngũ Chỉ Sơn', 'Xã Tả Phìn', 'Xã San Sả Hồ'] },
-    { name: 'Tỉnh Yên Bái', wards: ['Phường Nghĩa Lộ', 'Xã Trạm Tấu', 'Xã Mù Cang Chải', 'Xã Xà Hồ', 'Xã Túc Đán', 'Xã Tú Lệ', 'Xã Púng Luông', 'Xã La Pán Tẩn', 'Xã Dế Chố Thù'] },
-    { name: 'Tỉnh Hà Giang', wards: ['Phường Hà Giang', 'Xã Đồng Văn', 'Xã Mèo Vạc', 'Xã Lũng Cú', 'Xã Pả Vỉ', 'Xã Thông Nguyên (Hoàng Su Phì)', 'Xã Quản Bạ', 'Xã Yên Minh', 'Xã Vị Xuyên'] },
-    { name: 'Tỉnh Lai Châu', wards: ['Phường Lai Châu', 'Xã Tam Đường', 'Xã Tả Liên', 'Xã Sơn Bình', 'Xã Hồ Thầu', 'Xã Khun Há', 'Xã Phong Thổ', 'Xã Sìn Hồ', 'Xã Mường Tè', 'Xã Nậm Nhùn'] },
-    { name: 'Tỉnh Sơn La', wards: ['Phường Sơn La', 'Xã Bắc Yên', 'Xã Tà Xùa', 'Xã Lóng Luông', 'Phường Mộc Châu', 'Xã Chiềng Đi', 'Xã Vân Hồ', 'Xã Mai Sơn', 'Xã Quỳnh Nhai'] },
-    { name: 'Tỉnh Hòa Bình', wards: ['Phường Hòa Bình', 'Xã Mai Châu', 'Xã Hang Kia', 'Xã Pà Cò', 'Xã Cao Phong', 'Xã Thung Nai', 'Xã Lương Sơn', 'Xã Tân Lạc', 'Xã Đà Bắc'] },
-    { name: 'Tỉnh Cao Bằng', wards: ['Phường Cao Bằng', 'Xã Trùng Khánh', 'Xã Đàm Thủy (Bản Giốc)', 'Xã Hà Quảng', 'Xã Bảo Lạc', 'Xã Nguyên Bình', 'Xã Quảng Hòa'] },
-    { name: 'Tỉnh Lạng Sơn', wards: ['Phường Lạng Sơn', 'Xã Mẫu Sơn', 'Xã Hữu Lũng', 'Xã Chi Lăng', 'Xã Lộc Bình', 'Xã Tràng Định'] },
-    { name: 'Tỉnh Quảng Ninh', wards: ['Thành phố Hạ Long', 'Phường Yên Tử (Uông Bí)', 'Xã Bình Liêu', 'Xã Cô Tô', 'Xã Vân Đồn', 'Xã Ba Chẽ', 'Xã Tiên Yên'] },
-    { name: 'Tỉnh Tuyên Quang', wards: ['Phường Tuyên Quang', 'Xã Na Hang', 'Xã Lâm Bình', 'Xã Tân Trào', 'Xã Yên Sơn', 'Xã Chiêm Hóa'] },
-    { name: 'Tỉnh Phú Thọ', wards: ['Thành phố Việt Trì', 'Xã Xuân Sơn (Vườn Quốc Gia)', 'Xã Thanh Thủy', 'Phường Thị xã Phú Thọ', 'Xã Đoan Hùng'] },
-    { name: 'Tỉnh Vĩnh Phúc', wards: ['Thành phố Vĩnh Yên', 'Phường Tam Đảo', 'Thành phố Phúc Yên', 'Xã Lập Thạch', 'Xã Sông Lô'] },
-    { name: 'Tỉnh Bắc Giang', wards: ['Thành phố Bắc Giang', 'Xã Tây Yên Tử', 'Xã Lục Nam', 'Xã Lục Ngạn', 'Xã Yên Dũng', 'Xã Sơn Động'] },
-    { name: 'Tỉnh Bắc Ninh', wards: ['Thành phố Bắc Ninh', 'Phường Từ Sơn', 'Xã Tiên Du', 'Xã Yên Phong', 'Xã Thuận Thành'] },
-    { name: 'Tỉnh Thái Nguyên', wards: ['Thành phố Thái Nguyên', 'Phường Sông Công', 'Xã Võ Nhai', 'Xã Định Hóa', 'Xã Đại Từ (Núi Cốc)'] },
-    { name: 'Tỉnh Bắc Kạn', wards: ['Phường Bắc Kạn', 'Xã Ba Bể', 'Xã Chợ Đồn', 'Xã Nân Pắc', 'Xã Bạc Thông'] },
+    { name: 'Thành phố Hà Nội', wards: ['Phường Ba Đình', 'Phường Hoàn Kiếm', 'Xã Ba Vì', 'Xã Hương Sơn', 'Xã Sóc Sơn'] },
+    { name: 'Tỉnh Lào Cai', wards: ['Phường Sa Pa', 'Xã Y Tý', 'Xã Bát Xát', 'Xã Mường Hum', 'Xã Tả Van', 'Xã Bản Hồ', 'Xã Ngũ Chỉ Sơn', 'Xã Tả Phìn'] },
+    { name: 'Tỉnh Yên Bái', wards: ['Phường Nghĩa Lộ', 'Xã Trạm Tấu', 'Xã Mù Cang Chải', 'Xã Xà Hồ', 'Xã Tú Lệ', 'Xã La Pán Tẩn'] },
+    { name: 'Tỉnh Hà Giang', wards: ['Phường Hà Giang', 'Xã Đồng Văn', 'Xã Mèo Vạc', 'Xã Lũng Cú', 'Xã Thông Nguyên', 'Xã Quản Bạ'] },
+    { name: 'Tỉnh Lai Châu', wards: ['Phường Lai Châu', 'Xã Tam Đường', 'Xã Tả Liên', 'Xã Sơn Bình', 'Xã Hồ Thầu', 'Xã Sìn Hồ'] },
+    { name: 'Tỉnh Sơn La', wards: ['Phường Sơn La', 'Xã Bắc Yên', 'Xã Tà Xùa', 'Phường Mộc Châu', 'Xã Vân Hồ'] },
+    { name: 'Tỉnh Hòa Bình', wards: ['Phường Hòa Bình', 'Xã Mai Châu', 'Xã Hang Kia', 'Xã Pà Cò', 'Xã Cao Phong'] },
+    { name: 'Tỉnh Cao Bằng', wards: ['Phường Cao Bằng', 'Xã Trùng Khánh', 'Xã Đàm Thủy', 'Xã Hà Quảng', 'Xã Nguyên Bình'] },
+    { name: 'Tỉnh Lạng Sơn', wards: ['Phường Lạng Sơn', 'Xã Mẫu Sơn', 'Xã Hữu Lũng', 'Xã Chi Lăng'] },
+    { name: 'Tỉnh Quảng Ninh', wards: ['Thành phố Hạ Long', 'Phường Yên Tử', 'Xã Bình Liêu', 'Xã Cô Tô'] },
   ],
   'Miền Trung': [
-    { name: 'Thành phố Đà Nẵng', wards: ['Phường Sơn Trà', 'Phường Thọ Quang', 'Phường Phước Mỹ', 'Phường An Hải', 'Phường Hải Châu', 'Phường Thạch Thang', 'Phường Thanh Khê', 'Phường Mỹ An', 'Phường Khuê Mỹ', 'Phường Ngũ Hành Sơn', 'Phường Liên Chiểu', 'Phường Hòa Khánh', 'Phường Cẩm Lệ', 'Xã Hòa Vang', 'Xã Hòa Bắc (Núi Chúa)', 'Xã Hòa Ninh (Bà Nà)', 'Xã Hòa Phú'] },
-    { name: 'Thành phố Huế', wards: ['Phường Huế', 'Phường Thuận Thành', 'Phường Vĩnh Ninh', 'Phường Phú Hội', 'Xã A Lưới', 'Xã Nam Đông', 'Xã Bạch Mã (Phú Lộc)', 'Xã Phong Điền', 'Xã Hương Thủy'] },
-    { name: 'Tỉnh Quảng Bình', wards: ['Thành phố Đồng Hới', 'Xã Phong Nha - Kẻ Bàng', 'Xã Sơn Trạch', 'Xã Tân Hóa', 'Xã Bố Trạch', 'Xã Minh Hóa', 'Xã Tuyên Hóa', 'Xã Lệ Thủy'] },
-    { name: 'Tỉnh Quảng Nam', wards: ['Thành phố Hội An', 'Thành phố Tam Kỳ', 'Xã Tây Giang', 'Xã Nam Giang', 'Xã Phước Sơn', 'Xã Ngọc Linh', 'Xã Bắc Trà My', 'Xã Nam Trà My'] },
-    { name: 'Thành phố Đà Lạt (Lâm Đồng)', wards: ['Phường Đà Lạt', 'Phường Xuân Thọ', 'Phường Tuyền Lâm', 'Phường Bảo Lộc', 'Xã Lạc Dương (Lang Biang)', 'Xã Bidoup', 'Xã Đạ Nhim', 'Xã Tà Năng', 'Xã Phan Dũng', 'Xã Đơn Dương'] },
-    { name: 'Tỉnh Đắk Lắk', wards: ['Thành phố Buôn Ma Thuột', 'Xã Buôn Đôn', 'Xã Krông Bông (Chư Yang Sin)', 'Xã Lắk', 'Xã M\'Đrắk', 'Xã Krông Năng'] },
-    { name: 'Tỉnh Khánh Hòa', wards: ['Thành phố Nha Trang', 'Thành phố Cam Ranh', 'Xã Cam Lâm', 'Xã Hòn Bà (Khánh Vĩnh)', 'Xã Khánh Sơn', 'Xã Vạn Ninh', 'Xã Ninh Hòa'] },
-    { name: 'Tỉnh Ninh Thuận', wards: ['Thành phố Phan Rang - Tháp Chàm', 'Xã Phước Bình', 'Xã Vĩnh Hy (Núi Chúa)', 'Xã Bác Ái', 'Xã Ninh Sơn', 'Xã Thuận Bắc'] },
-    { name: 'Tỉnh Bình Thuận', wards: ['Thành phố Phan Thiết', 'Xã Phan Dũng', 'Xã Tuy Phong', 'Xã Tánh Linh (Núi Ông)', 'Xã Hàm Thuận Bắc', 'Xã Hàm Thuận Nam'] },
-    { name: 'Tỉnh Gia Lai', wards: ['Thành phố Pleiku', 'Xã Chư Đăng Ya', 'Xã Kbang (Kon Ka Kinh)', 'Xã Ia Grai', 'Xã Kông Chro', 'Xã Mang Yang'] },
-    { name: 'Tỉnh Kon Tum', wards: ['Thành phố Kon Tum', 'Xã Măng Đen (Kon Plông)', 'Xã Đắk Glei', 'Xã Tu Mơ Rông', 'Xã Sa Thầy'] },
+    { name: 'Thành phố Đà Nẵng', wards: ['Phường Sơn Trà', 'Phường Thọ Quang', 'Phường Hải Châu', 'Xã Hòa Bắc', 'Xã Hòa Vang'] },
+    { name: 'Thành phố Huế', wards: ['Phường Huế', 'Phường Thuận Thành', 'Xã Bạch Mã', 'Xã A Lưới', 'Xã Nam Đông'] },
+    { name: 'Tỉnh Quảng Bình', wards: ['Thành phố Đồng Hới', 'Xã Phong Nha - Kẻ Bàng', 'Xã Tân Hóa', 'Xã Bố Trạch'] },
+    { name: 'Tỉnh Quảng Nam', wards: ['Thành phố Hội An', 'Thành phố Tam Kỳ', 'Xã Nam Trà My', 'Xã Phước Sơn'] },
+    { name: 'Thành phố Đà Lạt (Lâm Đồng)', wards: ['Phường Đà Lạt', 'Phường Xuân Thọ', 'Xã Lạc Dương', 'Xã Bidoup', 'Xã Tà Năng', 'Xã Phan Dũng'] },
+    { name: 'Tỉnh Đắk Lắk', wards: ['Thành phố Buôn Ma Thuột', 'Xã Krông Bông', 'Xã Buôn Đôn', 'Xã Lắk'] },
+    { name: 'Tỉnh Gia Lai', wards: ['Thành phố Pleiku', 'Xã Chư Đăng Ya', 'Xã Kbang', 'Xã Mang Yang'] },
+    { name: 'Tỉnh Kon Tum', wards: ['Thành phố Kon Tum', 'Xã Măng Đen', 'Xã Đắk Glei', 'Xã Tu Mơ Rông'] },
+    { name: 'Tỉnh Ninh Thuận', wards: ['Thành phố Phan Rang', 'Xã Phước Bình', 'Xã Vĩnh Hy'] },
+    { name: 'Tỉnh Bình Thuận', wards: ['Thành phố Phan Thiết', 'Xã Phan Dũng', 'Xã Tánh Linh'] },
   ],
   'Miền Nam': [
-    { name: 'Thành phố Hồ Chí Minh', wards: ['Phường TP. Thủ Đức', 'Xã Cần Giờ', 'Xã Củ Chi', 'Xã Bình Chánh', 'Phường Quận 1', 'Phường Quận 7'] },
-    { name: 'Tỉnh Bà Rịa - Vũng Tàu', wards: ['Thành phố Vũng Tàu', 'Thành phố Bà Rịa', 'Xã Núi Dinh', 'Xã Xuyên Mộc (Bình Châu)', 'Xã Đất Đỏ', 'Xã Côn Đảo'] },
-    { name: 'Tỉnh Đồng Nai', wards: ['Thành phố Biên Hòa', 'Xã Nam Cát Tiên (Tân Phú)', 'Xã Chứa Chan (Xuân Lộc)', 'Xã Định Quán', 'Xã Vĩnh Cửu'] },
-    { name: 'Tỉnh Tây Ninh', wards: ['Thành phố Tây Ninh', 'Phường Ninh Sơn (Núi Bà Đen)', 'Xã Tân Biên', 'Xã Dương Minh Châu', 'Xã Châu Thành'] },
-    { name: 'Tỉnh An Giang', wards: ['Thành phố Long Xuyên', 'Thành phố Châu Đốc', 'Xã An Hảo (Núi Cấm)', 'Xã Tri Tôn', 'Xã Tịnh Biên'] },
-    { name: 'Tỉnh Kiên Giang', wards: ['Thành phố Phú Quốc', 'Thành phố Rạch Giá', 'Thành phố Hà Tiên', 'Xã Nam Du', 'Xã Kiên Lương'] },
-    { name: 'Tỉnh Bình Phước', wards: ['Thành phố Đồng Xoài', 'Xã Bù Gia Mập', 'Xã Bù Đăng', 'Xã Lộc Ninh', 'Xã Hớn Quản'] },
+    { name: 'Thành phố Hồ Chí Minh', wards: ['Phường TP. Thủ Đức', 'Xã Cần Giờ', 'Xã Củ Chi', 'Phường Quận 1'] },
+    { name: 'Tỉnh Bà Rịa - Vũng Tàu', wards: ['Thành phố Vũng Tàu', 'Thành phố Bà Rịa', 'Xã Núi Dinh', 'Xã Xuyên Mộc'] },
+    { name: 'Tỉnh Đồng Nai', wards: ['Thành phố Biên Hòa', 'Xã Nam Cát Tiên', 'Xã Chứa Chan'] },
+    { name: 'Tỉnh Tây Ninh', wards: ['Thành phố Tây Ninh', 'Phường Ninh Sơn', 'Xã Tân Biên'] },
+    { name: 'Tỉnh An Giang', wards: ['Thành phố Long Xuyên', 'Thành phố Châu Đốc', 'Xã An Hảo', 'Xã Tri Tôn'] },
+    { name: 'Tỉnh Kiên Giang', wards: ['Thành phố Phú Quốc', 'Thành phố Rạch Giá', 'Xã Nam Du'] },
   ],
 };
 
-import type { UserProfile } from '../../types.js';
+const PROVINCE_COORDINATES: Record<string, [number, number]> = {
+  'Thành phố Đà Nẵng': [16.0544, 108.2022],
+  'Tỉnh Lào Cai': [22.3364, 103.8438],
+  'Tỉnh Yên Bái': [21.7052, 104.8705],
+  'Tỉnh Hà Giang': [22.8233, 104.9839],
+  'Tỉnh Lai Châu': [22.3963, 103.4586],
+  'Tỉnh Sơn La': [21.3257, 103.9188],
+  'Tỉnh Hòa Bình': [20.8156, 105.3384],
+  'Tỉnh Cao Bằng': [22.6663, 106.2625],
+  'Thành phố Huế': [16.4637, 107.5909],
+  'Tỉnh Quảng Bình': [17.4687, 106.6227],
+  'Tỉnh Quảng Nam': [15.567, 108.0],
+  'Thành phố Đà Lạt (Lâm Đồng)': [11.9404, 108.4583],
+  'Tỉnh Đắk Lắk': [12.6667, 108.05],
+  'Tỉnh Gia Lai': [13.9833, 108.0],
+  'Thành phố Hà Nội': [21.0285, 105.8542],
+  'Thành phố Hồ Chí Minh': [10.8231, 106.6297],
+  'Tỉnh Bà Rịa - Vũng Tàu': [10.346, 107.0843],
+  'Tỉnh Tây Ninh': [11.3108, 106.0984],
+  'Tỉnh An Giang': [10.3759, 105.4185],
+};
 
 interface WizardProps {
   onBack: () => void;
@@ -115,44 +133,32 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
 
   if (!currentUser) {
     return (
-      <div style={{ maxWidth: 800, margin: '60px auto', padding: '48px 24px', textAlign: 'center', background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', borderRadius: 24, boxShadow: 'var(--shadow-lg)' }}>
-        <div style={{ background: 'rgba(14, 215, 181, 0.12)', width: 64, height: 64, borderRadius: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px auto' }}>
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-          </svg>
+      <div style={{ maxWidth: 760, margin: '60px auto', padding: '48px 32px', textAlign: 'center', background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', borderRadius: 24, boxShadow: 'var(--shadow-card)' }}>
+        <div style={{ background: 'rgba(16, 185, 129, 0.12)', width: 64, height: 64, borderRadius: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px auto' }}>
+          <IconCompass size={32} color="var(--color-primary)" />
         </div>
         <h2 style={{ fontSize: '1.6rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 12 }}>
           Yêu Cầu Đăng Nhập Để Đóng Góp Cung Đường
         </h2>
-        <p style={{ color: 'var(--color-text-muted)', fontSize: '0.95rem', marginBottom: 28, maxWidth: 540, margin: '0 auto 28px auto', lineHeight: '1.6' }}>
-          Để đảm bảo chất lượng dữ liệu địa hình 3D và ghi nhận điểm uy tín Trekker chính xác, bạn cần đăng nhập tài khoản trước khi gửi đóng góp cung đường mới cho cộng đồng.
+        <p style={{ color: 'var(--color-text-muted)', fontSize: '0.95rem', marginBottom: 28, lineHeight: 1.6, maxWidth: 540, margin: '0 auto 28px auto' }}>
+          Để đảm bảo tính xác thực 100% dữ liệu thực địa trên Database và ghi nhận điểm thưởng Trekker (+50 điểm), bạn cần đăng nhập trước khi đóng góp.
         </p>
         <div style={{ display: 'flex', justifyContent: 'center', gap: 14 }}>
-          <button className="btn btn-outline" onClick={onBack} style={{ borderRadius: 12, padding: '12px 24px' }}>
-            Quay lại trang chủ
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={() => {
-              window.location.hash = '#login';
-            }}
-            style={{ borderRadius: 12, padding: '12px 28px', fontWeight: 700 }}
-          >
-            Đăng nhập ngay
-          </button>
+          <button className="btn btn-outline" onClick={onBack} style={{ borderRadius: 12, padding: '10px 24px', fontSize: '0.9rem' }}>Quay lại</button>
+          <button className="btn btn-primary" onClick={() => { window.location.hash = '#login'; }} style={{ borderRadius: 12, padding: '10px 28px', fontSize: '0.9rem', fontWeight: 700 }}>Đăng nhập ngay</button>
         </div>
       </div>
     );
   }
 
   const isEditing = !!localStorage.getItem('trekmap_editing_contribution');
-
   const [pinMode, setPinMode] = useState<'start' | 'end'>('start');
   const [mapTileType, setMapTileType] = useState<'satellite' | 'terrain' | 'osm'>('satellite');
   const [gpxTrack, setGpxTrack] = useState<[number, number][]>([]);
+  const [gpxFileName, setGpxFileName] = useState<string>('');
+  const [uploadingImage, setUploadingImage] = useState<boolean>(false);
 
-  // Form State
+  // Form State adhering 100% to MongoDB Trail & Contribution schema
   const [formData, setFormData] = useState({
     name: '',
     altNames: '',
@@ -166,20 +172,52 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
     durationDays: 1,
     durationHoursNote: '1 ngày',
     difficultyLevel: 3,
-    difficultyNote: 'Cần thể lực tốt',
+    difficultyNote: 'Đường dốc đá, cần thể lực tốt',
+    bestMonths: [10, 11, 12, 1, 2, 3, 4] as number[],
+    avoidMonths: [6, 7, 8] as number[],
     description: '',
     transportationInfo: '',
     coverImage: '',
     permitRequired: false,
     permitInfo: '',
-    hasCampsite: false,
-    hasWaterSource: false,
+    hasCampsite: true,
+    hasWaterSource: true,
     kidFriendly: false,
+    rescueContact: {
+      name: 'Hạt Kiểm Lâm Lào Cai',
+      phone: '02143.871.228',
+      rangerContact: 'Trạm Kiểm Lâm Trạm Tôn',
+    },
+    waypoints: [] as Waypoint[],
     startLat: 22.3364,
     startLng: 103.8438,
     endLat: 22.3512,
-    endLng: 103.8640,
+    endLng: 103.864,
   });
+
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const editingStr = localStorage.getItem('trekmap_editing_contribution');
+    if (editingStr) {
+      try {
+        const editingItem = JSON.parse(editingStr);
+        setFormData((prev) => ({
+          ...prev,
+          ...editingItem,
+          altNames: Array.isArray(editingItem.altNames) ? editingItem.altNames.join(', ') : editingItem.altNames || '',
+          bestMonths: editingItem.bestMonths || [10, 11, 12, 1, 2, 3, 4],
+          avoidMonths: editingItem.avoidMonths || [6, 7, 8],
+          rescueContact: editingItem.rescueContact || prev.rescueContact,
+        }));
+        if (editingItem.gpxTrack && Array.isArray(editingItem.gpxTrack)) {
+          setGpxTrack(editingItem.gpxTrack);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  }, []);
 
   const handleRegionChange = (newRegion: Region) => {
     const provinces = VIETNAM_ADMINISTRATIVE_DATA[newRegion] || [];
@@ -191,6 +229,10 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
       region: newRegion,
       province: firstProvince,
       district: firstWard,
+      rescueContact: {
+        ...prev.rescueContact,
+        name: `Hạt Kiểm Lâm ${firstProvince.replace(/^(Tỉnh |Thành phố )/, '')}`,
+      },
     }));
   };
 
@@ -203,6 +245,10 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
       ...prev,
       province: newProvince,
       district: firstWard,
+      rescueContact: {
+        ...prev.rescueContact,
+        name: `Hạt Kiểm Lâm ${newProvince.replace(/^(Tỉnh |Thành phố )/, '')}`,
+      },
     }));
   };
 
@@ -216,31 +262,25 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
     }
   };
 
-  const PROVINCE_COORDINATES: Record<string, [number, number]> = {
-    'Thành phố Đà Nẵng': [16.0544, 108.2022],
-    'Tỉnh Lào Cai': [22.3364, 103.8438],
-    'Tỉnh Yên Bái': [21.7052, 104.8705],
-    'Tỉnh Hà Giang': [22.8233, 104.9839],
-    'Tỉnh Lai Châu': [22.3963, 103.4586],
-    'Tỉnh Sơn La': [21.3257, 103.9188],
-    'Tỉnh Hòa Bình': [20.8156, 105.3384],
-    'Tỉnh Cao Bằng': [22.6663, 106.2625],
-    'Thành phố Huế': [16.4637, 107.5909],
-    'Tỉnh Quảng Bình': [17.4687, 106.6227],
-    'Tỉnh Quảng Nam': [15.5670, 108.0000],
-    'Thành phố Đà Lạt (Lâm Đồng)': [11.9404, 108.4583],
-    'Tỉnh Đắk Lắk': [12.6667, 108.0500],
-    'Tỉnh Khánh Hòa': [12.2451, 109.1943],
-    'Thành phố Hà Nội': [21.0285, 105.8542],
-    'Thành phố Hồ Chí Minh': [10.8231, 106.6297],
-    'Tỉnh Bà Rịa - Vũng Tàu': [10.3460, 107.0843],
-    'Tỉnh Tây Ninh': [11.3108, 106.0984],
-    'Tỉnh An Giang': [10.3759, 105.4185],
-    'Tỉnh Kiên Giang': [10.0125, 105.0809],
-  };
+  const handleToggleMonth = (m: number) => {
+    const isBest = formData.bestMonths.includes(m);
+    const isAvoid = formData.avoidMonths.includes(m);
 
-  const [gpxFileName, setGpxFileName] = useState<string>('');
-  const [uploadingImage, setUploadingImage] = useState<boolean>(false);
+    if (!isBest && !isAvoid) {
+      setFormData((prev) => ({ ...prev, bestMonths: [...prev.bestMonths, m].sort((a, b) => a - b) }));
+    } else if (isBest) {
+      setFormData((prev) => ({
+        ...prev,
+        bestMonths: prev.bestMonths.filter((x) => x !== m),
+        avoidMonths: [...prev.avoidMonths, m].sort((a, b) => a - b),
+      }));
+    } else {
+      setFormData((prev) => ({
+        ...prev,
+        avoidMonths: prev.avoidMonths.filter((x) => x !== m),
+      }));
+    }
+  };
 
   const handleCoverImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -253,11 +293,15 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
         const base64 = event.target?.result as string;
         const uploadedUrl = await uploadImageToCloudinary(base64, file.name, 'trails');
         setFormData((prev) => ({ ...prev, coverImage: uploadedUrl }));
-      } catch (err) {
-        console.error('Upload image error:', err);
-        if (onShowToast) {
-          onShowToast('Không thể tải ảnh lên Cloudinary, vui lòng thử lại.', 'error');
+        if (errors.coverImage) {
+          setErrors((prev) => {
+            const copy = { ...prev };
+            delete copy.coverImage;
+            return copy;
+          });
         }
+      } catch (err) {
+        onShowToast?.('Không thể tải ảnh lên Cloudinary, vui lòng thử lại.', 'error');
       } finally {
         setUploadingImage(false);
       }
@@ -295,9 +339,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
               endLat: Number(end[0].toFixed(5)),
               endLng: Number(end[1].toFixed(5)),
             }));
-            if (onShowToast) {
-              onShowToast(`Đã trích xuất ${points.length} điểm track GPS từ tệp GPX thành công!`, 'success');
-            }
+            onShowToast?.(`Đã trích xuất ${points.length} điểm GPS thực địa từ tệp GPX!`, 'success');
           }
         }
       } catch (err) {
@@ -307,36 +349,21 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
     reader.readAsText(file);
   };
 
-  const [errors, setErrors] = useState<Record<string, string>>({});
-
-  React.useEffect(() => {
-    const editingStr = localStorage.getItem('trekmap_editing_contribution');
-    if (editingStr) {
-      try {
-        const editingItem = JSON.parse(editingStr);
-        setFormData((prev) => ({
-          ...prev,
-          ...editingItem,
-        }));
-      } catch (e) {
-        console.error(e);
-      }
-    }
-  }, []);
-
+  // Comprehensive Step Validations
   const validateStep1 = (): boolean => {
     const errs: Record<string, string> = {};
-    if (!formData.name.trim()) {
-      errs.name = 'Vui lòng nhập tên cung đường chính.';
+    if (!formData.name.trim() || formData.name.trim().length < 3) {
+      errs.name = 'Tên cung đường bắt buộc và phải có ít nhất 3 ký tự.';
     }
-    if (!formData.hamlet.trim()) {
-      errs.hamlet = 'Vui lòng nhập điểm căn cứ xuất phát (Thôn/Bản/Trạm cửa rừng).';
+    if (!formData.hamlet.trim() || formData.hamlet.trim().length < 2) {
+      errs.hamlet = 'Vui lòng nhập điểm xuất phát (Thôn/Bản/Cửa rừng).';
+    }
+    if (!formData.province.trim() || !formData.district.trim()) {
+      errs.district = 'Vui lòng chọn đầy đủ Tỉnh và Phường/Xã.';
     }
     setErrors(errs);
     if (Object.keys(errs).length > 0) {
-      if (onShowToast) {
-        onShowToast('Vui lòng hoàn thành tên & địa điểm tại Bước 1!', 'error');
-      }
+      onShowToast?.('Vui lòng hoàn thành đầy đủ thông tin tại Bước 1!', 'error');
       return false;
     }
     return true;
@@ -351,13 +378,14 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
       errs.elevationGainM = 'Độ cao nâng không được là số âm.';
     }
     if (!formData.maxAltitudeM || formData.maxAltitudeM <= 0) {
-      errs.maxAltitudeM = 'Cao độ đỉnh max phải lớn hơn 0 m.';
+      errs.maxAltitudeM = 'Cao độ đỉnh núi phải lớn hơn 0 m.';
+    }
+    if (formData.bestMonths.length === 0) {
+      errs.bestMonths = 'Vui lòng chọn ít nhất 1 tháng lý tưởng nhất để leo núi.';
     }
     setErrors(errs);
     if (Object.keys(errs).length > 0) {
-      if (onShowToast) {
-        onShowToast('Vui lòng kiểm tra lại thông số kỹ thuật tại Bước 2!', 'error');
-      }
+      onShowToast?.('Vui lòng kiểm tra lại thông số kỹ thuật & mùa leo tại Bước 2!', 'error');
       return false;
     }
     return true;
@@ -366,22 +394,23 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
   const validateStep3 = (): boolean => {
     const errs: Record<string, string> = {};
     if (isNaN(formData.startLat) || formData.startLat < -90 || formData.startLat > 90) {
-      errs.startLat = 'Vĩ độ xuất phát không hợp lệ.';
+      errs.startLat = 'Vĩ độ xuất phát không hợp lệ (-90 đến 90).';
     }
     if (isNaN(formData.startLng) || formData.startLng < -180 || formData.startLng > 180) {
-      errs.startLng = 'Kinh độ xuất phát không hợp lệ.';
+      errs.startLng = 'Kinh độ xuất phát không hợp lệ (-180 đến 180).';
     }
     if (isNaN(formData.endLat) || formData.endLat < -90 || formData.endLat > 90) {
-      errs.endLat = 'Vĩ độ kết thúc không hợp lệ.';
+      errs.endLat = 'Vĩ độ kết thúc không hợp lệ (-90 đến 90).';
     }
     if (isNaN(formData.endLng) || formData.endLng < -180 || formData.endLng > 180) {
-      errs.endLng = 'Kinh độ kết thúc không hợp lệ.';
+      errs.endLng = 'Kinh độ kết thúc không hợp lệ (-180 đến 180).';
+    }
+    if (formData.startLat === formData.endLat && formData.startLng === formData.endLng) {
+      errs.endLat = 'Điểm xuất phát và kết thúc không được trùng nhau.';
     }
     setErrors(errs);
     if (Object.keys(errs).length > 0) {
-      if (onShowToast) {
-        onShowToast('Vui lòng kiểm tra lại tọa độ GPS tại Bước 3!', 'error');
-      }
+      onShowToast?.('Vui lòng kiểm tra lại tọa độ GPS tại Bước 3!', 'error');
       return false;
     }
     return true;
@@ -390,7 +419,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
   const validateStep4 = (): boolean => {
     const errs: Record<string, string> = {};
     if (!formData.coverImage.trim()) {
-      errs.coverImage = 'Vui lòng chọn hoặc dán đường dẫn ảnh bìa cung đường.';
+      errs.coverImage = 'Vui lòng tải ảnh từ thiết bị hoặc nhập link ảnh bìa thực địa.';
     }
     if (!formData.description.trim() || formData.description.trim().length < 10) {
       errs.description = 'Mô tả tổng quan cần ít nhất 10 ký tự.';
@@ -398,14 +427,15 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
     if (!formData.transportationInfo.trim() || formData.transportationInfo.trim().length < 5) {
       errs.transportationInfo = 'Hướng dẫn di chuyển cần ít nhất 5 ký tự.';
     }
+    if (!formData.rescueContact.phone.trim() || formData.rescueContact.phone.trim().length < 3) {
+      errs.rescuePhone = 'Vui lòng nhập số hotline cứu hộ khẩn cấp thực tế.';
+    }
     if (formData.permitRequired && !formData.permitInfo.trim()) {
-      errs.permitInfo = 'Vui lòng nhập tên đơn vị cấp phép.';
+      errs.permitInfo = 'Vui lòng nhập nơi cấp phép hoặc lệ phí.';
     }
     setErrors(errs);
     if (Object.keys(errs).length > 0) {
-      if (onShowToast) {
-        onShowToast('Vui lòng điền đủ ảnh bìa và mô tả tại Bước 4!', 'error');
-      }
+      onShowToast?.('Vui lòng điền đủ ảnh, mô tả & hotline cứu hộ tại Bước 4!', 'error');
       return false;
     }
     return true;
@@ -436,143 +466,160 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
         }
       }
 
-      // Ensure coverImage is uploaded directly to Cloudinary CDN folder trekmap/trails
       let finalCoverImage = formData.coverImage;
       if (finalCoverImage && !finalCoverImage.includes('res.cloudinary.com')) {
         try {
           const cloudinaryUrl = await uploadImageToCloudinary(finalCoverImage, `trail_cover_${Date.now()}`, 'trails');
-          if (cloudinaryUrl) {
-            finalCoverImage = cloudinaryUrl;
-          }
+          if (cloudinaryUrl) finalCoverImage = cloudinaryUrl;
         } catch (imgErr) {
-          console.warn('⚠️ [Cloudinary Cover Image Upload Warning]:', imgErr);
+          console.warn('Upload warning:', imgErr);
         }
       }
 
-      const token = localStorage.getItem('trekmap_token');
-      const currentUserStr = localStorage.getItem('trekmap_user');
-      let authorEmail = currentUser?.email || '';
-      let authorName = currentUser?.fullName || currentUser?.name || currentUser?.username || '';
-      let authorAvatar = currentUser?.avatarUrl || currentUser?.avatar || '';
-      let userId = (currentUser as any)?._id || currentUser?.id || '';
+      const finalGpxTrack: [number, number][] =
+        gpxTrack.length > 0
+          ? gpxTrack
+          : [
+              [formData.startLat, formData.startLng],
+              [formData.startLat + 0.005, formData.startLng + 0.005],
+              [formData.endLat, formData.endLng],
+            ];
 
-      if (!authorEmail && currentUserStr) {
-        try {
-          const userObj = JSON.parse(currentUserStr);
-          authorEmail = userObj.email || authorEmail;
-          authorName = userObj.fullName || userObj.name || userObj.username || authorName;
-          authorAvatar = userObj.avatarUrl || userObj.avatar || authorAvatar;
-          userId = userObj._id || userObj.id || userId;
-        } catch (e) {
-          console.error(e);
-        }
-      }
-
-      if (!authorEmail && token) {
-        try {
-          const payload = JSON.parse(atob(token.split('.')[1]));
-          authorEmail = payload.email || authorEmail;
-          authorName = payload.fullName || payload.name || authorName;
-          userId = payload.userId || payload.id || userId;
-        } catch (e) {
-          console.error(e);
-        }
-      }
-
-      if (!authorName) authorName = 'Hoang';
-      if (!authorEmail) authorEmail = 'ht20041975@outlook.com.vn';
-      if (!authorAvatar) authorAvatar = 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
-
-      const finalGpxTrack: [number, number][] = gpxTrack.length > 0 ? gpxTrack : [
-        [formData.startLat, formData.startLng],
-        [formData.endLat, formData.endLng],
-      ];
-
-      const newContribution = {
+      const payload = {
         ...formData,
-        coverImage: finalCoverImage,
-        gpxTrack: finalGpxTrack,
         id: contribId,
-        authorEmail,
-        authorName,
-        authorAvatar,
-        userId,
-        name: formData.name || 'Cung đường Trekking mới',
-        status: 'pending',
-        createdAt: new Date().toLocaleDateString('vi-VN'),
-      };
-
-      const savedContributions = JSON.parse(localStorage.getItem('trekmap_contributions') || '[]');
-      let updatedContributions = savedContributions;
-
-      if (editingStr) {
-        updatedContributions = savedContributions.map((c: any) =>
-          c.id === contribId ? { ...c, ...newContribution } : c
-        );
-        localStorage.removeItem('trekmap_editing_contribution');
-      } else {
-        updatedContributions = [newContribution, ...savedContributions];
-      }
-
-      localStorage.setItem('trekmap_contributions', JSON.stringify(updatedContributions));
-
-      await submitTrailContribution({
-        ...formData,
+        coverImage: finalCoverImage,
         altNames: formData.altNames.split(',').map((s) => s.trim()).filter(Boolean),
         gpxTrack: finalGpxTrack,
-      });
+        authorName: currentUser?.fullName || currentUser?.name || 'Trekker Đóng Góp',
+        authorAvatar: currentUser?.avatarUrl || currentUser?.avatar || '',
+        authorEmail: currentUser?.email || '',
+        userId: (currentUser as any)?._id || currentUser?.id || '',
+      };
+
+      await submitTrailContribution(payload);
       setLoading(false);
-      if (onShowToast) {
-        const toastMsg = isEditing
-          ? 'Cập nhật thay đổi bài đóng góp thành công!'
-          : 'Gửi đóng góp cung đường thành công! Bài viết đã được ghi nhận và chuyển tới Ban Quản Trị duyệt.';
-        onShowToast(toastMsg, 'success');
-      }
+
+      const toastMsg = isEditing
+        ? 'Cập nhật bài đóng góp vào Database thành công!'
+        : 'Đã lưu bài đóng góp vào Database thành công! Đã gửi thông báo tới Ban Quản Trị duyệt.';
+      onShowToast?.(toastMsg, 'success');
       onSuccess();
-    } catch (err) {
+    } catch (err: any) {
       setLoading(false);
-      if (onShowToast) {
-        onShowToast('Không thể gửi bài đóng góp, vui lòng thử lại.', 'error');
-      }
+      onShowToast?.(err.message || 'Không thể lưu bài đóng góp vào Database, vui lòng thử lại.', 'error');
     }
   };
 
   return (
-    <div style={{ maxWidth: 960, margin: '30px auto', padding: '0 16px', boxSizing: 'border-box' }}>
-      <button className="btn btn-outline" onClick={onBack} style={{ marginBottom: 20 }}>
-        <ArrowLeft size={16} /> Hủy & Quay lại
-      </button>
+    <div style={{ maxWidth: 1240, margin: '14px auto 48px auto', padding: '0 20px', boxSizing: 'border-box' }}>
+      {/* Top Action & Title Bar */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: 16,
+          flexWrap: 'wrap',
+          gap: 12,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <button
+            className="btn btn-outline"
+            onClick={onBack}
+            style={{ padding: '7px 16px', fontSize: '0.84rem', borderRadius: 10, height: 36, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+          >
+            <ArrowLeft size={16} /> Hủy & Quay lại
+          </button>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 900, color: 'var(--color-text-main)', margin: 0 }}>
+            {isEditing ? 'Chỉnh Sửa Thông Tin Bài Đóng Góp' : 'Đóng Góp Cung Đường Trekking Mới Cho Cộng Đồng'}
+          </h2>
+        </div>
+      </div>
 
-      <div className="card" style={{ marginBottom: 24, padding: 20 }}>
-        <h2 style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 20, textAlign: 'center' }}>
-          {isEditing ? 'Chỉnh sửa thông tin bài đóng góp cung đường' : 'Đóng góp cung đường Trekking mới cho cộng đồng'}
-        </h2>
-
-        <div style={{ display: 'flex', justifyContent: 'space-between', position: 'relative' }}>
-          {['1. Vị trí & Tên', '2. Thông số kỹ thuật', '3. Bản đồ & Tọa độ', '4. Ảnh & Mô tả', '5. Xem trước & Gửi'].map((label, idx) => {
-            const stepNum = idx + 1;
+      {/* Balanced 5-Column Stepper Progress Bar */}
+      <div
+        className="card"
+        style={{
+          padding: '12px 16px',
+          marginBottom: 20,
+          borderRadius: 16,
+          boxShadow: 'var(--shadow-card)',
+        }}
+      >
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, alignItems: 'center' }}>
+          {[
+            { stepNum: 1, title: 'Vị Trí & Tên' },
+            { stepNum: 2, title: 'Thông Số & Mùa' },
+            { stepNum: 3, title: 'Bản Đồ GPS' },
+            { stepNum: 4, title: 'Tiện Ích & Cứu Hộ' },
+            { stepNum: 5, title: 'Xem Trước & Gửi' },
+          ].map(({ stepNum, title }) => {
             const isActive = step === stepNum;
             const isDone = step > stepNum;
 
             return (
-              <div key={idx} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1, zIndex: 2 }}>
-                <div style={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: '50%',
-                  background: isDone ? '#10b981' : isActive ? '#3b82f6' : '#334155',
-                  color: '#fff',
+              <div
+                key={stepNum}
+                onClick={() => {
+                  if (stepNum < step) setStep(stepNum);
+                }}
+                style={{
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  fontWeight: 700,
-                  fontSize: '0.9rem',
-                  marginBottom: 6,
-                }}>
+                  gap: 10,
+                  padding: '10px 8px',
+                  borderRadius: 12,
+                  background: isActive
+                    ? 'rgba(16, 185, 129, 0.14)'
+                    : isDone
+                    ? 'rgba(255, 255, 255, 0.03)'
+                    : 'transparent',
+                  border: isActive
+                    ? '1.5px solid var(--color-primary)'
+                    : isDone
+                    ? '1px solid rgba(16, 185, 129, 0.35)'
+                    : '1px solid var(--color-border)',
+                  cursor: stepNum < step ? 'pointer' : 'default',
+                  transition: 'all 0.25s ease',
+                  boxShadow: isActive ? '0 0 14px rgba(16, 185, 129, 0.25)' : 'none',
+                }}
+              >
+                <div
+                  style={{
+                    width: 26,
+                    height: 26,
+                    borderRadius: '50%',
+                    background: isDone
+                      ? 'var(--color-primary)'
+                      : isActive
+                      ? 'var(--color-primary)'
+                      : 'var(--color-bg-main)',
+                    color: isDone || isActive ? '#ffffff' : 'var(--color-text-dim)',
+                    border: isActive || isDone ? 'none' : '1px solid var(--color-border)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontWeight: 800,
+                    fontSize: '0.78rem',
+                    flexShrink: 0,
+                  }}
+                >
                   {isDone ? '✓' : stepNum}
                 </div>
-                <span style={{ fontSize: '0.75rem', color: isActive ? '#3b82f6' : isDone ? '#10b981' : '#94a3b8', fontWeight: isActive ? 700 : 400, textAlign: 'center' }}>
-                  {label}
+                <span
+                  style={{
+                    fontSize: '0.82rem',
+                    color: isActive ? 'var(--color-primary)' : isDone ? 'var(--color-text-main)' : 'var(--color-text-dim)',
+                    fontWeight: isActive ? 800 : isDone ? 700 : 500,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {title}
                 </span>
               </div>
             );
@@ -580,271 +627,362 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
         </div>
       </div>
 
+      {/* ================= STEP 1: SPACIOUS 2-COLUMN VIEWPORT LAYOUT ================= */}
       {step === 1 && (
-        <div className="card">
-          <h3 style={{ fontSize: '1.1rem', color: '#fff', marginBottom: 16 }}>
-            {isEditing ? 'Bước 1: Chỉnh sửa thông tin cơ bản & địa điểm' : 'Bước 1: Thông tin tên & Địa điểm cung đường'}
-          </h3>
-
-          <div className="form-group">
-            <label className="form-label">Tên cung đường chính *</label>
-            <input
-              type="text"
-              className="form-input"
-              style={{ borderColor: errors.name ? '#ef4444' : undefined }}
-              placeholder="Ví dụ: Đỉnh Pu Ta Leng (Lào Cai - Lai Châu)"
-              value={formData.name}
-              onChange={(e) => handleChange('name', e.target.value)}
-              required
-            />
-            {errors.name && <div style={{ color: '#ef4444', fontSize: '0.78rem', marginTop: 4, fontWeight: 600 }}>{errors.name}</div>}
+        <div className="card" style={{ padding: '26px 32px', borderRadius: 20, boxShadow: 'var(--shadow-card)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
+            <IconCompass size={22} color="var(--color-primary)" />
+            <h3 style={{ fontSize: '1.15rem', color: 'var(--color-text-main)', fontWeight: 800, margin: 0 }}>
+              Bước 1: Tên Cung Đường & Phân Cấp Hành Chính (100% Thực Địa)
+            </h3>
           </div>
 
-          <div className="form-group">
-            <label className="form-label">Tên gọi khác (cách nhau bởi dấu phẩy)</label>
-            <input
-              type="text"
-              className="form-input"
-              placeholder="Ví dụ: Nóc nhà thứ 2 Đông Dương, Đỉnh Tả Liên Sơn..."
-              value={formData.altNames}
-              onChange={(e) => handleChange('altNames', e.target.value)}
-            />
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-            {/* 1. Region Selector */}
-            <div className="form-group">
-              <label className="form-label" style={{ height: 24, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>Vùng miền *</label>
-              <select
-                className="form-select"
-                value={formData.region}
-                onChange={(e) => handleRegionChange(e.target.value as Region)}
-              >
-                <option value="Miền Bắc">Miền Bắc</option>
-                <option value="Miền Trung">Miền Trung</option>
-                <option value="Miền Nam">Miền Nam</option>
-              </select>
-            </div>
-
-            {/* 2. Dynamic City / Province Selector (34 Merged Provinces) */}
-            <div className="form-group">
-              <label className="form-label" style={{ height: 24, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>Thành phố / Tỉnh *</label>
-              <select
-                className="form-select"
-                value={formData.province}
-                onChange={(e) => handleProvinceChange(e.target.value)}
-              >
-                {(VIETNAM_ADMINISTRATIVE_DATA[formData.region] || []).map((p) => (
-                  <option key={p.name} value={p.name}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* 3. Dynamic Ward / Commune Selector with Custom Input fallback */}
-            <div className="form-group">
-              <label className="form-label" style={{ height: 24, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>Phường / Xã *</label>
-              <select
-                className="form-select"
-                value={isCustomWard ? 'CUSTOM_WARD_OPTION' : formData.district}
-                onChange={(e) => handleWardSelect(e.target.value)}
-              >
-                {((VIETNAM_ADMINISTRATIVE_DATA[formData.region] || []).find((p) => p.name === formData.province)?.wards || []).map((w) => (
-                  <option key={w} value={w}>
-                    {w}
-                  </option>
-                ))}
-                <option value="CUSTOM_WARD_OPTION">+ Nhập tên Phường / Xã khác...</option>
-              </select>
-
-              {isCustomWard && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+            {/* Left Column: Names & Base */}
+            <div>
+              <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 700, marginBottom: 6 }}>Tên cung đường chính *</label>
                 <input
                   type="text"
                   className="form-input"
-                  style={{ marginTop: 8 }}
-                  placeholder="Nhập tên Phường / Xã thực tế của bạn..."
-                  value={customWardText}
-                  onChange={(e) => {
-                    setCustomWardText(e.target.value);
-                    handleChange('district', e.target.value);
-                  }}
-                  autoFocus
+                  style={{ padding: '10px 14px', fontSize: '0.9rem', borderColor: errors.name ? '#ef4444' : undefined }}
+                  placeholder="Ví dụ: Chinh Phục Đỉnh Pu Ta Leng 3049m"
+                  value={formData.name}
+                  onChange={(e) => handleChange('name', e.target.value)}
                 />
+                {errors.name && <div style={{ color: '#ef4444', fontSize: '0.76rem', marginTop: 4, fontWeight: 600 }}>{errors.name}</div>}
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 700, marginBottom: 6 }}>Tên gọi khác / Tên đỉnh (phân tách bởi dấu phẩy)</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  style={{ padding: '10px 14px', fontSize: '0.9rem' }}
+                  placeholder="Ví dụ: Pu Ta Leng Peak, Nóc Nhà Thứ 3 Đông Dương..."
+                  value={formData.altNames}
+                  onChange={(e) => handleChange('altNames', e.target.value)}
+                />
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 700, marginBottom: 6 }}>Thôn / Bản / Cửa Rừng (Căn cứ xuất phát) *</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  style={{ padding: '10px 14px', fontSize: '0.9rem', borderColor: errors.hamlet ? '#ef4444' : undefined }}
+                  placeholder="Ví dụ: Bản Phô Hồ Thầu, Trạm Tôn 1.900m, Bản Sàng Ma Fo..."
+                  value={formData.hamlet || ''}
+                  onChange={(e) => handleChange('hamlet', e.target.value)}
+                />
+                {errors.hamlet && <div style={{ color: '#ef4444', fontSize: '0.76rem', marginTop: 4, fontWeight: 600 }}>{errors.hamlet}</div>}
+              </div>
+            </div>
+
+            {/* Right Column: Administrative Location */}
+            <div>
+              <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 700, marginBottom: 6 }}>Vùng miền *</label>
+                <select className="form-select" style={{ padding: '10px 14px', fontSize: '0.9rem' }} value={formData.region} onChange={(e) => handleRegionChange(e.target.value as Region)}>
+                  <option value="Miền Bắc">Miền Bắc</option>
+                  <option value="Miền Trung">Miền Trung</option>
+                  <option value="Miền Nam">Miền Nam</option>
+                </select>
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 700, marginBottom: 6 }}>Thành phố / Tỉnh *</label>
+                <select className="form-select" style={{ padding: '10px 14px', fontSize: '0.9rem' }} value={formData.province} onChange={(e) => handleProvinceChange(e.target.value)}>
+                  {(VIETNAM_ADMINISTRATIVE_DATA[formData.region] || []).map((p) => (
+                    <option key={p.name} value={p.name}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 700, marginBottom: 6 }}>Phường / Xã / Huyện *</label>
+                <select
+                  className="form-select"
+                  style={{ padding: '10px 14px', fontSize: '0.9rem' }}
+                  value={isCustomWard ? 'CUSTOM_WARD_OPTION' : formData.district}
+                  onChange={(e) => handleWardSelect(e.target.value)}
+                >
+                  {((VIETNAM_ADMINISTRATIVE_DATA[formData.region] || []).find((p) => p.name === formData.province)?.wards || []).map((w) => (
+                    <option key={w} value={w}>{w}</option>
+                  ))}
+                  <option value="CUSTOM_WARD_OPTION">+ Thêm Phường / Xã khác...</option>
+                </select>
+              </div>
+
+              {isCustomWard && (
+                <div className="form-group" style={{ marginTop: 10, marginBottom: 0 }}>
+                  <input
+                    type="text"
+                    className="form-input"
+                    style={{ padding: '8px 12px', fontSize: '0.85rem' }}
+                    placeholder="Nhập tên Phường, Xã cụ thể..."
+                    value={customWardText}
+                    onChange={(e) => {
+                      setCustomWardText(e.target.value);
+                      setFormData((prev) => ({ ...prev, district: e.target.value }));
+                    }}
+                  />
+                </div>
               )}
             </div>
           </div>
 
-          {/* 4. Hamlet / Village / Basecamp Location */}
-          <div className="form-group">
-            <label className="form-label" style={{ height: 24, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>Thôn / Ấp / Bản / Trạm Cửa Rừng (Căn cứ xuất phát) *</label>
-            <input
-              type="text"
-              className="form-input"
-              style={{ borderColor: errors.hamlet ? '#ef4444' : undefined }}
-              placeholder="Ví dụ: Bản Y Tý, Bản Tả Lèng, Trạm Tôn 1,900m, Basecamp Ma Lé..."
-              value={formData.hamlet || ''}
-              onChange={(e) => handleChange('hamlet', e.target.value)}
-            />
-            {errors.hamlet && <div style={{ color: '#ef4444', fontSize: '0.78rem', marginTop: 4, fontWeight: 600 }}>{errors.hamlet}</div>}
-          </div>
-
-          <button className="btn btn-primary" onClick={() => { if (validateStep1()) setStep(2); }} style={{ width: '100%', justifyContent: 'center', marginTop: 12 }}>
-            Tiếp theo: Thông số kỹ thuật <ArrowRight size={16} />
-          </button>
-        </div>
-      )}
-
-      {step === 2 && (
-        <div className="card">
-          <h3 style={{ fontSize: '1.1rem', color: '#fff', marginBottom: 16 }}>
-            {isEditing ? 'Bước 2: Chỉnh sửa thông số kỹ thuật' : 'Bước 2: Thông số kỹ thuật cung đường'}
-          </h3>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-            <div className="form-group">
-              <label className="form-label" style={{ height: 24, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>Độ dài (km) *</label>
-              <input
-                type="number"
-                className="form-input"
-                style={{ borderColor: errors.distanceKm ? '#ef4444' : undefined }}
-                value={formData.distanceKm}
-                onChange={(e) => handleChange('distanceKm', Number(e.target.value))}
-              />
-              {errors.distanceKm && <div style={{ color: '#ef4444', fontSize: '0.78rem', marginTop: 4, fontWeight: 600 }}>{errors.distanceKm}</div>}
-            </div>
-
-            <div className="form-group">
-              <label className="form-label" style={{ height: 24, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>Độ cao tích lũy (+m) *</label>
-              <input
-                type="number"
-                className="form-input"
-                style={{ borderColor: errors.elevationGainM ? '#ef4444' : undefined }}
-                value={formData.elevationGainM}
-                onChange={(e) => handleChange('elevationGainM', Number(e.target.value))}
-              />
-              {errors.elevationGainM && <div style={{ color: '#ef4444', fontSize: '0.78rem', marginTop: 4, fontWeight: 600 }}>{errors.elevationGainM}</div>}
-            </div>
-
-            <div className="form-group">
-              <label className="form-label" style={{ height: 24, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>Cao độ đỉnh max (m) *</label>
-              <input
-                type="number"
-                className="form-input"
-                style={{ borderColor: errors.maxAltitudeM ? '#ef4444' : undefined }}
-                value={formData.maxAltitudeM}
-                onChange={(e) => handleChange('maxAltitudeM', Number(e.target.value))}
-              />
-              {errors.maxAltitudeM && <div style={{ color: '#ef4444', fontSize: '0.78rem', marginTop: 4, fontWeight: 600 }}>{errors.maxAltitudeM}</div>}
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">Thời gian hoàn thành dự kiến *</label>
-            <select
-              className="form-select"
-              value={formData.durationHoursNote}
-              onChange={(e) => {
-                const val = e.target.value;
-                let days = 1;
-                if (val.includes('2 ngày')) days = 2;
-                if (val.includes('3 ngày')) days = 3;
-                if (val.includes('4 ngày')) days = 4;
-                setFormData((prev) => ({ ...prev, durationHoursNote: val, durationDays: days }));
+          {/* Action Row */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 24, paddingTop: 18, borderTop: '1px solid var(--color-border)' }}>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                if (validateStep1()) setStep(2);
               }}
+              style={{ padding: '11px 32px', fontSize: '0.95rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 8, borderRadius: 12 }}
             >
-              <option value="1 ngày">1 ngày</option>
-              <option value="2 ngày 1 đêm">2 ngày 1 đêm</option>
-              <option value="3 ngày 2 đêm">3 ngày 2 đêm</option>
-              <option value="4 ngày 3 đêm">4 ngày 3 đêm</option>
-              <option value="Nửa ngày">Nửa ngày</option>
-            </select>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">Mức độ khó (Thang điểm 1 - 5) *</label>
-            <select className="form-select" value={formData.difficultyLevel} onChange={(e) => handleChange('difficultyLevel', Number(e.target.value))}>
-              <option value={1}>1/5 - Rất dễ (Phù hợp trẻ em & người mới)</option>
-              <option value={2}>2/5 - Dễ (Đường thoải, thích hợp gia đình)</option>
-              <option value={3}>3/5 - Trung bình (Cần thể lực tốt, dốc liên tục 2-3h)</option>
-              <option value={4}>4/5 - Thử thách (Đường rêu trượt, dốc đứng, đu dây)</option>
-              <option value={5}>5/5 - Khó nguy hiểm (Cực kỳ tốn sức, cần kỹ năng leo núi chuyên nghiệp)</option>
-            </select>
-          </div>
-
-          <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
-            <button className="btn btn-secondary" onClick={() => setStep(1)} style={{ flex: 1, justifyContent: 'center' }}>
-              <ArrowLeft size={16} /> Quay lại
-            </button>
-            <button className="btn btn-primary" onClick={() => { if (validateStep2()) setStep(3); }} style={{ flex: 1, justifyContent: 'center' }}>
-              Tiếp theo: Bản đồ & Tọa độ <ArrowRight size={16} />
+              Tiếp theo: Thông số kỹ thuật & Mùa leo <ArrowRight size={16} />
             </button>
           </div>
         </div>
       )}
 
-      {step === 3 && (
-        <div className="card">
-          <h3 style={{ fontSize: '1.1rem', color: 'var(--color-text-main)', marginBottom: 16 }}>Bước 3: Đánh dấu Tọa độ & Tuyến đường</h3>
+      {/* ================= STEP 2: METRICS & 12-MONTH RADAR PICKER ================= */}
+      {step === 2 && (
+        <div className="card" style={{ padding: '26px 32px', borderRadius: 20, boxShadow: 'var(--shadow-card)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
+            <IconMountain size={22} color="var(--color-primary)" />
+            <h3 style={{ fontSize: '1.15rem', color: 'var(--color-text-main)', fontWeight: 800, margin: 0 }}>
+              Bước 2: Thông Số Kỹ Thuật & Lịch Mùa Trekking 12 Tháng
+            </h3>
+          </div>
 
-          {/* 2-Column Grid: Map/Inputs on Left + Guide Panel on Right */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 20, alignItems: 'start' }}>
-            
-            {/* LEFT COLUMN: Map Canvas & Inputs */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr', gap: 24 }}>
+            {/* Left Column: 3 Numeric Metrics & Duration */}
             <div>
-              {/* Toolbar: Pin Mode (Left) + Map Tile Selector (Right) */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
-                <div style={{ display: 'flex', background: 'var(--color-bg-main)', padding: 3, borderRadius: 10, border: '1px solid var(--color-border)' }}>
-                  <button
-                    type="button"
-                    onClick={() => setPinMode('start')}
-                    style={{
-                      padding: '6px 12px',
-                      borderRadius: 8,
-                      border: 'none',
-                      background: pinMode === 'start' ? 'var(--color-primary)' : 'transparent',
-                      color: pinMode === 'start' ? '#ffffff' : 'var(--color-text-muted)',
-                      fontWeight: 700,
-                      fontSize: '0.8rem',
-                      cursor: 'pointer',
-                      transition: 'all 0.2s ease',
-                    }}
-                  >
-                    1. Điểm Xuất Phát
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPinMode('end')}
-                    style={{
-                      padding: '6px 12px',
-                      borderRadius: 8,
-                      border: 'none',
-                      background: pinMode === 'end' ? '#ef4444' : 'transparent',
-                      color: pinMode === 'end' ? '#ffffff' : 'var(--color-text-muted)',
-                      fontWeight: 700,
-                      fontSize: '0.8rem',
-                      cursor: 'pointer',
-                      transition: 'all 0.2s ease',
-                    }}
-                  >
-                    2. Điểm Kết Thúc
-                  </button>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 14 }}>
+                <div>
+                  <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 4 }}>Cự ly (km) *</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    className="form-input"
+                    style={{ padding: '9px 12px', fontSize: '0.88rem', borderColor: errors.distanceKm ? '#ef4444' : undefined }}
+                    value={formData.distanceKm}
+                    onChange={(e) => handleChange('distanceKm', Number(e.target.value))}
+                  />
+                  {errors.distanceKm && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginTop: 2 }}>{errors.distanceKm}</div>}
                 </div>
-
-                <select
-                  className="form-select"
-                  style={{ width: 'auto', fontSize: '0.8rem', padding: '6px 10px' }}
-                  value={mapTileType}
-                  onChange={(e: any) => setMapTileType(e.target.value)}
-                >
-                  <option value="satellite">Vệ Tinh (Esri World)</option>
-                  <option value="terrain">Địa Hình (OpenTopoMap)</option>
-                  <option value="osm">Đường Phố (OpenStreetMap)</option>
-                </select>
+                <div>
+                  <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 4 }}>Độ dốc (+m) *</label>
+                  <input
+                    type="number"
+                    className="form-input"
+                    style={{ padding: '9px 12px', fontSize: '0.88rem', borderColor: errors.elevationGainM ? '#ef4444' : undefined }}
+                    value={formData.elevationGainM}
+                    onChange={(e) => handleChange('elevationGainM', Number(e.target.value))}
+                  />
+                  {errors.elevationGainM && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginTop: 2 }}>{errors.elevationGainM}</div>}
+                </div>
+                <div>
+                  <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 4 }}>Cao độ đỉnh (m) *</label>
+                  <input
+                    type="number"
+                    className="form-input"
+                    style={{ padding: '9px 12px', fontSize: '0.88rem', borderColor: errors.maxAltitudeM ? '#ef4444' : undefined }}
+                    value={formData.maxAltitudeM}
+                    onChange={(e) => handleChange('maxAltitudeM', Number(e.target.value))}
+                  />
+                  {errors.maxAltitudeM && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginTop: 2 }}>{errors.maxAltitudeM}</div>}
+                </div>
               </div>
 
-              {/* Map Canvas */}
-              <div style={{ height: 350, borderRadius: 12, overflow: 'hidden', border: '1px solid var(--color-border)', marginBottom: 14, position: 'relative', zIndex: 1 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+                <div>
+                  <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 4 }}>Thời gian đi *</label>
+                  <select
+                    className="form-select"
+                    style={{ padding: '9px 12px', fontSize: '0.88rem' }}
+                    value={formData.durationHoursNote}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      let days = 1;
+                      if (val.includes('2 ngày')) days = 2;
+                      if (val.includes('3 ngày')) days = 3;
+                      if (val.includes('4 ngày')) days = 4;
+                      setFormData((prev) => ({ ...prev, durationHoursNote: val, durationDays: days }));
+                    }}
+                  >
+                    <option value="1 ngày">1 ngày (Trong ngày)</option>
+                    <option value="2 ngày 1 đêm">2 ngày 1 đêm</option>
+                    <option value="3 ngày 2 đêm">3 ngày 2 đêm</option>
+                    <option value="4 ngày 3 đêm">4 ngày 3 đêm</option>
+                    <option value="Nửa ngày">Nửa ngày (4-6 tiếng)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 4 }}>Độ khó (1 - 5) *</label>
+                  <select className="form-select" style={{ padding: '9px 12px', fontSize: '0.88rem' }} value={formData.difficultyLevel} onChange={(e) => handleChange('difficultyLevel', Number(e.target.value))}>
+                    <option value={1}>1/5 - Rất dễ (Người mới)</option>
+                    <option value={2}>2/5 - Dễ (Gia đình)</option>
+                    <option value={3}>3/5 - Trung bình (Thể lực tốt)</option>
+                    <option value={4}>4/5 - Thử thách (Dốc đứng)</option>
+                    <option value={5}>5/5 - Khắc nghiệt (Chuyên nghiệp)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 4 }}>Ghi chú địa hình & độ khó</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  style={{ padding: '9px 12px', fontSize: '0.88rem' }}
+                  placeholder="Ví dụ: Vách đá dốc, rừng trúc trơn trượt, qua lán 2800m..."
+                  value={formData.difficultyNote}
+                  onChange={(e) => handleChange('difficultyNote', e.target.value)}
+                />
+              </div>
+            </div>
+
+            {/* Right Column: 12-Month Interactive Season Picker */}
+            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 16, padding: '16px 18px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <IconCalendar size={16} color="var(--color-primary)" /> Lịch 12 Tháng Trekking *
+                </label>
+                <div style={{ display: 'flex', gap: 10, fontSize: '0.74rem' }}>
+                  <span style={{ color: 'var(--color-primary)', fontWeight: 800 }}>🟢 Mùa lý tưởng</span>
+                  <span style={{ color: 'var(--color-error)', fontWeight: 800 }}>🔴 Tránh mưa bão</span>
+                </div>
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--color-text-dim)', marginBottom: 12 }}>
+                Nhấp vào từng tháng để chuyển đổi: <strong>Lý tưởng (Xanh)</strong> $\rightarrow$ <strong>Nên tránh (Đỏ)</strong> $\rightarrow$ <strong>Bình thường</strong>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 8 }}>
+                {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => {
+                  const isBest = formData.bestMonths.includes(m);
+                  const isAvoid = formData.avoidMonths.includes(m);
+
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => handleToggleMonth(m)}
+                      style={{
+                        padding: '10px 4px',
+                        borderRadius: 10,
+                        border: isBest
+                          ? '1.5px solid var(--color-primary)'
+                          : isAvoid
+                          ? '1.5px solid var(--color-error)'
+                          : '1px solid var(--color-border)',
+                        background: isBest
+                          ? 'rgba(16, 185, 129, 0.2)'
+                          : isAvoid
+                          ? 'rgba(239, 68, 68, 0.2)'
+                          : 'var(--color-bg-card)',
+                        color: isBest ? 'var(--color-primary)' : isAvoid ? 'var(--color-error)' : 'var(--color-text-dim)',
+                        fontWeight: 800,
+                        fontSize: '0.85rem',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: 2,
+                        transition: 'all 0.2s ease',
+                      }}
+                    >
+                      <span>T{m}</span>
+                      <span style={{ fontSize: '0.68rem' }}>{isBest ? '✓' : isAvoid ? '✕' : '-'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {errors.bestMonths && <div style={{ color: '#ef4444', fontSize: '0.76rem', marginTop: 6, fontWeight: 600 }}>{errors.bestMonths}</div>}
+            </div>
+          </div>
+
+          {/* Action Row */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24, paddingTop: 18, borderTop: '1px solid var(--color-border)' }}>
+            <button className="btn btn-secondary" onClick={() => setStep(1)} style={{ padding: '10px 24px', fontSize: '0.9rem', borderRadius: 10 }}>
+              <ArrowLeft size={16} /> Quay lại
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                if (validateStep2()) setStep(3);
+              }}
+              style={{ padding: '10px 28px', fontSize: '0.9rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 8, borderRadius: 10 }}
+            >
+              Tiếp theo: Bản đồ & Tọa độ GPS <ArrowRight size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ================= STEP 3: GPS MAP & GPX TRACK ================= */}
+      {step === 3 && (
+        <div className="card" style={{ padding: '26px 32px', borderRadius: 20, boxShadow: 'var(--shadow-card)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <IconMapPin size={22} color="var(--color-primary)" />
+              <h3 style={{ fontSize: '1.15rem', color: 'var(--color-text-main)', fontWeight: 800, margin: 0 }}>
+                Bước 3: Đánh Dấu Tọa Độ GPS & Tuyến Đường Tracklog
+              </h3>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => setPinMode('start')}
+                style={{
+                  padding: '6px 14px',
+                  borderRadius: 8,
+                  border: 'none',
+                  background: pinMode === 'start' ? 'var(--color-primary)' : 'var(--color-bg-main)',
+                  color: pinMode === 'start' ? '#ffffff' : 'var(--color-text-dim)',
+                  fontWeight: 800,
+                  fontSize: '0.8rem',
+                  cursor: 'pointer',
+                }}
+              >
+                1. Ghim Xuất Phát
+              </button>
+              <button
+                type="button"
+                onClick={() => setPinMode('end')}
+                style={{
+                  padding: '6px 14px',
+                  borderRadius: 8,
+                  border: 'none',
+                  background: pinMode === 'end' ? '#ef4444' : 'var(--color-bg-main)',
+                  color: pinMode === 'end' ? '#ffffff' : 'var(--color-text-dim)',
+                  fontWeight: 800,
+                  fontSize: '0.8rem',
+                  cursor: 'pointer',
+                }}
+              >
+                2. Ghim Đích / Đỉnh
+              </button>
+              <select
+                className="form-select"
+                style={{ width: 'auto', fontSize: '0.8rem', padding: '6px 12px', height: 32 }}
+                value={mapTileType}
+                onChange={(e: any) => setMapTileType(e.target.value)}
+              >
+                <option value="satellite">Vệ Tinh (Esri World)</option>
+                <option value="terrain">Địa Hình (Topo)</option>
+                <option value="osm">Bản Đồ Phố</option>
+              </select>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr', gap: 20, alignItems: 'start' }}>
+            {/* Map Canvas */}
+            <div>
+              <div style={{ height: 280, borderRadius: 14, overflow: 'hidden', border: '1px solid var(--color-border)', marginBottom: 12, position: 'relative' }}>
                 <MapContainer
                   center={PROVINCE_COORDINATES[formData.province] || [formData.startLat, formData.startLng]}
                   zoom={11}
@@ -858,15 +996,8 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                         ? 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png'
                         : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
                     }
-                    attribution={
-                      mapTileType === 'satellite'
-                        ? 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and GIS User Community'
-                        : mapTileType === 'terrain'
-                        ? '&copy; OpenStreetMap contributors, SRTM | Map style: &copy; OpenTopoMap (CC-BY-SA)'
-                        : '&copy; OpenStreetMap contributors'
-                    }
+                    attribution="Esri, OSM"
                   />
-
                   <MapClickListener
                     onSelectCoords={(lat, lng) => {
                       if (pinMode === 'start') {
@@ -876,30 +1007,12 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                       }
                     }}
                   />
-
-                  {/* Start Point Marker */}
                   <Marker position={[formData.startLat, formData.startLng]} icon={greenPinIcon}>
-                    <Popup>
-                      <div style={{ textAlign: 'center', padding: 4 }}>
-                        <strong style={{ color: '#10b981' }}>1. Điểm Xuất Phát (Cửa Rừng):</strong><br />
-                        <span>Vĩ độ: {formData.startLat}</span><br />
-                        <span>Kinh độ: {formData.startLng}</span>
-                      </div>
-                    </Popup>
+                    <Popup>Xuất phát: {formData.startLat}, {formData.startLng}</Popup>
                   </Marker>
-
-                  {/* End Point Marker */}
                   <Marker position={[formData.endLat, formData.endLng]} icon={redPinIcon}>
-                    <Popup>
-                      <div style={{ textAlign: 'center', padding: 4 }}>
-                        <strong style={{ color: '#ef4444' }}>2. Điểm Đỉnh Núi / Kết Thúc:</strong><br />
-                        <span>Vĩ độ: {formData.endLat}</span><br />
-                        <span>Kinh độ: {formData.endLng}</span>
-                      </div>
-                    </Popup>
+                    <Popup>Đích / Đỉnh: {formData.endLat}, {formData.endLng}</Popup>
                   </Marker>
-
-                  {/* Polyline Route Line */}
                   <Polyline
                     positions={
                       gpxTrack.length > 0
@@ -911,502 +1024,338 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                     }
                     color="#10b981"
                     weight={4}
-                    dashArray={gpxTrack.length === 0 ? '6, 6' : undefined}
                   />
                 </MapContainer>
               </div>
 
-              {/* GPX Upload Bar - Custom Design System Styling */}
-              <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
-                <span style={{ fontSize: '0.8rem', color: 'var(--color-text-main)', fontWeight: 600 }}>Tải lên tệp GPX (Nếu có):</span>
+              {/* GPX Upload Bar */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: '8px 14px', borderRadius: 10 }}>
+                <span style={{ fontSize: '0.82rem', color: 'var(--color-text-main)', fontWeight: 700 }}>Tệp GPX Tuyến Đường:</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <label
-                    htmlFor="gpx-file-upload-input"
-                    className="btn btn-outline"
-                    style={{ padding: '6px 14px', fontSize: '0.78rem', cursor: 'pointer', borderRadius: 8, height: 32, display: 'inline-flex', alignItems: 'center' }}
-                  >
-                    Chọn tệp GPX
+                  <label htmlFor="gpx-file-upload-input" className="btn btn-outline" style={{ padding: '5px 14px', fontSize: '0.78rem', cursor: 'pointer', borderRadius: 8, height: 28, display: 'inline-flex', alignItems: 'center' }}>
+                    Tải tệp .gpx
                   </label>
-                  <span style={{ fontSize: '0.78rem', color: gpxFileName ? 'var(--color-primary)' : 'var(--color-text-muted)', fontWeight: gpxFileName ? 600 : 400, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <span style={{ fontSize: '0.78rem', color: gpxFileName ? 'var(--color-primary)' : 'var(--color-text-dim)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {gpxFileName || 'Chưa chọn tệp'}
                   </span>
-                  <input
-                    id="gpx-file-upload-input"
-                    type="file"
-                    accept=".gpx"
-                    onChange={handleGpxUpload}
-                    style={{ display: 'none' }}
-                  />
-                </div>
-              </div>
-
-              {/* Dual Coordinates Inputs - Equal 50/50 Grid Distribution */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 16 }}>
-                {/* Start Point Box */}
-                <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 14, borderRadius: 10, width: '100%', boxSizing: 'border-box' }}>
-                  <div style={{ fontWeight: 700, fontSize: '0.8rem', color: '#10b981', height: 22, display: 'flex', alignItems: 'center', marginBottom: 10, whiteSpace: 'nowrap' }}>
-                    1. Tọa độ Xuất Phát
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
-                    <div style={{ minWidth: 0 }}>
-                      <label className="form-label" style={{ fontSize: '0.72rem', height: 18, display: 'flex', alignItems: 'center', marginBottom: 4, whiteSpace: 'nowrap' }}>Vĩ độ (Lat)</label>
-                      <input
-                        type="number"
-                        step="0.00001"
-                        className="form-input"
-                        style={{ fontSize: '0.85rem', padding: '6px 8px', width: '100%', boxSizing: 'border-box' }}
-                        value={formData.startLat}
-                        onChange={(e) => handleChange('startLat', Number(e.target.value))}
-                      />
-                    </div>
-                    <div style={{ minWidth: 0 }}>
-                      <label className="form-label" style={{ fontSize: '0.72rem', height: 18, display: 'flex', alignItems: 'center', marginBottom: 4, whiteSpace: 'nowrap' }}>Kinh độ (Lng)</label>
-                      <input
-                        type="number"
-                        step="0.00001"
-                        className="form-input"
-                        style={{ fontSize: '0.85rem', padding: '6px 8px', width: '100%', boxSizing: 'border-box' }}
-                        value={formData.startLng}
-                        onChange={(e) => handleChange('startLng', Number(e.target.value))}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* End Point Box */}
-                <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 14, borderRadius: 10, width: '100%', boxSizing: 'border-box' }}>
-                  <div style={{ fontWeight: 700, fontSize: '0.8rem', color: '#ef4444', height: 22, display: 'flex', alignItems: 'center', marginBottom: 10, whiteSpace: 'nowrap' }}>
-                    2. Tọa độ Kết Thúc
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
-                    <div style={{ minWidth: 0 }}>
-                      <label className="form-label" style={{ fontSize: '0.72rem', height: 18, display: 'flex', alignItems: 'center', marginBottom: 4, whiteSpace: 'nowrap' }}>Vĩ độ (Lat)</label>
-                      <input
-                        type="number"
-                        step="0.00001"
-                        className="form-input"
-                        style={{ fontSize: '0.85rem', padding: '6px 8px', width: '100%', boxSizing: 'border-box' }}
-                        value={formData.endLat}
-                        onChange={(e) => handleChange('endLat', Number(e.target.value))}
-                      />
-                    </div>
-                    <div style={{ minWidth: 0 }}>
-                      <label className="form-label" style={{ fontSize: '0.72rem', height: 18, display: 'flex', alignItems: 'center', marginBottom: 4, whiteSpace: 'nowrap' }}>Kinh độ (Lng)</label>
-                      <input
-                        type="number"
-                        step="0.00001"
-                        className="form-input"
-                        style={{ fontSize: '0.85rem', padding: '6px 8px', width: '100%', boxSizing: 'border-box' }}
-                        value={formData.endLng}
-                        onChange={(e) => handleChange('endLng', Number(e.target.value))}
-                      />
-                    </div>
-                  </div>
+                  <input id="gpx-file-upload-input" type="file" accept=".gpx" onChange={handleGpxUpload} style={{ display: 'none' }} />
                 </div>
               </div>
             </div>
 
-            {/* RIGHT COLUMN: Guide & Legend Panel (Bảng Chú Thích & Hướng Dẫn) */}
-            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 12, padding: 16, position: 'sticky', top: 20 }}>
-              <h4 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 12, borderBottom: '1px solid var(--color-border)', paddingBottom: 8 }}>
-                Chú Thích & Hướng Dẫn
-              </h4>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                {/* Rule 1 */}
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: '0.8rem', color: '#10b981', marginBottom: 4 }}>
-                    1. Chấm Điểm Xuất Phát
+            {/* Coordinates Fields & Tips */}
+            <div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+                <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 12 }}>
+                  <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-primary)', marginBottom: 6 }}>1. Tọa độ Xuất Phát</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                    <div>
+                      <label className="form-label" style={{ fontSize: '0.7rem', marginBottom: 2 }}>Vĩ độ (Lat)</label>
+                      <input type="number" step="0.00001" className="form-input" style={{ padding: '6px 8px', fontSize: '0.82rem' }} value={formData.startLat} onChange={(e) => handleChange('startLat', Number(e.target.value))} />
+                    </div>
+                    <div>
+                      <label className="form-label" style={{ fontSize: '0.7rem', marginBottom: 2 }}>Kinh độ (Lng)</label>
+                      <input type="number" step="0.00001" className="form-input" style={{ padding: '6px 8px', fontSize: '0.82rem' }} value={formData.startLng} onChange={(e) => handleChange('startLng', Number(e.target.value))} />
+                    </div>
                   </div>
-                  <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', lineHeight: 1.4, margin: 0 }}>
-                    Chọn nút <strong>"1. Điểm Xuất Phát"</strong> ở góc trái bản đồ, sau đó nhấp vào vị trí chân núi / cửa rừng để thả ghim vị trí bắt đầu leo.
-                  </p>
                 </div>
 
-                {/* Rule 2 */}
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: '0.8rem', color: '#ef4444', marginBottom: 4 }}>
-                    2. Chấm Điểm Kết Thúc
+                <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 12 }}>
+                  <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-error)', marginBottom: 6 }}>2. Tọa độ Đích / Đỉnh</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                    <div>
+                      <label className="form-label" style={{ fontSize: '0.7rem', marginBottom: 2 }}>Vĩ độ (Lat)</label>
+                      <input type="number" step="0.00001" className="form-input" style={{ padding: '6px 8px', fontSize: '0.82rem' }} value={formData.endLat} onChange={(e) => handleChange('endLat', Number(e.target.value))} />
+                    </div>
+                    <div>
+                      <label className="form-label" style={{ fontSize: '0.7rem', marginBottom: 2 }}>Kinh độ (Lng)</label>
+                      <input type="number" step="0.00001" className="form-input" style={{ padding: '6px 8px', fontSize: '0.82rem' }} value={formData.endLng} onChange={(e) => handleChange('endLng', Number(e.target.value))} />
+                    </div>
                   </div>
-                  <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', lineHeight: 1.4, margin: 0 }}>
-                    Chọn nút <strong>"2. Điểm Kết Thúc"</strong>, sau đó nhấp vào vị trí đỉnh núi hoặc điểm hạ sơn để thả ghim kết thúc.
-                  </p>
-                </div>
-
-                {/* Rule 3 */}
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: '0.8rem', color: 'var(--color-primary)', marginBottom: 4 }}>
-                    3. Tải Tệp GPX Tuyến Đường
-                  </div>
-                  <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', lineHeight: 1.4, margin: 0 }}>
-                    Nếu bạn có tệp <code>.gpx</code> xuất từ Garmin, Strava hoặc Wikiloc, hãy chọn tệp để máy tự động vẽ tuyến đường mòn và đọc tọa độ.
-                  </p>
-                </div>
-
-                {/* Rule 4 */}
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: '0.8rem', color: 'var(--color-text-main)', marginBottom: 4 }}>
-                    4. Nhập Tọa Độ Thủ Công
-                  </div>
-                  <p style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', lineHeight: 1.4, margin: 0 }}>
-                    Bạn cũng có thể gõ trực tiếp tọa độ thập phân (Ví dụ: 16.0544, 108.2022) vào các ô bên dưới nếu đã biết trước.
-                  </p>
                 </div>
               </div>
-            </div>
 
+              <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 12, padding: 14, fontSize: '0.78rem', color: 'var(--color-text-dim)', lineHeight: 1.5 }}>
+                <div style={{ fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <IconLightbulb size={16} color="var(--color-sun)" /> Hướng Dẫn Tọa Độ Thực Địa
+                </div>
+                <div>• Nhấp trực tiếp vào bản đồ vệ tinh để cập nhật tọa độ chính xác.</div>
+                <div>• Nếu có tệp <code>.gpx</code>, hệ thống sẽ tự động vẽ toàn bộ tracklog đường mòn và đọc cao độ thực tế.</div>
+              </div>
+            </div>
           </div>
 
-          {/* Action Buttons */}
-          <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
-            <button className="btn btn-secondary" onClick={() => setStep(2)} style={{ flex: 1, justifyContent: 'center' }}>
+          {/* Action Row */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24, paddingTop: 18, borderTop: '1px solid var(--color-border)' }}>
+            <button className="btn btn-secondary" onClick={() => setStep(2)} style={{ padding: '10px 24px', fontSize: '0.9rem', borderRadius: 10 }}>
               <ArrowLeft size={16} /> Quay lại
             </button>
-            <button className="btn btn-primary" onClick={() => { if (validateStep3()) setStep(4); }} style={{ flex: 1, justifyContent: 'center' }}>
-              Tiếp theo: Ảnh & Mô tả <ArrowRight size={16} />
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                if (validateStep3()) setStep(4);
+              }}
+              style={{ padding: '10px 28px', fontSize: '0.9rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 8, borderRadius: 10 }}
+            >
+              Tiếp theo: Tiện ích & Cứu hộ <ArrowRight size={16} />
             </button>
           </div>
         </div>
       )}
 
+      {/* ================= STEP 4: FACILITIES, RESCUE, PERMIT & MEDIA ================= */}
       {step === 4 && (
-        <div className="card">
-          <h3 style={{ fontSize: '1.1rem', color: 'var(--color-text-main)', marginBottom: 16 }}>Bước 4: Mô tả chi tiết & Ảnh bìa cung đường</h3>
-
-          {/* Cover Image Selection Block */}
-          <div className="form-group" style={{ marginBottom: 20 }}>
-            <label className="form-label" style={{ fontWeight: 700, marginBottom: 8 }}>Ảnh bìa đại diện cung đường *</label>
-
-            {/* Upload Action Bar */}
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
-              <label
-                htmlFor="cover-image-file-input"
-                className="btn btn-primary"
-                style={{ padding: '8px 18px', fontSize: '0.82rem', cursor: 'pointer', borderRadius: 8 }}
-              >
-                {uploadingImage ? 'Đang tải lên...' : 'Tải ảnh từ thiết bị'}
-              </label>
-              <input
-                id="cover-image-file-input"
-                type="file"
-                accept="image/*"
-                disabled={uploadingImage}
-                onChange={handleCoverImageUpload}
-                style={{ display: 'none' }}
-              />
-              <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
-                (Hoặc dán trực tiếp đường link URL ảnh bên dưới)
-              </span>
-            </div>
-
-            <input
-              type="text"
-              className="form-input"
-              style={{ borderColor: errors.coverImage ? '#ef4444' : undefined }}
-              placeholder="https://domain.com/path-to-image.jpg"
-              value={formData.coverImage}
-              onChange={(e) => handleChange('coverImage', e.target.value)}
-            />
-            {errors.coverImage && <div style={{ color: '#ef4444', fontSize: '0.78rem', marginTop: 4, fontWeight: 600 }}>{errors.coverImage}</div>}
-
-            {/* Live Image Preview showing 100% full image without cropping */}
-            {formData.coverImage && (
-              <div style={{ marginTop: 12, borderRadius: 12, overflow: 'hidden', border: '1px solid var(--color-border)', height: 260, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0b1319', padding: 8, position: 'relative' }}>
-                <img
-                  src={formData.coverImage}
-                  alt="Ảnh bìa xem trước"
-                  style={{
-                    maxWidth: '100%',
-                    maxHeight: '100%',
-                    objectFit: 'contain',
-                    borderRadius: 8,
-                  }}
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=1200&q=80';
-                  }}
-                />
-              </div>
-            )}
+        <div className="card" style={{ padding: '26px 32px', borderRadius: 20, boxShadow: 'var(--shadow-card)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
+            <IconShieldCheck size={22} color="var(--color-primary)" />
+            <h3 style={{ fontSize: '1.15rem', color: 'var(--color-text-main)', fontWeight: 800, margin: 0 }}>
+              Bước 4: Tiện Ích, Giấy Phép, Hotline Cứu Hộ & Ảnh Thực Địa
+            </h3>
           </div>
 
-          <div className="form-group">
-            <label className="form-label">Mô tả tổng quan cung đường *</label>
-            <textarea
-              className="form-textarea"
-              rows={4}
-              style={{ borderColor: errors.description ? '#ef4444' : undefined }}
-              placeholder="Mô tả về cảnh đẹp, điểm đặc sắc, các mốc thời gian..."
-              value={formData.description}
-              onChange={(e) => handleChange('description', e.target.value)}
-            />
-            {errors.description && <div style={{ color: '#ef4444', fontSize: '0.78rem', marginTop: 4, fontWeight: 600 }}>{errors.description}</div>}
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">Hướng dẫn di chuyển đến điểm bắt đầu *</label>
-            <textarea
-              className="form-textarea"
-              rows={3}
-              style={{ borderColor: errors.transportationInfo ? '#ef4444' : undefined }}
-              placeholder="Bắt xe khách từ đâu, đi xe máy qua đèo nào..."
-              value={formData.transportationInfo}
-              onChange={(e) => handleChange('transportationInfo', e.target.value)}
-            />
-            {errors.transportationInfo && <div style={{ color: '#ef4444', fontSize: '0.78rem', marginTop: 4, fontWeight: 600 }}>{errors.transportationInfo}</div>}
-          </div>
-
-          {/* Facilities & Permit Options */}
-          <div className="form-group" style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--color-border)' }}>
-            <label className="form-label" style={{ fontWeight: 700, marginBottom: 12, display: 'block' }}>
-              Đặc điểm & Tiện ích cung đường (Chọn các thuộc tính phù hợp)
-            </label>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-border)' }}>
-                <input
-                  type="checkbox"
-                  checked={formData.permitRequired}
-                  onChange={(e) => handleChange('permitRequired', e.target.checked)}
-                  style={{ width: 16, height: 16, cursor: 'pointer' }}
-                />
-                <span style={{ fontSize: '0.83rem', color: 'var(--color-text-main)', fontWeight: 600 }}>Cần giấy phép VQG / Trạm KL</span>
-              </label>
-
-              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-border)' }}>
-                <input
-                  type="checkbox"
-                  checked={formData.hasCampsite}
-                  onChange={(e) => handleChange('hasCampsite', e.target.checked)}
-                  style={{ width: 16, height: 16, cursor: 'pointer' }}
-                />
-                <span style={{ fontSize: '0.83rem', color: 'var(--color-text-main)', fontWeight: 600 }}>Có bãi cắm trại dã ngoại</span>
-              </label>
-
-              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-border)' }}>
-                <input
-                  type="checkbox"
-                  checked={formData.hasWaterSource}
-                  onChange={(e) => handleChange('hasWaterSource', e.target.checked)}
-                  style={{ width: 16, height: 16, cursor: 'pointer' }}
-                />
-                <span style={{ fontSize: '0.83rem', color: 'var(--color-text-main)', fontWeight: 600 }}>Có nguồn nước tự nhiên</span>
-              </label>
-
-              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 8, border: '1px solid var(--color-border)' }}>
-                <input
-                  type="checkbox"
-                  checked={formData.kidFriendly}
-                  onChange={(e) => handleChange('kidFriendly', e.target.checked)}
-                  style={{ width: 16, height: 16, cursor: 'pointer' }}
-                />
-                <span style={{ fontSize: '0.83rem', color: 'var(--color-text-main)', fontWeight: 600 }}>Phù hợp cho trẻ em</span>
-              </label>
-            </div>
-
-            {formData.permitRequired && (
-              <div style={{ marginTop: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+            {/* Left Column: Cover Image & Description */}
+            <div>
+              <div className="form-group" style={{ marginBottom: 14 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <label className="form-label" style={{ fontSize: '0.82rem', fontWeight: 700, margin: 0 }}>Ảnh bìa thực địa *</label>
+                  <label htmlFor="cover-file-input" className="btn btn-primary" style={{ padding: '4px 12px', fontSize: '0.76rem', height: 26, cursor: 'pointer', borderRadius: 8 }}>
+                    {uploadingImage ? 'Đang tải...' : 'Tải ảnh từ máy'}
+                  </label>
+                  <input id="cover-file-input" type="file" accept="image/*" disabled={uploadingImage} onChange={handleCoverImageUpload} style={{ display: 'none' }} />
+                </div>
                 <input
                   type="text"
                   className="form-input"
-                  style={{ borderColor: errors.permitInfo ? '#ef4444' : undefined }}
-                  placeholder="Nhập tên đơn vị cấp phép (Ví dụ: Ban quản lý VQG Hoàng Liên, Trạm kiểm lâm Y Tý...)"
-                  value={formData.permitInfo}
-                  onChange={(e) => handleChange('permitInfo', e.target.value)}
+                  style={{ padding: '8px 12px', fontSize: '0.85rem', borderColor: errors.coverImage ? '#ef4444' : undefined }}
+                  placeholder="https://images.unsplash.com/... hoặc link ảnh Cloudinary"
+                  value={formData.coverImage}
+                  onChange={(e) => handleChange('coverImage', e.target.value)}
                 />
-                {errors.permitInfo && <div style={{ color: '#ef4444', fontSize: '0.78rem', marginTop: 4, fontWeight: 600 }}>{errors.permitInfo}</div>}
+                {errors.coverImage && <div style={{ color: '#ef4444', fontSize: '0.74rem', marginTop: 2 }}>{errors.coverImage}</div>}
               </div>
-            )}
+
+              <div className="form-group" style={{ marginBottom: 14 }}>
+                <label className="form-label" style={{ fontSize: '0.82rem', fontWeight: 700, marginBottom: 4 }}>Mô tả tổng quan cung đường *</label>
+                <textarea
+                  className="form-textarea"
+                  rows={3}
+                  style={{ padding: '8px 12px', fontSize: '0.85rem', borderColor: errors.description ? '#ef4444' : undefined }}
+                  placeholder="Mô tả về đặc trưng cảnh quan, thảm thực vật, mốc thời gian..."
+                  value={formData.description}
+                  onChange={(e) => handleChange('description', e.target.value)}
+                />
+                {errors.description && <div style={{ color: '#ef4444', fontSize: '0.74rem', marginTop: 2 }}>{errors.description}</div>}
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label" style={{ fontSize: '0.82rem', fontWeight: 700, marginBottom: 4 }}>Hướng dẫn di chuyển đến chân núi *</label>
+                <textarea
+                  className="form-textarea"
+                  rows={2}
+                  style={{ padding: '8px 12px', fontSize: '0.85rem', borderColor: errors.transportationInfo ? '#ef4444' : undefined }}
+                  placeholder="Lộ trình xe khách giường nằm, xe ôm vào bản, điểm gửi xe..."
+                  value={formData.transportationInfo}
+                  onChange={(e) => handleChange('transportationInfo', e.target.value)}
+                />
+                {errors.transportationInfo && <div style={{ color: '#ef4444', fontSize: '0.74rem', marginTop: 2 }}>{errors.transportationInfo}</div>}
+              </div>
+            </div>
+
+            {/* Right Column: Rescue Hotline & Facilities Checkboxes */}
+            <div>
+              <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 14, padding: '14px 16px', marginBottom: 14 }}>
+                <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-sun)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <IconAlertTriangle size={16} color="var(--color-sun)" /> Cứu Hộ & Kiểm Lâm Địa Bàn (Thực Tế) *
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+                  <div>
+                    <label className="form-label" style={{ fontSize: '0.74rem', marginBottom: 2 }}>Đơn vị phụ trách / VQG</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      style={{ padding: '7px 10px', fontSize: '0.82rem' }}
+                      value={formData.rescueContact.name}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, rescueContact: { ...prev.rescueContact, name: e.target.value } }))}
+                    />
+                  </div>
+                  <div>
+                    <label className="form-label" style={{ fontSize: '0.74rem', marginBottom: 2 }}>Số hotline cứu hộ *</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      style={{ padding: '7px 10px', fontSize: '0.82rem', borderColor: errors.rescuePhone ? '#ef4444' : undefined }}
+                      placeholder="114 / 02143.871.228"
+                      value={formData.rescueContact.phone}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, rescueContact: { ...prev.rescueContact, phone: e.target.value } }))}
+                    />
+                    {errors.rescuePhone && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginTop: 2 }}>{errors.rescuePhone}</div>}
+                  </div>
+                </div>
+                <div>
+                  <label className="form-label" style={{ fontSize: '0.74rem', marginBottom: 2 }}>Trạm kiểm lâm cửa rừng</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    style={{ padding: '7px 10px', fontSize: '0.82rem' }}
+                    value={formData.rescueContact.rangerContact}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, rescueContact: { ...prev.rescueContact, rangerContact: e.target.value } }))}
+                  />
+                </div>
+              </div>
+
+              {/* Facilities Checkboxes */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', background: 'var(--color-bg-main)', padding: '8px 12px', borderRadius: 10, border: '1px solid var(--color-border)', fontSize: '0.8rem', fontWeight: 600 }}>
+                  <input type="checkbox" checked={formData.permitRequired} onChange={(e) => handleChange('permitRequired', e.target.checked)} />
+                  <span>Cần giấy phép VQG</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', background: 'var(--color-bg-main)', padding: '8px 12px', borderRadius: 10, border: '1px solid var(--color-border)', fontSize: '0.8rem', fontWeight: 600 }}>
+                  <input type="checkbox" checked={formData.hasCampsite} onChange={(e) => handleChange('hasCampsite', e.target.checked)} />
+                  <span>Có bãi cắm trại</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', background: 'var(--color-bg-main)', padding: '8px 12px', borderRadius: 10, border: '1px solid var(--color-border)', fontSize: '0.8rem', fontWeight: 600 }}>
+                  <input type="checkbox" checked={formData.hasWaterSource} onChange={(e) => handleChange('hasWaterSource', e.target.checked)} />
+                  <span>Có nguồn nước</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', background: 'var(--color-bg-main)', padding: '8px 12px', borderRadius: 10, border: '1px solid var(--color-border)', fontSize: '0.8rem', fontWeight: 600 }}>
+                  <input type="checkbox" checked={formData.kidFriendly} onChange={(e) => handleChange('kidFriendly', e.target.checked)} />
+                  <span>Phù hợp trẻ em</span>
+                </label>
+              </div>
+
+              {formData.permitRequired && (
+                <div style={{ marginTop: 8 }}>
+                  <input
+                    type="text"
+                    className="form-input"
+                    style={{ padding: '7px 10px', fontSize: '0.82rem', borderColor: errors.permitInfo ? '#ef4444' : undefined }}
+                    placeholder="Nhập tên nơi cấp phép (BQL VQG Hoàng Liên, vé 60k...)"
+                    value={formData.permitInfo}
+                    onChange={(e) => handleChange('permitInfo', e.target.value)}
+                  />
+                  {errors.permitInfo && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginTop: 2 }}>{errors.permitInfo}</div>}
+                </div>
+              )}
+            </div>
           </div>
 
-          <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
-            <button className="btn btn-secondary" onClick={() => setStep(3)} style={{ flex: 1, justifyContent: 'center' }}>
+          {/* Action Row */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 24, paddingTop: 18, borderTop: '1px solid var(--color-border)' }}>
+            <button className="btn btn-secondary" onClick={() => setStep(3)} style={{ padding: '10px 24px', fontSize: '0.9rem', borderRadius: 10 }}>
               <ArrowLeft size={16} /> Quay lại
             </button>
-            <button className="btn btn-primary" onClick={() => { if (validateStep4()) setStep(5); }} style={{ flex: 1, justifyContent: 'center' }}>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                if (validateStep4()) setStep(5);
+              }}
+              style={{ padding: '10px 28px', fontSize: '0.9rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 8, borderRadius: 10 }}
+            >
               Xem trước bài đóng góp <ArrowRight size={16} />
             </button>
           </div>
         </div>
       )}
 
+      {/* ================= STEP 5: LIVE HUD PREVIEW & SUBMIT ================= */}
       {step === 5 && (
-        <div className="card">
-          <h3 style={{ fontSize: '1.2rem', color: 'var(--color-text-main)', marginBottom: 6, textAlign: 'center' }}>
-            {isEditing ? 'Bước 5: Xem trước bài đóng góp (Đang chỉnh sửa)' : 'Bước 5: Xem trước & Xác nhận gửi bài đóng góp'}
-          </h3>
-          <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', textAlign: 'center', marginBottom: 20 }}>
-            {isEditing ? 'Vui lòng kiểm tra kỹ các thay đổi trước khi lưu' : 'Vui lòng kiểm tra kỹ các thông tin bên dưới trước khi gửi cho Ban Quản Trị duyệt'}
-          </p>
-
-          {/* Author Badge & Pending Status Header */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(14, 215, 181, 0.08)', border: '1px solid rgba(14, 215, 181, 0.2)', padding: '12px 16px', borderRadius: 12, marginBottom: 20 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div className="card" style={{ padding: '26px 32px', borderRadius: 20, boxShadow: 'var(--shadow-card)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <img
                 src={currentUser?.avatarUrl || currentUser?.avatar || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
-                alt="Author avatar"
-                style={{ width: 40, height: 40, borderRadius: '50%', border: '2px solid var(--color-primary)', objectFit: 'cover' }}
+                alt="Avatar"
+                style={{ width: 34, height: 34, borderRadius: '50%', border: '2px solid var(--color-primary)' }}
               />
-              <div>
-                <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                  {currentUser?.fullName || currentUser?.name || 'Trekker Đóng Góp'}
-                </div>
-                <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-                  Đóng góp lúc: {new Date().toLocaleDateString('vi-VN')}
-                </div>
-              </div>
+              <span style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                {currentUser?.fullName || currentUser?.name || 'Trekker Đóng Góp'}
+              </span>
+              <span style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)' }}>• +50 điểm uy tín khi Ban Quản Trị duyệt</span>
             </div>
-            <span style={{ background: 'rgba(245, 158, 11, 0.2)', color: '#f59e0b', border: '1px solid rgba(245, 158, 11, 0.4)', padding: '4px 12px', borderRadius: 20, fontSize: '0.78rem', fontWeight: 700 }}>
-              ⏳ Trạng thái: Chờ BQT Duyệt
+            <span style={{ background: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b', border: '1px solid rgba(245, 158, 11, 0.3)', padding: '4px 14px', borderRadius: 16, fontSize: '0.78rem', fontWeight: 800 }}>
+              ⏳ Trạng thái: Chờ Ban Quản Trị Duyệt
             </span>
           </div>
 
-          {/* Hero Cover Image Banner */}
-          {formData.coverImage && (
-            <div style={{ height: 240, borderRadius: 12, overflow: 'hidden', marginBottom: 20, position: 'relative', border: '1px solid var(--color-border)', background: '#0b1319', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <img
-                src={formData.coverImage}
-                alt={formData.name}
-                style={{
-                  maxWidth: '100%',
-                  maxHeight: '100%',
-                  objectFit: 'contain',
-                }}
-                onError={(e) => {
-                  (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=1200&q=80';
-                }}
-              />
-              <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.2) 60%, transparent 100%)', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: 20, pointerEvents: 'none' }}>
-                <span style={{ background: 'var(--color-primary)', color: '#fff', fontSize: '0.72rem', fontWeight: 800, padding: '3px 10px', borderRadius: 6, width: 'fit-content', marginBottom: 6 }}>
-                  {formData.region} • {formData.province}
-                </span>
-                <h2 style={{ color: '#ffffff', fontSize: '1.4rem', fontWeight: 800, margin: 0, textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>
-                  {formData.name || 'Cung đường Trekking mới'}
-                </h2>
-              </div>
-            </div>
-          )}
-
-          {/* Mini Leaflet Preview Map */}
-          <div style={{ height: 220, borderRadius: 12, overflow: 'hidden', border: '1px solid var(--color-border)', marginBottom: 20 }}>
-            <MapContainer
-              center={[formData.startLat, formData.startLng]}
-              zoom={12}
-              scrollWheelZoom={false}
-              style={{ height: '100%', width: '100%' }}
-            >
-              <TileLayer
-                url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-                attribution="Esri World Imagery"
-              />
-              <Marker position={[formData.startLat, formData.startLng]} icon={greenPinIcon}>
-                <Popup>Điểm xuất phát: {formData.hamlet || formData.name}</Popup>
-              </Marker>
-              <Marker position={[formData.endLat, formData.endLng]} icon={redPinIcon}>
-                <Popup>Điểm kết thúc / Đỉnh</Popup>
-              </Marker>
-              {gpxTrack.length > 0 && (
-                <Polyline positions={gpxTrack} pathOptions={{ color: '#00ffd5', weight: 4, opacity: 0.9 }} />
-              )}
-            </MapContainer>
-          </div>
-
-          {/* Structured Preview Details */}
-          <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 20, borderRadius: 12, marginBottom: 20 }}>
-            {!formData.coverImage && (
-              <h4 style={{ fontSize: '1.2rem', color: 'var(--color-primary)', fontWeight: 800, marginBottom: 8 }}>
-                {formData.name || 'Cung đường Trekking mới'}
-              </h4>
-            )}
-
-            {/* Location Tag */}
-            <div style={{ color: 'var(--color-text-main)', fontSize: '0.85rem', fontWeight: 600, marginBottom: 16 }}>
-              Vị trí: {formData.hamlet ? formData.hamlet + ', ' : ''}{formData.district}, {formData.province} ({formData.region})
-            </div>
-
-            {/* 4 Metric Badges Grid */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 20 }}>
-              <div style={{ background: 'var(--color-bg-card, rgba(255,255,255,0.05))', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Chiều dài</div>
-                <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: 2 }}>{formData.distanceKm} km</div>
-              </div>
-              <div style={{ background: 'var(--color-bg-card, rgba(255,255,255,0.05))', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Độ cao nâng</div>
-                <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#38bdf8', marginTop: 2 }}>+{formData.elevationGainM} m</div>
-              </div>
-              <div style={{ background: 'var(--color-bg-card, rgba(255,255,255,0.05))', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Thời gian đi</div>
-                <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 2 }}>{formData.durationHoursNote}</div>
-              </div>
-              <div style={{ background: 'var(--color-bg-card, rgba(255,255,255,0.05))', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Mức độ khó</div>
-                <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#f59e0b', marginTop: 2 }}>{formData.difficultyLevel}/5</div>
-              </div>
-            </div>
-
-            {/* Coordinates Section */}
-            <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 14, marginBottom: 16 }}>
-              <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 6 }}>
-                Tọa độ GPS đã đánh dấu ({gpxTrack.length > 0 ? `${gpxTrack.length} điểm track` : 'Tọa độ ghim'}):
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
-                <div>• Xuất phát (Start): <code>{formData.startLat}, {formData.startLng}</code></div>
-                <div>• Kết thúc (End): <code>{formData.endLat}, {formData.endLng}</code></div>
-              </div>
-            </div>
-
-            {/* Description */}
-            <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 14, marginBottom: 16 }}>
-              <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 6 }}>
-                Mô tả tổng quan cung đường:
-              </div>
-              <p style={{ color: 'var(--color-text-main)', fontSize: '0.85rem', lineHeight: 1.6, margin: 0, whiteSpace: 'pre-line' }}>
-                {formData.description || 'Chưa nhập nội dung mô tả.'}
-              </p>
-            </div>
-
-            {/* Transportation */}
-            {formData.transportationInfo && (
-              <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 14, marginBottom: 16 }}>
-                <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 6 }}>
-                  Hướng dẫn di chuyển:
+          {/* 2-Column Live HUD Preview */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 20, background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 16, padding: 18, marginBottom: 20 }}>
+            {/* Left Column: Image & Details */}
+            <div>
+              {formData.coverImage && (
+                <div style={{ height: 160, borderRadius: 12, overflow: 'hidden', marginBottom: 12, position: 'relative' }}>
+                  <img src={formData.coverImage} alt={formData.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <div style={{ position: 'absolute', bottom: 8, left: 10, background: 'var(--color-primary)', color: '#fff', fontSize: '0.72rem', fontWeight: 800, padding: '3px 10px', borderRadius: 6 }}>
+                    {formData.region} • {formData.province}
+                  </div>
                 </div>
-                <p style={{ color: 'var(--color-text-muted)', fontSize: '0.82rem', lineHeight: 1.5, margin: 0, whiteSpace: 'pre-line' }}>
-                  {formData.transportationInfo}
-                </p>
+              )}
+              <div style={{ fontSize: '1.1rem', fontWeight: 900, color: 'var(--color-text-main)', marginBottom: 4 }}>{formData.name}</div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-dim)', marginBottom: 8 }}>
+                Xuất phát: <strong>{formData.hamlet}</strong>, {formData.district}, {formData.province}
               </div>
-            )}
+              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-main)', lineHeight: 1.45, maxHeight: 54, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {formData.description}
+              </div>
+            </div>
 
-            {/* Facilities Badges */}
-            <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 14, display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-              <span style={{ background: formData.permitRequired ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)', color: formData.permitRequired ? '#ef4444' : '#10b981', border: `1px solid ${formData.permitRequired ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`, padding: '4px 12px', borderRadius: 8, fontSize: '0.78rem', fontWeight: 700 }}>
-                Giấy phép: {formData.permitRequired ? (formData.permitInfo || 'Cần cấp phép') : 'Không cần'}
-              </span>
-              <span style={{ background: formData.hasCampsite ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255, 255, 255, 0.05)', color: formData.hasCampsite ? '#10b981' : 'var(--color-text-muted)', border: '1px solid var(--color-border)', padding: '4px 12px', borderRadius: 8, fontSize: '0.78rem', fontWeight: 700 }}>
-                Bãi cắm trại: {formData.hasCampsite ? 'Có' : 'Không'}
-              </span>
-              <span style={{ background: formData.hasWaterSource ? 'rgba(56, 189, 248, 0.15)' : 'rgba(255, 255, 255, 0.05)', color: formData.hasWaterSource ? '#38bdf8' : 'var(--color-text-muted)', border: '1px solid var(--color-border)', padding: '4px 12px', borderRadius: 8, fontSize: '0.78rem', fontWeight: 700 }}>
-                Nguồn nước: {formData.hasWaterSource ? 'Có' : 'Không'}
-              </span>
-              <span style={{ background: formData.kidFriendly ? 'rgba(245, 158, 11, 0.15)' : 'rgba(255, 255, 255, 0.05)', color: formData.kidFriendly ? '#f59e0b' : 'var(--color-text-muted)', border: '1px solid var(--color-border)', padding: '4px 12px', borderRadius: 8, fontSize: '0.78rem', fontWeight: 700 }}>
-                Trẻ em: {formData.kidFriendly ? 'Phù hợp' : 'Không phù hợp'}
-              </span>
+            {/* Right Column: 4 Metrics & Season / Rescue Info */}
+            <div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 12 }}>
+                <div style={{ background: 'var(--color-bg-card)', padding: '8px 6px', borderRadius: 8, textAlign: 'center', border: '1px solid var(--color-border)' }}>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)' }}>Cự ly</div>
+                  <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--color-sky)' }}>{formData.distanceKm}km</div>
+                </div>
+                <div style={{ background: 'var(--color-bg-card)', padding: '8px 6px', borderRadius: 8, textAlign: 'center', border: '1px solid var(--color-border)' }}>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)' }}>Cao độ</div>
+                  <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--color-sun)' }}>{formData.maxAltitudeM}m</div>
+                </div>
+                <div style={{ background: 'var(--color-bg-card)', padding: '8px 6px', borderRadius: 8, textAlign: 'center', border: '1px solid var(--color-border)' }}>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)' }}>Độ dốc</div>
+                  <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--color-earth)' }}>+{formData.elevationGainM}m</div>
+                </div>
+                <div style={{ background: 'var(--color-bg-card)', padding: '8px 6px', borderRadius: 8, textAlign: 'center', border: '1px solid var(--color-border)' }}>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)' }}>Độ khó</div>
+                  <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--color-primary)' }}>{formData.difficultyLevel}/5</div>
+                </div>
+              </div>
+
+              <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 6 }}>
+                Mùa leo núi lý tưởng:
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+                {formData.bestMonths.map((m) => (
+                  <span key={m} style={{ background: 'rgba(16, 185, 129, 0.15)', border: '1px solid var(--color-primary)', color: 'var(--color-primary)', padding: '2px 8px', borderRadius: 6, fontSize: '0.74rem', fontWeight: 800 }}>
+                    Tháng {m}
+                  </span>
+                ))}
+              </div>
+
+              <div style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)', borderTop: '1px solid var(--color-border)', paddingTop: 8 }}>
+                Hotline cứu hộ: <strong>{formData.rescueContact.phone || '114'}</strong> ({formData.rescueContact.name})
+              </div>
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: 12 }}>
-            <button className="btn btn-secondary" onClick={() => setStep(4)} style={{ flex: 1, justifyContent: 'center' }}>
-              <ArrowLeft size={16} /> Quay lại sửa thông tin
+          {/* Action Row */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14 }}>
+            <button className="btn btn-secondary" onClick={() => setStep(4)} style={{ padding: '11px 24px', fontSize: '0.9rem', borderRadius: 12 }}>
+              <ArrowLeft size={16} /> Sửa thông tin
             </button>
             <button
               className="btn btn-primary"
               onClick={handleSubmit}
               disabled={loading}
-              style={{ flex: 2, justifyContent: 'center' }}
+              style={{ flex: 1, padding: '11px 32px', fontSize: '0.95rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 12 }}
             >
-              {loading
-                ? (isEditing ? 'Đang lưu thay đổi...' : 'Đang gửi bài...')
-                : (isEditing ? 'Cập nhật & Lưu thay đổi bài đóng góp' : 'Xác nhận & Nộp bài cho BQT duyệt')
-              }
+              {loading ? (
+                <span>Đang lưu vào Database...</span>
+              ) : (
+                <>
+                  <IconSend size={16} />
+                  {isEditing ? 'Cập Nhật & Lưu Vào Database' : 'Xác Nhận & Lưu Vào Database (Gửi BQT Duyệt)'}
+                </>
+              )}
             </button>
           </div>
         </div>

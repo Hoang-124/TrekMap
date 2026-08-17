@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 
-// Custom TrekMap Reaction Image Component (Direct PNG Assets from User Design with Vibrancy Boost)
-export const TrekReactionImg = ({ name, size = 34, alt = '' }: { name: string; size?: number; alt?: string }) => (
+// Custom TrekMap Reaction Image Component (Direct PNG Assets with Vibrancy Boost)
+export const TrekReactionImg = ({ name, size = 30, alt = '' }: { name: string; size?: number; alt?: string }) => (
   <img
     src={`/reactions/${name}.png`}
     alt={alt || name}
@@ -11,7 +11,7 @@ export const TrekReactionImg = ({ name, size = 34, alt = '' }: { name: string; s
       objectFit: 'contain',
       display: 'inline-block',
       verticalAlign: 'middle',
-      filter: 'brightness(1.15) contrast(1.15) saturate(1.3) drop-shadow(0 3px 8px rgba(0,0,0,0.45))',
+      filter: 'brightness(1.15) contrast(1.15) saturate(1.3) drop-shadow(0 2px 6px rgba(0,0,0,0.4))',
       transition: 'all 0.2s ease',
     }}
   />
@@ -28,13 +28,13 @@ export interface ReactionItem {
 }
 
 export const REACTION_LIST: ReactionItem[] = [
-  { id: 'like', label: 'Thích', emoji: '👍', color: '#fbbf24', icon: <TrekReactionImg name="like" size={34} alt="Thích" /> },
-  { id: 'dislike', label: 'Không thích', emoji: '👎', color: '#cbd5e1', icon: <TrekReactionImg name="dislike" size={34} alt="Không thích" /> },
-  { id: 'haha', label: 'Haha', emoji: '😆', color: '#f97316', icon: <TrekReactionImg name="haha" size={34} alt="Haha" /> },
-  { id: 'wow', label: 'Wow', emoji: '😮', color: '#38bdf8', icon: <TrekReactionImg name="wow" size={34} alt="Wow" /> },
-  { id: 'buon', label: 'Buồn', emoji: '😢', color: '#818cf8', icon: <TrekReactionImg name="buon" size={34} alt="Buồn" /> },
-  { id: 'huhu', label: 'Huhu', emoji: '😭', color: '#22d3ee', icon: <TrekReactionImg name="huhu" size={34} alt="Huhu" /> },
-  { id: 'angry', label: 'Phẫn nộ', emoji: '😡', color: '#f87171', icon: <TrekReactionImg name="angry" size={34} alt="Phẫn nộ" /> },
+  { id: 'like', label: 'Thích', emoji: '👍', color: '#fbbf24', icon: <TrekReactionImg name="like" size={28} alt="Thích" /> },
+  { id: 'dislike', label: 'Không thích', emoji: '👎', color: '#cbd5e1', icon: <TrekReactionImg name="dislike" size={28} alt="Không thích" /> },
+  { id: 'haha', label: 'Haha', emoji: '😆', color: '#f97316', icon: <TrekReactionImg name="haha" size={28} alt="Haha" /> },
+  { id: 'wow', label: 'Wow', emoji: '😮', color: '#38bdf8', icon: <TrekReactionImg name="wow" size={28} alt="Wow" /> },
+  { id: 'buon', label: 'Buồn', emoji: '😢', color: '#818cf8', icon: <TrekReactionImg name="buon" size={28} alt="Buồn" /> },
+  { id: 'huhu', label: 'Huhu', emoji: '😭', color: '#22d3ee', icon: <TrekReactionImg name="huhu" size={28} alt="Huhu" /> },
+  { id: 'angry', label: 'Phẫn nộ', emoji: '😡', color: '#f87171', icon: <TrekReactionImg name="angry" size={28} alt="Phẫn nộ" /> },
 ];
 
 interface FacebookReactionPickerProps {
@@ -94,7 +94,7 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
     timeoutRef.current = setTimeout(() => {
       setShowPicker(false);
       setHoveredId(null);
-    }, 350);
+    }, 300);
   };
 
   return (
@@ -103,29 +103,29 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
-      {/* Floating Reaction Bar Modal (Facebook Style Seamless Hit-box) */}
+      {/* Floating Reaction Bar Modal (Anchored to right of button to avoid screen overflow) */}
       {showPicker && (
         <div
           style={{
             position: 'absolute',
-            bottom: '100%',
-            left: 0,
-            paddingBottom: 12, // Transparent seamless bridge to prevent mouse leaving!
-            zIndex: 999,
+            bottom: 'calc(100% + 2px)',
+            right: 0,
+            paddingBottom: 10,
+            zIndex: 99999,
           }}
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
         >
           <div
             style={{
-              background: 'linear-gradient(135deg, rgba(12, 35, 48, 0.98), rgba(6, 20, 28, 0.99))',
+              background: 'var(--color-bg-card)',
               backdropFilter: 'blur(20px)',
-              border: '2px solid #00ffd5',
-              borderRadius: 40,
-              padding: '8px 16px',
+              border: '1.5px solid var(--color-border-glow)',
+              borderRadius: 36,
+              padding: '6px 12px',
               display: 'flex',
-              gap: 12,
-              boxShadow: '0 16px 50px rgba(0, 255, 213, 0.5), 0 0 25px rgba(0, 255, 213, 0.3)',
+              gap: 8,
+              boxShadow: '0 16px 40px rgba(0, 0, 0, 0.6), 0 0 20px rgba(5, 150, 105, 0.25)',
               alignItems: 'center',
               whiteSpace: 'nowrap',
               position: 'relative',
@@ -141,18 +141,17 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
                     <div
                       style={{
                         position: 'absolute',
-                        bottom: '115%',
-                        background: 'rgba(4, 19, 27, 0.95)',
+                        bottom: '120%',
+                        background: 'var(--color-bg-main)',
                         color: item.color,
-                        border: `1.5px solid ${item.color}`,
-                        borderRadius: 12,
-                        padding: '3px 10px',
-                        fontSize: '0.75rem',
+                        border: `1px solid ${item.color}`,
+                        borderRadius: 10,
+                        padding: '2px 8px',
+                        fontSize: '0.7rem',
                         fontWeight: 800,
                         whiteSpace: 'nowrap',
-                        boxShadow: `0 4px 15px ${item.color}66`,
+                        boxShadow: `0 4px 12px ${item.color}44`,
                         pointerEvents: 'none',
-                        animation: 'fadeIn 0.15s ease',
                         zIndex: 1000,
                       }}
                     >
@@ -169,30 +168,28 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
                     }}
                     title={item.label}
                     style={{
-                      background: isSelected ? 'rgba(0, 255, 213, 0.35)' : 'rgba(255, 255, 255, 0.14)',
-                      border: isSelected ? `2px solid ${item.color}` : '1.5px solid rgba(255, 255, 255, 0.2)',
+                      background: isSelected ? 'rgba(5, 150, 105, 0.25)' : 'rgba(255, 255, 255, 0.06)',
+                      border: isSelected ? `2px solid ${item.color}` : '1px solid var(--color-border)',
                       cursor: 'pointer',
-                      padding: '8px',
+                      padding: '6px',
                       borderRadius: '50%',
-                      transition: 'all 0.22s cubic-bezier(0.175, 0.885, 0.32, 1.3)',
+                      transition: 'all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.3)',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      boxShadow: isSelected ? `0 0 20px ${item.color}` : '0 4px 14px rgba(0, 0, 0, 0.35)',
+                      boxShadow: isSelected ? `0 0 14px ${item.color}` : 'none',
                     }}
                     onMouseEnter={(e) => {
                       setHoveredId(item.id as string);
-                      e.currentTarget.style.transform = 'scale(1.55) translateY(-10px) rotate(-4deg)';
-                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.28)';
-                      e.currentTarget.style.filter = `drop-shadow(0 8px 20px ${item.color})`;
+                      e.currentTarget.style.transform = 'scale(1.4) translateY(-6px)';
+                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)';
                       e.currentTarget.style.borderColor = item.color;
                     }}
                     onMouseLeave={(e) => {
                       setHoveredId(null);
-                      e.currentTarget.style.transform = 'scale(1) translateY(0) rotate(0deg)';
-                      e.currentTarget.style.background = isSelected ? 'rgba(0, 255, 213, 0.35)' : 'rgba(255, 255, 255, 0.14)';
-                      e.currentTarget.style.filter = 'none';
-                      e.currentTarget.style.borderColor = isSelected ? item.color : 'rgba(255, 255, 255, 0.2)';
+                      e.currentTarget.style.transform = 'scale(1) translateY(0)';
+                      e.currentTarget.style.background = isSelected ? 'rgba(5, 150, 105, 0.25)' : 'rgba(255, 255, 255, 0.06)';
+                      e.currentTarget.style.borderColor = isSelected ? item.color : 'var(--color-border)';
                     }}
                   >
                     <span>{item.icon}</span>
@@ -204,7 +201,7 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
         </div>
       )}
 
-      {/* Main Trigger Button (Facebook Exact UI Style) */}
+      {/* Main Trigger Button */}
       <button
         type="button"
         onMouseEnter={handleMouseEnter}
@@ -213,56 +210,55 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
           setShowPicker(!showPicker);
         }}
         style={{
-          background: activeItem ? 'rgba(0, 255, 213, 0.14)' : 'rgba(255, 255, 255, 0.05)',
-          border: activeItem ? `1.5px solid ${activeItem.color}` : '1px solid rgba(255, 255, 255, 0.15)',
-          borderRadius: 24,
-          padding: '5px 12px',
+          background: activeItem ? 'rgba(5, 150, 105, 0.14)' : 'var(--color-bg-main)',
+          border: activeItem ? `1.5px solid ${activeItem.color}` : '1px solid var(--color-border)',
+          borderRadius: 20,
+          padding: '4px 10px',
           cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',
           gap: 6,
           transition: 'all 0.2s ease',
-          boxShadow: activeItem ? `0 0 16px ${activeItem.color}44` : 'none',
+          boxShadow: activeItem ? `0 0 12px ${activeItem.color}33` : 'none',
         }}
       >
-        {/* Top 3 Overlapping Icons Stack (Facebook Round Coin Style) */}
+        {/* Top 3 Overlapping Icons Stack */}
         {top3Icons.length > 0 ? (
           <div style={{ display: 'flex', alignItems: 'center' }}>
             {top3Icons.map((item, idx) => (
               <div
                 key={item.id}
                 style={{
-                  marginLeft: idx > 0 ? -6 : 0,
+                  marginLeft: idx > 0 ? -5 : 0,
                   zIndex: top3Icons.length - idx,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  width: 22,
-                  height: 22,
+                  width: 20,
+                  height: 20,
                   borderRadius: '50%',
                   background: 'var(--color-bg-card)',
-                  border: '1.5px solid var(--color-border)',
-                  boxShadow: '0 2px 5px rgba(0,0,0,0.5)',
+                  border: '1px solid var(--color-border)',
                   overflow: 'hidden',
                 }}
               >
-                <TrekReactionImg name={item.id as string} size={18} alt={item.label} />
+                <TrekReactionImg name={item.id as string} size={16} alt={item.label} />
               </div>
             ))}
           </div>
         ) : (
           <div style={{ display: 'flex', alignItems: 'center' }}>
-            <TrekReactionImg name={activeItem ? (activeItem.id as string) : 'like'} size={22} alt={activeItem ? activeItem.label : 'Thích'} />
+            <TrekReactionImg name={activeItem ? (activeItem.id as string) : 'like'} size={18} alt={activeItem ? activeItem.label : 'Thích'} />
           </div>
         )}
 
-        {/* Facebook Style Reaction Count Number */}
+        {/* Reaction Count Number */}
         <span
           style={{
-            fontSize: '0.88rem',
+            fontSize: '0.82rem',
             fontWeight: 800,
-            color: activeItem ? activeItem.color : '#cbd5e1',
-            marginLeft: 2,
+            color: activeItem ? activeItem.color : 'var(--color-text-muted)',
+            marginLeft: 1,
             lineHeight: 1,
           }}
         >
@@ -272,5 +268,3 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
     </div>
   );
 };
-
-

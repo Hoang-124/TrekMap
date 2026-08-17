@@ -34,10 +34,11 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
 }) => {
   // Live statistics dynamically calculated from database trails
   const stats = useMemo(() => {
-    const totalTrails = trails.length;
-    const totalKm = trails.reduce((acc, t) => acc + (t.distanceKm || 0), 0);
-    const maxAltitude = Math.max(...trails.map((t) => t.maxAltitudeM || 0), 3143);
-    const summitsAbove3k = trails.filter((t) => (t.maxAltitudeM || 0) >= 3000).length;
+    const list = Array.isArray(trails) ? trails : [];
+    const totalTrails = list.length;
+    const totalKm = list.reduce((acc, t) => acc + (t?.distanceKm || 0), 0);
+    const maxAltitude = list.length > 0 ? Math.max(...list.map((t) => t?.maxAltitudeM || 0), 3143) : 3143;
+    const summitsAbove3k = list.filter((t) => (t?.maxAltitudeM || 0) >= 3000).length;
 
     return {
       totalTrails,
@@ -284,12 +285,15 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
           </div>
 
           {/* Live Autocomplete Suggestions Dropdown */}
-          {searchQuery.trim().length > 0 && (() => {
-            const matches = trails.filter(
+          {searchQuery && searchQuery.trim().length > 0 && (() => {
+            const list = Array.isArray(trails) ? trails : [];
+            const q = searchQuery.trim().toLowerCase();
+            const matches = list.filter(
               (t) =>
-                t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                t.province.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                t.region.toLowerCase().includes(searchQuery.toLowerCase())
+                (t?.name || '').toLowerCase().includes(q) ||
+                (t?.province || '').toLowerCase().includes(q) ||
+                (t?.district || '').toLowerCase().includes(q) ||
+                (t?.region || '').toLowerCase().includes(q)
             ).slice(0, 4);
 
             if (matches.length === 0) return null;
@@ -344,7 +348,10 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
                       </div>
                     </div>
                     <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-sun)' }}>🏔️ {m.maxAltitudeM}m</div>
+                      <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-sun)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
+                        <IconMountain size={13} color="var(--color-sun)" />
+                        <span>{m.maxAltitudeM}m</span>
+                      </div>
                       <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)' }}>{m.distanceKm} km</div>
                     </div>
                   </div>

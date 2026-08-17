@@ -23,10 +23,22 @@ import { SocketProvider, useSocket } from './context/SocketContext.js';
 import { AuthModal } from './components/auth/AuthModal.js';
 import { LogoutConfirmModal } from './components/auth/LogoutConfirmModal.js';
 import { Toast } from './components/common/Toast.js';
-import { fetchTrails, fetchIncidents } from './services/api.js';
+import { fetchTrails, fetchTrailById, fetchIncidents } from './services/api.js';
+import { mockTrails } from './data/seedData.js';
 import { getApiHeaders } from './utils/sessionHeaders.js';
 import { EmergencyContactsModal } from './components/common/EmergencyContactsModal.js';
-import { IconHiking, IconShieldAlert, IconPhone, IconAlertTriangle, IconMapPin } from './components/common/SvgIcons.js';
+import { ErrorBoundary } from './components/common/ErrorBoundary.js';
+import {
+  IconHiking,
+  IconShieldAlert,
+  IconPhone,
+  IconAlertTriangle,
+  IconMapPin,
+  IconMountain,
+  IconTent,
+  IconDroplet,
+  IconClock,
+} from './components/common/SvgIcons.js';
 import type { Trail, Incident, ForumThread, UserProfile } from './types.js';
 import './App.css';
 
@@ -79,15 +91,118 @@ const Send = ({ size = 18, color = 'currentColor', style }: { size?: number; col
   </svg>
 );
 
+function getInitialRoute(): {
+  view: 'home' | 'explore' | 'detail' | 'contribute' | 'profile' | 'forum' | 'admin' | 'messages' | 'notifications';
+  trailId: string | null;
+} {
+  if (typeof window === 'undefined') return { view: 'home', trailId: null };
+  const pathname = window.location.pathname.replace(/^\//, '');
+  const hash = window.location.hash;
+
+  if (hash.startsWith('#trail/')) {
+    const trailId = hash.replace('#trail/', '');
+    return { view: 'detail', trailId };
+  }
+
+  if (['forum', 'profile', 'messages', 'contribute', 'admin', 'explore', 'notifications'].includes(pathname)) {
+    return { view: pathname as any, trailId: null };
+  }
+
+  if (hash === '#forum') return { view: 'forum', trailId: null };
+  if (hash === '#profile') return { view: 'profile', trailId: null };
+  if (hash === '#messages') return { view: 'messages', trailId: null };
+  if (hash === '#contribute') return { view: 'contribute', trailId: null };
+  if (hash === '#admin') return { view: 'admin', trailId: null };
+  if (hash === '#explore') return { view: 'explore', trailId: null };
+  if (hash === '#notifications') return { view: 'notifications', trailId: null };
+
+  return { view: 'home', trailId: null };
+}
+
+function getInitialTrail(trailId: string | null): Trail | null {
+  if (!trailId) return null;
+  const seedFound = mockTrails.find((t) => t.id === trailId || (t as any)._id === trailId || String(t.id) === trailId);
+  if (seedFound) return seedFound;
+
+  try {
+    const cachedContribs: any[] = JSON.parse(localStorage.getItem('trekmap_contributions') || '[]');
+    const contrib = cachedContribs.find((c) => c.id === trailId || c._id === trailId || `contrib-${c._id}` === trailId || `contrib-${c.id}` === trailId);
+    if (contrib) {
+      return {
+        id: contrib.id || `contrib-${contrib._id || Date.now()}`,
+        name: contrib.name,
+        altNames: contrib.altNames || [],
+        region: contrib.region || 'Miền Bắc',
+        province: contrib.province || '',
+        district: contrib.district || '',
+        hamlet: contrib.hamlet || '',
+        distanceKm: Number(contrib.distanceKm) || 15,
+        elevationGainM: Number(contrib.elevationGainM) || 800,
+        maxAltitudeM: Number(contrib.maxAltitudeM) || 2000,
+        durationDays: Math.ceil((Number(contrib.distanceKm) || 15) / 10),
+        durationHoursNote: contrib.durationHoursNote || '1 ngày',
+        difficultyLevel: Number(contrib.difficultyLevel) || 3,
+        difficultyNote: (Number(contrib.difficultyLevel) || 3) >= 4 ? 'Thử thách cao' : 'Trung bình',
+        bestMonths: Array.isArray(contrib.bestMonths) && contrib.bestMonths.length > 0 ? contrib.bestMonths : [10, 11, 12, 1, 2, 3, 4],
+        avoidMonths: Array.isArray(contrib.avoidMonths) ? contrib.avoidMonths : [],
+        startLat: Number(contrib.startLat) || 22.3364,
+        startLng: Number(contrib.startLng) || 103.8438,
+        endLat: Number(contrib.endLat) || 22.3032,
+        endLng: Number(contrib.endLng) || 103.7753,
+        description: contrib.description || 'Cung đường đóng góp cộng đồng.',
+        transportationInfo: contrib.transportationInfo || '',
+        coverImage: contrib.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=1200&q=80',
+        galleryImages: [contrib.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=1200&q=80'],
+        permitRequired: !!contrib.permitRequired,
+        permitInfo: contrib.permitInfo || '',
+        hasCampsite: !!contrib.hasCampsite,
+        hasWaterSource: !!contrib.hasWaterSource,
+        kidFriendly: !!contrib.kidFriendly,
+        gpxTrack: contrib.gpxTrack || [
+          [Number(contrib.startLat) || 22.3364, Number(contrib.startLng) || 103.8438],
+          [Number(contrib.endLat) || 22.3032, Number(contrib.endLng) || 103.7753],
+        ],
+        waypoints: contrib.waypoints || [],
+        status: contrib.status || 'approved',
+        createdAt: contrib.createdAt,
+        updatedAt: contrib.updatedAt,
+        rescueContact: contrib.rescueContact || {
+          name: 'Hạt Kiểm Lâm ' + (contrib.province || 'Địa phương'),
+          phone: '114 / 115 (Cứu nạn & Cấp cứu 24/7)',
+          rangerContact: 'Trạm Kiểm Lâm ' + (contrib.district || 'Cửa Rừng'),
+        },
+        rating: 0,
+        reviewCount: 0,
+      };
+    }
+  } catch (e) {}
+
+  return null;
+}
+
 export function App() {
-  const [currentView, setCurrentView] = useState<'home' | 'explore' | 'detail' | 'contribute' | 'profile' | 'forum' | 'admin' | 'messages' | 'notifications'>('home');
+  const initialRoute = getInitialRoute();
+  const [currentView, setCurrentView] = useState<'home' | 'explore' | 'detail' | 'contribute' | 'profile' | 'forum' | 'admin' | 'messages' | 'notifications'>(initialRoute.view);
   const [previousView, setPreviousView] = useState<'home' | 'explore' | 'detail' | 'contribute' | 'profile' | 'forum' | 'admin' | 'messages' | 'notifications'>('home');
   const [trails, setTrails] = useState<Trail[]>([]);
-  const [selectedTrail, setSelectedTrail] = useState<Trail | null>(null);
+  const [selectedTrail, setSelectedTrail] = useState<Trail | null>(() => getInitialTrail(initialRoute.trailId));
+  const [selectedSeasonMonth, setSelectedSeasonMonth] = useState<number | null>(null);
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [selectedIncidentDetail, setSelectedIncidentDetail] = useState<Incident | null>(null);
   const [activeIncidentIndex, setActiveIncidentIndex] = useState(0);
   const [isAlertBannerDismissed, setIsAlertBannerDismissed] = useState(false);
+
+  // If initial route is detail and selectedTrail is not found locally, fetch it immediately from API
+  useEffect(() => {
+    if (initialRoute.view === 'detail' && initialRoute.trailId && !selectedTrail) {
+      fetchTrailById(initialRoute.trailId).then((trail) => {
+        if (trail) {
+          setSelectedTrail(trail);
+          setCurrentView('detail');
+        }
+      });
+    }
+  }, []);
 
   // Auto-rotate ticker every 5 seconds
   useEffect(() => {
@@ -156,13 +271,20 @@ export function App() {
       if (hash.startsWith('#trail/')) {
         setIsAuthModalOpen(false);
         const trailId = hash.replace('#trail/', '');
-        if (trailId && trails.length > 0) {
-          const found = trails.find((t) => t.id === trailId || (t as any)._id === trailId || String(t.id) === trailId);
-          if (found) {
-            setSelectedTrail(found);
-            setCurrentView('detail');
-            return;
+        if (trailId) {
+          setCurrentView('detail');
+          if (trails.length > 0) {
+            const found = trails.find((t) => t.id === trailId || (t as any)._id === trailId || String(t.id) === trailId);
+            if (found) {
+              setSelectedTrail(found);
+              return;
+            }
           }
+          fetchTrailById(trailId).then((trail) => {
+            if (trail) {
+              setSelectedTrail(trail);
+            }
+          });
         }
         return;
       }
@@ -188,6 +310,7 @@ export function App() {
         setIsAuthModalOpen(false);
         if (pathname === '' || pathname === 'home') {
           setCurrentView('home');
+          setSelectedTrail(null);
         }
       }
     };
@@ -321,10 +444,19 @@ export function App() {
         const json = await res.json();
         const userData = json.user || json.data;
         if (json.success && userData) {
+          if (userData.isBanned) {
+            localStorage.removeItem('trekmap_token');
+            setCurrentUser(null);
+            showToast('Tài khoản của bạn đã bị Ban Quản Trị khóa do vi phạm quy định!', 'error');
+            return;
+          }
           setCurrentUser(userData);
         } else {
           localStorage.removeItem('trekmap_token');
           setCurrentUser(null);
+          if (json.isBanned) {
+            showToast('Tài khoản của bạn đã bị Ban Quản Trị khóa vĩnh viễn!', 'error');
+          }
         }
       } catch (err) {
         console.log('Session expired or server unavailable');
@@ -410,8 +542,16 @@ export function App() {
       targetView = viewOrUrl.replace(/^\//, '');
     }
 
-    if (targetView === 'home') {
+    if (targetView === 'home' || targetView === 'explore') {
       setSelectedTrail(null);
+    }
+
+    const protectedViews = ['contribute', 'profile', 'admin', 'messages', 'notifications'];
+    if (protectedViews.includes(targetView) && !currentUser && !localStorage.getItem('trekmap_token')) {
+      showToast('Vui lòng đăng nhập tài khoản để sử dụng tính năng này.', 'info');
+      setAuthModalInitialMode('login');
+      setIsAuthModalOpen(true);
+      return;
     }
 
     if (['home', 'explore', 'detail', 'contribute', 'profile', 'forum', 'admin', 'messages', 'notifications'].includes(targetView)) {
@@ -446,8 +586,24 @@ export function App() {
     handleNavigate('home');
   };
 
+  const handleOpenIncidentReport = () => {
+    if (!currentUser) {
+      showToast('Vui lòng đăng nhập tài khoản để gửi báo cáo nguy hiểm thực địa.', 'info');
+      setAuthModalInitialMode('login');
+      setIsAuthModalOpen(true);
+      return;
+    }
+    setIsIncidentModalOpen(true);
+  };
+
   const handleCreateHomeThread = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!currentUser) {
+      showToast('Vui lòng đăng nhập tài khoản để đăng bài thảo luận.', 'info');
+      setAuthModalInitialMode('login');
+      setIsAuthModalOpen(true);
+      return;
+    }
     if (!newTitle.trim() || !newContent.trim()) return;
 
     try {
@@ -489,7 +645,7 @@ export function App() {
           currentView={currentView}
           currentUser={currentUser}
           onNavigate={handleNavigate}
-          onOpenIncidentModal={() => setIsIncidentModalOpen(true)}
+          onOpenIncidentModal={handleOpenIncidentReport}
           onOpenAuthModal={() => handleNavigate('login')}
           onSearchChange={(q) => setSearchQuery(q)}
           onLogout={() => setIsLogoutModalOpen(true)}
@@ -561,7 +717,8 @@ export function App() {
         );
       })()}
 
-      <main key={currentView} className="view-fade-in" style={{ flex: 1 }}>
+      <ErrorBoundary fallbackTitle="Không thể tải nội dung trang">
+        <main key={currentView} className="view-fade-in" style={{ flex: 1 }}>
         {/* VIEW 1: HOME & EXPLORE */}
         {(currentView === 'home' || currentView === 'explore') && (
           <div>
@@ -587,11 +744,13 @@ export function App() {
               <div id="gis-map-section">
                 <InteractiveMapShowcase
                   trails={trails}
-                  selectedTrail={selectedTrail}
+                  selectedTrail={null}
                   onSelectTrail={handleSelectTrail}
                   incidents={incidents}
                   selectedRegion={selectedRegion}
                   onSelectRegion={setSelectedRegion}
+                  selectedMonth={selectedSeasonMonth}
+                  onClearMonthFilter={() => setSelectedSeasonMonth(null)}
                 />
               </div>
 
@@ -599,6 +758,11 @@ export function App() {
               <SeasonExpeditionRadar
                 trails={trails}
                 onSelectTrail={handleSelectTrail}
+                onFilterSeasonMonth={(month) => {
+                  setSelectedSeasonMonth(month);
+                  const mapEl = document.getElementById('gis-map-section');
+                  if (mapEl) mapEl.scrollIntoView({ behavior: 'smooth' });
+                }}
               />
 
               {/* Bento Command Hub (Basecamp Radio + Livewire Radar + Guides + GPX HUD) */}
@@ -606,8 +770,9 @@ export function App() {
                 incidents={incidents}
                 trails={trails}
                 onSelectTrail={handleSelectTrail}
-                onOpenIncidentModal={() => setIsIncidentModalOpen(true)}
+                onOpenIncidentModal={handleOpenIncidentReport}
                 onNavigateToForum={() => handleNavigate('forum')}
+                onShowToast={(msg, type) => showToast(msg, type)}
               />
 
               {/* Top 10 Vietnam Summit Altitude Ladder */}
@@ -711,52 +876,220 @@ export function App() {
                     Không tìm thấy cung đường phù hợp với bộ lọc. Vui lòng đặt lại tiêu chí tìm kiếm.
                   </div>
                 ) : viewMode === 'compact' ? (
-                  /* Compact Horizontal Row View */
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    {trails.slice(0, visibleTrailCount).map((t) => (
-                      <div
-                        key={t.id}
-                        onClick={() => handleSelectTrail(t)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 16,
-                          background: 'var(--color-bg-card)',
-                          border: '1px solid var(--color-border)',
-                          borderRadius: 14,
-                          padding: 12,
-                          cursor: 'pointer',
-                          transition: 'all 0.2s ease',
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.borderColor = 'var(--color-primary)';
-                          e.currentTarget.style.transform = 'translateY(-2px)';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.borderColor = 'var(--color-border)';
-                          e.currentTarget.style.transform = 'translateY(0)';
-                        }}
-                      >
-                        <img
-                          src={t.coverImage}
-                          alt={t.name}
-                          style={{ width: 90, height: 68, borderRadius: 10, objectFit: 'cover' }}
-                        />
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                            <span style={{ fontSize: '1.02rem', fontWeight: 800, color: 'var(--color-text-main)' }}>{t.name}</span>
-                            <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>{t.region}</span>
-                            <span className="badge badge-info" style={{ fontSize: '0.7rem' }}>{t.province}</span>
+                  /* Rich Tactical Compact List Row View */
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    {trails.slice(0, visibleTrailCount).map((t) => {
+                      const isSelected = comparedTrails.some((ct) => ct.id === t.id);
+                      let diffBadge = 'badge-info';
+                      let diffText = 'Trung bình';
+                      if (t.difficultyLevel >= 4) {
+                        diffBadge = 'badge-error';
+                        diffText = 'Thử thách cao';
+                      } else if (t.difficultyLevel <= 2) {
+                        diffBadge = 'badge-success';
+                        diffText = 'Dễ (Beginner)';
+                      }
+
+                      return (
+                        <div
+                          key={t.id}
+                          onClick={() => handleSelectTrail(t)}
+                          className="card-hover-lift"
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: '160px 1.5fr 1.1fr 1fr auto',
+                            gap: 18,
+                            alignItems: 'center',
+                            background: 'var(--color-bg-card)',
+                            border: isSelected ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)',
+                            borderRadius: 16,
+                            padding: '14px 18px',
+                            cursor: 'pointer',
+                            transition: 'all 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+                            boxShadow: 'var(--shadow-card)',
+                          }}
+                        >
+                          {/* 1. Thumbnail & Badges */}
+                          <div style={{ position: 'relative', width: 160, height: 104, borderRadius: 12, overflow: 'hidden', flexShrink: 0 }}>
+                            <img
+                              src={t.coverImage}
+                              alt={t.name}
+                              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            />
+                            {/* Altitude Badge at Bottom-Left */}
+                            <div
+                              style={{
+                                position: 'absolute',
+                                bottom: 6,
+                                left: 6,
+                                background: 'rgba(7, 13, 30, 0.88)',
+                                backdropFilter: 'blur(6px)',
+                                padding: '2px 7px',
+                                borderRadius: 6,
+                                fontSize: '0.7rem',
+                                fontWeight: 700,
+                                color: 'var(--color-sky)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 3,
+                              }}
+                            >
+                              <IconMountain size={11} color="var(--color-sky)" />
+                              <span>{t.maxAltitudeM}m</span>
+                            </div>
+
+                            {/* Status Badge at Top-Right */}
+                            <div
+                              style={{
+                                position: 'absolute',
+                                top: 6,
+                                right: 6,
+                                background: 'rgba(7, 13, 30, 0.92)',
+                                backdropFilter: 'blur(6px)',
+                                padding: '2px 8px',
+                                borderRadius: 6,
+                                fontSize: '0.68rem',
+                                fontWeight: 800,
+                                color: t.reviewCount && t.reviewCount > 0 ? 'var(--color-sun)' : 'var(--color-primary)',
+                              }}
+                            >
+                              {t.reviewCount && t.reviewCount > 0 && t.rating ? (
+                                `★ ${Number(t.rating).toFixed(1)} (${t.reviewCount})`
+                              ) : (
+                                'Mới'
+                              )}
+                            </div>
                           </div>
-                          <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginTop: 4 }}>
-                            Độ dài: <strong style={{ color: 'var(--color-primary)' }}>{t.distanceKm} km</strong> • Nâng độ cao: <strong style={{ color: '#38bdf8' }}>+{t.elevationGainM}m</strong> • Thời gian: {t.durationHoursNote}
+
+                          {/* 2. Identity & Geo Info */}
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 4 }}>
+                              <span className="badge badge-success" style={{ fontSize: '0.68rem', fontWeight: 800 }}>{t.region}</span>
+                              <span className="badge badge-info" style={{ fontSize: '0.68rem', fontWeight: 700 }}>{t.province}{t.district ? ` • ${t.district}` : ''}</span>
+                              <span className={`badge ${diffBadge}`} style={{ fontSize: '0.68rem', fontWeight: 800 }}>
+                                Cấp {t.difficultyLevel}/5 ({diffText})
+                              </span>
+                            </div>
+                            <h4
+                              style={{
+                                fontSize: '1.05rem',
+                                fontWeight: 800,
+                                color: 'var(--color-text-main)',
+                                margin: '0 0 4px 0',
+                                lineHeight: 1.35,
+                              }}
+                            >
+                              {t.name}
+                            </h4>
+                            {t.altNames && t.altNames.length > 0 && (
+                              <div style={{ fontSize: '0.74rem', color: 'var(--color-text-dim)', fontStyle: 'italic', marginBottom: 4 }}>
+                                Tên khác: {t.altNames.join(', ')}
+                              </div>
+                            )}
+                            <div
+                              style={{
+                                fontSize: '0.78rem',
+                                color: 'var(--color-text-muted)',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                maxWidth: '100%',
+                              }}
+                            >
+                              {t.description || 'Cung đường trekking với dữ liệu địa hình và trắc diện cao độ.'}
+                            </div>
+                          </div>
+
+                          {/* 3. Key Metrics (Cự ly, Leo dốc, Thời gian) */}
+                          <div
+                            style={{
+                              background: 'var(--color-bg-main)',
+                              padding: '10px 14px',
+                              borderRadius: 12,
+                              border: '1px solid var(--color-border)',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 4,
+                              fontSize: '0.78rem',
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--color-text-muted)' }}>
+                              <span>Cự ly di chuyển:</span>
+                              <strong style={{ color: 'var(--color-primary)' }}>{t.distanceKm} km</strong>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--color-text-muted)' }}>
+                              <span>Độ dốc tích lũy:</span>
+                              <strong style={{ color: '#38bdf8' }}>+{t.elevationGainM}m</strong>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--color-text-muted)' }}>
+                              <span>Thời gian dự kiến:</span>
+                              <strong style={{ color: 'var(--color-sun)' }}>{t.durationHoursNote || `${t.durationDays} ngày`}</strong>
+                            </div>
+                          </div>
+
+                          {/* 4. Amenities & Best Season */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                              {t.hasCampsite && (
+                                <span style={{ fontSize: '0.7rem', padding: '2px 7px', borderRadius: 6, background: 'rgba(16, 185, 129, 0.1)', color: 'var(--color-primary)', border: '1px solid var(--color-border)', display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 700 }}>
+                                  <IconTent size={11} color="var(--color-primary)" /> Bãi trại
+                                </span>
+                              )}
+                              {t.hasWaterSource && (
+                                <span style={{ fontSize: '0.7rem', padding: '2px 7px', borderRadius: 6, background: 'rgba(56, 189, 248, 0.1)', color: '#38bdf8', border: '1px solid var(--color-border)', display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 700 }}>
+                                  <IconDroplet size={11} color="#38bdf8" /> Nguồn nước
+                                </span>
+                              )}
+                              {t.permitRequired && (
+                                <span style={{ fontSize: '0.7rem', padding: '2px 7px', borderRadius: 6, background: 'rgba(239, 68, 68, 0.1)', color: 'var(--color-error)', border: '1px solid var(--color-border)', display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 700 }}>
+                                  Cần giấy phép
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <IconClock size={12} color="var(--color-text-dim)" />
+                              <span>Mùa lý tưởng: <strong>{t.bestMonths && t.bestMonths.length > 0 ? `Tháng ${t.bestMonths.join(', ')}` : 'Quanh năm'}</strong></span>
+                            </div>
+                          </div>
+
+                          {/* 5. Action Buttons */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleCompare(t)}
+                              className="btn btn-outline"
+                              style={{
+                                fontSize: '0.76rem',
+                                padding: '6px 12px',
+                                borderRadius: 10,
+                                fontWeight: 700,
+                                background: isSelected ? 'var(--color-primary)' : 'transparent',
+                                color: isSelected ? '#041108' : 'var(--color-text-muted)',
+                                borderColor: isSelected ? 'var(--color-primary)' : 'var(--color-border)',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {isSelected ? '✓ Đã chọn' : '+ So sánh'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSelectTrail(t)}
+                              className="btn btn-primary"
+                              style={{
+                                fontSize: '0.78rem',
+                                padding: '8px 14px',
+                                borderRadius: 10,
+                                fontWeight: 800,
+                                whiteSpace: 'nowrap',
+                                boxShadow: '0 4px 12px rgba(16, 185, 129, 0.2)',
+                              }}
+                            >
+                              Chi Tiết & GPX →
+                            </button>
                           </div>
                         </div>
-                        <button className="btn btn-outline" style={{ fontSize: '0.8rem', padding: '8px 16px', whiteSpace: 'nowrap' }}>
-                          Xem Chi Tiết
-                        </button>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : (
                   /* Standard Grid View */
@@ -796,76 +1129,155 @@ export function App() {
               {/* Safety & Leave No Trace Pledge */}
               <SafetyPledgeSection
                 onOpenEmergencyContacts={() => setIsEmergencyContactsOpen(true)}
-                onOpenIncidentReport={() => setIsIncidentModalOpen(true)}
+                onOpenIncidentReport={handleOpenIncidentReport}
               />
             </div>
           </div>
         )}
 
         {/* VIEW 2: TRAIL DETAIL */}
-        {currentView === 'detail' && selectedTrail && (
-          <TrailDetailView
-            trail={selectedTrail}
-            onBack={() => {
-              const target = previousView && previousView !== 'detail' ? previousView : 'home';
-              handleNavigate(target);
-            }}
-            onOpenIncidentModal={() => setIsIncidentModalOpen(true)}
-          />
+        {currentView === 'detail' && (
+          selectedTrail ? (
+            <TrailDetailView
+              trail={selectedTrail}
+              currentUser={currentUser}
+              onBack={() => {
+                const target = previousView && previousView !== 'detail' ? previousView : 'home';
+                handleNavigate(target);
+              }}
+              onOpenIncidentModal={handleOpenIncidentReport}
+              onRequireLogin={(action) => {
+                showToast(`Vui lòng đăng nhập tài khoản để ${action}.`, 'info');
+                setAuthModalInitialMode('login');
+                setIsAuthModalOpen(true);
+              }}
+              incidents={incidents}
+            />
+          ) : (
+            <div style={{ minHeight: '75vh', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 16 }}>
+              <div style={{ width: 48, height: 48, border: '3px solid rgba(0, 255, 213, 0.2)', borderTopColor: 'var(--color-primary)', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+              <div style={{ color: 'var(--color-text-muted)', fontSize: '0.92rem', fontWeight: 600 }}>
+                Đang tải thông số cung đường trekking...
+              </div>
+            </div>
+          )
         )}
 
         {/* VIEW 3: CONTRIBUTE WIZARD */}
         {currentView === 'contribute' && (
-          <TrailContributionWizard
-            currentUser={currentUser}
-            onBack={() => {
-              const isEditing = !!localStorage.getItem('trekmap_editing_contribution');
-              localStorage.removeItem('trekmap_editing_contribution');
-              if (isEditing) {
+          !currentUser ? (
+            <div style={{ maxWidth: 540, margin: '80px auto', textAlign: 'center', padding: '40px 24px', background: 'var(--color-bg-card)', borderRadius: 24, border: '1px solid var(--color-border)', boxShadow: 'var(--shadow-card)' }}>
+              <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(56, 189, 248, 0.15)', border: '1px solid rgba(56, 189, 248, 0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px auto', color: 'var(--color-sky)' }}>
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+                  <polyline points="10 17 15 12 10 7" />
+                  <line x1="15" y1="12" x2="3" y2="12" />
+                </svg>
+              </div>
+              <h3 style={{ fontSize: '1.25rem', color: 'var(--color-text-main)', fontWeight: 800, marginBottom: 8 }}>Yêu Cầu Đăng Nhập Tài Khoản</h3>
+              <p style={{ color: 'var(--color-text-muted)', fontSize: '0.88rem', lineHeight: 1.6, marginBottom: 24 }}>
+                Tính năng đóng góp cung đường mới và tải tracklog GPX lên cộng đồng yêu cầu bạn phải có tài khoản đã xác thực.
+              </p>
+              <button className="btn btn-primary" onClick={() => { setAuthModalInitialMode('login'); setIsAuthModalOpen(true); }} style={{ padding: '11px 28px', fontSize: '0.92rem', borderRadius: 30 }}>
+                Đăng Nhập Ngay
+              </button>
+            </div>
+          ) : (
+            <TrailContributionWizard
+              currentUser={currentUser}
+              onBack={() => {
+                const isEditing = !!localStorage.getItem('trekmap_editing_contribution');
+                localStorage.removeItem('trekmap_editing_contribution');
+                if (isEditing) {
+                  handleNavigate('profile');
+                } else {
+                  handleNavigate('home');
+                }
+              }}
+              onSuccess={() => {
                 handleNavigate('profile');
-              } else {
-                handleNavigate('home');
-              }
-            }}
-            onSuccess={() => {
-              handleNavigate('profile');
-            }}
-            onShowToast={(msg, type) => showToast(msg, type)}
-          />
+              }}
+              onShowToast={(msg, type) => showToast(msg, type)}
+            />
+          )
         )}
 
         {/* VIEW 4: USER PROFILE */}
         {currentView === 'profile' && (
-          <UserProfileView
-            currentUser={currentUser}
-            onBack={() => {
-              handleNavigate('home');
-            }}
-            onSelectTrail={handleSelectTrail}
-            onShowToast={(msg, type) => showToast(msg, type)}
-            onProfileUpdate={(updatedUser) => setCurrentUser(updatedUser)}
-            onNavigateToContribute={() => {
-              handleNavigate('contribute');
-            }}
-          />
+          !currentUser ? (
+            <div style={{ maxWidth: 540, margin: '80px auto', textAlign: 'center', padding: '40px 24px', background: 'var(--color-bg-card)', borderRadius: 24, border: '1px solid var(--color-border)', boxShadow: 'var(--shadow-card)' }}>
+              <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(56, 189, 248, 0.15)', border: '1px solid rgba(56, 189, 248, 0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px auto', color: 'var(--color-sky)' }}>
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+                  <circle cx="12" cy="7" r="4" />
+                </svg>
+              </div>
+              <h3 style={{ fontSize: '1.25rem', color: 'var(--color-text-main)', fontWeight: 800, marginBottom: 8 }}>Yêu Cầu Đăng Nhập Tài Khoản</h3>
+              <p style={{ color: 'var(--color-text-muted)', fontSize: '0.88rem', lineHeight: 1.6, marginBottom: 24 }}>
+                Vui lòng đăng nhập để xem thông tin hồ sơ cá nhân, kho cung đường đã lưu, huy hiệu và lịch sử đóng góp.
+              </p>
+              <button className="btn btn-primary" onClick={() => { setAuthModalInitialMode('login'); setIsAuthModalOpen(true); }} style={{ padding: '11px 28px', fontSize: '0.92rem', borderRadius: 30 }}>
+                Đăng Nhập Ngay
+              </button>
+            </div>
+          ) : (
+            <UserProfileView
+              currentUser={currentUser}
+              onBack={() => {
+                handleNavigate('home');
+              }}
+              onSelectTrail={handleSelectTrail}
+              onShowToast={(msg, type) => showToast(msg, type)}
+              onProfileUpdate={(updatedUser) => setCurrentUser(updatedUser)}
+              onNavigateToContribute={() => {
+                handleNavigate('contribute');
+              }}
+            />
+          )
         )}
 
         {/* VIEW 5: FORUM VIEW (ALPINE EXPEDITION HUB) */}
         {currentView === 'forum' && (
           <TrekForumView
+            currentUser={currentUser}
             onBack={() => handleNavigate('home')}
             onShowToast={(msg, type) => showToast(msg, type)}
+            onRequireLogin={(action) => {
+              showToast(`Vui lòng đăng nhập tài khoản để ${action}.`, 'info');
+              setAuthModalInitialMode('login');
+              setIsAuthModalOpen(true);
+            }}
           />
         )}
 
         {/* VIEW 6: ADMIN DASHBOARD (APPROVAL PORTAL) */}
         {currentView === 'admin' && (
-          <AdminDashboardView
-            onBack={() => {
-              handleNavigate('home');
-            }}
-            onShowToast={(msg, type) => showToast(msg, type)}
-          />
+          !currentUser || (currentUser.role !== 'admin' && currentUser.role !== 'trusted') ? (
+            <div style={{ maxWidth: 540, margin: '80px auto', textAlign: 'center', padding: '40px 24px', background: 'var(--color-bg-card)', borderRadius: 24, border: '1px solid var(--color-border)', boxShadow: 'var(--shadow-card)' }}>
+              <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(239, 68, 68, 0.15)', border: '1px solid rgba(239, 68, 68, 0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px auto', color: 'var(--color-error)' }}>
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                  <line x1="12" y1="9" x2="12" y2="13" />
+                  <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+              </div>
+              <h3 style={{ fontSize: '1.25rem', color: 'var(--color-text-main)', fontWeight: 800, marginBottom: 8 }}>Từ Chối Quyền Truy Cập</h3>
+              <p style={{ color: 'var(--color-text-muted)', fontSize: '0.88rem', lineHeight: 1.6, marginBottom: 24 }}>
+                Trang Quản Trị Hệ Thống chỉ dành riêng cho Quản Trị Viên (Admin). Vui lòng đăng nhập bằng tài khoản Quản Trị.
+              </p>
+              <button className="btn btn-primary" onClick={() => { setAuthModalInitialMode('login'); setIsAuthModalOpen(true); }} style={{ padding: '11px 28px', fontSize: '0.92rem', borderRadius: 30 }}>
+                Đăng Nhập Tài Khoản Admin
+              </button>
+            </div>
+          ) : (
+            <AdminDashboardView
+              onBack={() => {
+                handleNavigate('home');
+              }}
+              onShowToast={(msg, type) => showToast(msg, type)}
+              currentUser={currentUser}
+            />
+          )
         )}
 
         {/* VIEW 7: MESSAGES PAGE */}
@@ -884,6 +1296,7 @@ export function App() {
           />
         )}
       </main>
+      </ErrorBoundary>
 
       {/* Modal New Thread on Homepage */}
       {isHomeNewThreadOpen && (
@@ -1005,8 +1418,16 @@ export function App() {
       <IncidentReportModal
         isOpen={isIncidentModalOpen}
         onClose={() => setIsIncidentModalOpen(false)}
-        trailName={selectedTrail ? selectedTrail.name : 'Vùng Trekking'}
-        trailId={selectedTrail ? selectedTrail.id : 'trail-fansipan'}
+        trailName={selectedTrail ? selectedTrail.name : undefined}
+        trailId={selectedTrail ? (selectedTrail.id || (selectedTrail as any)._id) : undefined}
+        trails={trails}
+        incidents={incidents}
+        currentUser={currentUser}
+        onSuccess={async () => {
+          const incData = await fetchIncidents();
+          setIncidents(incData);
+        }}
+        onShowToast={(msg, type) => showToast(msg, type)}
       />
 
       {/* Emergency Incident Detail Modal */}

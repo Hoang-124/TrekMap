@@ -240,22 +240,22 @@ export const GearChecklistTab: React.FC<GearChecklistTabProps> = ({ trail }) => 
 
           {/* P2-11: Overweight Warnings */}
           {weightRatioPercent > 25 ? (
-            <div style={{ background: 'rgba(239, 68, 68, 0.12)', border: '1px solid var(--color-error)', padding: 14, borderRadius: 12, color: '#fca5a5', fontSize: '0.84rem', lineHeight: 1.5 }}>
-              <strong style={{ color: '#fff', display: 'block', marginBottom: 4 }}>
+            <div style={{ background: 'rgba(239, 68, 68, 0.12)', border: '1px solid var(--color-error)', padding: 14, borderRadius: 12, color: 'var(--color-error)', fontSize: '0.84rem', lineHeight: 1.5 }}>
+              <strong style={{ color: 'var(--color-text-main)', display: 'block', marginBottom: 4 }}>
                 NGUY HIỂM: BALO QUÁ NẶNG!
               </strong>
               Balo chiếm <strong>{weightRatioPercent}%</strong> cân nặng cơ thể (&gt; 25%). Khuyến nghị lược bỏ bớt các vật dụng không thiết yếu (máy ảnh, loa Bluetooth) để tránh chấn thương khớp gối & cột sống trên đường trekking dài.
             </div>
           ) : weightRatioPercent > 20 ? (
-            <div style={{ background: 'rgba(245, 158, 11, 0.12)', border: '1px solid var(--color-sun)', padding: 14, borderRadius: 12, color: '#fef08a', fontSize: '0.84rem', lineHeight: 1.5 }}>
-              <strong style={{ color: '#fff', display: 'block', marginBottom: 4 }}>
+            <div style={{ background: 'rgba(245, 158, 11, 0.12)', border: '1px solid var(--color-sun)', padding: 14, borderRadius: 12, color: 'var(--color-sun)', fontSize: '0.84rem', lineHeight: 1.5 }}>
+              <strong style={{ color: 'var(--color-text-main)', display: 'block', marginBottom: 4 }}>
                 CẢNH BÁO: Balo tương đối nặng
               </strong>
               Tỷ lệ <strong>{weightRatioPercent}%</strong> nằm ở ngưỡng giới hạn chịu đựng (20% - 25%). Hãy siết chặt đai trợ lực hông khi di chuyển.
             </div>
           ) : (
-            <div style={{ background: 'rgba(16, 185, 129, 0.12)', border: '1px solid var(--color-primary)', padding: 14, borderRadius: 12, color: '#6ee7b7', fontSize: '0.84rem', lineHeight: 1.5 }}>
-              <strong style={{ color: '#fff', display: 'block', marginBottom: 4 }}>
+            <div style={{ background: 'rgba(16, 185, 129, 0.12)', border: '1px solid var(--color-primary)', padding: 14, borderRadius: 12, color: 'var(--color-primary)', fontSize: '0.84rem', lineHeight: 1.5 }}>
+              <strong style={{ color: 'var(--color-text-main)', display: 'block', marginBottom: 4 }}>
                 Tỷ lệ hoàn hảo!
               </strong>
               Trọng lượng balo lý tưởng (&lt; 20% thể trọng). Cơ thể bạn sẽ di chuyển linh hoạt và giữ sức bền tối đa!

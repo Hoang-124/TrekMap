@@ -68,23 +68,24 @@ export const createTrailSvgIcon = (trail: Trail, incident?: any) => {
   const alertBadgeHtml = hasAlert ? `
     <div class="trail-pin-alert-badge" style="
       position: absolute;
-      top: -5px;
-      right: -6px;
-      width: 18px;
-      height: 18px;
+      top: -6px;
+      right: -7px;
+      width: 20px;
+      height: 20px;
       background: ${alertColor};
-      border: 2px solid #ffffff;
+      border: 2.2px solid #ffffff;
       border-radius: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 0 10px ${alertColor};
-      z-index: 10;
+      box-shadow: 0 0 14px ${alertColor}, 0 3px 8px rgba(0, 0, 0, 0.85);
+      z-index: 50;
+      pointer-events: none;
+      transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
     ">
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-        <line x1="12" y1="9" x2="12" y2="13"/>
-        <line x1="12" y1="17" x2="12.01" y2="17"/>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="5" x2="12" y2="13"/>
+        <circle cx="12" cy="18" r="1.5" fill="#ffffff" stroke="none"/>
       </svg>
     </div>
   ` : '';
@@ -101,8 +102,16 @@ export const createTrailSvgIcon = (trail: Trail, incident?: any) => {
       font-weight: 700;
       line-height: 1.2;
       text-align: left;
+      display: flex;
+      align-items: center;
+      gap: 4px;
     ">
-      ⚠️ Cảnh báo: ${incident.description || 'Có sự cố an toàn trên cung đường'}
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="${alertColor}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;">
+        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+        <line x1="12" y1="9" x2="12" y2="13"/>
+        <line x1="12" y1="17" x2="12.01" y2="17"/>
+      </svg>
+      <span>Cảnh báo: ${incident.description || 'Có sự cố an toàn trên cung đường'}</span>
     </div>
   ` : '';
 
@@ -116,13 +125,13 @@ export const createTrailSvgIcon = (trail: Trail, incident?: any) => {
       justify-content: center;
       cursor: pointer;
     ">
-      ${alertBadgeHtml}
-
       <!-- Teardrop Map Pin SVG matching user reference photo -->
       <svg class="trail-teardrop-svg" width="30" height="40" viewBox="0 0 30 40" fill="none" xmlns="http://www.w3.org/2000/svg" style="
         filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.75)) drop-shadow(0 0 8px ${hasAlert ? alertColor : diffInfo.glow});
         transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
         overflow: visible;
+        position: relative;
+        z-index: 1;
       ">
         <!-- Teardrop Shape with Color categorized by Difficulty -->
         <path
@@ -137,17 +146,24 @@ export const createTrailSvgIcon = (trail: Trail, incident?: any) => {
         <circle cx="15" cy="15" r="5.2" fill="#ffffff" />
       </svg>
 
+      <!-- Alert Badge directly overlaying the pin in front -->
+      ${alertBadgeHtml}
+
       <!-- Pure CSS Hover Tooltip (Only visible on hover) -->
       <div class="trail-pin-hover-tooltip">
         <div style="font-size: 12px; font-weight: 800; color: #ffffff; line-height: 1.2;">
           ${trail.name}
         </div>
-        <div style="font-size: 10px; font-weight: 700; color: ${diffInfo.color}; margin-top: 3px; display: flex; align-items: center; justify-content: center; gap: 4px;">
+        <div style="font-size: 10px; font-weight: 700; color: ${diffInfo.color}; margin-top: 3px; display: flex; align-items: center; justify-content: center; gap: 6px;">
           <span>● Cấp ${diffInfo.label} (${trail.difficultyLevel}/5)</span>
-          <span>• 🏔️ ${trail.maxAltitudeM}m</span>
+          <span style="display: inline-flex; align-items: center; gap: 2px;">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m8 3 4 8 5-5 5 15H2L8 3z"/></svg>
+            ${trail.maxAltitudeM}m
+          </span>
         </div>
-        <div style="font-size: 9.5px; color: #94a3b8; margin-top: 1px;">
-          📍 ${trail.province}${trail.district ? `, ${trail.district}` : ''}
+        <div style="font-size: 9.5px; color: #94a3b8; margin-top: 2px; display: flex; align-items: center; justify-content: center; gap: 3px;">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
+          <span>${trail.province}${trail.district ? `, ${trail.district}` : ''}</span>
         </div>
         ${alertTooltipHtml}
       </div>
@@ -303,15 +319,15 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: any; onSelec
         if (isMounted && json.success && json.data && json.data.length > 0) {
           const today = json.data[0];
           const condMap: Record<string, string> = {
-            clear: '☀️ Trời trong',
-            cloudy: '⛅ Nhiều mây',
-            foggy: '🌫️ Sương mù',
-            rainy: '🌧️ Mưa rào',
-            storm: '⛈️ Bão dông',
+            clear: 'Trời trong',
+            cloudy: 'Nhiều mây',
+            foggy: 'Sương mù',
+            rainy: 'Mưa rào',
+            storm: 'Bão dông',
           };
           setWeather({
             temp: Math.round((today.tempMinC + today.tempMaxC) / 2),
-            condition: condMap[today.weatherCondition] || '🌤️ Thời tiết tốt',
+            condition: condMap[today.weatherCondition] || 'Thời tiết tốt',
           });
         }
       } catch (err) {}
@@ -386,22 +402,26 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: any; onSelec
         {trail.name}
       </h4>
 
+      {/* ⚠️ Incident Warning Alert Banner */}
       {incident && (
         <div
           style={{
-            background: 'rgba(239, 68, 68, 0.16)',
-            border: `1px solid ${alertColor}`,
+            background: 'rgba(239, 68, 68, 0.2)',
+            border: `1.5px solid ${alertColor}`,
             borderRadius: 8,
-            padding: '6px 8px',
+            padding: '7px 9px',
             marginBottom: 8,
-            fontSize: '0.74rem',
-            color: '#fecaca',
             lineHeight: 1.35,
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3 }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 800, color: alertColor }}>
-              ⚠️ Cảnh Báo Thực Địa
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontWeight: 800, color: alertColor, fontSize: '0.78rem' }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+              <span>Cảnh Báo Thực Địa</span>
             </span>
             <span style={{
               fontSize: '0.62rem',
@@ -532,11 +552,30 @@ const MapController: React.FC<{
   const map = useMap();
   const prevTileRef = useRef(currentTileKey);
 
+  // Invalidate map size on mount and window resize to eliminate tile gaps
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      map.invalidateSize();
+    }, 150);
+
+    const handleResize = () => {
+      map.invalidateSize();
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [map]);
+
   useEffect(() => {
     if (flyToPos) {
       map.flyTo(flyToPos, 13, { duration: 1.5 });
     } else if (selectedTrail) {
       map.flyTo([selectedTrail.startLat, selectedTrail.startLng], 12, { duration: 1.5 });
+    } else {
+      map.flyTo([16.0470, 108.2062], 6, { duration: 1.2 });
     }
   }, [selectedTrail, flyToPos, map]);
 
@@ -547,6 +586,7 @@ const MapController: React.FC<{
       const zoom = map.getZoom();
       requestAnimationFrame(() => {
         map.setView(center, zoom, { animate: false });
+        map.invalidateSize();
       });
       prevTileRef.current = currentTileKey;
     }
@@ -560,7 +600,7 @@ export const MapView: React.FC<MapViewProps> = ({
   selectedTrail,
   onSelectTrail,
   incidents = [],
-  height = '560px',
+  height = '100%',
   onShowToast,
 }) => {
   const [currentTileKey, setCurrentTileKey] = useState<keyof typeof TILE_PROVIDERS>('satellite');
@@ -576,17 +616,6 @@ export const MapView: React.FC<MapViewProps> = ({
     nearby: Trail[];
     geocodedAddress?: string;
   } | null>(null);
-
-  // P2-14 Offline Caching State
-  const [isCachingTiles, setIsCachingTiles] = useState(false);
-  const [isOfflineCached, setIsOfflineCached] = useState(false);
-  const [cacheProgress, setCacheProgress] = useState(0);
-
-  // P2-15 GPS Live Tracking State
-  const [isLiveTracking, setIsLiveTracking] = useState(false);
-  const [liveTrackPoints, setLiveTrackPoints] = useState<[number, number][]>([]);
-  const [liveStats, setLiveStats] = useState({ speedKmH: 0, distanceKm: 0, durationSec: 0, altM: 0 });
-  const [watchId, setWatchId] = useState<number | null>(null);
 
   const centerLat = selectedTrail ? selectedTrail.startLat : 16.0470;
   const centerLng = selectedTrail ? selectedTrail.startLng : 108.2062;
@@ -604,89 +633,6 @@ export const MapView: React.FC<MapViewProps> = ({
 
   const currentTile = TILE_PROVIDERS[currentTileKey];
 
-  // P2-14: Cache Leaflet tiles for offline usage
-  const handleCacheOfflineMap = async () => {
-    if (!selectedTrail && trails.length === 0) return;
-    setIsCachingTiles(true);
-    setCacheProgress(10);
-
-    try {
-      if ('caches' in window) {
-        const cache = await caches.open('trekmap-tiles-v1');
-        const targetTrail = selectedTrail || trails[0];
-
-        const tileUrls = [];
-        const baseLat = targetTrail.startLat;
-        const baseLng = targetTrail.startLng;
-
-        for (let z = 12; z <= 14; z++) {
-          const x = Math.floor(((baseLng + 180) / 360) * Math.pow(2, z));
-          const y = Math.floor(
-            ((1 - Math.log(Math.tan((baseLat * Math.PI) / 180) + 1 / Math.cos((baseLat * Math.PI) / 180)) / Math.PI) / 2) *
-              Math.pow(2, z)
-          );
-          for (let dx = -1; dx <= 1; dx++) {
-            for (let dy = -1; dy <= 1; dy++) {
-              tileUrls.push(
-                `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y + dy}/${x + dx}`
-              );
-            }
-          }
-        }
-
-        let completed = 0;
-        for (const url of tileUrls) {
-          try {
-            await cache.add(url);
-          } catch (e) {}
-          completed++;
-          setCacheProgress(Math.round((completed / tileUrls.length) * 100));
-        }
-
-        setIsOfflineCached(true);
-      }
-    } catch (err) {
-      console.warn('Offline cache failed:', err);
-    } finally {
-      setIsCachingTiles(false);
-    }
-  };
-
-  // P2-15: Toggle Live GPS Tracking
-  const toggleLiveTracking = () => {
-    if (isLiveTracking) {
-      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-      setIsLiveTracking(false);
-      setWatchId(null);
-    } else {
-      if (!navigator.geolocation) {
-        if (onShowToast) {
-          onShowToast('Trình duyệt của bạn không hỗ trợ GPS Live Tracking', 'error');
-        }
-        return;
-      }
-      setIsLiveTracking(true);
-      const id = navigator.geolocation.watchPosition(
-        (pos) => {
-          const newPt: [number, number] = [pos.coords.latitude, pos.coords.longitude];
-          setLiveTrackPoints((prev) => [...prev, newPt]);
-          setUserLocation(newPt);
-          setFlyToPos(newPt);
-
-          setLiveStats((prev) => ({
-            speedKmH: Math.round((pos.coords.speed || 1.2) * 3.6 * 10) / 10,
-            distanceKm: Math.round((prev.distanceKm + 0.05) * 100) / 100,
-            durationSec: prev.durationSec + 3,
-            altM: Math.round(pos.coords.altitude || 1200),
-          }));
-        },
-        (err) => console.warn('GPS error:', err),
-        { enableHighAccuracy: true }
-      );
-      setWatchId(id);
-    }
-  };
-
   const handleLocateMe = async () => {
     setIsLocating(true);
     
@@ -698,7 +644,7 @@ export const MapView: React.FC<MapViewProps> = ({
 
       try {
         const [nearby, geoData] = await Promise.all([
-          fetchNearbyTrails(lat, lng, 50),
+          fetchNearbyTrails(lat, lng, 4),
           reverseGeocode(lat, lng),
         ]);
         setGpsToast({
@@ -707,12 +653,18 @@ export const MapView: React.FC<MapViewProps> = ({
           nearby: nearby || [],
           geocodedAddress: geoData?.formattedAddress || geoData?.displayName,
         });
+        if (onShowToast) {
+          onShowToast('Đã xác định vị trí GPS thực tế của bạn!', 'info');
+        }
       } catch (err) {
         setGpsToast({ lat, lng, nearby: [] });
       }
     };
 
     if (!navigator.geolocation) {
+      if (onShowToast) {
+        onShowToast('Trình duyệt không hỗ trợ GPS Geolocation', 'error');
+      }
       performSpatialSearch(22.3364, 103.8438);
       return;
     }
@@ -722,6 +674,9 @@ export const MapView: React.FC<MapViewProps> = ({
         performSpatialSearch(position.coords.latitude, position.coords.longitude);
       },
       () => {
+        if (onShowToast) {
+          onShowToast('Không thể lấy vị trí GPS chính xác, hiển thị vị trí mặc định', 'info');
+        }
         performSpatialSearch(22.3364, 103.8438);
       },
       { enableHighAccuracy: true, timeout: 8000 }
@@ -736,7 +691,7 @@ export const MapView: React.FC<MapViewProps> = ({
   }, [selectedTrail, filteredTrails]);
 
   return (
-    <div style={{ position: 'relative', width: '100%', borderRadius: 24, overflow: 'hidden' }}>
+    <div style={{ position: 'relative', width: '100%', height, borderRadius: 24, overflow: 'hidden' }}>
       {/* Floating Control Bar */}
       <div style={{
         position: 'absolute',
@@ -776,50 +731,6 @@ export const MapView: React.FC<MapViewProps> = ({
         >
           <Activity size={15} color={showGpxTracks ? 'var(--color-primary)' : 'var(--color-text-dim)'} />
           <span>{showGpxTracks ? 'Đường GPX' : 'Tắt GPX'}</span>
-        </button>
-
-        {/* P2-14: Offline Map Caching Button */}
-        <button
-          onClick={handleCacheOfflineMap}
-          disabled={isCachingTiles}
-          style={{
-            background: isOfflineCached ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255, 255, 255, 0.06)',
-            color: isOfflineCached ? 'var(--color-primary)' : 'var(--color-text-main)',
-            border: `1px solid ${isOfflineCached ? 'var(--color-primary)' : 'var(--color-border)'}`,
-            borderRadius: 24,
-            padding: '8px 14px',
-            fontSize: 'var(--font-size-sm)',
-            fontWeight: 700,
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            whiteSpace: 'nowrap',
-          }}
-        >
-          <span>{isCachingTiles ? `Đang lưu (${cacheProgress}%)` : isOfflineCached ? 'Đã lưu offline' : 'Bản đồ Offline'}</span>
-        </button>
-
-        {/* P2-15: GPS Live Tracking Button */}
-        <button
-          onClick={toggleLiveTracking}
-          style={{
-            background: isLiveTracking ? 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)' : 'rgba(255, 255, 255, 0.08)',
-            color: '#fff',
-            border: isLiveTracking ? 'none' : '1px solid var(--color-border)',
-            borderRadius: 24,
-            padding: '8px 14px',
-            fontSize: 'var(--font-size-sm)',
-            fontWeight: 800,
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            boxShadow: isLiveTracking ? '0 0 12px rgba(239, 68, 68, 0.5)' : 'none',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          <span>{isLiveTracking ? 'Đang Live Trek' : 'Bắt đầu Trek'}</span>
         </button>
 
         {/* Locate Me GPS Button */}
@@ -1010,7 +921,7 @@ export const MapView: React.FC<MapViewProps> = ({
 
       {/* Map Element Container */}
       <div style={{
-        height,
+        height: '100%',
         width: '100%',
         borderRadius: 24,
         overflow: 'hidden',
@@ -1030,20 +941,6 @@ export const MapView: React.FC<MapViewProps> = ({
             attribution={currentTile.attribution}
             url={currentTile.url}
           />
-
-          {/* P2-15 Live GPS Tracking Polyline (Orange Line) */}
-          {isLiveTracking && liveTrackPoints.length > 1 && (
-            <Polyline
-              positions={liveTrackPoints}
-              pathOptions={{
-                color: '#f97316',
-                weight: 6,
-                opacity: 0.95,
-                lineCap: 'round',
-                lineJoin: 'round',
-              }}
-            />
-          )}
 
           {/* User GPS Location Marker */}
           {userLocation && (
@@ -1141,9 +1038,16 @@ export const MapView: React.FC<MapViewProps> = ({
           {/* SVG Mountain Teardrop Markers with Integrated Warning Badges */}
           {filteredTrails.map((trail) => {
             const tid = trail.id || (trail as any)._id;
-            const matchingIncident = incidents?.find(
-              (inc) => inc.trailId === tid || inc.trailId === trail.id || inc.trailName === trail.name
-            );
+            const matchingIncident = incidents?.find((inc) => {
+              if (!inc) return false;
+              if (inc.trailId && (inc.trailId === tid || inc.trailId === trail.id)) return true;
+              if (inc.trailName && trail.name) {
+                const normInc = inc.trailName.toLowerCase().replace(/[^a-z0-9]/g, '');
+                const normTrail = trail.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+                if (normInc.includes(normTrail) || normTrail.includes(normInc)) return true;
+              }
+              return false;
+            });
 
             return (
               <Marker
@@ -1165,59 +1069,6 @@ export const MapView: React.FC<MapViewProps> = ({
             );
           })}
         </MapContainer>
-
-        {/* P2-15 Live GPS Tracking Floating Stats Overlay */}
-        {isLiveTracking && (
-          <div style={{
-            position: 'absolute',
-            bottom: 20,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 1000,
-            background: 'rgba(7, 19, 25, 0.92)',
-            backdropFilter: 'blur(16px)',
-            border: '2px solid #f97316',
-            borderRadius: 20,
-            padding: '12px 24px',
-            boxShadow: '0 8px 32px rgba(249, 115, 22, 0.35)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 24,
-            minWidth: 360,
-            justifyContent: 'space-around',
-          }}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>Tốc độ</div>
-              <div style={{ fontSize: '1.3rem', fontWeight: 900, color: '#f97316' }}>{liveStats.speedKmH} <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>km/h</span></div>
-            </div>
-            <div style={{ borderLeft: '1px solid var(--color-border)', height: 30 }} />
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>Đã đi</div>
-              <div style={{ fontSize: '1.3rem', fontWeight: 900, color: 'var(--color-primary)' }}>{liveStats.distanceKm} <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>km</span></div>
-            </div>
-            <div style={{ borderLeft: '1px solid var(--color-border)', height: 30 }} />
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>Cao độ</div>
-              <div style={{ fontSize: '1.3rem', fontWeight: 900, color: 'var(--color-sky)' }}>{liveStats.altM} <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>m</span></div>
-            </div>
-            <div style={{ borderLeft: '1px solid var(--color-border)', height: 30 }} />
-            <button
-              onClick={toggleLiveTracking}
-              style={{
-                background: '#ef4444',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 12,
-                padding: '8px 14px',
-                fontWeight: 800,
-                fontSize: '0.8rem',
-                cursor: 'pointer',
-              }}
-            >
-              Dừng Trek
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Organic Nature GPS Toast Notification Card Overlay */}
@@ -1228,24 +1079,24 @@ export const MapView: React.FC<MapViewProps> = ({
           right: 24,
           zIndex: 1050,
           width: 350,
-          background: 'rgba(19, 31, 55, 0.95)',
+          background: 'var(--color-bg-glass)',
           backdropFilter: 'blur(20px)',
-          border: '1.5px solid rgba(56, 189, 248, 0.4)',
+          border: '1.5px solid var(--color-border)',
           borderRadius: 20,
           padding: 16,
-          boxShadow: '0 20px 48px rgba(0, 0, 0, 0.8), 0 0 20px rgba(56, 189, 248, 0.2)',
+          boxShadow: 'var(--shadow-card)',
           animation: 'fadeIn 0.3s ease',
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, paddingBottom: 8, borderBottom: '1px solid rgba(255, 255, 255, 0.12)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#38bdf8', fontWeight: 800, fontSize: '0.88rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, paddingBottom: 8, borderBottom: '1px solid var(--color-border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-sky)', fontWeight: 800, fontSize: '0.88rem' }}>
               <span>Định Vị GPS [ {gpsToast.lat.toFixed(4)}, {gpsToast.lng.toFixed(4)} ]</span>
             </div>
             <button
               onClick={() => setGpsToast(null)}
               style={{
-                background: 'rgba(255, 255, 255, 0.1)',
+                background: 'var(--color-border)',
                 border: 'none',
-                color: '#cbd5e1',
+                color: 'var(--color-text-muted)',
                 borderRadius: 6,
                 padding: '2px 8px',
                 fontSize: '0.75rem',
@@ -1258,21 +1109,27 @@ export const MapView: React.FC<MapViewProps> = ({
           </div>
 
           {gpsToast.geocodedAddress && (
-            <div style={{ fontSize: '0.78rem', color: 'var(--color-primary)', fontWeight: 700, marginBottom: 8, background: 'rgba(14, 215, 181, 0.1)', padding: '4px 8px', borderRadius: 6 }}>
+            <div style={{ fontSize: '0.78rem', color: 'var(--color-primary)', fontWeight: 700, marginBottom: 8, background: 'rgba(74, 222, 128, 0.12)', padding: '4px 8px', borderRadius: 6 }}>
               {gpsToast.geocodedAddress}
             </div>
           )}
 
           {gpsToast.nearby.length > 0 ? (
             <div>
-              <div style={{ fontSize: '0.78rem', color: '#cbd5e1', marginBottom: 8, fontWeight: 700 }}>
-                Tìm thấy <span style={{ color: '#10b981', fontWeight: 900 }}>{gpsToast.nearby.length}</span> cung đường trong bán kính &lt;50km:
+              <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginBottom: 8, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m8 3 4 8 5-5 5 15H2L8 3z"/></svg>
+                  <span>Cung đường gần bạn nhất:</span>
+                </span>
+                <span style={{ color: 'var(--color-primary)', fontWeight: 800 }}>{gpsToast.nearby.length} cung đường</span>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 180, overflowY: 'auto' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 220, overflowY: 'auto' }}>
                 {gpsToast.nearby.map((t) => {
                   const color = getDifficultyColor(t.difficultyLevel);
+                  const diffInfo = getDifficultyInfo(t.difficultyLevel);
                   const dist = (t as any).distanceFromUserKm;
-                  const roadDist = (t as any).estimatedRoadDistanceKm || (dist ? Math.round(dist * 1.9) : null);
+                  const roadDist = (t as any).roadDistanceKm || (t as any).estimatedRoadDistanceKm || (dist ? Math.round(dist * 1.8) : null);
+                  const duration = (t as any).travelDurationFormatted;
                   return (
                     <div
                       key={t.id}
@@ -1281,8 +1138,8 @@ export const MapView: React.FC<MapViewProps> = ({
                         setFlyToPos([t.startLat, t.startLng]);
                       }}
                       style={{
-                        background: 'rgba(255, 255, 255, 0.05)',
-                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                        background: 'var(--color-bg-card)',
+                        border: '1px solid var(--color-border)',
                         borderRadius: 12,
                         padding: '10px 12px',
                         display: 'flex',
@@ -1291,18 +1148,61 @@ export const MapView: React.FC<MapViewProps> = ({
                         cursor: 'pointer',
                         transition: 'all 0.2s ease',
                       }}
+                      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--color-border-glow)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--color-border)')}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, overflow: 'hidden' }}>
-                        <div style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }}></div>
-                        <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {t.name}
-                        </span>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, overflow: 'hidden', marginRight: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }}></div>
+                          <span style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--color-text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {t.name}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', paddingLeft: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
+                            {t.province}
+                          </span>
+                          <span>•</span>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m8 3 4 8 5-5 5 15H2L8 3z"/></svg>
+                            {t.maxAltitudeM}m
+                          </span>
+                          <span>•</span>
+                          <span>Cấp {diffInfo.label}</span>
+                        </div>
                       </div>
                       
                       {roadDist && (
-                        <span style={{ fontSize: '0.76rem', color: '#38bdf8', fontWeight: 800, background: 'rgba(56, 189, 248, 0.16)', padding: '3px 9px', borderRadius: 8, marginLeft: 8, flexShrink: 0 }}>
-                          ~{roadDist} km
-                        </span>
+                        <div style={{ textAlign: 'right', flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+                          <span
+                            title={dist ? `Khoảng cách đường bộ di chuyển thực tế: ~${roadDist} km (Đường chim bay: ~${dist} km)` : undefined}
+                            style={{
+                              fontSize: '0.78rem',
+                              color: 'var(--color-sky)',
+                              fontWeight: 800,
+                              background: 'rgba(56, 189, 248, 0.16)',
+                              padding: '3px 8px',
+                              borderRadius: 8,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                            }}
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.5 2.8C2.1 10.7 2 11 2 11.4V16c0 .6.4 1 1 1h2" />
+                              <circle cx="7" cy="17" r="2" />
+                              <path d="M9 17h6" />
+                              <circle cx="17" cy="17" r="2" />
+                            </svg>
+                            ~{roadDist} km
+                          </span>
+                          {duration && (
+                            <span style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>
+                              ~{duration} đi xe
+                            </span>
+                          )}
+                        </div>
                       )}
                     </div>
                   );
@@ -1310,8 +1210,8 @@ export const MapView: React.FC<MapViewProps> = ({
               </div>
             </div>
           ) : (
-            <div style={{ fontSize: '0.78rem', color: '#94a3b8' }}>
-              Không tìm thấy cung đường nào trong bán kính 50km từ vị trí GPS hiện tại.
+            <div style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)' }}>
+              Đang xác định các cung đường trekking gần nhất...
             </div>
           )}
         </div>

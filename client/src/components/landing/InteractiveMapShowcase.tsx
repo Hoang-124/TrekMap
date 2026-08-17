@@ -1,7 +1,7 @@
 import React from 'react';
 import type { Trail } from '../../types.js';
 import { MapView } from '../map/MapView.js';
-import { IconSatellite, IconLightbulb } from '../common/SvgIcons.js';
+import { IconSatellite, IconLightbulb, IconCalendar, IconX } from '../common/SvgIcons.js';
 
 interface InteractiveMapShowcaseProps {
   trails: Trail[];
@@ -10,6 +10,8 @@ interface InteractiveMapShowcaseProps {
   incidents?: any[];
   selectedRegion?: string;
   onSelectRegion?: (region: string) => void;
+  selectedMonth?: number | null;
+  onClearMonthFilter?: () => void;
   onExploreFullMap?: () => void;
 }
 
@@ -20,12 +22,24 @@ export const InteractiveMapShowcase: React.FC<InteractiveMapShowcaseProps> = ({
   incidents = [],
   selectedRegion = 'All',
   onSelectRegion,
+  selectedMonth,
+  onClearMonthFilter,
   onExploreFullMap,
 }) => {
-  // Filter trails based on region filter
+  // Filter trails based on region and selected month
   const filteredTrails = trails.filter((t) => {
-    if (!selectedRegion || selectedRegion === 'All' || selectedRegion === 'Tất Cả') return true;
-    return t.region === selectedRegion;
+    // 1. Region filter
+    if (selectedRegion && selectedRegion !== 'All' && selectedRegion !== 'Tất Cả') {
+      if (t.region !== selectedRegion) return false;
+    }
+    // 2. Month filter
+    if (selectedMonth) {
+      if (Array.isArray(t.bestMonths) && t.bestMonths.length > 0) {
+        return t.bestMonths.includes(selectedMonth) && (!t.avoidMonths || !t.avoidMonths.includes(selectedMonth));
+      }
+      return !t.avoidMonths?.includes(selectedMonth);
+    }
+    return true;
   });
 
   return (
@@ -87,6 +101,47 @@ export const InteractiveMapShowcase: React.FC<InteractiveMapShowcaseProps> = ({
 
         {/* Region Switcher Pills & Fullscreen Action */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {selectedMonth && (
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                background: 'rgba(16, 185, 129, 0.15)',
+                border: '1px solid var(--color-primary)',
+                padding: '5px 12px',
+                borderRadius: 20,
+                fontSize: '0.78rem',
+                fontWeight: 700,
+                color: 'var(--color-primary)',
+                boxShadow: '0 0 12px rgba(16, 185, 129, 0.25)',
+              }}
+            >
+              <IconCalendar size={14} color="var(--color-primary)" />
+              <span>Đang lọc: Tháng {selectedMonth} ({filteredTrails.length} cung đường)</span>
+              {onClearMonthFilter && (
+                <button
+                  type="button"
+                  onClick={onClearMonthFilter}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.15)',
+                    border: 'none',
+                    color: 'var(--color-text-main)',
+                    cursor: 'pointer',
+                    padding: '2px',
+                    borderRadius: 10,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                  title="Bỏ lọc theo tháng (Hiện tất cả)"
+                >
+                  <IconX size={12} color="var(--color-text-main)" />
+                </button>
+              )}
+            </div>
+          )}
+
           {onSelectRegion && (
             <div
               style={{
@@ -148,7 +203,6 @@ export const InteractiveMapShowcase: React.FC<InteractiveMapShowcaseProps> = ({
           border: '1.5px solid var(--color-border)',
           boxShadow: 'var(--shadow-card)',
           position: 'relative',
-          background: 'var(--color-bg-card)',
         }}
       >
         <MapView
@@ -156,6 +210,7 @@ export const InteractiveMapShowcase: React.FC<InteractiveMapShowcaseProps> = ({
           selectedTrail={selectedTrail}
           onSelectTrail={onSelectTrail}
           incidents={incidents}
+          height="100%"
         />
       </div>
 

@@ -25,6 +25,8 @@ export interface IUser extends Document {
   followingCount?: number;
   tripReportsCount?: number;
   savedTrails?: Schema.Types.ObjectId[];
+  isBanned?: boolean;
+  banReason?: string;
   resetOtpCode?: string;
   resetOtpExpires?: Date;
   resetPasswordToken?: string;
@@ -59,6 +61,8 @@ const userSchema = new Schema<IUser>(
     followingCount: { type: Number, default: 0 },
     tripReportsCount: { type: Number, default: 0 },
     savedTrails: [{ type: Schema.Types.ObjectId, ref: 'Trail' }],
+    isBanned: { type: Boolean, default: false, index: true },
+    banReason: { type: String, default: '' },
     resetOtpCode: { type: String },
     resetOtpExpires: { type: Date },
     resetPasswordToken: { type: String },

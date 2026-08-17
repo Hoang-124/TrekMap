@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import type { Waypoint } from '../../types.js';
+import { IconMountain } from '../common/SvgIcons.js';
 
 interface ElevationProfileSVGProps {
   gpxTrack: [number, number][];
@@ -149,8 +150,8 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
       }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', fontWeight: 800, color: 'var(--color-primary)' }}>
-          <span>📈</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.8rem', fontWeight: 800, color: 'var(--color-primary)' }}>
+          <IconMountain size={16} color="var(--color-primary)" />
           <span>TRẮC DIỆN CAO ĐỘ (ELEVATION PROFILE)</span>
         </div>
         <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)' }}>
@@ -225,7 +226,7 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
               textAnchor="middle"
               style={{ filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.8))' }}
             >
-              🏔️ Đỉnh {peakPoint.alt}m
+              Đỉnh: {peakPoint.alt}m
             </text>
           </g>
 
@@ -259,7 +260,7 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
                 y1={paddingTop - 10}
                 x2={hoveredPoint.x}
                 y2={height - paddingBottom}
-                stroke="#ffffff"
+                stroke="var(--color-text-main)"
                 strokeWidth="1.5"
                 strokeDasharray="3 3"
                 opacity={0.8}
@@ -268,7 +269,7 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
                 cx={hoveredPoint.x}
                 cy={hoveredPoint.y}
                 r={6}
-                fill="#ffffff"
+                fill="var(--color-text-main)"
                 stroke="var(--color-primary)"
                 strokeWidth="3"
               />
@@ -284,12 +285,12 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
               top: Math.max(0, (hoveredPoint.y / height) * 100 - 32) + '%',
               left: Math.min(80, Math.max(10, (hoveredPoint.x / svgWidth) * 100)) + '%',
               transform: 'translate(-50%, -100%)',
-              background: 'rgba(15, 24, 46, 0.95)',
+              background: 'var(--color-bg-card)',
               border: '1px solid var(--color-primary)',
               borderRadius: 8,
               padding: '6px 10px',
               fontSize: '0.75rem',
-              color: '#ffffff',
+              color: 'var(--color-text-main)',
               boxShadow: '0 8px 20px rgba(0,0,0,0.7), 0 0 10px rgba(74,222,128,0.3)',
               pointerEvents: 'none',
               zIndex: 10,
@@ -316,11 +317,11 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
           padding: '0 4px',
         }}
       >
-        <span>📍 Xuất phát: {minAlt}m (0 km)</span>
+        <span>Xuất phát: {minAlt}m (0 km)</span>
         <span style={{ color: 'var(--color-earth)', fontWeight: 700 }}>
-          ⚡ Tích lũy: +{elevationGainM}m
+          Tích lũy: +{elevationGainM}m
         </span>
-        <span>🏁 Đích: {peakPoint.alt}m ({distanceKm} km)</span>
+        <span>Đích: {peakPoint.alt}m ({distanceKm} km)</span>
       </div>
     </div>
   );

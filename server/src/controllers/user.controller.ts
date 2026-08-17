@@ -6,6 +6,7 @@ import { IncidentModel } from '../models/Incident.js';
 import { ReviewModel } from '../models/Review.js';
 import { ThreadModel } from '../models/Thread.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
+import { broadcastEvent } from '../config/socket.js';
 
 // GET /api/admin/users - Get all users (Admin only)
 export const getUsersAdmin = async (req: AuthRequest, res: Response) => {
@@ -35,6 +36,12 @@ export const banUserAdmin = async (req: AuthRequest, res: Response) => {
     user.role = 'user'; // ensure not admin
     (user as any).isBanned = true;
     await user.save();
+
+    broadcastEvent('userBanned', {
+      userId: (user._id || user.id).toString(),
+      email: user.email,
+    });
+
     return res.json({ success: true, message: `Đã khóa tài khoản ${user.email} thành công!` });
   } catch (err) {
     console.error('[Ban User Admin Error]:', err);
@@ -55,6 +62,12 @@ export const unbanUserAdmin = async (req: AuthRequest, res: Response) => {
     }
     (user as any).isBanned = false;
     await user.save();
+
+    broadcastEvent('userUnbanned', {
+      userId: (user._id || user.id).toString(),
+      email: user.email,
+    });
+
     return res.json({ success: true, message: `Đã mở khóa tài khoản ${user.email}!` });
   } catch (err) {
     console.error('[Unban User Admin Error]:', err);

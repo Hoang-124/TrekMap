@@ -58,17 +58,31 @@ export const authMiddleware = async (req: AuthRequest, res: Response, next: Next
       const decoded = verifyToken(token);
       if (decoded && decoded.userId) {
         let role = decoded.role || 'user';
+        let isBanned = false;
         
-        // Safe check for valid Mongo ObjectId before querying DB
-        if (Types.ObjectId.isValid(decoded.userId)) {
-          try {
-            const user = await UserModel.findById(decoded.userId).select('role');
-            if (user) {
-              role = user.role;
-            }
-          } catch (dbErr) {
-            // Ignore DB lookup error and fallback to decoded role
+        // Check DB for latest role and ban status
+        try {
+          let user: any = null;
+          if (Types.ObjectId.isValid(decoded.userId)) {
+            user = await UserModel.findById(decoded.userId).select('role isBanned email');
           }
+          if (!user && decoded.email) {
+            user = await UserModel.findOne({ email: decoded.email.toLowerCase() }).select('role isBanned email');
+          }
+          if (user) {
+            role = user.role;
+            isBanned = !!user.isBanned;
+          }
+        } catch (dbErr) {
+          // Ignore DB lookup error and fallback to decoded token
+        }
+
+        if (isBanned) {
+          return res.status(403).json({
+            success: false,
+            isBanned: true,
+            message: 'Tài khoản của bạn đã bị Ban Quản Trị khóa vĩnh viễn do vi phạm quy định cộng đồng hoặc báo động giả.',
+          });
         }
 
         req.user = {
@@ -101,23 +115,31 @@ export const optionalAuthMiddleware = async (req: AuthRequest, res: Response, ne
       const decoded = verifyToken(token);
       if (decoded && decoded.userId) {
         let role = decoded.role || 'user';
+        let isBanned = false;
 
-        if (Types.ObjectId.isValid(decoded.userId)) {
-          try {
-            const user = await UserModel.findById(decoded.userId).select('role');
-            if (user) {
-              role = user.role;
-            }
-          } catch (dbErr) {
-            // Ignore DB lookup error
+        try {
+          let user: any = null;
+          if (Types.ObjectId.isValid(decoded.userId)) {
+            user = await UserModel.findById(decoded.userId).select('role isBanned email');
           }
+          if (!user && decoded.email) {
+            user = await UserModel.findOne({ email: decoded.email.toLowerCase() }).select('role isBanned email');
+          }
+          if (user) {
+            role = user.role;
+            isBanned = !!user.isBanned;
+          }
+        } catch (dbErr) {
+          // Ignore DB lookup error
         }
 
-        req.user = {
-          userId: decoded.userId,
-          email: decoded.email,
-          role,
-        };
+        if (!isBanned) {
+          req.user = {
+            userId: decoded.userId,
+            email: decoded.email,
+            role,
+          };
+        }
       }
     }
   } catch (err) {

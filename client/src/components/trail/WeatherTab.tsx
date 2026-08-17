@@ -104,7 +104,7 @@ export const WeatherTab: React.FC<WeatherTabProps> = ({ trail }) => {
           }}
         >
           <div>
-            <strong style={{ fontSize: '1rem', color: '#fff', display: 'block', marginBottom: 2 }}>
+            <strong style={{ fontSize: '1rem', color: 'var(--color-text-main)', display: 'block', marginBottom: 2 }}>
               CẢNH BÁO THỜI TIẾT NGUY HIỂM VÙNG NÚI
             </strong>
             <span style={{ fontSize: '0.9rem', lineHeight: 1.5 }}>{warningMessage}</span>

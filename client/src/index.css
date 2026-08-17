@@ -987,3 +987,7 @@ textarea:focus,
   transform: scale(1.22) !important;
   box-shadow: 0 0 16px var(--color-primary), 0 6px 14px rgba(0, 0, 0, 0.8) !important;
 }
+
+.trail-pin-node:hover .trail-pin-alert-badge {
+  transform: scale(1.22) translateY(-4px) !important;
+}

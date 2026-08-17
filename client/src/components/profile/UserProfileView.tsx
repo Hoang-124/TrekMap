@@ -213,14 +213,30 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     setDeletingContribution({ id, name });
   };
 
-  const confirmDeleteContribution = () => {
+  const confirmDeleteContribution = async () => {
     if (!deletingContribution) return;
+    const targetId = deletingContribution.id;
     const targetName = deletingContribution.name;
+    const token = localStorage.getItem('trekmap_token');
+
+    // 1. Delete from Server DB if token exists
+    try {
+      if (token) {
+        await fetch(`http://localhost:5000/api/contributions/${targetId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      }
+    } catch (err) {
+      console.warn('Delete contribution API error:', err);
+    }
+
+    // 2. Delete from localStorage
     const allContribs: any[] = JSON.parse(localStorage.getItem('trekmap_contributions') || '[]');
-    const updatedGlobal = allContribs.filter((item) => item.id !== deletingContribution.id);
+    const updatedGlobal = allContribs.filter((item) => (item.id !== targetId && item._id !== targetId));
     localStorage.setItem('trekmap_contributions', JSON.stringify(updatedGlobal));
     
-    setUserContributions((prev) => prev.filter((item) => item.id !== deletingContribution.id));
+    setUserContributions((prev) => prev.filter((item) => (item.id !== targetId && item._id !== targetId)));
     setDeletingContribution(null);
     if (onShowToast) {
       onShowToast(`Đã xóa bài đóng góp "${targetName}" thành công!`, 'info');
@@ -271,17 +287,48 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           if (data.user.gearLocker && Array.isArray(data.user.gearLocker)) {
             setUserGear(data.user.gearLocker);
           }
-          // Filter contributions for the logged in user by email, ID, or author name
-          const allContribs: any[] = JSON.parse(localStorage.getItem('trekmap_contributions') || '[]');
-          const userEmail = data.user.email;
-          const userId = data.user._id || data.user.id;
-          const userName = data.user.fullName || data.user.username || data.user.name || '';
+
+          // Fetch live contributions from Server API and merge with localStorage
+          let serverContribs: any[] = [];
+          try {
+            const cRes = await fetch('http://localhost:5000/api/contributions', {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            const cData = await cRes.json();
+            if (cData.success && Array.isArray(cData.data)) {
+              serverContribs = cData.data;
+            }
+          } catch (cErr) {
+            console.warn('[Profile Contrib API Fetch]:', cErr);
+          }
+
+          const localContribs: any[] = JSON.parse(localStorage.getItem('trekmap_contributions') || '[]');
+          const contribMap = new Map<string, any>();
+          serverContribs.forEach((c) => {
+            const key = c.id || c._id;
+            if (key) contribMap.set(String(key), c);
+          });
+          localContribs.forEach((c) => {
+            const key = c.id || c._id;
+            if (key && !contribMap.has(String(key))) {
+              contribMap.set(String(key), c);
+            }
+          });
+          const allContribs = Array.from(contribMap.values());
+
+          const userEmail = (data.user.email || '').toLowerCase().trim();
+          const userId = String(data.user._id || data.user.id || '').trim();
+          const userName = (data.user.fullName || data.user.username || data.user.name || '').toLowerCase().trim();
 
           const filtered = allContribs.filter((c: any) => {
-            const emailMatch = c.authorEmail && userEmail && c.authorEmail.toLowerCase() === userEmail.toLowerCase();
-            const idMatch = c.userId && userId && String(c.userId) === String(userId);
-            const nameMatch = c.authorName && userName && c.authorName.toLowerCase() === userName.toLowerCase();
-            const noMeta = !c.authorEmail && !c.userId && (!c.authorName || c.authorName === 'Người dùng TrekMap');
+            const cEmail = (c.authorEmail || '').toLowerCase().trim();
+            const cUserId = String(c.userId || c.createdBy || '').trim();
+            const cName = (c.authorName || '').toLowerCase().trim();
+
+            const emailMatch = Boolean(userEmail && cEmail && cEmail === userEmail);
+            const idMatch = Boolean(userId && cUserId && cUserId === userId);
+            const nameMatch = Boolean(userName && cName && cName === userName);
+            const noMeta = !cEmail && !cUserId && (!cName || cName === 'người dùng trekmap');
 
             return emailMatch || idMatch || nameMatch || noMeta;
           });

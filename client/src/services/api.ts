@@ -91,9 +91,9 @@ export async function fetchTrails(params?: {
       durationHoursNote: c.durationHoursNote || '1 ngày',
       difficultyLevel: Number(c.difficultyLevel) || 3,
       difficultyNote: (Number(c.difficultyLevel) || 3) >= 4 ? 'Thử thách cao' : 'Trung bình',
-      bestMonths: [10, 11, 12, 1, 2, 3, 4],
-      avoidMonths: [6, 7, 8],
-      bestSeasons: [10, 11, 12, 1, 2, 3, 4],
+      bestMonths: Array.isArray(c.bestMonths) && c.bestMonths.length > 0 ? c.bestMonths : [10, 11, 12, 1, 2, 3, 4],
+      avoidMonths: Array.isArray(c.avoidMonths) ? c.avoidMonths : [],
+      bestSeasons: Array.isArray(c.bestMonths) && c.bestMonths.length > 0 ? c.bestMonths : [10, 11, 12, 1, 2, 3, 4],
       startLat: Number(c.startLat) || 22.3364,
       startLng: Number(c.startLng) || 103.8438,
       endLat: Number(c.endLat) || 22.3512,
@@ -119,11 +119,11 @@ export async function fetchTrails(params?: {
       updatedAt: new Date().toLocaleDateString('vi-VN'),
       rescueContact: {
         name: 'Hạt Kiểm Lâm ' + (c.province || 'Địa phương'),
-        phone: '114 / SOS 0987-654-321',
+        phone: '114 / 115 (Cứu nạn & Cấp cứu 24/7)',
         rangerContact: 'Trạm Kiểm Lâm ' + (c.district || 'Cửa Rừng'),
       },
-      rating: 5.0,
-      reviewCount: 1,
+      rating: Number(c.rating) || 0,
+      reviewCount: Number(c.reviewCount) || 0,
     }));
 
     const existingIds = new Set(list.map((t) => t.id));
@@ -135,69 +135,88 @@ export async function fetchTrails(params?: {
 
   // Client-side Filter & Sort logic
   if (params?.region && params.region !== 'All') {
-    list = list.filter((t) => t.region.toLowerCase() === params.region!.toLowerCase());
+    list = list.filter((t) => (t?.region || '').toLowerCase() === params.region!.toLowerCase());
   }
   if (params?.difficulty) {
-    list = list.filter((t) => t.difficultyLevel === Number(params.difficulty));
+    list = list.filter((t) => t?.difficultyLevel === Number(params.difficulty));
   }
   if (params?.duration) {
-    list = list.filter((t) => t.durationDays === Number(params.duration));
+    list = list.filter((t) => t?.durationDays === Number(params.duration));
   }
   if (params?.campsite) {
-    list = list.filter((t) => t.hasCampsite);
+    list = list.filter((t) => !!t?.hasCampsite);
   }
   if (params?.kidFriendly) {
-    list = list.filter((t) => t.kidFriendly);
+    list = list.filter((t) => !!t?.kidFriendly);
   }
-  if (params?.search) {
-    const q = params.search.toLowerCase();
-    list = list.filter((t) => t.name.toLowerCase().includes(q) || t.province.toLowerCase().includes(q));
+  if (params?.search && typeof params.search === 'string' && params.search.trim().length > 0) {
+    const q = params.search.trim().toLowerCase();
+    list = list.filter(
+      (t) =>
+        (t?.name || '').toLowerCase().includes(q) ||
+        (t?.province || '').toLowerCase().includes(q) ||
+        (t?.district || '').toLowerCase().includes(q) ||
+        (t?.region || '').toLowerCase().includes(q) ||
+        (t?.description || '').toLowerCase().includes(q)
+    );
   }
 
   if (params?.sortBy) {
     const s = params.sortBy;
     if (s === 'rating_desc' || s === 'rating') {
-      list.sort((a, b) => b.rating - a.rating);
+      list.sort((a, b) => (b?.rating || 0) - (a?.rating || 0));
     } else if (s === 'distance_asc') {
-      list.sort((a, b) => a.distanceKm - b.distanceKm);
+      list.sort((a, b) => (a?.distanceKm || 0) - (b?.distanceKm || 0));
     } else if (s === 'distance_desc') {
-      list.sort((a, b) => b.distanceKm - a.distanceKm);
+      list.sort((a, b) => (b?.distanceKm || 0) - (a?.distanceKm || 0));
     } else if (s === 'difficulty_asc') {
-      list.sort((a, b) => a.difficultyLevel - b.difficultyLevel);
+      list.sort((a, b) => (a?.difficultyLevel || 0) - (b?.difficultyLevel || 0));
     } else if (s === 'difficulty_desc') {
-      list.sort((a, b) => b.difficultyLevel - a.difficultyLevel);
+      list.sort((a, b) => (b?.difficultyLevel || 0) - (a?.difficultyLevel || 0));
     }
   }
 
   return list;
 }
 
-export async function fetchNearbyTrails(lat: number, lng: number, radiusKm = 50): Promise<Trail[]> {
+export async function fetchNearbyTrails(lat: number, lng: number, limit = 5): Promise<Trail[]> {
   try {
-    const res = await fetch(`${API_BASE}/trails/nearby?lat=${lat}&lng=${lng}&radiusKm=${radiusKm}`);
+    const res = await fetch(`${API_BASE}/trails/nearby?lat=${lat}&lng=${lng}&limit=${limit}`);
     if (!res.ok) throw new Error('Spatial Query API error');
     const json = await res.json();
-    return json.data;
+    if (json.data && Array.isArray(json.data) && json.data.length > 0) {
+      return json.data;
+    }
   } catch (err) {
-    console.warn('Spatial Query API error, performing local Haversine distance filtering');
-    const R = 6371;
-    return mockTrails
-      .map((t) => {
-        const dLat = ((t.startLat - lat) * Math.PI) / 180;
-        const dLon = ((t.startLng - lng) * Math.PI) / 180;
-        const a =
-          Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-          Math.cos((lat * Math.PI) / 180) * Math.cos((t.startLat * Math.PI) / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        const distKm = Math.round(R * c * 10) / 10;
-        return {
-          ...t,
-          distanceFromUserKm: distKm,
-          estimatedRoadDistanceKm: Math.round(distKm * 1.9),
-        };
-      })
-      .filter((t) => (t as any).distanceFromUserKm <= radiusKm) as Trail[];
+    console.warn('Spatial Query API error, performing local Haversine distance calculation');
   }
+
+  const R = 6371; // WGS84 Earth radius in km
+  return mockTrails
+    .map((t) => {
+      const dLat = ((t.startLat - lat) * Math.PI) / 180;
+      const dLon = ((t.startLng - lng) * Math.PI) / 180;
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos((lat * Math.PI) / 180) * Math.cos((t.startLat * Math.PI) / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      const distKm = Math.round(R * c * 10) / 10;
+      const roadKm = Math.round(distKm * 1.8 * 10) / 10;
+      const totalMinutes = Math.round((roadKm / 48) * 60);
+      const hours = Math.floor(totalMinutes / 60);
+      const mins = totalMinutes % 60;
+      const travelDurationFormatted = hours > 0 ? `${hours}h ${mins > 0 ? `${mins}p` : ''}`.trim() : `${mins} phút`;
+
+      return {
+        ...t,
+        distanceFromUserKm: distKm,
+        roadDistanceKm: roadKm,
+        travelDurationMin: totalMinutes,
+        travelDurationFormatted,
+      };
+    })
+    .sort((a, b) => ((a as any).distanceFromUserKm || 0) - ((b as any).distanceFromUserKm || 0))
+    .slice(0, limit) as Trail[];
 }
 
 export async function fetchTrailById(id: string): Promise<Trail | null> {
@@ -252,8 +271,8 @@ export async function submitTrailContribution(trailData: Partial<Trail>): Promis
       createdBy: 'user-1',
       createdAt: new Date().toISOString().split('T')[0],
       updatedAt: new Date().toISOString().split('T')[0],
-      rating: 5.0,
-      reviewCount: 1,
+      rating: 0,
+      reviewCount: 0,
       coverImage: trailData.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=1200&q=80',
       rescueContact: { name: 'Cứu hộ 114', phone: '114', rangerContact: '115' },
       hasCampsite: true,
@@ -324,6 +343,27 @@ export async function submitIncident(incidentData: Partial<Incident>): Promise<I
       locationNote: incidentData.locationNote || '',
     };
   }
+}
+
+export async function confirmIncidentApi(
+  incidentId: string,
+  payload: {
+    action?: 'confirm_true' | 'dispute_false';
+    note?: string;
+    additionalDescription?: string;
+    severity?: string;
+    reason?: string;
+    reporterName?: string;
+    reporterEmail?: string;
+    reporterAvatar?: string;
+  }
+): Promise<any> {
+  const res = await fetch(`${API_BASE}/incidents/${incidentId}/confirm`, {
+    method: 'POST',
+    headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload),
+  });
+  return res.json();
 }
 
 export async function fetchUserProfile(userId: string): Promise<User> {
@@ -416,5 +456,88 @@ export async function reverseGeocode(lat: number, lng: number) {
     };
   }
 }
+
+// Notification API Services
+export async function fetchNotificationsApi(params?: { category?: string; page?: number; limit?: number }) {
+  try {
+    const token = localStorage.getItem('trekmap_token');
+    if (!token) return { success: false, data: [], unreadCount: 0 };
+
+    const query = new URLSearchParams();
+    if (params?.category && params.category !== 'all') query.append('category', params.category);
+    if (params?.page) query.append('page', String(params.page));
+    if (params?.limit) query.append('limit', String(params.limit));
+
+    const res = await fetch(`${API_BASE}/notifications?${query.toString()}`, {
+      headers: getApiHeaders({ Authorization: `Bearer ${token}` }),
+    });
+    if (!res.ok) throw new Error('Failed to fetch notifications');
+    return await res.json();
+  } catch (err) {
+    return { success: false, data: [], unreadCount: 0 };
+  }
+}
+
+export async function markNotificationReadApi(id: string) {
+  try {
+    const token = localStorage.getItem('trekmap_token');
+    if (!token) return { success: false };
+
+    const res = await fetch(`${API_BASE}/notifications/${id}/read`, {
+      method: 'PUT',
+      headers: getApiHeaders({ Authorization: `Bearer ${token}` }),
+    });
+    return await res.json();
+  } catch (err) {
+    return { success: false };
+  }
+}
+
+export async function markAllNotificationsReadApi(category?: string) {
+  try {
+    const token = localStorage.getItem('trekmap_token');
+    if (!token) return { success: false };
+
+    const res = await fetch(`${API_BASE}/notifications/read-all`, {
+      method: 'PUT',
+      headers: getApiHeaders({ 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }),
+      body: JSON.stringify({ category }),
+    });
+    return await res.json();
+  } catch (err) {
+    return { success: false };
+  }
+}
+
+export async function deleteNotificationApi(id: string) {
+  try {
+    const token = localStorage.getItem('trekmap_token');
+    if (!token) return { success: false };
+
+    const res = await fetch(`${API_BASE}/notifications/${id}`, {
+      method: 'DELETE',
+      headers: getApiHeaders({ Authorization: `Bearer ${token}` }),
+    });
+    return await res.json();
+  } catch (err) {
+    return { success: false };
+  }
+}
+
+export async function clearReadNotificationsApi() {
+  try {
+    const token = localStorage.getItem('trekmap_token');
+    if (!token) return { success: false };
+
+    const res = await fetch(`${API_BASE}/notifications`, {
+      method: 'DELETE',
+      headers: getApiHeaders({ Authorization: `Bearer ${token}` }),
+    });
+    return await res.json();
+  } catch (err) {
+    return { success: false };
+  }
+}
+
 
 

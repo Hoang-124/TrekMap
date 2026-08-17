@@ -22,9 +22,11 @@ import { useSocket } from '../../hooks/useSocket.js';
 interface TrekForumViewProps {
   onBack: () => void;
   onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
+  currentUser?: any;
+  onRequireLogin?: (actionName: string) => void;
 }
 
-export const TrekForumView: React.FC<TrekForumViewProps> = ({ onBack, onShowToast }) => {
+export const TrekForumView: React.FC<TrekForumViewProps> = ({ onBack, onShowToast, currentUser, onRequireLogin }) => {
   const [threads, setThreads] = useState<ForumThread[]>([]);
   const [isNewThreadOpen, setIsNewThreadOpen] = useState(false);
   const { socket } = useSocket();
@@ -87,6 +89,10 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({ onBack, onShowToas
 
   const handleCreateThread = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!currentUser && !localStorage.getItem('trekmap_token')) {
+      if (onRequireLogin) onRequireLogin('đăng bài thảo luận mới');
+      return;
+    }
     if (!newTitle.trim() || !newContent.trim()) return;
 
     try {
@@ -132,12 +138,12 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({ onBack, onShowToas
         <button
           className="btn btn-primary"
           onClick={() => {
-            const token = localStorage.getItem('trekmap_token');
-            if (!token) {
-              if (onShowToast) {
+            if (!currentUser && !localStorage.getItem('trekmap_token')) {
+              if (onRequireLogin) {
+                onRequireLogin('tạo bài nhật ký mới trên diễn đàn');
+              } else if (onShowToast) {
                 onShowToast('Vui lòng đăng nhập để tạo bài nhật ký mới trên diễn đàn!', 'info');
               }
-              window.location.hash = '#login';
               return;
             }
             setIsNewThreadOpen(true);

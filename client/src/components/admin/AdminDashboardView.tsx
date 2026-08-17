@@ -18,11 +18,13 @@ const ShieldCheck = createSvgIcon(<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 
 interface AdminDashboardViewProps {
   onBack: () => void;
   onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
+  currentUser?: any;
 }
 
 export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   onBack,
   onShowToast,
+  currentUser,
 }) => {
   const [adminSection, setAdminSection] = useState<'contributions' | 'trails' | 'incidents' | 'users' | 'stats'>('contributions');
   const [activeTab, setActiveTab] = useState<'pending' | 'approved' | 'all'>('pending');
@@ -43,20 +45,27 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [editingTrailModal, setEditingTrailModal] = useState<any | null>(null);
   const [isCreateTrailOpen, setIsCreateTrailOpen] = useState(false);
 
-  React.useEffect(() => {
-    const fetchFromMongo = async () => {
-      try {
-        const res = await fetch('/api/contributions');
-        const data = await res.json();
-        if (data.success && Array.isArray(data.data) && data.data.length > 0) {
-          setContributions(data.data);
-          localStorage.setItem('trekmap_contributions', JSON.stringify(data.data));
-        }
-      } catch (err) {
-        console.warn('⚠️ [MongoDB Admin Fetch Notice]: Using local cache.', err);
+  const fetchFromMongo = async () => {
+    try {
+      const res = await fetch('/api/contributions');
+      const data = await res.json();
+      if (data.success && Array.isArray(data.data) && data.data.length > 0) {
+        setContributions(data.data);
+        localStorage.setItem('trekmap_contributions', JSON.stringify(data.data));
+        setSelectedContribution((prev: any) => {
+          if (!prev) return null;
+          const found = data.data.find((x: any) => x.id === prev.id);
+          return found || prev;
+        });
       }
-    };
+    } catch (err) {
+      console.warn('⚠️ [MongoDB Admin Fetch Notice]: Using local cache.', err);
+    }
+  };
+
+  React.useEffect(() => {
     fetchFromMongo();
+    fetchAdminUsers();
   }, []);
 
   const fetchAdminUsers = async () => {
@@ -109,88 +118,125 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
   // Handle Approve Contribution in MongoDB
   const handleApprove = async (id: string, name: string) => {
-    const updated = contributions.map((c) => {
-      if (c.id === id) {
-        return { ...c, status: 'approved', approvedAt: new Date().toLocaleDateString('vi-VN') };
-      }
-      return c;
-    });
-
-    setContributions(updated);
-    localStorage.setItem('trekmap_contributions', JSON.stringify(updated));
+    const token = localStorage.getItem('trekmap_token');
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
 
     try {
-      await fetch(`http://localhost:5000/api/contributions/${id}`, {
+      const res = await fetch(`/api/contributions/${id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ status: 'approved', approvedAt: new Date().toLocaleDateString('vi-VN') }),
       });
-    } catch (e) {
-      console.error(e);
-    }
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || 'Lỗi khi duyệt bài đóng góp');
+      }
 
-    if (onShowToast) {
-      onShowToast(`Đã duyệt & công khai cung đường "${name}" vào MongoDB thành công!`, 'success');
+      const updated = contributions.map((c) => {
+        if (c.id === id) {
+          return { ...c, status: 'approved', approvedAt: new Date().toLocaleDateString('vi-VN') };
+        }
+        return c;
+      });
+
+      setContributions(updated);
+      localStorage.setItem('trekmap_contributions', JSON.stringify(updated));
+
+      if (onShowToast) {
+        onShowToast(`Đã duyệt & công khai cung đường "${name}" vào MongoDB thành công!`, 'success');
+      }
+      if (selectedContribution?.id === id) {
+        setSelectedContribution(null);
+      }
+      fetchFromMongo();
+      fetchAdminTrails();
+      fetchAdminStats();
+    } catch (e: any) {
+      console.error(e);
+      onShowToast?.(e.message || 'Không thể duyệt bài đóng góp, vui lòng thử lại.', 'error');
     }
-    if (selectedContribution?.id === id) {
-      setSelectedContribution(null);
-    }
-    fetchAdminStats();
   };
 
   // Handle Reject Contribution in MongoDB
   const handleReject = async (id: string, name: string) => {
-    const updated = contributions.map((c) => {
-      if (c.id === id) {
-        return { ...c, status: 'rejected', rejectedAt: new Date().toLocaleDateString('vi-VN') };
-      }
-      return c;
-    });
-
-    setContributions(updated);
-    localStorage.setItem('trekmap_contributions', JSON.stringify(updated));
+    const token = localStorage.getItem('trekmap_token');
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
 
     try {
-      await fetch(`http://localhost:5000/api/contributions/${id}`, {
+      const res = await fetch(`/api/contributions/${id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ status: 'rejected', rejectedAt: new Date().toLocaleDateString('vi-VN') }),
       });
-    } catch (e) {
-      console.error(e);
-    }
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || 'Lỗi khi từ chối bài đóng góp');
+      }
 
-    if (onShowToast) {
-      onShowToast(`Đã từ chối bài đóng góp "${name}".`, 'info');
+      const updated = contributions.map((c) => {
+        if (c.id === id) {
+          return { ...c, status: 'rejected', rejectedAt: new Date().toLocaleDateString('vi-VN') };
+        }
+        return c;
+      });
+
+      setContributions(updated);
+      localStorage.setItem('trekmap_contributions', JSON.stringify(updated));
+
+      if (onShowToast) {
+        onShowToast(`Đã từ chối bài đóng góp "${name}".`, 'info');
+      }
+      if (selectedContribution?.id === id) {
+        setSelectedContribution(null);
+      }
+      fetchFromMongo();
+      fetchAdminStats();
+    } catch (e: any) {
+      console.error(e);
+      onShowToast?.(e.message || 'Không thể từ chối bài đóng góp.', 'error');
     }
-    if (selectedContribution?.id === id) {
-      setSelectedContribution(null);
-    }
-    fetchAdminStats();
   };
 
   // Handle Delete Contribution in MongoDB
   const handleDelete = async (id: string, name: string) => {
     if (window.confirm(`Bạn có chắc chắn muốn xóa bài đóng góp "${name}" khỏi hệ thống MongoDB không?`)) {
-      const updated = contributions.filter((c) => c.id !== id);
-      setContributions(updated);
-      localStorage.setItem('trekmap_contributions', JSON.stringify(updated));
+      const token = localStorage.getItem('trekmap_token');
+      const headers: Record<string, string> = {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      };
 
       try {
-        await fetch(`http://localhost:5000/api/contributions/${id}`, {
+        const res = await fetch(`/api/contributions/${id}`, {
           method: 'DELETE',
+          headers,
         });
-      } catch (e) {
-        console.error(e);
-      }
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.message || 'Lỗi khi xóa bài đóng góp');
+        }
 
-      if (onShowToast) {
-        onShowToast(`Đã xóa bài đóng góp "${name}" khỏi MongoDB!`, 'info');
+        const updated = contributions.filter((c) => c.id !== id);
+        setContributions(updated);
+        localStorage.setItem('trekmap_contributions', JSON.stringify(updated));
+
+        if (onShowToast) {
+          onShowToast(`Đã xóa bài đóng góp "${name}" khỏi MongoDB!`, 'info');
+        }
+        if (selectedContribution?.id === id) {
+          setSelectedContribution(null);
+        }
+        fetchFromMongo();
+        fetchAdminStats();
+      } catch (e: any) {
+        console.error(e);
+        onShowToast?.(e.message || 'Không thể xóa bài đóng góp.', 'error');
       }
-      if (selectedContribution?.id === id) {
-        setSelectedContribution(null);
-      }
-      fetchAdminStats();
     }
   };
 
@@ -291,7 +337,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         </button>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(245, 158, 11, 0.12)', border: '1px solid rgba(245, 158, 11, 0.3)', padding: '6px 14px', borderRadius: 20, color: '#f59e0b', fontSize: '0.82rem', fontWeight: 700 }}>
-          <ShieldCheck size={16} /> TRUNG TÂM QUẢN TRỊ BQT TREKMAP (ADMIN)
+          <ShieldCheck size={16} />
+          <span>TRUNG TÂM QUẢN TRỊ BQT TREKMAP (ADMIN)</span>
+          {currentUser && <span style={{ color: 'var(--color-sky)', fontSize: '0.78rem' }}>• {currentUser.fullName || currentUser.email}</span>}
         </div>
       </div>
 
@@ -314,9 +362,32 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         <button
           className={`btn ${adminSection === 'incidents' ? 'btn-primary' : 'btn-outline'}`}
           onClick={() => setAdminSection('incidents')}
-          style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
+          style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12, display: 'inline-flex', alignItems: 'center', gap: 6 }}
         >
-          Quản Lý Sự Cố
+          <span>Quản Lý Sự Cố</span>
+          {incidentsList.filter((i) => i.disputes && i.disputes.length > 0).length > 0 && (
+            <span
+              style={{
+                background: '#ef4444',
+                color: '#fff',
+                padding: '2px 7px',
+                borderRadius: 10,
+                fontSize: '0.68rem',
+                fontWeight: 800,
+                boxShadow: '0 0 8px rgba(239, 68, 68, 0.6)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+              <span>{incidentsList.filter((i) => i.disputes && i.disputes.length > 0).length} Khiếu nại</span>
+            </span>
+          )}
         </button>
         <button
           className={`btn ${adminSection === 'users' ? 'btn-primary' : 'btn-outline'}`}
@@ -713,30 +784,28 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
             {/* SECTION 6: Danh Tính Người Đóng Góp */}
             {(() => {
-              const isHoangAcc = selectedContribution.authorName === 'Hoang' ||
-                                 selectedContribution.authorEmail === 'ht20041975@outlook.com.vn' ||
-                                 selectedContribution.authorEmail?.includes('outlook') ||
-                                 selectedContribution.authorName === 'Người dùng TrekMap' ||
-                                 selectedContribution.authorEmail === 'Chưa cập nhật email' ||
-                                 !selectedContribution.authorEmail;
+              const liveContrib = contributions.find((c) => c.id === selectedContribution.id) || selectedContribution;
+              const matchedUser =
+                usersList.find(
+                  (u) =>
+                    (liveContrib.userId && (u._id === liveContrib.userId || u.id === liveContrib.userId)) ||
+                    (liveContrib.authorEmail && u.email?.toLowerCase() === liveContrib.authorEmail.toLowerCase())
+                ) ||
+                (currentUser?.email && liveContrib.authorEmail && currentUser.email.toLowerCase() === liveContrib.authorEmail.toLowerCase()
+                  ? currentUser
+                  : null);
 
-              const displayAuthorName = isHoangAcc ? 'Hoang' : (selectedContribution.authorName || 'Hoang');
-              const displayAuthorEmail = isHoangAcc ? 'ht20041975@outlook.com.vn' : (selectedContribution.authorEmail || 'ht20041975@outlook.com.vn');
-              let displayAuthorAvatar = selectedContribution.authorAvatar;
-              if (!displayAuthorAvatar || displayAuthorAvatar.includes('photo-1534528741775')) {
-                const savedUserStr = localStorage.getItem('trekmap_user');
-                if (savedUserStr) {
-                  try {
-                    const u = JSON.parse(savedUserStr);
-                    if (u.avatarUrl || u.avatar) {
-                      displayAuthorAvatar = u.avatarUrl || u.avatar;
-                    }
-                  } catch (e) {}
-                }
-              }
-              if (!displayAuthorAvatar) {
-                displayAuthorAvatar = 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
-              }
+              const displayAuthorName =
+                (liveContrib.authorName && liveContrib.authorName !== 'Trekker Đóng Góp' && liveContrib.authorName !== 'Người dùng TrekMap')
+                  ? liveContrib.authorName
+                  : (matchedUser?.fullName || matchedUser?.name || liveContrib.authorName || 'Trekker Đóng Góp');
+
+              const displayAuthorEmail = liveContrib.authorEmail || matchedUser?.email || 'Chưa cập nhật email';
+
+              const displayAuthorAvatar =
+                (liveContrib.authorAvatar && !liveContrib.authorAvatar.includes('ui-avatars.com/api/?name=Trekker'))
+                  ? liveContrib.authorAvatar
+                  : (matchedUser?.avatarUrl || matchedUser?.avatar || liveContrib.authorAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayAuthorName)}&background=0ed7b5&color=041217&bold=true`);
 
               const handleOpenAuthorProfile = () => {
                 const authorContribs = contributions.filter(
@@ -752,7 +821,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   name: displayAuthorName,
                   email: displayAuthorEmail,
                   avatar: displayAuthorAvatar,
-                  date: selectedContribution.createdAt || '30/7/2026',
+                  date: liveContrib.createdAt || '30/7/2026',
                   contribCount: authorContribs.length || 1,
                   approvedCount,
                   pendingCount,
@@ -822,7 +891,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       </div>
 
                       <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginTop: 3 }}>
-                        Email: <strong style={{ color: 'var(--color-primary)' }}>{displayAuthorEmail}</strong> • Ngày gửi: <strong>{selectedContribution.createdAt || '30/7/2026'}</strong>
+                        Email: <strong style={{ color: 'var(--color-primary)' }}>{displayAuthorEmail}</strong> • Ngày gửi: <strong>{liveContrib.createdAt || '30/7/2026'}</strong>
                       </div>
                     </div>
                   </div>
@@ -960,7 +1029,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 }}
               >
                 <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
                     <span style={{ background: inc.severity === 'critical' ? '#ef4444' : inc.severity === 'high' ? '#f59e0b' : '#38bdf8', color: '#fff', fontSize: '0.72rem', fontWeight: 800, padding: '2px 8px', borderRadius: 6 }}>
                       {inc.severity?.toUpperCase() || 'HIGH'}
                     </span>
@@ -968,35 +1037,148 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       {inc.trailName || inc.type}
                     </span>
                     {inc.resolved ? (
-                      <span style={{ color: '#10b981', fontSize: '0.75rem', fontWeight: 700 }}>✓ Đã xử lý</span>
+                      <span style={{ color: '#10b981', fontSize: '0.75rem', fontWeight: 700, background: 'rgba(16, 185, 129, 0.1)', padding: '2px 8px', borderRadius: 6, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                        <span>Đã an toàn (Đã gỡ)</span>
+                      </span>
                     ) : (
-                      <span style={{ color: '#ef4444', fontSize: '0.75rem', fontWeight: 700 }}>Đang phát cảnh báo</span>
+                      <span style={{ color: '#ef4444', fontSize: '0.75rem', fontWeight: 700, background: 'rgba(239, 68, 68, 0.1)', padding: '2px 8px', borderRadius: 6, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                          <line x1="12" y1="9" x2="12" y2="13" />
+                          <line x1="12" y1="17" x2="12.01" y2="17" />
+                        </svg>
+                        <span>Đang phát cảnh báo</span>
+                      </span>
                     )}
                   </div>
-                  <p style={{ fontSize: '0.82rem', color: 'var(--color-text-main)', margin: 0, marginTop: 4 }}>
+                  <p style={{ fontSize: '0.84rem', color: 'var(--color-text-main)', margin: 0, marginTop: 4, lineHeight: 1.4 }}>
                     {inc.description}
                   </p>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: 4 }}>
-                    Báo cáo bởi: {inc.userName || 'Trekker'} • {inc.reportedAt || 'Gần đây'} • Ghi chú: {inc.locationNote || 'N/A'}
+
+                  {/* Reporter Details Box & Multi-Trekker Verification */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, padding: '6px 10px', background: 'var(--color-bg-card)', borderRadius: 8, border: '1px solid var(--color-border)', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+                        <circle cx="12" cy="7" r="4" />
+                      </svg>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--color-text-main)', fontWeight: 700 }}>
+                        Người phát đầu tiên: <strong style={{ color: 'var(--color-primary)' }}>{inc.reporterName || inc.userName || 'Trekker Thực Địa'}</strong>
+                      </span>
+                    </div>
+
+                    {inc.reporterEmail && (
+                      <span style={{ fontSize: '0.73rem', color: 'var(--color-text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect width="20" height="16" x="2" y="4" rx="2" />
+                          <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+                        </svg>
+                        <span>{inc.reporterEmail}</span>
+                      </span>
+                    )}
+
+                    <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10" />
+                        <polyline points="12 6 12 12 16 14" />
+                      </svg>
+                      <span>{inc.reportedAt || 'Gần đây'}</span>
+                    </span>
+
+                    {inc.locationNote && (
+                      <span style={{ fontSize: '0.72rem', color: 'var(--color-sky)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" />
+                          <circle cx="12" cy="10" r="3" />
+                        </svg>
+                        <span>{inc.locationNote}</span>
+                      </span>
+                    )}
+
+                    {inc.confirmations && inc.confirmations > 1 && (
+                      <span className="badge badge-warning" style={{ fontSize: '0.68rem', padding: '2px 8px', fontWeight: 800 }}>
+                        ✓ {inc.confirmations} Trekker cùng xác thực
+                      </span>
+                    )}
                   </div>
+
+                  {/* Co-Reporters & Timeline Observations */}
+                  {inc.coReporters && inc.coReporters.length > 1 && (
+                    <div style={{ marginTop: 6, padding: '5px 10px', background: 'rgba(56, 189, 248, 0.06)', border: '1px dashed rgba(56, 189, 248, 0.3)', borderRadius: 6, fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>
+                      <strong style={{ color: 'var(--color-sky)' }}>Trekker cùng đồng báo cáo (+1):</strong>{' '}
+                      {inc.coReporters.slice(1).map((c: any, idx: number) => (
+                        <span key={idx} style={{ marginRight: 8, color: 'var(--color-text-main)' }}>
+                          • {c.userName} ({c.confirmedAt}){c.note ? `: "${c.note}"` : ''}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Disputes / False Alarm Reports Notification */}
+                  {inc.disputes && inc.disputes.length > 0 && (
+                    <div
+                      style={{
+                        marginTop: 8,
+                        padding: '8px 12px',
+                        background: 'rgba(239, 68, 68, 0.12)',
+                        border: '1.5px solid rgba(239, 68, 68, 0.5)',
+                        borderRadius: 8,
+                        fontSize: '0.78rem',
+                        color: '#ef4444',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 800, marginBottom: 4 }}>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                          <line x1="12" y1="9" x2="12" y2="13" />
+                          <line x1="12" y1="17" x2="12.01" y2="17" />
+                        </svg>
+                        <span>CẢNH BÁO TỪ CỘNG ĐỒNG: CÓ {inc.disputes.length} TREKKER KHIẾU NẠI ĐÂY LÀ TIN GIẢ / BÁO ĐỘNG SAI SỰ THẬT!</span>
+                      </div>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+                        {inc.disputes.map((d: any, idx: number) => (
+                          <div key={idx} style={{ background: 'rgba(0,0,0,0.2)', padding: '5px 8px', borderRadius: 6, color: 'var(--color-text-main)' }}>
+                            • <strong>{d.userName || 'Trekker'}</strong> ({d.userEmail ? `${d.userEmail} - ` : ''}{d.disputedAt}): <em>"{d.reason}"</em>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   {!inc.resolved && (
                     <button
                       className="btn btn-primary"
                       onClick={() => handleResolveIncident(inc._id || inc.id)}
-                      style={{ background: '#10b981', borderColor: '#10b981', padding: '6px 12px', fontSize: '0.8rem' }}
+                      style={{ background: '#10b981', borderColor: '#10b981', padding: '6px 12px', fontSize: '0.8rem', fontWeight: 700 }}
                     >
-                      Đánh dấu xử lý xong
+                      Đánh dấu xử lý xong (Gỡ cảnh báo)
                     </button>
                   )}
+
+                  {/* Quick Ban Account if Fake Alert */}
+                  {inc.reportedBy && (
+                    <button
+                      className="btn btn-outline"
+                      onClick={() => handleBanUser(inc.reportedBy, inc.reporterEmail || inc.reporterName || 'Tài khoản')}
+                      title="Khóa tài khoản này nếu phát hiện báo động giả / spam"
+                      style={{ color: '#f59e0b', borderColor: 'rgba(245, 158, 11, 0.4)', padding: '6px 10px', fontSize: '0.78rem', fontWeight: 600 }}
+                    >
+                      Khóa nick (Báo động giả)
+                    </button>
+                  )}
+
                   <button
                     className="btn btn-outline"
                     onClick={() => handleDeleteIncident(inc._id || inc.id)}
                     style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)', padding: '6px 12px', fontSize: '0.8rem' }}
                   >
-                    Xóa
+                    Xóa sự cố
                   </button>
                 </div>
               </div>

@@ -1,6 +1,15 @@
 import React, { useState } from 'react';
 import type { Trail } from '../../types.js';
 import { OptimizedImage } from '../common/OptimizedImage.js';
+import {
+  IconMountain,
+  IconMapPin,
+  IconTent,
+  IconDroplet,
+  IconClock,
+  IconShieldAlert,
+  IconUsers,
+} from '../common/SvgIcons.js';
 
 interface TrailCardProps {
   trail: Trail;
@@ -175,7 +184,16 @@ export const TrailCard: React.FC<TrailCardProps> = ({
               transition: 'all 0.2s ease',
             }}
           >
-            <span>{isSelectedForCompare ? '✓' : '＋'}</span>
+            {isSelectedForCompare ? (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            ) : (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+            )}
             <span>So sánh</span>
           </button>
         )}
@@ -200,10 +218,18 @@ export const TrailCard: React.FC<TrailCardProps> = ({
             zIndex: 2,
           }}
         >
-          <span>★</span>
-          <span>
-            {trail.rating} ({trail.reviewCount})
-          </span>
+          {trail.reviewCount && trail.reviewCount > 0 && trail.rating && trail.rating > 0 && !(String(trail.id).startsWith('contrib-') && trail.reviewCount === 1) ? (
+            <>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="var(--color-sun)" stroke="var(--color-sun)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+              </svg>
+              <span>
+                {Number(trail.rating).toFixed(1)} ({trail.reviewCount})
+              </span>
+            </>
+          ) : (
+            <span style={{ color: 'var(--color-primary)', fontWeight: 800 }}>Mới</span>
+          )}
         </div>
 
         {/* Max Altitude Pill at Bottom-Left */}
@@ -220,9 +246,13 @@ export const TrailCard: React.FC<TrailCardProps> = ({
             fontWeight: 700,
             color: 'var(--color-sky)',
             zIndex: 2,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
           }}
         >
-          🏔️ {trail.maxAltitudeM}m
+          <IconMountain size={12} color="var(--color-sky)" />
+          <span>{trail.maxAltitudeM}m</span>
         </div>
       </div>
 
@@ -233,15 +263,15 @@ export const TrailCard: React.FC<TrailCardProps> = ({
             fontSize: 'var(--font-size-xs)',
             color: 'var(--color-stream)',
             marginBottom: 4,
-            fontWeight: 'var(--font-weight-bold)',
+            fontWeight: 700,
             display: 'flex',
             alignItems: 'center',
             gap: 4,
           }}
         >
-          <span>📍</span>
+          <IconMapPin size={13} color="var(--color-stream)" />
           <span>
-            {trail.province}, {trail.district}
+            {trail.province}{trail.district ? `, ${trail.district}` : ''}
           </span>
         </div>
 
@@ -250,7 +280,7 @@ export const TrailCard: React.FC<TrailCardProps> = ({
             fontSize: '1.08rem',
             fontWeight: 800,
             color: isHovered ? 'var(--color-primary)' : 'var(--color-text-main)',
-            marginBottom: 6,
+            marginBottom: trail.altNames && trail.altNames.length > 0 ? 2 : 6,
             lineHeight: 1.3,
             transition: 'color 0.2s ease',
           }}
@@ -258,11 +288,17 @@ export const TrailCard: React.FC<TrailCardProps> = ({
           {trail.name}
         </h3>
 
+        {trail.altNames && trail.altNames.length > 0 && (
+          <div style={{ fontSize: '0.74rem', color: 'var(--color-text-dim)', fontStyle: 'italic', marginBottom: 6 }}>
+            Tên khác: {trail.altNames.join(', ')}
+          </div>
+        )}
+
         <p
           style={{
             fontSize: 'var(--font-size-sm)',
             color: 'var(--color-text-muted)',
-            marginBottom: 14,
+            marginBottom: 12,
             display: '-webkit-box',
             WebkitLineClamp: 2,
             WebkitBoxOrient: 'vertical',
@@ -283,7 +319,7 @@ export const TrailCard: React.FC<TrailCardProps> = ({
             border: '1px solid var(--color-border)',
             padding: '10px 8px',
             borderRadius: 12,
-            marginBottom: 16,
+            marginBottom: 10,
             fontSize: 'var(--font-size-xs)',
             textAlign: 'center',
           }}
@@ -313,10 +349,42 @@ export const TrailCard: React.FC<TrailCardProps> = ({
             <div style={{ color: 'var(--color-text-dim)', fontSize: '0.72rem', fontWeight: 600 }}>
               Thời gian
             </div>
-            <strong style={{ color: 'var(--color-sun)', fontSize: '0.85rem' }}>
-              {trail.durationDays} ngày
+            <strong style={{ color: 'var(--color-sun)', fontSize: '0.82rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>
+              {trail.durationHoursNote || `${trail.durationDays} ngày`}
             </strong>
           </div>
+        </div>
+
+        {/* Amenities Pills & Season Bar */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
+          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+            {trail.hasCampsite && (
+              <span style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: 6, background: 'rgba(16, 185, 129, 0.1)', color: 'var(--color-primary)', border: '1px solid var(--color-border)', display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 700 }}>
+                <IconTent size={11} color="var(--color-primary)" /> Bãi trại
+              </span>
+            )}
+            {trail.hasWaterSource && (
+              <span style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: 6, background: 'rgba(56, 189, 248, 0.12)', color: 'var(--color-sky)', border: '1px solid var(--color-border)', display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 700 }}>
+                <IconDroplet size={11} color="var(--color-sky)" /> Nguồn nước
+              </span>
+            )}
+            {trail.permitRequired && (
+              <span style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: 6, background: 'rgba(239, 68, 68, 0.12)', color: 'var(--color-error)', border: '1px solid var(--color-border)', display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 700 }}>
+                <IconShieldAlert size={11} color="var(--color-error)" /> Giấy phép
+              </span>
+            )}
+            {trail.kidFriendly && (
+              <span style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: 6, background: 'rgba(34, 211, 238, 0.12)', color: 'var(--color-stream)', border: '1px solid var(--color-border)', display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 700 }}>
+                <IconUsers size={11} color="var(--color-stream)" /> Trẻ em OK
+              </span>
+            )}
+          </div>
+          {trail.bestMonths && trail.bestMonths.length > 0 && (
+            <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <IconClock size={11} color="var(--color-text-dim)" />
+              <span>Mùa đẹp: <strong>Tháng {trail.bestMonths.join(', ')}</strong></span>
+            </div>
+          )}
         </div>
 
         {/* Action Button */}

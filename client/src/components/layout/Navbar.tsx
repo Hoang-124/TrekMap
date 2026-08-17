@@ -148,7 +148,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 }}
               >
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 8px #10b981' }} />
-                VÔ TUYẾN 24/7
+                VÔ TUYẾN BASECAMP
               </span>
             </div>
           </div>
@@ -175,7 +175,11 @@ export const Navbar: React.FC<NavbarProps> = ({
               type="text"
               placeholder="Tìm kiếm cung đường, địa danh..."
               value={searchVal}
-              onChange={(e) => setSearchVal(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setSearchVal(v);
+                onSearchChange(v);
+              }}
               style={{
                 width: '100%',
                 background: 'var(--color-bg-main)',
@@ -196,6 +200,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           <button
             className="btn btn-danger"
             onClick={onOpenIncidentModal}
+            title="Gửi báo cáo nguy hiểm, sạt lở hoặc thời tiết xấu đang xảy ra"
             style={{
               fontSize: '0.82rem',
               padding: '7px 14px',
@@ -208,11 +213,11 @@ export const Navbar: React.FC<NavbarProps> = ({
             }}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-              <line x1="12" y1="8" x2="12" y2="12" />
-              <line x1="12" y1="16" x2="12.01" y2="16" />
+              <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
             </svg>
-            <span>Cứu hộ SOS</span>
+            <span>Báo cáo nguy hiểm</span>
           </button>
 
           <div style={{ width: 1, height: 22, background: 'var(--color-border)', margin: '0 2px' }} />

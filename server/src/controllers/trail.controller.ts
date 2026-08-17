@@ -2,11 +2,13 @@ import { Request, Response } from 'express';
 import { mockTrails, mockGuides } from '../data/seedData.js';
 import { Trail } from '../types.js';
 import { TrailModel } from '../models/Trail.js';
+import { Contribution } from '../models/Contribution.js';
 import { ReviewModel } from '../models/Review.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { verifyToken } from '../utils/auth.js';
 import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
 import { awardReputationPoints, deductReputationPoints, REPUTATION_POINTS, PENALTY_POINTS } from '../utils/reputation.js';
+import { calculateDrivingRoute } from '../services/publicApis.service.js';
 
 let inMemoryTrails: Trail[] = [...mockTrails];
 
@@ -47,9 +49,17 @@ export const getTrails = async (req: Request, res: Response) => {
     if (kidFriendly === 'true') {
       query.kidFriendly = true;
     }
-    if (search) {
-      const regex = new RegExp(search as string, 'i');
-      query.$or = [{ name: regex }, { province: regex }, { description: regex }];
+    if (search && typeof search === 'string' && search.trim().length > 0) {
+      const escaped = search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(escaped, 'i');
+      query.$or = [
+        { name: regex },
+        { altNames: regex },
+        { province: regex },
+        { district: regex },
+        { region: regex },
+        { description: regex },
+      ];
     }
 
     const sortOptions: any = {};
@@ -70,9 +80,7 @@ export const getTrails = async (req: Request, res: Response) => {
     }
 
     const dbTrails = await TrailModel.find(query).sort(sortOptions).exec();
-    if (dbTrails && dbTrails.length > 0) {
-      return res.json({ success: true, count: dbTrails.length, data: dbTrails });
-    }
+    return res.json({ success: true, count: dbTrails.length, data: dbTrails });
   } catch (err) {
     // Fallthrough to in-memory store if DB query fails
   }
@@ -81,7 +89,7 @@ export const getTrails = async (req: Request, res: Response) => {
   let filtered = [...inMemoryTrails];
 
   if (region && region !== 'All') {
-    filtered = filtered.filter((t) => t.region.toLowerCase() === (region as string).toLowerCase());
+    filtered = filtered.filter((t) => (t.region || '').toLowerCase() === (region as string).toLowerCase());
   }
 
   if (difficulty) {
@@ -102,41 +110,44 @@ export const getTrails = async (req: Request, res: Response) => {
     filtered = filtered.filter((t) => t.kidFriendly);
   }
 
-  if (search) {
-    const s = (search as string).toLowerCase();
+  if (search && typeof search === 'string') {
+    const s = (search as string).toLowerCase().trim();
     filtered = filtered.filter(
       (t) =>
-        t.name.toLowerCase().includes(s) ||
-        t.province.toLowerCase().includes(s) ||
-        t.description.toLowerCase().includes(s)
+        (t.name || '').toLowerCase().includes(s) ||
+        (t.province || '').toLowerCase().includes(s) ||
+        (t.region || '').toLowerCase().includes(s) ||
+        (t.district || '').toLowerCase().includes(s) ||
+        (t.description || '').toLowerCase().includes(s)
     );
   }
 
   // In-memory Sorting
   if (sortBy === 'rating_desc' || sortBy === 'rating') {
-    filtered.sort((a, b) => b.rating - a.rating);
+    filtered.sort((a, b) => (b.rating || 0) - (a.rating || 0));
   } else if (sortBy === 'distance_asc') {
-    filtered.sort((a, b) => a.distanceKm - b.distanceKm);
+    filtered.sort((a, b) => (a.distanceKm || 0) - (b.distanceKm || 0));
   } else if (sortBy === 'distance_desc') {
-    filtered.sort((a, b) => b.distanceKm - a.distanceKm);
+    filtered.sort((a, b) => (b.distanceKm || 0) - (a.distanceKm || 0));
   } else if (sortBy === 'difficulty_asc') {
-    filtered.sort((a, b) => a.difficultyLevel - b.difficultyLevel);
+    filtered.sort((a, b) => (a.difficultyLevel || 0) - (b.difficultyLevel || 0));
   } else if (sortBy === 'difficulty_desc') {
-    filtered.sort((a, b) => b.difficultyLevel - a.difficultyLevel);
+    filtered.sort((a, b) => (b.difficultyLevel || 0) - (a.difficultyLevel || 0));
   } else if (sortBy === 'duration_asc') {
-    filtered.sort((a, b) => a.durationDays - b.durationDays);
+    filtered.sort((a, b) => (a.durationDays || 0) - (b.durationDays || 0));
   } else if (sortBy === 'duration_desc') {
-    filtered.sort((a, b) => b.durationDays - a.durationDays);
+    filtered.sort((a, b) => (b.durationDays || 0) - (a.durationDays || 0));
   }
 
   return res.json({ success: true, count: filtered.length, data: filtered });
 };
 
-// 2dsphere Spatial Query: GET /api/trails/nearby?lat={lat}&lng={lng}&radiusKm={radiusKm}
+// 2dsphere Spatial Query: GET /api/trails/nearby?lat={lat}&lng={lng}&radiusKm={radiusKm}&limit={limit}
 export const getNearbyTrails = async (req: Request, res: Response) => {
   const latitude = parseFloat(req.query.lat as string);
   const longitude = parseFloat(req.query.lng as string);
-  const radiusKm = parseFloat(req.query.radiusKm as string) || 50;
+  const radiusKm = parseFloat(req.query.radiusKm as string);
+  const limit = parseInt(req.query.limit as string) || 5;
 
   if (isNaN(latitude) || isNaN(longitude)) {
     return res.status(400).json({
@@ -145,7 +156,6 @@ export const getNearbyTrails = async (req: Request, res: Response) => {
     });
   }
 
-  const radiusMeters = radiusKm * 1000;
   const startTimeMs = performance.now();
 
   try {
@@ -157,10 +167,10 @@ export const getNearbyTrails = async (req: Request, res: Response) => {
             type: 'Point',
             coordinates: [longitude, latitude],
           },
-          $maxDistance: radiusMeters,
+          ...(radiusKm ? { $maxDistance: radiusKm * 1000 } : {}),
         },
       },
-    }).maxTimeMS(200).lean().exec();
+    }).limit(limit).maxTimeMS(200).lean().exec();
 
     const timeoutPromise = new Promise<any[]>((_, reject) =>
       setTimeout(() => reject(new Error('Spatial DB query timeout')), 150)
@@ -171,19 +181,24 @@ export const getNearbyTrails = async (req: Request, res: Response) => {
     const queryExecutionTimeMs = Math.round((performance.now() - startTimeMs) * 100) / 100;
 
     if (dbTrails && dbTrails.length > 0) {
-      const dataWithDistance = dbTrails.map((trail: any) => {
-        const distKm = calculateHaversineDistanceKm(latitude, longitude, trail.startLat, trail.startLng);
-        return {
-          ...trail,
-          distanceFromUserKm: distKm,
-          estimatedRoadDistanceKm: Math.round(distKm * 1.9),
-        };
-      });
+      const dataWithDistance = await Promise.all(
+        dbTrails.map(async (trail: any) => {
+          const distKm = calculateHaversineDistanceKm(latitude, longitude, trail.startLat, trail.startLng);
+          const routeInfo = await calculateDrivingRoute(latitude, longitude, trail.startLat, trail.startLng);
+          return {
+            ...trail,
+            distanceFromUserKm: distKm,
+            roadDistanceKm: routeInfo.roadDistanceKm,
+            travelDurationMin: routeInfo.travelDurationMin,
+            travelDurationFormatted: routeInfo.travelDurationFormatted,
+          };
+        })
+      );
 
       return res.json({
         success: true,
         count: dataWithDistance.length,
-        radiusKm,
+        radiusKm: radiusKm || null,
         executionTimeMs: queryExecutionTimeMs,
         userCoordinates: { lat: latitude, lng: longitude },
         data: dataWithDistance,
@@ -194,27 +209,46 @@ export const getNearbyTrails = async (req: Request, res: Response) => {
   }
 
   // 2. High-Speed In-Memory Haversine Spatial Filtering Fallback
-  const nearbyMemoryTrails = inMemoryTrails
+  let nearbyMemoryTrails = inMemoryTrails
     .map((t) => {
       const distKm = calculateHaversineDistanceKm(latitude, longitude, t.startLat, t.startLng);
       return {
         ...t,
         distanceFromUserKm: distKm,
-        estimatedRoadDistanceKm: Math.round(distKm * 1.9),
       };
     })
-    .filter((t) => t.distanceFromUserKm <= radiusKm)
     .sort((a, b) => a.distanceFromUserKm - b.distanceFromUserKm);
+
+  if (radiusKm && !isNaN(radiusKm)) {
+    const filtered = nearbyMemoryTrails.filter((t) => t.distanceFromUserKm <= radiusKm);
+    if (filtered.length > 0) {
+      nearbyMemoryTrails = filtered;
+    }
+  }
+
+  // Return top nearest trails with real driving distance & duration
+  const topNearest = nearbyMemoryTrails.slice(0, limit);
+  const trailsWithDriving = await Promise.all(
+    topNearest.map(async (t) => {
+      const routeInfo = await calculateDrivingRoute(latitude, longitude, t.startLat, t.startLng);
+      return {
+        ...t,
+        roadDistanceKm: routeInfo.roadDistanceKm,
+        travelDurationMin: routeInfo.travelDurationMin,
+        travelDurationFormatted: routeInfo.travelDurationFormatted,
+      };
+    })
+  );
 
   const totalTimeMs = Math.round((performance.now() - startTimeMs) * 100) / 100;
 
   return res.json({
     success: true,
-    count: nearbyMemoryTrails.length,
-    radiusKm,
+    count: trailsWithDriving.length,
+    radiusKm: radiusKm || null,
     executionTimeMs: totalTimeMs,
     userCoordinates: { lat: latitude, lng: longitude },
-    data: nearbyMemoryTrails,
+    data: trailsWithDriving,
   });
 };
 
@@ -222,11 +256,65 @@ export const getTrailById = async (req: Request, res: Response) => {
   const { id } = req.params;
 
   try {
-    const dbTrail = await TrailModel.findById(id).exec();
+    const dbTrail = await TrailModel.findOne({ $or: [{ _id: id }, { id: id }] }).exec();
     if (dbTrail) {
       return res.json({ success: true, data: dbTrail });
     }
   } catch (err) {}
+
+  try {
+    const contrib = await Contribution.findOne({ $or: [{ _id: id }, { id: id }] }).lean().exec();
+    if (contrib) {
+      const mappedTrail = {
+        id: contrib.id || `contrib-${contrib._id}`,
+        name: contrib.name,
+        altNames: contrib.altNames || [],
+        region: contrib.region || 'Miền Bắc',
+        province: contrib.province || '',
+        district: contrib.district || '',
+        hamlet: contrib.hamlet || '',
+        distanceKm: Number(contrib.distanceKm) || 15,
+        elevationGainM: Number(contrib.elevationGainM) || 800,
+        maxAltitudeM: Number(contrib.maxAltitudeM) || 2000,
+        durationDays: Math.ceil((Number(contrib.distanceKm) || 15) / 10),
+        durationHoursNote: contrib.durationHoursNote || '1 ngày',
+        difficultyLevel: Number(contrib.difficultyLevel) || 3,
+        difficultyNote: (Number(contrib.difficultyLevel) || 3) >= 4 ? 'Thử thách cao' : 'Trung bình',
+        bestMonths: Array.isArray(contrib.bestMonths) && contrib.bestMonths.length > 0 ? contrib.bestMonths : [10, 11, 12, 1, 2, 3, 4],
+        avoidMonths: Array.isArray(contrib.avoidMonths) ? contrib.avoidMonths : [],
+        startLat: Number(contrib.startLat) || 22.3364,
+        startLng: Number(contrib.startLng) || 103.8438,
+        endLat: Number(contrib.endLat) || 22.3512,
+        endLng: Number(contrib.endLng) || 103.864,
+        description: contrib.description || 'Cung đường đóng góp từ cộng đồng Trekker.',
+        transportationInfo: contrib.transportationInfo || '',
+        coverImage: contrib.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=1200&q=80',
+        galleryImages: [contrib.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=1200&q=80'],
+        permitRequired: !!contrib.permitRequired,
+        permitInfo: contrib.permitInfo || '',
+        hasCampsite: !!contrib.hasCampsite,
+        hasWaterSource: !!contrib.hasWaterSource,
+        kidFriendly: !!contrib.kidFriendly,
+        gpxTrack: contrib.gpxTrack || [
+          [Number(contrib.startLat) || 22.3364, Number(contrib.startLng) || 103.8438],
+          [Number(contrib.endLat) || 22.3512, Number(contrib.endLng) || 103.864],
+        ],
+        dangerWarnings: [],
+        waypoints: contrib.waypoints || [],
+        status: contrib.status || 'approved',
+        createdAt: contrib.createdAt,
+        updatedAt: contrib.updatedAt,
+        rescueContact: contrib.rescueContact || {
+          name: 'Hạt Kiểm Lâm ' + (contrib.province || 'Địa phương'),
+          phone: '114 / 115 (Cứu nạn & Cấp cứu 24/7)',
+          rangerContact: 'Trạm Kiểm Lâm ' + (contrib.district || 'Cửa Rừng'),
+        },
+        rating: Number(contrib.rating) || 0,
+        reviewCount: Number(contrib.reviewCount) || 0,
+      };
+      return res.json({ success: true, data: mappedTrail });
+    }
+  } catch (cErr) {}
 
   const trail = inMemoryTrails.find((t) => t.id === id);
 
