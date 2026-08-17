@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import mongoose, { Types } from 'mongoose';
 import { ThreadModel } from '../models/Thread.js';
 import { UserModel } from '../models/User.js';
+import { TrailModel } from '../models/Trail.js';
+import { CommunityMessageModel } from '../models/CommunityMessage.js';
 import { verifyToken } from '../utils/auth.js';
 import { getUserKey, getUserKeys } from '../middleware/auth.middleware.js';
 import { mockThreads } from '../data/seedData.js';
@@ -318,5 +320,85 @@ export const reactToThread = async (req: Request, res: Response) => {
   } catch (err) {
     console.error('[Thread Reaction API Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi khi lưu cảm xúc bài viết.' });
+  }
+};
+
+// GET /api/forum/top-trekkers
+export const getTopTrekkers = async (req: Request, res: Response) => {
+  try {
+    const topUsers = await UserModel.find({ reputationScore: { $gt: 0 } })
+      .select('fullName avatarUrl reputationScore badges role')
+      .sort({ reputationScore: -1 })
+      .limit(6)
+      .lean();
+
+    return res.json({ success: true, data: topUsers });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: 'Lỗi tải danh sách trekker' });
+  }
+};
+
+// GET /api/forum/gpx/:trailId
+export const downloadTrailGpx = async (req: Request, res: Response) => {
+  try {
+    const trailParam = String(req.params.trailId || '');
+    const query: any = Types.ObjectId.isValid(trailParam)
+      ? { $or: [{ id: trailParam }, { _id: new Types.ObjectId(trailParam) }] }
+      : { id: trailParam };
+
+    const trail = (await TrailModel.findOne(query).lean()) as any;
+    if (!trail || !trail.gpxTrack || trail.gpxTrack.length === 0) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy dữ liệu GPS của cung đường này' });
+    }
+
+    const gpxPoints = trail.gpxTrack.map((pt: [number, number]) => `      <trkpt lat="${pt[0]}" lon="${pt[1]}"></trkpt>`).join('\n');
+    const gpxXml = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="TrekMap Vietnam - https://trekmap.vn" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>${trail.name}</name>
+    <desc>${trail.description || 'Cung đường trekking thực địa Việt Nam'}</desc>
+    <time>${new Date().toISOString()}</time>
+  </metadata>
+  <trk>
+    <name>${trail.name}</name>
+    <trkseg>
+${gpxPoints}
+    </trkseg>
+  </trk>
+</gpx>`;
+
+    res.setHeader('Content-Type', 'application/gpx+xml; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(trail.id || trail._id?.toString() || 'trail')}.gpx"`);
+    return res.send(gpxXml);
+  } catch (err) {
+    console.error('[GPX Export Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi xuất file GPX' });
+  }
+};
+
+// GET /api/forum/chat-messages
+export const getCommunityChatMessages = async (req: Request, res: Response) => {
+  try {
+    const rawMessages = await CommunityMessageModel.find()
+      .sort({ createdAt: -1 })
+      .limit(60)
+      .lean();
+
+    const formatted = rawMessages.reverse().map((m: any) => ({
+      id: m._id.toString(),
+      senderId: m.senderId ? m.senderId.toString() : undefined,
+      senderName: m.senderName,
+      senderAvatar: m.senderAvatar,
+      senderBadge: m.senderBadge,
+      nameColor: m.nameColor,
+      text: m.text,
+      quote: m.quote && m.quote.author && m.quote.text ? { author: m.quote.author, text: m.quote.text } : undefined,
+      createdAt: m.createdAt ? new Date(m.createdAt).toISOString() : new Date().toISOString(),
+    }));
+
+    return res.json({ success: true, data: formatted });
+  } catch (err) {
+    console.error('[Get Community Chat Messages Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi tải lịch sử tin nhắn cộng đồng' });
   }
 };

@@ -1,23 +1,30 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { ForumThread } from '../../types.js';
-
-const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
-  return ({ size = defaultSize, color = 'currentColor', style }: { size?: number; color?: string; style?: React.CSSProperties }) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
-      {d}
-    </svg>
-  );
-};
-
-const ArrowLeft = createSvgIcon(<><line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" /></>);
-const PlusCircle = createSvgIcon(<><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="16" /><line x1="8" y1="12" x2="16" y2="12" /></>);
-const Download = createSvgIcon(<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></>);
-const FileText = createSvgIcon(<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /><polyline points="10 9 9 9 8 9" /></>);
-const Send = createSvgIcon(<><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></>);
-import { TrekkerRadioBasecamp } from './TrekkerRadioBasecamp.js';
+import {
+  IconArrowLeft,
+  IconPlus,
+  IconDownload,
+  IconFileText,
+  IconSend,
+  IconSearch,
+  IconUsers,
+  IconSparkles,
+  IconShieldCheck,
+  IconRadio,
+} from '../common/SvgIcons.js';
 import { AlpineExpeditionFeed } from './AlpineExpeditionFeed.js';
-import { getApiHeaders } from '../../utils/sessionHeaders';
+import { LiveTrekkerChatroom } from './LiveTrekkerChatroom.js';
+import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import { useSocket } from '../../hooks/useSocket.js';
+
+interface TopTrekker {
+  _id: string;
+  fullName: string;
+  avatarUrl: string;
+  reputationScore: number;
+  badges?: string[];
+  role?: string;
+}
 
 interface TrekForumViewProps {
   onBack: () => void;
@@ -26,19 +33,36 @@ interface TrekForumViewProps {
   onRequireLogin?: (actionName: string) => void;
 }
 
-export const TrekForumView: React.FC<TrekForumViewProps> = ({ onBack, onShowToast, currentUser, onRequireLogin }) => {
+const POPULAR_PEAKS = [
+  { id: 'all', name: 'Tất Cả Cung Đường' },
+  { id: 'trail-laothan', name: 'Lảo Thẩn (2.860m)' },
+  { id: 'trail-fansipan', name: 'Fansipan (3.143m)' },
+  { id: 'trail-kyquansan', name: 'Kỳ Quan San (3.046m)' },
+  { id: 'trail-putaleng', name: 'Pu Ta Leng (3.049m)' },
+  { id: 'trail-taxua', name: 'Tà Xùa (2.865m)' },
+];
+
+export const TrekForumView: React.FC<TrekForumViewProps> = ({
+  onBack,
+  onShowToast,
+  currentUser,
+  onRequireLogin,
+}) => {
   const [threads, setThreads] = useState<ForumThread[]>([]);
+  const [topTrekkers, setTopTrekkers] = useState<TopTrekker[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedPeak, setSelectedPeak] = useState('all');
   const [isNewThreadOpen, setIsNewThreadOpen] = useState(false);
   const { socket } = useSocket();
 
-  // New Thread Form
+  // New Thread Form state
   const [newTitle, setNewTitle] = useState('');
-  const [newCategory, setNewCategory] = useState<'Hỏi Đáp' | 'Kinh Nghiệm' | 'Tìm Đồng Đội' | 'Cảnh Báo'>('Hỏi Đáp');
+  const [newCategory, setNewCategory] = useState<'Hỏi Đáp' | 'Kinh Nghiệm' | 'Tìm Đồng Đội' | 'Cảnh Báo'>('Kinh Nghiệm');
   const [newContent, setNewContent] = useState('');
 
   const fetchThreads = useCallback(async () => {
     try {
-      const res = await fetch('http://localhost:5000/api/forum', {
+      const res = await fetch('/api/forum', {
         headers: getApiHeaders(),
       });
       const data = await res.json();
@@ -50,11 +74,24 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({ onBack, onShowToas
     }
   }, []);
 
+  const fetchTopTrekkers = useCallback(async () => {
+    try {
+      const res = await fetch('/api/forum/top-trekkers');
+      const data = await res.json();
+      if (data.success && Array.isArray(data.data)) {
+        setTopTrekkers(data.data);
+      }
+    } catch (err) {
+      console.error('Failed to load top trekkers', err);
+    }
+  }, []);
+
   useEffect(() => {
     fetchThreads();
-  }, [fetchThreads]);
+    fetchTopTrekkers();
+  }, [fetchThreads, fetchTopTrekkers]);
 
-  // Real-time socket listeners for live thread updates
+  // Real-time socket listeners
   useEffect(() => {
     if (!socket) return;
 
@@ -89,15 +126,15 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({ onBack, onShowToas
 
   const handleCreateThread = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUser && !localStorage.getItem('trekmap_token')) {
+    const token = localStorage.getItem('trekmap_token');
+    if (!currentUser && !token) {
       if (onRequireLogin) onRequireLogin('đăng bài thảo luận mới');
       return;
     }
     if (!newTitle.trim() || !newContent.trim()) return;
 
     try {
-      const token = localStorage.getItem('trekmap_token');
-      const res = await fetch('http://localhost:5000/api/forum', {
+      const res = await fetch('/api/forum', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -117,28 +154,332 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({ onBack, onShowToas
         setNewTitle('');
         setNewContent('');
         if (onShowToast) {
-          onShowToast('Tạo bài đóng góp nhật ký mới thành công!', 'success');
+          onShowToast('Tạo bài đóng góp nhật ký mới thành công! Bạn nhận +15 điểm uy tín.', 'success');
         }
+      } else {
+        if (onShowToast) onShowToast(data.message || 'Lỗi khi đăng bài', 'error');
       }
     } catch (err) {
-      if (onShowToast) {
-        onShowToast('Không thể đăng bài, vui lòng thử lại.', 'error');
-      }
+      if (onShowToast) onShowToast('Không thể kết nối máy chủ', 'error');
     }
   };
 
+  // Filtered threads based on search query and peak filter
+  const filteredThreads = threads.filter((t) => {
+    const matchesSearch =
+      !searchQuery.trim() ||
+      t.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      t.content.toLowerCase().includes(searchQuery.toLowerCase());
+
+    const matchesPeak =
+      selectedPeak === 'all' ||
+      t.title.toLowerCase().includes(selectedPeak.replace('trail-', '').toLowerCase()) ||
+      t.content.toLowerCase().includes(selectedPeak.replace('trail-', '').toLowerCase());
+
+    return matchesSearch && matchesPeak;
+  });
+
   return (
-    <div style={{ maxWidth: 1320, margin: '0 auto', padding: '30px 24px' }}>
-      {/* Navigation Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <button className="btn btn-outline" onClick={onBack}>
-          <ArrowLeft size={16} /> Quay lại trang chủ
+    <div style={{ maxWidth: 1400, margin: '0 auto', padding: '24px 20px 60px' }}>
+      {/* Top Header & Actions Bar */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
+        <button
+          className="btn btn-outline interactive-click"
+          onClick={onBack}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 12 }}
+        >
+          <IconArrowLeft size={16} /> Quay lại trang chủ
         </button>
 
-        <button
-          className="btn btn-primary"
-          onClick={() => {
-            if (!currentUser && !localStorage.getItem('trekmap_token')) {
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            className="btn btn-primary interactive-click ripple-fx"
+            onClick={() => {
+              const token = localStorage.getItem('trekmap_token');
+              if (!currentUser && !token) {
+                if (onRequireLogin) {
+                  onRequireLogin('tạo bài nhật ký mới trên diễn đàn');
+                } else if (onShowToast) {
+                  onShowToast('Vui lòng đăng nhập để tạo bài nhật ký mới trên diễn đàn!', 'info');
+                }
+                return;
+              }
+              setIsNewThreadOpen(true);
+            }}
+            style={{
+              padding: '9px 18px',
+              borderRadius: 12,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              fontWeight: 800,
+            }}
+          >
+            <IconPlus size={16} color="#041108" /> Viết Bài Đóng Góp
+          </button>
+        </div>
+      </div>
+
+      {/* Hero Community Banner */}
+      <div
+        className="card"
+        style={{
+          background: 'linear-gradient(135deg, rgba(7, 13, 30, 0.95) 0%, rgba(12, 28, 48, 0.95) 100%)',
+          border: '1px solid var(--color-border)',
+          borderRadius: 24,
+          padding: '28px 32px',
+          marginBottom: 28,
+          boxShadow: 'var(--shadow-card)',
+          position: 'relative',
+          overflow: 'hidden',
+        }}
+      >
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(5, 150, 105, 0.14)', border: '1px solid rgba(5, 150, 105, 0.3)', padding: '3px 10px', borderRadius: 16, fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-primary)', marginBottom: 10 }}>
+          <IconSparkles size={13} color="var(--color-primary)" />
+          ALPINE COMMUNITY HUB 24/7
+        </div>
+        <h1 style={{ fontSize: '1.8rem', fontWeight: 900, color: 'var(--color-text-main)', margin: '0 0 8px 0', letterSpacing: '-0.02em' }}>
+          Trung Tâm Cộng Đồng & Vô Tuyến Thực Địa
+        </h1>
+        <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem', maxWidth: 840, lineHeight: 1.6, margin: '0 0 18px 0' }}>
+          Không gian kết nối trực tuyến của cộng đồng Trekker Việt Nam: Thảo luận kinh nghiệm cung đường, đàm thoại thực địa và tải xuống tracklog GPX chuẩn GPS.
+        </p>
+
+        {/* Search Bar & Peak Pills inside Banner */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* Keyword Search Input */}
+          <div style={{ position: 'relative', maxWidth: 640 }}>
+            <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-dim)' }}>
+              <IconSearch size={16} />
+            </span>
+            <input
+              type="text"
+              className="form-input"
+              placeholder="Tìm kiếm bài viết, kinh nghiệm leo núi, trạm kiểm lâm..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '10px 14px 10px 40px',
+                borderRadius: 14,
+                background: 'var(--color-bg-card)',
+                border: '1px solid var(--color-border)',
+                fontSize: '0.86rem',
+              }}
+            />
+          </div>
+
+          {/* Mountain Peak Selection Pills */}
+          <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
+            {POPULAR_PEAKS.map((peak) => {
+              const isSelected = selectedPeak === peak.id;
+              return (
+                <button
+                  key={peak.id}
+                  type="button"
+                  onClick={() => setSelectedPeak(peak.id)}
+                  style={{
+                    padding: '5px 12px',
+                    borderRadius: 12,
+                    fontSize: '0.76rem',
+                    fontWeight: 700,
+                    whiteSpace: 'nowrap',
+                    cursor: 'pointer',
+                    background: isSelected ? 'var(--color-primary)' : 'var(--color-bg-card)',
+                    color: isSelected ? '#041108' : 'var(--color-text-muted)',
+                    border: isSelected ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  {peak.name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* SECTION 1: CENTERED REAL-TIME EXPEDITION HUB (3 COLUMNS WITH CHATROOM AT CENTER STAGE) */}
+      <div style={{ marginBottom: 40 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '300px minmax(0, 1fr) 300px', gap: 20, alignItems: 'stretch' }}>
+          {/* Left Sub-Widget: GPX Tracklog Downloads & Safety Handbook */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div
+              className="card"
+              style={{
+                background: 'var(--color-bg-card)',
+                border: '1px solid var(--color-border)',
+                borderRadius: 20,
+                padding: '18px 20px',
+                boxShadow: 'var(--shadow-card)',
+                flex: 1,
+              }}
+            >
+              <h3 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 4px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <IconFileText size={16} color="var(--color-primary)" />
+                Kho Tracklog GPX Thật 100%
+              </h3>
+              <p style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', lineHeight: 1.45, margin: '0 0 12px 0' }}>
+                Tải file GPX chuẩn tọa độ GPS thực địa nạp vào điện thoại/Garmin để điều hướng an toàn offline:
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {[
+                  { id: 'trail-laothan', name: 'Lảo Thẩn Y Tý (2.860m)', dist: '16.0 km' },
+                  { id: 'trail-fansipan', name: 'Fansipan Trạm Tôn (3.143m)', dist: '22.4 km' },
+                  { id: 'trail-kyquansan', name: 'Kỳ Quan San (3.046m)', dist: '30.0 km' },
+                  { id: 'trail-putaleng', name: 'Pu Ta Leng (3.049m)', dist: '34.0 km' },
+                  { id: 'trail-taxua', name: 'Tà Xùa Mỏm Cá Heo', dist: '18.5 km' },
+                ].map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      background: 'var(--color-bg-main)',
+                      border: '1px solid var(--color-border)',
+                      borderRadius: 10,
+                      padding: '7px 10px',
+                      fontSize: '0.74rem',
+                    }}
+                  >
+                    <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 170 }}>
+                      <div style={{ fontWeight: 800, color: 'var(--color-text-main)', textOverflow: 'ellipsis', overflow: 'hidden' }}>{item.name}</div>
+                      <div style={{ fontSize: '0.66rem', color: 'var(--color-sky)', marginTop: 1 }}>{item.dist}</div>
+                    </div>
+                    <a
+                      href={`/api/forum/gpx/${item.id}`}
+                      download={`${item.id}.gpx`}
+                      className="btn btn-outline interactive-click"
+                      style={{ padding: '4px 8px', borderRadius: 8, fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}
+                    >
+                      <IconDownload size={12} color="var(--color-primary)" />
+                      <span>Tải</span>
+                    </a>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Quick Safety Rule Banner */}
+            <div
+              style={{
+                background: 'rgba(5, 150, 105, 0.08)',
+                border: '1px solid rgba(5, 150, 105, 0.25)',
+                borderRadius: 16,
+                padding: '12px 14px',
+                fontSize: '0.74rem',
+                color: 'var(--color-text-muted)',
+                lineHeight: 1.45,
+              }}
+            >
+              <div style={{ fontWeight: 800, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <IconShieldCheck size={14} color="var(--color-primary)" />
+                Nguyên Tắc An Toàn
+              </div>
+              Luôn mang tối thiểu 1.5L nước, sạc dự phòng, đèn pin đội đầu và gậy trekking khi vào rừng.
+            </div>
+          </div>
+
+          {/* Center Stage: MAIN LIVE CHATROOM (PROMINENT & SPACIOUS) */}
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <LiveTrekkerChatroom
+              currentUser={currentUser}
+              onRequireLogin={onRequireLogin}
+            />
+          </div>
+
+          {/* Right Sub-Widget: Top Trekkers & Basecamp Status */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div
+              className="card"
+              style={{
+                background: 'var(--color-bg-card)',
+                border: '1px solid var(--color-border)',
+                borderRadius: 20,
+                padding: '18px 20px',
+                boxShadow: 'var(--shadow-card)',
+                flex: 1,
+              }}
+            >
+              <h3 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 10px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <IconUsers size={16} color="var(--color-sky)" />
+                Top Thành Viên Uy Tín
+              </h3>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {topTrekkers.length === 0 ? (
+                  <div style={{ fontSize: '0.76rem', color: 'var(--color-text-dim)', textAlign: 'center', padding: '12px 0' }}>
+                    Chưa có dữ liệu thành viên
+                  </div>
+                ) : (
+                  topTrekkers.map((user, idx) => (
+                    <div
+                      key={user._id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '6px 0',
+                        borderBottom: idx < topTrekkers.length - 1 ? '1px solid var(--color-border)' : 'none',
+                      }}
+                    >
+                      <img
+                        src={user.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=100&q=80'}
+                        alt={user.fullName}
+                        style={{
+                          width: 30,
+                          height: 30,
+                          borderRadius: '50%',
+                          border: '1.5px solid var(--color-primary)',
+                          objectFit: 'cover',
+                          flexShrink: 0,
+                        }}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {user.fullName}
+                        </div>
+                        <div style={{ fontSize: '0.66rem', color: 'var(--color-primary)', fontWeight: 700 }}>
+                          ★ {user.reputationScore} Điểm uy tín
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Basecamp Telemetry Info */}
+            <div
+              style={{
+                background: 'rgba(56, 189, 248, 0.08)',
+                border: '1px solid rgba(56, 189, 248, 0.25)',
+                borderRadius: 16,
+                padding: '12px 14px',
+                fontSize: '0.74rem',
+                color: 'var(--color-text-muted)',
+                lineHeight: 1.45,
+              }}
+            >
+              <div style={{ fontWeight: 800, color: 'var(--color-sky)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <IconRadio size={14} color="var(--color-sky)" />
+                Trạm Vô Tuyến 4G
+              </div>
+              Hệ thống kết nối trực tiếp với 100 trạm kiểm lâm và cứu hộ Hoàng Liên Sơn - Tây Bắc.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* SECTION 2: FULL-WIDTH EXPEDITION FEED & COMMUNITY FORUM */}
+      <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 32 }}>
+        <AlpineExpeditionFeed
+          threads={filteredThreads}
+          onOpenNewThreadModal={() => {
+            const token = localStorage.getItem('trekmap_token');
+            if (!currentUser && !token) {
               if (onRequireLogin) {
                 onRequireLogin('tạo bài nhật ký mới trên diễn đàn');
               } else if (onShowToast) {
@@ -148,144 +489,93 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({ onBack, onShowToas
             }
             setIsNewThreadOpen(true);
           }}
-        >
-          <PlusCircle size={16} /> Viết nhật ký mới
-        </button>
-      </div>
-
-      {/* Hero Banner */}
-      <div className="card" style={{
-        background: 'var(--color-bg-card)',
-        border: '1px solid var(--color-border)',
-        padding: '36px 32px',
-        marginBottom: 36,
-      }}>
-        <span className="badge badge-success" style={{ marginBottom: 12 }}>
-          ALPINE EXPEDITION HUB
-        </span>
-        <h1 style={{ fontSize: 'var(--font-size-2xl)', fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)', marginBottom: 12 }}>
-          Trạm Nhật Ký Băng Rừng & Vô Tuyến Trekker
-        </h1>
-        <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--font-size-base)', maxWidth: 800, lineHeight: 'var(--line-height-relaxed)' }}>
-          Hệ thống kết nối vô tuyến trực tuyến 4G, chia sẻ cẩm nang địa hình và cập nhật tình trạng sương mù, trượt lở thực tế trên các đỉnh núi Việt Nam.
-        </p>
-      </div>
-
-      {/* 1. BASECAMP RADIO STATION */}
-      <TrekkerRadioBasecamp />
-
-      {/* 2. ALPINE EXPEDITION FEED & RADAR */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 28 }}>
-        <div>
-          <AlpineExpeditionFeed
-            threads={threads}
-            onOpenNewThreadModal={() => {
-              const token = localStorage.getItem('trekmap_token');
-              if (!token) {
-                if (onShowToast) {
-                  onShowToast('Vui lòng đăng nhập để tạo bài nhật ký mới trên diễn đàn!', 'info');
-                }
-                window.location.hash = '#login';
-                return;
-              }
-              setIsNewThreadOpen(true);
-            }}
-          />
-        </div>
-
-        {/* Sidebar Resources */}
-        <div>
-          <div className="card" style={{ marginBottom: 24, background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
-            <h3 style={{ fontSize: 'var(--font-size-base)', fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)', marginBottom: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <FileText size={18} color="var(--color-primary)" /> Kho GPX & Tài Nguyên
-            </h3>
-            <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', marginBottom: 16, lineHeight: 'var(--line-height-normal)' }}>
-              Tải xuống dữ liệu bản đồ GPX chuẩn và tài liệu hướng dẫn an toàn leo núi miễn phí cho cộng đồng.
-            </p>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {[
-                { title: 'Tệp GPX Trọn bộ 50 Cung đường', size: '2.4 MB' },
-                { title: 'Cẩm nang Y tế & Xử lý sự cố', size: '1.1 MB' },
-                { title: 'Bảng tọa độ 100 Trạm kiểm lâm', size: '850 KB' },
-              ].map((res, idx) => (
-                <div key={idx} style={{
-                  background: 'var(--color-bg-main)',
-                  border: '1px solid var(--color-border)',
-                  borderRadius: 10,
-                  padding: '10px 14px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  fontSize: 'var(--font-size-xs)',
-                }}>
-                  <div>
-                    <div style={{ color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-bold)' }}>{res.title}</div>
-                    <div style={{ color: 'var(--color-text-dim)', fontSize: 'var(--font-size-xs)' }}>{res.size}</div>
-                  </div>
-                  <button className="btn btn-outline" style={{ padding: 6, borderRadius: '50%' }}>
-                    <Download size={14} color="var(--color-primary)" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
+        />
       </div>
 
       {/* Create New Thread Modal */}
       {isNewThreadOpen && (
         <div className="modal-overlay" onClick={() => setIsNewThreadOpen(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ fontSize: '1.3rem', color: '#fff', fontWeight: 800, marginBottom: 20 }}>
-              Viết bài đóng góp nhật ký băng rừng
+          <div
+            className="modal-content"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'var(--color-bg-card)',
+              border: '1px solid var(--color-border)',
+              borderRadius: 22,
+              padding: '28px 30px',
+              maxWidth: 560,
+              width: '100%',
+              boxShadow: 'var(--shadow-card)',
+            }}
+          >
+            <h3 style={{ fontSize: '1.25rem', color: 'var(--color-text-main)', fontWeight: 800, margin: '0 0 18px 0' }}>
+              Viết Bài Đóng Góp Nhật Ký Băng Rừng
             </h3>
 
             <form onSubmit={handleCreateThread}>
-              <div className="form-group">
-                <label className="form-label">Tiêu đề nhật ký</label>
+              <div className="form-group" style={{ marginBottom: 14 }}>
+                <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 6, display: 'block', color: 'var(--color-text-main)' }}>
+                  Tiêu đề nhật ký / câu hỏi
+                </label>
                 <input
                   type="text"
                   className="form-input"
-                  placeholder="Ví dụ: Cẩm nang leo Lảo Thẩn 2N1Đ tự túc mới nhất"
+                  placeholder="Ví dụ: Cẩm nang leo Lảo Thẩn 2N1Đ săn mây tự túc mới nhất"
                   value={newTitle}
                   onChange={(e) => setNewTitle(e.target.value)}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 10, fontSize: '0.84rem' }}
                   required
                 />
               </div>
 
-              <div className="form-group">
-                <label className="form-label">Chuyên mục</label>
+              <div className="form-group" style={{ marginBottom: 14 }}>
+                <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 6, display: 'block', color: 'var(--color-text-main)' }}>
+                  Chuyên mục
+                </label>
                 <select
                   className="form-select"
                   value={newCategory}
                   onChange={(e) => setNewCategory(e.target.value as any)}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 10, fontSize: '0.84rem', background: 'var(--color-bg-main)', color: 'var(--color-text-main)', border: '1px solid var(--color-border)' }}
                 >
-                  <option value="Hỏi Đáp">Hỏi Đáp</option>
-                  <option value="Kinh Nghiệm">Kinh Nghiệm</option>
-                  <option value="Tìm Đồng Đội">Tìm Đồng Đội</option>
-                  <option value="Cảnh Báo">Cảnh Báo</option>
+                  <option value="Kinh Nghiệm">Cẩm nang & Kinh nghiệm</option>
+                  <option value="Hỏi Đáp">Hỏi đáp kỹ thuật</option>
+                  <option value="Tìm Đồng Đội">Ghép đoàn & Tìm bạn</option>
+                  <option value="Cảnh Báo">Radar cảnh báo an toàn</option>
                 </select>
               </div>
 
-              <div className="form-group">
-                <label className="form-label">Nội dung chi tiết</label>
+              <div className="form-group" style={{ marginBottom: 20 }}>
+                <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 6, display: 'block', color: 'var(--color-text-main)' }}>
+                  Nội dung chi tiết
+                </label>
                 <textarea
                   className="form-textarea"
-                  rows={5}
-                  placeholder="Nhập nội dung chia sẻ trải nghiệm thực tế của bạn..."
+                  rows={6}
+                  placeholder="Nhập nội dung chia sẻ trải nghiệm thực tế, lộ trình hoặc câu hỏi của bạn..."
                   value={newContent}
                   onChange={(e) => setNewContent(e.target.value)}
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: 10, fontSize: '0.84rem' }}
                   required
                 />
               </div>
 
-              <div style={{ display: 'flex', gap: 12, marginTop: 24 }}>
-                <button type="button" className="btn btn-secondary" onClick={() => setIsNewThreadOpen(false)} style={{ flex: 1 }}>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  className="btn btn-outline interactive-click"
+                  onClick={() => setIsNewThreadOpen(false)}
+                  style={{ padding: '8px 16px', borderRadius: 10, fontSize: '0.82rem' }}
+                >
                   Hủy bỏ
                 </button>
-                <button type="submit" className="btn btn-primary" style={{ flex: 2 }}>
-                  <Send size={16} /> Đăng nhật ký
+                <button
+                  type="submit"
+                  className="btn btn-primary interactive-click ripple-fx"
+                  style={{ padding: '8px 20px', borderRadius: 10, fontSize: '0.82rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                >
+                  <IconSend size={15} color="#041108" />
+                  Đăng Bài Ngay
                 </button>
               </div>
             </form>

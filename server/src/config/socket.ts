@@ -1,5 +1,7 @@
 import { Server as HttpServer } from 'http';
 import { Server, Socket } from 'socket.io';
+import { Types } from 'mongoose';
+import { CommunityMessageModel } from '../models/CommunityMessage.js';
 
 let io: Server | null = null;
 
@@ -94,6 +96,57 @@ export const initSocketServer = (httpServer: HttpServer): Server => {
       const ch = msgData.channel || 'Channel 1';
       io?.to(`radio:${ch}`).emit('radioMessage', msgData);
       io?.emit('radioMessage', msgData);
+    });
+
+    // Join Public Community Chatroom
+    socket.on('joinCommunityChat', () => {
+      socket.join('room:community_chat');
+      const count = io?.sockets.adapter.rooms.get('room:community_chat')?.size || 1;
+      io?.to('room:community_chat').emit('communityOnlineCount', count);
+      console.log(`💬 [Community Chat] Socket ${socket.id} joined room:community_chat (Online: ${count})`);
+    });
+
+    // Send Public Community Chat Message
+    socket.on('sendCommunityChatMessage', async (msgData: any) => {
+      try {
+        if (!msgData || !msgData.text) return;
+
+        const senderIdObj = msgData.senderId && Types.ObjectId.isValid(String(msgData.senderId))
+          ? new Types.ObjectId(String(msgData.senderId))
+          : undefined;
+
+        const validQuote = msgData.quote && typeof msgData.quote === 'object' && msgData.quote.author && msgData.quote.text
+          ? { author: String(msgData.quote.author), text: String(msgData.quote.text) }
+          : undefined;
+
+        const savedDoc = await CommunityMessageModel.create({
+          senderId: senderIdObj,
+          senderName: msgData.senderName || 'Trekker Ẩn Danh',
+          senderAvatar: msgData.senderAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=100&q=80',
+          senderBadge: msgData.senderBadge || 'Trekker',
+          nameColor: msgData.nameColor || 'var(--color-primary)',
+          text: msgData.text,
+          quote: validQuote,
+        });
+
+        const newMsg = {
+          id: (savedDoc as any)._id?.toString() || `msg-${Date.now()}`,
+          senderId: msgData.senderId,
+          senderName: savedDoc.senderName,
+          senderAvatar: savedDoc.senderAvatar,
+          senderBadge: savedDoc.senderBadge,
+          nameColor: savedDoc.nameColor,
+          text: savedDoc.text,
+          quote: validQuote,
+          createdAt: savedDoc.createdAt ? new Date(savedDoc.createdAt).toISOString() : new Date().toISOString(),
+        };
+
+        // Broadcast to all clients in community chat
+        io?.to('room:community_chat').emit('newCommunityMessage', newMsg);
+        io?.emit('newCommunityMessage', newMsg);
+      } catch (err) {
+        console.error('[Community Chat Socket Error]:', err);
+      }
     });
 
     socket.on('disconnect', () => {
