@@ -168,7 +168,7 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
                     }}
                     title={item.label}
                     style={{
-                      background: isSelected ? 'rgba(5, 150, 105, 0.25)' : 'rgba(255, 255, 255, 0.06)',
+                      background: isSelected ? 'rgba(5, 150, 105, 0.25)' : 'var(--color-bg-main)',
                       border: isSelected ? `2px solid ${item.color}` : '1px solid var(--color-border)',
                       cursor: 'pointer',
                       padding: '6px',
@@ -182,13 +182,13 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
                     onMouseEnter={(e) => {
                       setHoveredId(item.id as string);
                       e.currentTarget.style.transform = 'scale(1.4) translateY(-6px)';
-                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)';
+                      e.currentTarget.style.background = 'var(--color-bg-card)';
                       e.currentTarget.style.borderColor = item.color;
                     }}
                     onMouseLeave={(e) => {
                       setHoveredId(null);
                       e.currentTarget.style.transform = 'scale(1) translateY(0)';
-                      e.currentTarget.style.background = isSelected ? 'rgba(5, 150, 105, 0.25)' : 'rgba(255, 255, 255, 0.06)';
+                      e.currentTarget.style.background = isSelected ? 'rgba(5, 150, 105, 0.25)' : 'var(--color-bg-main)';
                       e.currentTarget.style.borderColor = isSelected ? item.color : 'var(--color-border)';
                     }}
                   >

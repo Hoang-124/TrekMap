@@ -489,3 +489,39 @@ export const deleteIncident = async (req: Request, res: Response) => {
   broadcastEvent('incidentResolved', { id });
   res.json({ success: true, message: 'Đã xóa sự cố thành công!' });
 };
+
+// PUT /api/admin/incidents/:id/dispute-resolve - Admin resolves false alarm dispute
+export const resolveDisputeIncidentAdmin = async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { action } = req.body; // 'dismiss_incident' (dispute accepted, fake alarm removed) or 'reject_dispute' (dispute rejected, real danger)
+
+  try {
+    const isMongoId = typeof id === 'string' && id.length === 24;
+    const query = isMongoId ? { _id: id } : { $or: [{ id }, { _id: id }] };
+
+    if (action === 'dismiss_incident') {
+      // Fake alarm confirmed: remove incident
+      await IncidentModel.findOneAndDelete(query as any);
+      inMemoryIncidents = inMemoryIncidents.filter((i) => i.id !== id && (i as any)._id !== id);
+
+      broadcastEvent('incidentResolved', { id });
+      return res.json({
+        success: true,
+        message: 'Đã chấp thuận khiếu nại: Gỡ bỏ cảnh báo sai sự thật khỏi bản đồ!',
+      });
+    } else {
+      // Incident is confirmed real hazard: clear disputes
+      await IncidentModel.findOneAndUpdate(query as any, { $set: { disputes: [] } });
+      const found = inMemoryIncidents.find((i) => i.id === id || (i as any)._id === id);
+      if (found) found.disputes = [];
+
+      return res.json({
+        success: true,
+        message: 'Đã bác bỏ khiếu nại: Cảnh báo sự cố là có thật và tiếp tục được duy trì trên bản đồ.',
+      });
+    }
+  } catch (err) {
+    console.error('[Resolve Dispute Admin Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi xử lý khiếu nại sự cố.' });
+  }
+};

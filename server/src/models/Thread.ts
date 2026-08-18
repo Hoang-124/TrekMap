@@ -26,6 +26,8 @@ export interface IThread extends Document {
   userReactionsMap?: Record<string, string>;
   repliesCount: number;
   viewsCount: number;
+  isPinned?: boolean;
+  isLocked?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -55,6 +57,8 @@ const threadSchema = new Schema<IThread>(
     userReactionsMap: { type: Map, of: String, default: {} },
     repliesCount: { type: Number, default: 0 },
     viewsCount: { type: Number, default: 1 },
+    isPinned: { type: Boolean, default: false, index: true },
+    isLocked: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

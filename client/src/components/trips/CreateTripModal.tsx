@@ -34,7 +34,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
         return;
       }
 
-      const res = await fetch('http://localhost:5000/api/trips', {
+      const res = await fetch('/api/trips', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

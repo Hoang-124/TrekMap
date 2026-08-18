@@ -104,19 +104,9 @@ export const getOrCreateConversation = async (req: AuthRequest, res: Response) =
       });
     }
 
-    // Auto-create user document if author is not in DB yet so chat always opens
+    // Return 404 instead of auto-creating fake users — prevents mass abuse
     if (!targetUser) {
-      const cleanName = String(targetUserId).trim();
-      const cleanUsername = cleanName.toLowerCase().replace(/[^a-z0-9]/g, '_');
-      targetUser = new UserModel({
-        username: `${cleanUsername}_${Date.now()}`,
-        email: `${cleanUsername}@trekmap.vn`,
-        passwordHash: 'dummy-password-hash',
-        fullName: cleanName,
-        role: 'user',
-        avatarUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(cleanName)}&background=10b981&color=fff`,
-      });
-      await targetUser.save();
+      return res.status(404).json({ success: false, message: 'Không tìm thấy người dùng. Vui lòng kiểm tra lại tên hoặc email.' });
     }
 
     const actualTargetId = String(targetUser._id);
@@ -270,14 +260,7 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
     }
 
     if (!senderUser) {
-      senderUser = new UserModel({
-        username: `user_${Date.now()}`,
-        email: req.user?.email || `user_${Date.now()}@trekmap.vn`,
-        passwordHash: 'dummy-password-hash',
-        fullName: req.user?.email ? req.user.email.split('@')[0] : 'Thành viên TrekMap',
-        role: 'user',
-      });
-      await senderUser.save();
+      return res.status(401).json({ success: false, message: 'Không tìm thấy tài khoản người gửi. Vui lòng đăng nhập lại.' });
     }
 
     const senderId = senderUser._id;

@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { TrailConditionModel } from '../models/TrailCondition';
 import { UserModel } from '../models/User';
+import { awardReputationPoints } from '../utils/reputation.js';
 
 // POST /api/trail-conditions - Submit a condition update for a trail
 export const createTrailCondition = async (req: AuthRequest, res: Response) => {
@@ -30,8 +31,8 @@ export const createTrailCondition = async (req: AuthRequest, res: Response) => {
       isActive: true,
     });
 
-    // Reward reputation points (+10) for trail safety contribution
-    await UserModel.findByIdAndUpdate(userId, { $inc: { reputationScore: 10 } }).catch(() => {});
+    // Reward reputation via centralized engine (+10 for trail safety contribution)
+    await awardReputationPoints(userId, 10, 'Cập nhật tình trạng thực địa cung đường').catch(() => {});
 
     return res.status(201).json({
       success: true,

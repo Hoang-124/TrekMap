@@ -44,9 +44,9 @@ export const toggleFollowUser = async (req: AuthRequest, res: Response) => {
       if (currentUser && targetUser) {
         await ActivityModel.create({
           userId: currentUserId as any,
-          type: 'earned_badge',
+          type: 'followed_user',
           title: `${currentUser.fullName} đã bắt đầu theo dõi ${targetUser.fullName}`,
-          targetType: 'badge',
+          targetType: 'user',
         }).catch(() => {});
       }
 

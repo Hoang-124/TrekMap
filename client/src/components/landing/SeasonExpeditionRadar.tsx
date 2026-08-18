@@ -291,13 +291,13 @@ export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
   return (
     <section
       style={{
-        padding: '50px 24px',
+        padding: '24px 0 28px 0',
         maxWidth: 1280,
         margin: '0 auto',
       }}
     >
       {/* Section Header */}
-      <div style={{ textAlign: 'center', marginBottom: 36 }}>
+      <div style={{ textAlign: 'center', marginBottom: 20 }}>
         <div
           style={{
             display: 'inline-flex',
@@ -556,9 +556,9 @@ export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {matchedTrails.slice(0, 3).map((trail) => (
+              {matchedTrails.slice(0, 3).map((trail, idx) => (
                 <div
-                  key={trail.id}
+                  key={trail.id || (trail as any)._id || `matched-trail-${idx}`}
                   onClick={() => onSelectTrail?.(trail)}
                   className="interactive-click card-hover-lift"
                   style={{

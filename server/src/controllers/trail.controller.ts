@@ -9,6 +9,21 @@ import { verifyToken } from '../utils/auth.js';
 import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
 import { awardReputationPoints, deductReputationPoints, REPUTATION_POINTS, PENALTY_POINTS } from '../utils/reputation.js';
 import { calculateDrivingRoute } from '../services/publicApis.service.js';
+import { sanitizeInput } from '../utils/validation.js';
+
+// XML entity escaper for GPX export
+function escapeXml(unsafe: string): string {
+  return unsafe.replace(/[<>&'"]/g, (c) => {
+    switch (c) {
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '&': return '&amp;';
+      case "'": return '&apos;';
+      case '"': return '&quot;';
+      default: return c;
+    }
+  });
+}
 
 let inMemoryTrails: Trail[] = [...mockTrails];
 
@@ -336,92 +351,8 @@ export const getGuides = (req: Request, res: Response) => {
   return res.json({ success: true, count: filtered.length, data: filtered });
 };
 
-export const createContribution = async (req: Request, res: Response) => {
-  const newTrailData = req.body;
-
-  if (!newTrailData.name || !newTrailData.region || !newTrailData.province) {
-    return res.status(400).json({ success: false, message: 'Thiếu thông tin cung đường cơ bản.' });
-  }
-
-  let reputationReward = null;
-  const authHeader = req.headers['authorization'];
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.substring(7);
-    const decoded = verifyToken(token);
-    if (decoded?.userId) {
-      reputationReward = await awardReputationPoints(
-        decoded.userId,
-        REPUTATION_POINTS.CONTRIBUTE_TRAIL,
-        'Đóng góp cung đường mới'
-      );
-    }
-  }
-
-  const newTrail: Trail = {
-    id: `trail-${Date.now()}`,
-    name: newTrailData.name,
-    district: newTrailData.district || 'Sa Pả',
-    region: newTrailData.region || 'Miền Bắc',
-    province: newTrailData.province,
-    startLat: newTrailData.startLat || 22.3364,
-    startLng: newTrailData.startLng || 103.8438,
-    endLat: newTrailData.endLat || 22.3032,
-    endLng: newTrailData.endLng || 103.7753,
-    distanceKm: newTrailData.distanceKm || 12,
-    elevationGainM: newTrailData.elevationGainM || 1000,
-    maxAltitudeM: newTrailData.maxAltitudeM || 2000,
-    durationDays: newTrailData.durationDays || 2,
-    durationHoursNote: newTrailData.durationHoursNote || '2 Ngày 1 Đêm',
-    difficultyLevel: newTrailData.difficultyLevel || 3,
-    difficultyNote: newTrailData.difficultyNote || 'Trung bình',
-    bestMonths: newTrailData.bestMonths || [10, 11, 12, 1, 2, 3, 4],
-    avoidMonths: newTrailData.avoidMonths || [6, 7, 8],
-    gpxTrack: newTrailData.gpxTrack || [
-      [22.3364, 103.8438],
-      [22.3200, 103.8100],
-      [22.3032, 103.7753],
-    ],
-    rating: 5.0,
-    reviewCount: 1,
-    description: newTrailData.description || 'Bài đóng góp cung đường mới từ cộng đồng.',
-    transportationInfo: newTrailData.transportationInfo || 'Di chuyển bằng xe khách giường nằm.',
-    permitRequired: newTrailData.permitRequired || false,
-    permitInfo: newTrailData.permitInfo || 'Tự do đi lại.',
-    status: 'approved',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    coverImage: newTrailData.coverImage || 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=800&q=80',
-    hasCampsite: newTrailData.hasCampsite || true,
-    hasWaterSource: newTrailData.hasWaterSource || true,
-    kidFriendly: newTrailData.kidFriendly || false,
-    rescueContact: {
-      name: newTrailData.rescueName || 'Cứu hộ Địa phương',
-      phone: newTrailData.rescuePhone || '114 / 115',
-      rangerContact: newTrailData.rangerContact || 'Hạt kiểm lâm',
-    },
-    waypoints: newTrailData.waypoints || [],
-  };
-
-  inMemoryTrails.unshift(newTrail);
-
-  try {
-    const { createdBy, ...trailDataToSave } = newTrail;
-    await TrailModel.create({
-      ...trailDataToSave,
-      startLocation: {
-        type: 'Point',
-        coordinates: [newTrail.startLng, newTrail.startLat],
-      },
-    });
-  } catch (err) {}
-
-  return res.status(201).json({
-    success: true,
-    message: 'Đóng góp cung đường mới thành công! Bạn đã nhận +50 điểm uy tín!',
-    data: newTrail,
-    reputationReward,
-  });
-};
+// Legacy createContribution removed — use contribution.controller.ts instead
+// Redirected via contribution.routes.ts with proper validation, sanitization, and admin notification
 
 export const createReview = async (req: Request, res: Response) => {
   const { trailId, rating, difficultyRating, content, safetyNote, photos, tripDate } = req.body;
@@ -489,10 +420,11 @@ export const createReview = async (req: Request, res: Response) => {
     const trailReviews = await ReviewModel.find({ trailId: trailId as any });
     if (trailReviews.length > 0) {
       const avgRating = Math.round((trailReviews.reduce((acc, r) => acc + r.rating, 0) / trailReviews.length) * 10) / 10;
-      await TrailModel.findByIdAndUpdate(trailId, {
-        rating: avgRating,
-        reviewCount: trailReviews.length,
-      }).catch(() => {});
+      // L10: Support both ObjectId and string-based trailId
+      await TrailModel.findOneAndUpdate(
+        { $or: [{ _id: trailId }, { id: trailId }] },
+        { rating: avgRating, reviewCount: trailReviews.length }
+      ).catch(() => {});
     }
   } catch (err) {
     console.warn('[MongoDB Review Save Warning]:', err);
@@ -545,11 +477,30 @@ export const createTrailAdmin = async (req: AuthRequest, res: Response) => {
     const startLng = data.startLng || data.startLocation?.lng || 103.8438;
 
     const newTrail = await TrailModel.create({
-      district: data.district || data.province || 'Chưa xác định',
-      durationHoursNote: data.durationHoursNote || `${(data.durationDays || 2) * 8}-${(data.durationDays || 2) * 10} giờ`,
+      name: sanitizeInput(data.name),
+      region: sanitizeInput(data.region) as any,
+      province: sanitizeInput(data.province),
+      district: sanitizeInput(data.district || data.province || 'Chưa xác định'),
+      distanceKm: Number(data.distanceKm) || 15,
+      elevationGainM: Number(data.elevationGainM) || 800,
+      maxAltitudeM: Number(data.maxAltitudeM) || 2000,
+      durationDays: Number(data.durationDays) || 2,
+      durationHoursNote: sanitizeInput(data.durationHoursNote || `${(data.durationDays || 2) * 8}-${(data.durationDays || 2) * 10} giờ`),
+      difficultyLevel: Number(data.difficultyLevel) || 3,
+      description: sanitizeInput(data.description || ''),
+      transportationInfo: sanitizeInput(data.transportationInfo || 'Liên hệ ban tổ chức để biết thêm thông tin.'),
       coverImage: data.coverImage || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329089/trekmap/trails/default.jpg',
-      transportationInfo: data.transportationInfo || 'Liên hệ ban tổ chức để biết thêm thông tin.',
-      ...data,
+      bestMonths: Array.isArray(data.bestMonths) ? data.bestMonths : [10, 11, 12, 1, 2, 3, 4],
+      avoidMonths: Array.isArray(data.avoidMonths) ? data.avoidMonths : [6, 7, 8],
+      gpxTrack: Array.isArray(data.gpxTrack) ? data.gpxTrack : [],
+      waypoints: Array.isArray(data.waypoints) ? data.waypoints : [],
+      permitRequired: !!data.permitRequired,
+      permitInfo: sanitizeInput(data.permitInfo || ''),
+      hasCampsite: !!data.hasCampsite,
+      hasWaterSource: !!data.hasWaterSource,
+      kidFriendly: !!data.kidFriendly,
+      rating: 0,
+      reviewCount: 0,
       startLat,
       startLng,
       startLocation: {
@@ -559,7 +510,7 @@ export const createTrailAdmin = async (req: AuthRequest, res: Response) => {
       status: 'approved',
     });
 
-    inMemoryTrails.unshift(newTrail.toObject() as any);
+    inMemoryTrails.unshift((newTrail as any).toObject() as any);
     return res.status(201).json({ success: true, message: 'Tạo cung đường mới thành công!', data: newTrail });
   } catch (err) {
     console.error('[Create Trail Admin Error]:', err);

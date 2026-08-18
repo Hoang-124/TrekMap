@@ -29,7 +29,7 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ tr
 
   const fetchConditions = async () => {
     try {
-      const res = await fetch(`http://localhost:5000/api/trail-conditions/trail/${trailId}`);
+      const res = await fetch(`/api/trail-conditions/trail/${trailId}`);
       const data = await res.json();
       if (data.success) {
         setConditions(data.data || []);
@@ -54,7 +54,7 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ tr
         return;
       }
 
-      const res = await fetch('http://localhost:5000/api/trail-conditions', {
+      const res = await fetch('/api/trail-conditions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -87,7 +87,7 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ tr
       const token = localStorage.getItem('trekmap_token');
       if (!token) return;
 
-      const res = await fetch(`http://localhost:5000/api/trail-conditions/${id}/upvote`, {
+      const res = await fetch(`/api/trail-conditions/${id}/upvote`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       });

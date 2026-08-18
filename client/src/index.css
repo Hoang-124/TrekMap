@@ -571,6 +571,73 @@ textarea:focus,
   }
 }
 
+/* Modular Bento 2-Column Co-existence Master Grid */
+.bento-master-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 24px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .bento-master-grid {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+}
+
+/* Real-time Alpine Forum Expedition Grid (Live Chatroom + Sidebar Widgets) */
+.forum-expedition-grid {
+  display: grid;
+  grid-template-columns: 290px minmax(0, 1fr) 290px;
+  gap: 20px;
+  align-items: stretch;
+}
+
+@media (max-width: 1100px) {
+  .forum-expedition-grid {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+}
+
+/* Chat Message Entry Animation */
+@keyframes chatMessagePop {
+  0% {
+    opacity: 0;
+    transform: translateY(18px) scale(0.94);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(-2px) scale(1.01);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes chatBubbleGlow {
+  0% {
+    box-shadow: 0 0 0 0 rgba(5, 150, 105, 0.6);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(5, 150, 105, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(5, 150, 105, 0);
+  }
+}
+
+.chat-message-pop {
+  animation: chatMessagePop 0.32s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: transform, opacity;
+}
+
+.chat-bubble-glow {
+  animation: chatBubbleGlow 1.2s ease-out 1;
+}
+
 /* Smooth Card Hover Elevation */
 .card,
 .trail-card,

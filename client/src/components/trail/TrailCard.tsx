@@ -8,7 +8,6 @@ import {
   IconDroplet,
   IconClock,
   IconShieldAlert,
-  IconUsers,
 } from '../common/SvgIcons.js';
 
 interface TrailCardProps {
@@ -17,33 +16,6 @@ interface TrailCardProps {
   isSelectedForCompare?: boolean;
   onToggleCompare?: (trail: Trail) => void;
 }
-
-// Mini SVG sparkline representing elevation contour
-const MiniElevationSparkline: React.FC<{ elevationGainM: number; color?: string }> = ({
-  elevationGainM,
-  color = 'var(--color-earth)',
-}) => {
-  const points = '0,18 8,14 16,16 26,8 36,12 46,4 56,10 64,2 72,8 80,18';
-  return (
-    <svg width="48" height="18" viewBox="0 0 80 20" style={{ overflow: 'visible', opacity: 0.9 }}>
-      <defs>
-        <linearGradient id={`sparkGrad-${elevationGainM}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.4" />
-          <stop offset="100%" stopColor={color} stopOpacity="0.0" />
-        </linearGradient>
-      </defs>
-      <polygon points={`${points} 80,20 0,20`} fill={`url(#sparkGrad-${elevationGainM})`} />
-      <polyline
-        points={points}
-        fill="none"
-        stroke={color}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-};
 
 export const TrailCard: React.FC<TrailCardProps> = ({
   trail,
@@ -54,12 +26,12 @@ export const TrailCard: React.FC<TrailCardProps> = ({
   const [isHovered, setIsHovered] = useState(false);
 
   let diffBadgeClass = 'badge-success';
-  let diffText = 'Dễ (Beginner)';
+  let diffText = 'Dễ';
   let isHard = false;
 
   if (trail.difficultyLevel >= 4) {
     diffBadgeClass = 'badge-error';
-    diffText = 'Thử thách cao';
+    diffText = 'Khó';
     isHard = true;
   } else if (trail.difficultyLevel === 3) {
     diffBadgeClass = 'badge-info';
@@ -76,14 +48,14 @@ export const TrailCard: React.FC<TrailCardProps> = ({
         flexDirection: 'column',
         height: '100%',
         position: 'relative',
-        borderRadius: 16,
+        borderRadius: 14,
         background: 'var(--color-bg-card)',
         border: `1px solid ${isSelectedForCompare ? 'var(--color-primary)' : isHovered ? 'var(--color-border-glow)' : 'var(--color-border)'}`,
         boxShadow: isHovered
-          ? '0 20px 35px -8px rgba(0, 0, 0, 0.6), 0 0 20px -2px rgba(74, 222, 128, 0.15)'
+          ? '0 12px 28px -6px rgba(0, 0, 0, 0.5), 0 0 16px -2px rgba(74, 222, 128, 0.15)'
           : 'var(--shadow-card)',
-        transform: isHovered ? 'translateY(-6px)' : 'translateY(0)',
-        transition: 'all 0.32s cubic-bezier(0.16, 1, 0.3, 1)',
+        transform: isHovered ? 'translateY(-4px)' : 'translateY(0)',
+        transition: 'all 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
         overflow: 'hidden',
       }}
     >
@@ -91,25 +63,24 @@ export const TrailCard: React.FC<TrailCardProps> = ({
       <div
         style={{
           position: 'relative',
-          height: 200,
-          borderRadius: 12,
+          height: 135,
+          borderRadius: 10,
           overflow: 'hidden',
-          margin: 8,
-          marginBottom: 14,
+          margin: '6px 6px 8px 6px',
         }}
       >
         <div
           style={{
             width: '100%',
             height: '100%',
-            transform: isHovered ? 'scale(1.07)' : 'scale(1.0)',
-            transition: 'transform 0.5s cubic-bezier(0.16, 1, 0.3, 1)',
+            transform: isHovered ? 'scale(1.05)' : 'scale(1.0)',
+            transition: 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
           }}
         >
           <OptimizedImage
             src={trail.coverImage}
             alt={trail.name}
-            targetWidth={600}
+            targetWidth={500}
             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           />
         </div>
@@ -120,8 +91,8 @@ export const TrailCard: React.FC<TrailCardProps> = ({
             position: 'absolute',
             inset: 0,
             background: isHovered
-              ? 'linear-gradient(to top, rgba(7, 13, 30, 0.92) 0%, rgba(7, 13, 30, 0.2) 50%, rgba(7, 13, 30, 0.4) 100%)'
-              : 'linear-gradient(to top, rgba(7, 13, 30, 0.88) 0%, transparent 60%)',
+              ? 'linear-gradient(to top, rgba(7, 13, 30, 0.9) 0%, rgba(7, 13, 30, 0.15) 50%, rgba(7, 13, 30, 0.4) 100%)'
+              : 'linear-gradient(to top, rgba(7, 13, 30, 0.85) 0%, transparent 60%)',
             transition: 'background 0.3s ease',
             pointerEvents: 'none',
           }}
@@ -131,24 +102,26 @@ export const TrailCard: React.FC<TrailCardProps> = ({
         <div
           style={{
             position: 'absolute',
-            top: 10,
-            left: 10,
-            maxWidth: 'calc(100% - 70px)',
+            top: 6,
+            left: 6,
+            maxWidth: 'calc(100% - 65px)',
             display: 'flex',
-            gap: 6,
+            gap: 4,
             flexWrap: 'wrap',
             alignItems: 'center',
             zIndex: 2,
           }}
         >
-          <span className="badge badge-success" style={{ fontWeight: 800 }}>
+          <span className="badge badge-success" style={{ fontWeight: 800, fontSize: '0.66rem', padding: '2px 6px' }}>
             {trail.region}
           </span>
           <span
             className={`badge ${diffBadgeClass}`}
             style={{
               fontWeight: 800,
-              boxShadow: isHard ? '0 0 10px rgba(239, 68, 68, 0.4)' : undefined,
+              fontSize: '0.66rem',
+              padding: '2px 6px',
+              boxShadow: isHard ? '0 0 8px rgba(239, 68, 68, 0.4)' : undefined,
             }}
           >
             {diffText} ({trail.difficultyLevel}/5)
@@ -166,30 +139,30 @@ export const TrailCard: React.FC<TrailCardProps> = ({
             title={isSelectedForCompare ? 'Bỏ chọn so sánh' : 'Chọn để so sánh'}
             style={{
               position: 'absolute',
-              top: 10,
-              right: 10,
+              top: 6,
+              right: 6,
               zIndex: 3,
               background: isSelectedForCompare ? 'var(--color-primary)' : 'rgba(15, 24, 46, 0.85)',
               color: isSelectedForCompare ? '#070d1e' : '#cbd5e1',
               border: `1px solid ${isSelectedForCompare ? 'var(--color-primary)' : 'rgba(255, 255, 255, 0.2)'}`,
-              borderRadius: 20,
-              padding: '4px 8px',
-              fontSize: '0.72rem',
+              borderRadius: 16,
+              padding: '2px 7px',
+              fontSize: '0.68rem',
               fontWeight: 800,
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: 4,
+              gap: 3,
               backdropFilter: 'blur(8px)',
               transition: 'all 0.2s ease',
             }}
           >
             {isSelectedForCompare ? (
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="20 6 9 17 4 12" />
               </svg>
             ) : (
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="12" y1="5" x2="12" y2="19" />
                 <line x1="5" y1="12" x2="19" y2="12" />
               </svg>
@@ -202,25 +175,25 @@ export const TrailCard: React.FC<TrailCardProps> = ({
         <div
           style={{
             position: 'absolute',
-            bottom: 10,
-            right: 10,
+            bottom: 6,
+            right: 6,
             background: 'rgba(15, 24, 46, 0.92)',
             backdropFilter: 'blur(6px)',
-            padding: '3px 10px',
-            borderRadius: 20,
+            padding: '2px 7px',
+            borderRadius: 16,
             border: '1px solid var(--color-border)',
-            fontSize: 'var(--font-size-xs)',
-            fontWeight: 'var(--font-weight-bold)',
+            fontSize: '0.68rem',
+            fontWeight: 800,
             color: 'var(--color-sun)',
             display: 'flex',
             alignItems: 'center',
-            gap: 4,
+            gap: 3,
             zIndex: 2,
           }}
         >
           {trail.reviewCount && trail.reviewCount > 0 && trail.rating && trail.rating > 0 && !(String(trail.id).startsWith('contrib-') && trail.reviewCount === 1) ? (
             <>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="var(--color-sun)" stroke="var(--color-sun)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--color-sun)" stroke="var(--color-sun)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
               </svg>
               <span>
@@ -236,74 +209,82 @@ export const TrailCard: React.FC<TrailCardProps> = ({
         <div
           style={{
             position: 'absolute',
-            bottom: 10,
-            left: 10,
+            bottom: 6,
+            left: 6,
             background: 'rgba(7, 13, 30, 0.85)',
             backdropFilter: 'blur(6px)',
-            padding: '3px 8px',
-            borderRadius: 6,
-            fontSize: '0.72rem',
-            fontWeight: 700,
+            padding: '2px 6px',
+            borderRadius: 5,
+            fontSize: '0.68rem',
+            fontWeight: 800,
             color: 'var(--color-sky)',
             zIndex: 2,
             display: 'flex',
             alignItems: 'center',
-            gap: 4,
+            gap: 3,
           }}
         >
-          <IconMountain size={12} color="var(--color-sky)" />
+          <IconMountain size={11} color="var(--color-sky)" />
           <span>{trail.maxAltitudeM}m</span>
         </div>
       </div>
 
       {/* Info Section */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '0 16px 16px 16px' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '0 12px 12px 12px' }}>
         <div
           style={{
-            fontSize: 'var(--font-size-xs)',
+            fontSize: '0.7rem',
             color: 'var(--color-stream)',
-            marginBottom: 4,
+            marginBottom: 2,
             fontWeight: 700,
             display: 'flex',
             alignItems: 'center',
-            gap: 4,
+            gap: 3,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
           }}
         >
-          <IconMapPin size={13} color="var(--color-stream)" />
-          <span>
+          <IconMapPin size={11} color="var(--color-stream)" />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {trail.province}{trail.district ? `, ${trail.district}` : ''}
           </span>
         </div>
 
         <h3
           style={{
-            fontSize: '1.08rem',
+            fontSize: '0.92rem',
             fontWeight: 800,
             color: isHovered ? 'var(--color-primary)' : 'var(--color-text-main)',
-            marginBottom: trail.altNames && trail.altNames.length > 0 ? 2 : 6,
+            marginBottom: trail.altNames && trail.altNames.length > 0 ? 1 : 4,
             lineHeight: 1.3,
+            display: '-webkit-box',
+            WebkitLineClamp: 1,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
             transition: 'color 0.2s ease',
           }}
+          title={trail.name}
         >
           {trail.name}
         </h3>
 
         {trail.altNames && trail.altNames.length > 0 && (
-          <div style={{ fontSize: '0.74rem', color: 'var(--color-text-dim)', fontStyle: 'italic', marginBottom: 6 }}>
+          <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', fontStyle: 'italic', marginBottom: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             Tên khác: {trail.altNames.join(', ')}
           </div>
         )}
 
         <p
           style={{
-            fontSize: 'var(--font-size-sm)',
+            fontSize: '0.74rem',
             color: 'var(--color-text-muted)',
-            marginBottom: 12,
+            marginBottom: 8,
             display: '-webkit-box',
-            WebkitLineClamp: 2,
+            WebkitLineClamp: 1,
             WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
-            lineHeight: 'var(--line-height-normal)',
+            lineHeight: 1.35,
           }}
         >
           {trail.description}
@@ -314,75 +295,67 @@ export const TrailCard: React.FC<TrailCardProps> = ({
           style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(3, 1fr)',
-            gap: 6,
+            gap: 4,
             background: 'var(--color-bg-main)',
             border: '1px solid var(--color-border)',
-            padding: '10px 8px',
-            borderRadius: 12,
-            marginBottom: 10,
-            fontSize: 'var(--font-size-xs)',
+            padding: '6px 4px',
+            borderRadius: 8,
+            marginBottom: 8,
+            fontSize: '0.72rem',
             textAlign: 'center',
           }}
         >
           <div>
-            <div style={{ color: 'var(--color-text-dim)', fontSize: '0.72rem', fontWeight: 600 }}>
+            <div style={{ color: 'var(--color-text-dim)', fontSize: '0.65rem', fontWeight: 600 }}>
               Độ dài
             </div>
-            <strong style={{ color: 'var(--color-primary)', fontSize: '0.85rem' }}>
+            <strong style={{ color: 'var(--color-primary)', fontSize: '0.78rem' }}>
               {trail.distanceKm} km
             </strong>
           </div>
 
           <div>
-            <div style={{ color: 'var(--color-text-dim)', fontSize: '0.72rem', fontWeight: 600 }}>
+            <div style={{ color: 'var(--color-text-dim)', fontSize: '0.65rem', fontWeight: 600 }}>
               Tích lũy
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-              <strong style={{ color: 'var(--color-earth)', fontSize: '0.85rem' }}>
-                +{trail.elevationGainM}m
-              </strong>
-              <MiniElevationSparkline elevationGainM={trail.elevationGainM} />
-            </div>
+            <strong style={{ color: 'var(--color-earth)', fontSize: '0.78rem' }}>
+              +{trail.elevationGainM}m
+            </strong>
           </div>
 
           <div>
-            <div style={{ color: 'var(--color-text-dim)', fontSize: '0.72rem', fontWeight: 600 }}>
+            <div style={{ color: 'var(--color-text-dim)', fontSize: '0.65rem', fontWeight: 600 }}>
               Thời gian
             </div>
-            <strong style={{ color: 'var(--color-sun)', fontSize: '0.82rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>
+            <strong style={{ color: 'var(--color-sun)', fontSize: '0.74rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>
               {trail.durationHoursNote || `${trail.durationDays} ngày`}
             </strong>
           </div>
         </div>
 
         {/* Amenities Pills & Season Bar */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
-          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 4, marginBottom: 10 }}>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
             {trail.hasCampsite && (
-              <span style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: 6, background: 'rgba(16, 185, 129, 0.1)', color: 'var(--color-primary)', border: '1px solid var(--color-border)', display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 700 }}>
-                <IconTent size={11} color="var(--color-primary)" /> Bãi trại
+              <span style={{ fontSize: '0.64rem', padding: '1px 5px', borderRadius: 4, background: 'rgba(16, 185, 129, 0.1)', color: 'var(--color-primary)', border: '1px solid var(--color-border)', display: 'inline-flex', alignItems: 'center', gap: 2, fontWeight: 700 }}>
+                <IconTent size={10} color="var(--color-primary)" /> Bãi trại
               </span>
             )}
             {trail.hasWaterSource && (
-              <span style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: 6, background: 'rgba(56, 189, 248, 0.12)', color: 'var(--color-sky)', border: '1px solid var(--color-border)', display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 700 }}>
-                <IconDroplet size={11} color="var(--color-sky)" /> Nguồn nước
+              <span style={{ fontSize: '0.64rem', padding: '1px 5px', borderRadius: 4, background: 'rgba(56, 189, 248, 0.12)', color: 'var(--color-sky)', border: '1px solid var(--color-border)', display: 'inline-flex', alignItems: 'center', gap: 2, fontWeight: 700 }}>
+                <IconDroplet size={10} color="var(--color-sky)" /> Nước
               </span>
             )}
             {trail.permitRequired && (
-              <span style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: 6, background: 'rgba(239, 68, 68, 0.12)', color: 'var(--color-error)', border: '1px solid var(--color-border)', display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 700 }}>
-                <IconShieldAlert size={11} color="var(--color-error)" /> Giấy phép
-              </span>
-            )}
-            {trail.kidFriendly && (
-              <span style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: 6, background: 'rgba(34, 211, 238, 0.12)', color: 'var(--color-stream)', border: '1px solid var(--color-border)', display: 'inline-flex', alignItems: 'center', gap: 3, fontWeight: 700 }}>
-                <IconUsers size={11} color="var(--color-stream)" /> Trẻ em OK
+              <span style={{ fontSize: '0.64rem', padding: '1px 5px', borderRadius: 4, background: 'rgba(239, 68, 68, 0.12)', color: 'var(--color-error)', border: '1px solid var(--color-border)', display: 'inline-flex', alignItems: 'center', gap: 2, fontWeight: 700 }}>
+                <IconShieldAlert size={10} color="var(--color-error)" /> Giấy phép
               </span>
             )}
           </div>
           {trail.bestMonths && trail.bestMonths.length > 0 && (
-            <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', display: 'flex', alignItems: 'center', gap: 4 }}>
-              <IconClock size={11} color="var(--color-text-dim)" />
-              <span>Mùa đẹp: <strong>Tháng {trail.bestMonths.join(', ')}</strong></span>
+            <div style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)', display: 'flex', alignItems: 'center', gap: 3 }}>
+              <IconClock size={10} color="var(--color-text-dim)" />
+              <span>T.{trail.bestMonths.slice(0, 3).join(', ')}{trail.bestMonths.length > 3 ? '...' : ''}</span>
             </div>
           )}
         </div>
@@ -396,8 +369,10 @@ export const TrailCard: React.FC<TrailCardProps> = ({
             marginTop: 'auto',
             justifyContent: 'center',
             fontWeight: 800,
-            borderRadius: 10,
-            boxShadow: isHovered ? '0 4px 14px rgba(74, 222, 128, 0.35)' : undefined,
+            fontSize: '0.78rem',
+            padding: '7px 10px',
+            borderRadius: 8,
+            boxShadow: isHovered ? '0 4px 12px rgba(74, 222, 128, 0.35)' : undefined,
             transition: 'all 0.2s ease',
           }}
         >

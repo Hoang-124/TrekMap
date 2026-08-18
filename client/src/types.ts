@@ -151,7 +151,7 @@ export interface UserProfile {
   name?: string;
   avatarUrl: string;
   avatar?: string;
-  role: 'user' | 'guide' | 'admin' | 'trusted';
+  role: 'user' | 'guide' | 'admin' | 'moderator' | 'trusted';
   reputationScore: number;
   badges: string[];
   checkedInTrails: string[];
@@ -183,6 +183,7 @@ export interface ForumThread {
   viewsCount: number;
   createdAt: string;
   isPinned?: boolean;
+  isLocked?: boolean;
 }
 
 export interface ConversationParticipant {

@@ -45,57 +45,55 @@ export const InteractiveMapShowcase: React.FC<InteractiveMapShowcaseProps> = ({
   return (
     <section
       style={{
-        padding: '50px 0',
+        padding: '16px 0 32px 0',
         maxWidth: 1320,
         margin: '0 auto',
       }}
     >
-      {/* Section Header */}
+      {/* Section Header - Streamlined & Compact */}
       <div
         style={{
           display: 'flex',
           justifyContent: 'space-between',
-          alignItems: 'flex-end',
+          alignItems: 'center',
           flexWrap: 'wrap',
-          gap: 16,
-          marginBottom: 24,
+          gap: 12,
+          marginBottom: 16,
         }}
       >
         <div>
-          <div
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '4px 14px',
-              borderRadius: 20,
-              background: 'var(--color-bg-card)',
-              border: '1px solid var(--color-border)',
-              fontSize: 'var(--font-size-xs)',
-              fontWeight: 800,
-              color: 'var(--color-primary)',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
-              marginBottom: 10,
-              boxShadow: 'var(--shadow-card)',
-            }}
-          >
-            <IconSatellite size={16} color="var(--color-primary)" />
-            Bản Đồ 3D Không Gian Thực
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <h2
+              style={{
+                fontSize: 'clamp(1.3rem, 2.4vw, 1.75rem)',
+                fontWeight: 900,
+                color: 'var(--color-text-main)',
+                margin: 0,
+              }}
+            >
+              Bản Đồ Địa Hình & Tracklog GPX 3D
+            </h2>
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+                padding: '2px 10px',
+                borderRadius: 14,
+                background: 'rgba(16, 185, 129, 0.12)',
+                border: '1px solid var(--color-border)',
+                fontSize: '0.72rem',
+                fontWeight: 800,
+                color: 'var(--color-primary)',
+                textTransform: 'uppercase',
+              }}
+            >
+              <IconSatellite size={13} color="var(--color-primary)" />
+              Thời Gian Thực
+            </span>
           </div>
-
-          <h2
-            style={{
-              fontSize: 'clamp(1.6rem, 3.2vw, 2.4rem)',
-              fontWeight: 900,
-              color: 'var(--color-text-main)',
-              marginBottom: 6,
-            }}
-          >
-            Khám Phá Track Log GPX Thực Địa
-          </h2>
-          <p style={{ color: 'var(--color-text-muted)', fontSize: '0.92rem', maxWidth: 620 }}>
-            Tương tác trực tiếp với các cung đường trekking: chuyển đổi lớp bản đồ vệ tinh, topo cao độ và xem chi tiết điểm hạ trại nguồn nước.
+          <p style={{ color: 'var(--color-text-muted)', fontSize: '0.82rem', margin: '4px 0 0 0', maxWidth: 680 }}>
+            Tương tác đa lớp: Bản đồ vệ tinh, địa hình topo cao độ, tọa độ trạm kiểm lâm và điểm hạ trại.
           </p>
         </div>
 
@@ -196,8 +194,10 @@ export const InteractiveMapShowcase: React.FC<InteractiveMapShowcaseProps> = ({
 
       {/* Embedded Live Leaflet Map Container */}
       <div
+        id="gis-map-canvas"
         style={{
-          height: '620px',
+          height: 'min(70vh, 540px)',
+          minHeight: '440px',
           borderRadius: 24,
           overflow: 'hidden',
           border: '1.5px solid var(--color-border)',

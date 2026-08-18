@@ -12,6 +12,7 @@ import {
 
 interface SummitAltitudeLadderProps {
   trails: Trail[];
+  compact?: boolean;
   onSelectTrail?: (trail: Trail) => void;
   onExploreSummit?: (summitName: string) => void;
 }
@@ -198,6 +199,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
 
 export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
   trails,
+  compact = false,
   onSelectTrail,
 }) => {
   const [selectedRank, setSelectedRank] = useState<number>(1);
@@ -222,6 +224,138 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
   }, [trails]);
 
   const selectedSummit = summitsWithDb.find((s) => s.rank === selectedRank) || summitsWithDb[0];
+
+  if (compact) {
+    return (
+      <div
+        className="card"
+        style={{
+          background: 'var(--color-bg-card)',
+          border: '1px solid var(--color-border)',
+          borderRadius: 20,
+          padding: '18px 20px',
+          boxShadow: 'var(--shadow-card)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <h3 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <IconMountain size={16} color="var(--color-sun)" />
+            Top 10 Đỉnh Cao Nhất
+          </h3>
+          <span style={{ fontSize: '0.7rem', color: 'var(--color-sun)', fontWeight: 800, background: 'rgba(234, 179, 8, 0.12)', padding: '2px 8px', borderRadius: 12, border: '1px solid rgba(234, 179, 8, 0.25)' }}>
+            3.143m
+          </span>
+        </div>
+
+        {/* Selected Peak Quick Card */}
+        {selectedSummit && (
+          <div
+            style={{
+              background: 'var(--color-bg-main)',
+              border: '1px solid var(--color-border)',
+              borderRadius: 14,
+              padding: '12px',
+              marginBottom: 12,
+              position: 'relative',
+              overflow: 'hidden',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ background: 'var(--color-primary)', color: '#041108', fontSize: '0.68rem', fontWeight: 900, padding: '2px 7px', borderRadius: 6 }}>
+                  #{selectedSummit.rank}
+                </span>
+                <span style={{ fontSize: '0.86rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                  {selectedSummit.name}
+                </span>
+              </div>
+              <span style={{ fontSize: '0.82rem', fontWeight: 900, color: 'var(--color-sky)' }}>
+                {selectedSummit.actualAltitude}m
+              </span>
+            </div>
+
+            <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', lineHeight: 1.45, marginBottom: 8 }}>
+              {selectedSummit.highlights}
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)', background: 'var(--color-bg-card)', padding: '2px 6px', borderRadius: 6, border: '1px solid var(--color-border)' }}>
+                  {selectedSummit.province}
+                </span>
+                <span style={{ fontSize: '0.66rem', color: 'var(--color-sun)', background: 'var(--color-bg-card)', padding: '2px 6px', borderRadius: 6, border: '1px solid var(--color-border)', fontWeight: 700 }}>
+                  {selectedSummit.difficulty}
+                </span>
+              </div>
+
+              {selectedSummit.dbTrail && onSelectTrail && (
+                <button
+                  type="button"
+                  onClick={() => onSelectTrail(selectedSummit.dbTrail!)}
+                  className="btn btn-outline interactive-click"
+                  style={{ fontSize: '0.7rem', padding: '3px 8px', borderRadius: 6, fontWeight: 800 }}
+                >
+                  Xem Cung Đường →
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* 10 Peaks Mini Altitude List */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 200, overflowY: 'auto', paddingRight: 2 }}>
+          {summitsWithDb.map((s) => {
+            const isSelected = s.rank === selectedRank;
+            return (
+              <div
+                key={s.rank}
+                onClick={() => setSelectedRank(s.rank)}
+                className="interactive-click"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '5px 8px',
+                  borderRadius: 8,
+                  border: isSelected ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+                  background: isSelected ? 'rgba(5, 150, 105, 0.12)' : 'var(--color-bg-main)',
+                  cursor: 'pointer',
+                  fontSize: '0.74rem',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                  <span
+                    style={{
+                      width: 18,
+                      height: 18,
+                      borderRadius: 4,
+                      background: isSelected ? 'var(--color-primary)' : 'var(--color-bg-card)',
+                      color: isSelected ? '#041108' : 'var(--color-text-dim)',
+                      fontSize: '0.64rem',
+                      fontWeight: 800,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {s.rank}
+                  </span>
+                  <span style={{ fontWeight: isSelected ? 800 : 600, color: isSelected ? 'var(--color-primary)' : 'var(--color-text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {s.name}
+                  </span>
+                </div>
+                <span style={{ fontWeight: 800, color: 'var(--color-sky)', fontSize: '0.72rem', flexShrink: 0 }}>
+                  {s.actualAltitude}m
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <section

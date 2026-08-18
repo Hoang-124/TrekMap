@@ -1,7 +1,7 @@
 import { getApiHeaders } from '../utils/sessionHeaders.js';
 import type { Conversation, Message } from '../types.js';
 
-const API_BASE = 'http://localhost:5000/api';
+const API_BASE = '/api';
 
 export async function fetchConversations(): Promise<Conversation[]> {
   try {

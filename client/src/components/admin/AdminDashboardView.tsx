@@ -26,7 +26,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   onShowToast,
   currentUser,
 }) => {
-  const [adminSection, setAdminSection] = useState<'contributions' | 'trails' | 'incidents' | 'users' | 'stats'>('contributions');
+  const [adminSection, setAdminSection] = useState<'contributions' | 'trails' | 'incidents' | 'users' | 'forum' | 'stats'>('contributions');
   const [activeTab, setActiveTab] = useState<'pending' | 'approved' | 'all'>('pending');
   const [selectedContribution, setSelectedContribution] = useState<any | null>(null);
   const [selectedAuthorModal, setSelectedAuthorModal] = useState<any | null>(null);
@@ -41,6 +41,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [trailsList, setTrailsList] = useState<any[]>([]);
   const [incidentsList, setIncidentsList] = useState<any[]>([]);
   const [usersList, setUsersList] = useState<any[]>([]);
+  const [threadsList, setThreadsList] = useState<any[]>([]);
   const [adminStats, setAdminStats] = useState<any>(null);
   const [editingTrailModal, setEditingTrailModal] = useState<any | null>(null);
   const [isCreateTrailOpen, setIsCreateTrailOpen] = useState(false);
@@ -95,6 +96,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     } catch (e) {}
   };
 
+  const fetchAdminThreads = async () => {
+    try {
+      const res = await fetch('/api/forum');
+      const data = await res.json();
+      if (data.success && Array.isArray(data.data)) setThreadsList(data.data);
+    } catch (e) {}
+  };
+
   const fetchAdminStats = async () => {
     try {
       const token = localStorage.getItem('trekmap_token');
@@ -110,8 +119,100 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     if (adminSection === 'users') fetchAdminUsers();
     if (adminSection === 'trails') fetchAdminTrails();
     if (adminSection === 'incidents') fetchAdminIncidents();
+    if (adminSection === 'forum') fetchAdminThreads();
     if (adminSection === 'stats') fetchAdminStats();
   }, [adminSection]);
+
+  const handleUpdateRole = async (userId: string, newRole: string, userName: string) => {
+    try {
+      const token = localStorage.getItem('trekmap_token');
+      const res = await fetch(`/api/admin/users/${userId}/role`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ role: newRole }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        onShowToast?.(`Đã đổi vai trò của ${userName} thành "${newRole}"!`, 'success');
+        fetchAdminUsers();
+        fetchAdminStats();
+      } else {
+        onShowToast?.(data.message || 'Lỗi khi cập nhật vai trò', 'error');
+      }
+    } catch (e) {
+      onShowToast?.('Lỗi kết nối máy chủ', 'error');
+    }
+  };
+
+  const handlePinThread = async (threadId: string, _title?: string) => {
+    try {
+      const token = localStorage.getItem('trekmap_token');
+      const res = await fetch(`/api/admin/threads/${threadId}/pin`, {
+        method: 'PUT',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      const data = await res.json();
+      if (data.success) {
+        onShowToast?.(data.message, 'success');
+        fetchAdminThreads();
+      }
+    } catch (e) {}
+  };
+
+  const handleLockThread = async (threadId: string, _title?: string) => {
+    try {
+      const token = localStorage.getItem('trekmap_token');
+      const res = await fetch(`/api/admin/threads/${threadId}/lock`, {
+        method: 'PUT',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      const data = await res.json();
+      if (data.success) {
+        onShowToast?.(data.message, 'info');
+        fetchAdminThreads();
+      }
+    } catch (e) {}
+  };
+
+  const handleDeleteThread = async (threadId: string, title: string) => {
+    if (!window.confirm(`Bạn có chắc muốn xóa bài viết "${title}"?`)) return;
+    try {
+      const token = localStorage.getItem('trekmap_token');
+      const res = await fetch(`/api/admin/threads/${threadId}`, {
+        method: 'DELETE',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      const data = await res.json();
+      if (data.success) {
+        onShowToast?.(data.message || 'Đã xóa bài viết!', 'info');
+        fetchAdminThreads();
+        fetchAdminStats();
+      }
+    } catch (e) {}
+  };
+
+  const handleResolveDispute = async (incidentId: string, action: 'dismiss_incident' | 'reject_dispute') => {
+    try {
+      const token = localStorage.getItem('trekmap_token');
+      const res = await fetch(`/api/admin/incidents/${incidentId}/dispute-resolve`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        onShowToast?.(data.message, 'success');
+        fetchAdminIncidents();
+        fetchAdminStats();
+      }
+    } catch (e) {}
+  };
 
   const pendingContributions = contributions.filter((c) => c.status === 'pending' || !c.status);
   const approvedContributions = contributions.filter((c) => c.status === 'approved');
@@ -306,6 +407,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       const data = await res.json();
       if (data.success) {
         if (onShowToast) onShowToast(`Đã khóa tài khoản ${email}`, 'info');
+        setUsersList((prev) => prev.map((u) => ((u._id === id || u.id === id) ? { ...u, isBanned: true } : u)));
         fetchAdminUsers();
         fetchAdminStats();
       }
@@ -322,6 +424,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       const data = await res.json();
       if (data.success) {
         if (onShowToast) onShowToast(`Đã mở khóa tài khoản ${email}`, 'success');
+        setUsersList((prev) => prev.map((u) => ((u._id === id || u.id === id) ? { ...u, isBanned: false } : u)));
         fetchAdminUsers();
         fetchAdminStats();
       }
@@ -395,6 +498,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
         >
           Quản Lý Người Dùng
+        </button>
+        <button
+          className={`btn ${adminSection === 'forum' ? 'btn-primary' : 'btn-outline'}`}
+          onClick={() => setAdminSection('forum')}
+          style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
+        >
+          Kiểm Duyệt Diễn Đàn
         </button>
         <button
           className={`btn ${adminSection === 'stats' ? 'btn-primary' : 'btn-outline'}`}
@@ -1146,6 +1256,24 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                           </div>
                         ))}
                       </div>
+
+                      {/* Dispute Action Resolution Buttons */}
+                      <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                        <button
+                          className="btn btn-primary"
+                          onClick={() => handleResolveDispute(inc._id || inc.id, 'dismiss_incident')}
+                          style={{ background: '#10b981', borderColor: '#10b981', padding: '5px 12px', fontSize: '0.75rem', fontWeight: 700 }}
+                        >
+                          ✓ Chấp nhận khiếu nại (Gỡ cảnh báo ảo)
+                        </button>
+                        <button
+                          className="btn btn-outline"
+                          onClick={() => handleResolveDispute(inc._id || inc.id, 'reject_dispute')}
+                          style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)', padding: '5px 12px', fontSize: '0.75rem' }}
+                        >
+                          ✕ Bác bỏ khiếu nại (Nguy hiểm thật)
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1191,10 +1319,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       {adminSection === 'users' && (
         <div className="card" style={{ padding: 24 }}>
           <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 4 }}>
-            Quản Lý Người Dùng & Quyền Hạn ({usersList.length})
+            Quản Lý Người Dùng & Phân Quyền Vai Trò ({usersList.length})
           </h3>
           <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginBottom: 20 }}>
-            Quản lý thành viên, xem điểm uy tín, gán vai trò Admin hoặc Khóa tài khoản vi phạm quy chuẩn
+            Quản lý thành viên, thăng cấp Hướng dẫn viên (Verified Guide), Kiểm duyệt viên (Mod) hoặc Khóa tài khoản vi phạm
           </p>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1220,8 +1348,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--color-primary)' }}
                   />
                   <div>
-                    <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                      {u.fullName || u.username} {u.role === 'admin' && <span style={{ background: '#f59e0b', color: '#fff', fontSize: '0.68rem', padding: '2px 6px', borderRadius: 4, marginLeft: 6 }}>ADMIN</span>}
+                    <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--color-text-main)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <span>{u.fullName || u.username}</span>
+                      {u.role === 'admin' && <span style={{ background: '#f59e0b', color: '#fff', fontSize: '0.68rem', padding: '2px 6px', borderRadius: 4 }}>ADMIN</span>}
+                      {u.role === 'guide' && <span style={{ background: '#10b981', color: '#fff', fontSize: '0.68rem', padding: '2px 6px', borderRadius: 4 }}>✓ GUIDE</span>}
+                      {u.role === 'moderator' && <span style={{ background: '#38bdf8', color: '#fff', fontSize: '0.68rem', padding: '2px 6px', borderRadius: 4 }}>MODERATOR</span>}
                     </div>
                     <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
                       {u.email} • Uy tín: <strong style={{ color: '#10b981' }}>{u.reputationScore || 50} pts</strong> • Huy hiệu: {u.badges?.join(', ') || 'Trekker Mới'}
@@ -1229,14 +1360,39 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   </div>
                 </div>
 
-                <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  {/* Role Selector Dropdown */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)' }}>Vai trò:</span>
+                    <select
+                      value={u.role || 'user'}
+                      onChange={(e) => handleUpdateRole(u._id || u.id, e.target.value, u.fullName || u.email)}
+                      disabled={u.email === currentUser?.email}
+                      style={{
+                        background: 'var(--color-bg-card)',
+                        color: 'var(--color-text-main)',
+                        border: '1px solid var(--color-border)',
+                        borderRadius: 8,
+                        padding: '5px 10px',
+                        fontSize: '0.78rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <option value="user">Trekker (Thành viên)</option>
+                      <option value="guide">Verified Guide (Hướng dẫn viên)</option>
+                      <option value="moderator">Kiểm duyệt viên (Mod)</option>
+                      <option value="admin">Quản trị viên (Admin)</option>
+                    </select>
+                  </div>
+
                   {u.isBanned ? (
                     <button
                       className="btn btn-primary"
                       onClick={() => handleUnbanUser(u._id || u.id, u.email)}
                       style={{ background: '#10b981', borderColor: '#10b981', padding: '6px 14px', fontSize: '0.8rem' }}
                     >
-                      Mở Khóa Tài Khoản
+                      Mở Khóa
                     </button>
                   ) : u.role !== 'admin' ? (
                     <button
@@ -1244,10 +1400,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       onClick={() => handleBanUser(u._id || u.id, u.email)}
                       style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)', padding: '6px 14px', fontSize: '0.8rem' }}
                     >
-                      Khóa Tài Khoản
+                      Khóa Nick
                     </button>
                   ) : (
-                    <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>Tài khoản Quản trị</span>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>Quản trị viên</span>
                   )}
                 </div>
               </div>
@@ -1256,7 +1412,98 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         </div>
       )}
 
-      {/* 5. SECTION: ANALYTICS DASHBOARD */}
+      {/* 5. SECTION: FORUM MODERATION */}
+      {adminSection === 'forum' && (
+        <div className="card" style={{ padding: 24 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
+            <div>
+              <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
+                Kiểm Duyệt & Quản Lý Diễn Đàn ({threadsList.length} bài viết)
+              </h3>
+              <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', margin: '4px 0 0 0' }}>
+                Ghim bài viết thông báo khẩn, khóa bình luận hoặc xóa bài viết vi phạm tiêu chuẩn cộng đồng
+              </p>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {threadsList.map((t) => (
+              <div
+                key={t.id || t._id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  background: 'var(--color-bg-main)',
+                  border: `1px solid ${t.isPinned ? 'rgba(245, 158, 11, 0.5)' : 'var(--color-border)'}`,
+                  padding: '14px 18px',
+                  borderRadius: 12,
+                  flexWrap: 'wrap',
+                  gap: 12,
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 280 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                    {t.isPinned && (
+                      <span style={{ background: '#f59e0b', color: '#fff', fontSize: '0.7rem', fontWeight: 800, padding: '2px 8px', borderRadius: 6 }}>
+                        📌 ĐÃ GHIM
+                      </span>
+                    )}
+                    {t.isLocked && (
+                      <span style={{ background: '#ef4444', color: '#fff', fontSize: '0.7rem', fontWeight: 800, padding: '2px 8px', borderRadius: 6 }}>
+                        🔒 ĐÃ KHÓA BÌNH LUẬN
+                      </span>
+                    )}
+                    <span style={{ background: 'var(--color-bg-card)', color: 'var(--color-sky)', fontSize: '0.72rem', fontWeight: 700, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--color-border)' }}>
+                      {t.category || 'Thảo luận'}
+                    </span>
+                    <span style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                      {t.title}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                    <span>Tác giả: <strong style={{ color: 'var(--color-text-main)' }}>{t.authorName}</strong></span>
+                    <span>• {t.repliesCount || 0} bình luận</span>
+                    <span>• {t.upvotes || 0} lượt thích</span>
+                    <span>• {t.createdAt ? new Date(t.createdAt).toLocaleDateString('vi-VN') : 'Gần đây'}</span>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    className={`btn ${t.isPinned ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => handlePinThread(t.id || t._id, t.title)}
+                    style={{ padding: '6px 12px', fontSize: '0.78rem' }}
+                  >
+                    {t.isPinned ? 'Bỏ Ghim' : '📌 Ghim Bài'}
+                  </button>
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => handleLockThread(t.id || t._id, t.title)}
+                    style={{
+                      padding: '6px 12px',
+                      fontSize: '0.78rem',
+                      color: t.isLocked ? '#10b981' : '#f59e0b',
+                      borderColor: t.isLocked ? 'rgba(16,185,129,0.4)' : 'rgba(245,158,11,0.4)',
+                    }}
+                  >
+                    {t.isLocked ? '🔓 Mở Bình Luận' : '🔒 Khóa Bình Luận'}
+                  </button>
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => handleDeleteThread(t.id || t._id, t.title)}
+                    style={{ padding: '6px 12px', fontSize: '0.78rem', color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)' }}
+                  >
+                    🗑️ Xóa Bài
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 6. SECTION: ANALYTICS DASHBOARD */}
       {adminSection === 'stats' && (
         <div className="card" style={{ padding: 24 }}>
           <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 4 }}>

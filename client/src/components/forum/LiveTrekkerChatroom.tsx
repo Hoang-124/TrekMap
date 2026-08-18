@@ -4,6 +4,7 @@ import {
   IconSend,
   IconSparkles,
   IconQuote,
+  IconClock,
 } from '../common/SvgIcons.js';
 import { useSocket } from '../../hooks/useSocket.js';
 
@@ -30,9 +31,46 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
   const [inputText, setInputText] = useState('');
   const [quoteMessage, setQuoteMessage] = useState<{ author: string; text: string } | null>(null);
   const [onlineCount, setOnlineCount] = useState<number>(1);
+  const [isSending, setIsSending] = useState(false);
+  const [cooldown, setCooldown] = useState<number>(0);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const notificationAudioRef = useRef<HTMLAudioElement | null>(null);
+  const sentMessageIds = useRef<Set<string>>(new Set());
   const { socket } = useSocket();
+
+  // Preload notification sound
+  useEffect(() => {
+    try {
+      notificationAudioRef.current = new Audio('/audio/notification.mp3');
+      notificationAudioRef.current.volume = 0.75;
+      notificationAudioRef.current.load();
+    } catch (e) {
+      console.warn('Could not initialize audio object', e);
+    }
+  }, []);
+
+  // 10-Second Rate Limit Cooldown Interval
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = setInterval(() => {
+      setCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [cooldown]);
+
+  const playIncomingNotificationSound = () => {
+    try {
+      if (notificationAudioRef.current) {
+        notificationAudioRef.current.currentTime = 0;
+        notificationAudioRef.current.play().catch(() => {});
+      } else {
+        const audio = new Audio('/audio/notification.mp3');
+        audio.volume = 0.75;
+        audio.play().catch(() => {});
+      }
+    } catch {}
+  };
 
   const scrollToBottom = () => {
     if (messagesContainerRef.current) {
@@ -67,11 +105,25 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
     // Join public community room
     socket.emit('joinCommunityChat');
 
-    const handleOnlineCount = (count: number) => {
-      setOnlineCount(count || 1);
-    };
-
     const handleNewMessage = (msg: CommunityChatMessage) => {
+      let activeUserId = currentUser?._id || currentUser?.id;
+      if (!activeUserId) {
+        try {
+          const stored = JSON.parse(localStorage.getItem('trekmap_user') || 'null');
+          activeUserId = stored?._id || stored?.id;
+        } catch {}
+      }
+      const isFromMe = Boolean(
+        sentMessageIds.current.has(msg.id) ||
+        (activeUserId && msg.senderId && String(msg.senderId) === String(activeUserId)) ||
+        (currentUser?.fullName && msg.senderName === currentUser.fullName)
+      );
+
+      // Only play notification sound if message is from another trekker
+      if (!isFromMe) {
+        playIncomingNotificationSound();
+      }
+
       setMessages((prev) => {
         // Prevent duplicate messages by id
         if (prev.some((m) => m.id === msg.id)) return prev;
@@ -80,14 +132,19 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
       setTimeout(scrollToBottom, 50);
     };
 
+    const handleOnlineCount = (count: number) => {
+      setOnlineCount(Math.max(1, count || 1));
+    };
+
     socket.on('communityOnlineCount', handleOnlineCount);
     socket.on('newCommunityMessage', handleNewMessage);
 
     return () => {
+      socket.emit('leaveCommunityChat');
       socket.off('communityOnlineCount', handleOnlineCount);
       socket.off('newCommunityMessage', handleNewMessage);
     };
-  }, [socket]);
+  }, [socket, currentUser]);
 
   useEffect(() => {
     scrollToBottom();
@@ -95,13 +152,19 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputText.trim()) return;
+    if (!inputText.trim() || cooldown > 0) return;
 
     const token = localStorage.getItem('trekmap_token');
     if (!currentUser && !token) {
       if (onRequireLogin) onRequireLogin('gửi tin nhắn trò chuyện cộng đồng');
       return;
     }
+
+    setIsSending(true);
+    setTimeout(() => setIsSending(false), 300);
+
+    // Start 10-second cooldown timer
+    setCooldown(10);
 
     const senderName = currentUser?.fullName || 'Trekker';
     const senderAvatar =
@@ -120,6 +183,9 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
       createdAt: new Date().toISOString(),
       time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
     };
+
+    // Track own message ID so socket broadcast doesn't re-trigger notification sound
+    sentMessageIds.current.add(msgData.id);
 
     if (socket) {
       socket.emit('sendCommunityChatMessage', msgData);
@@ -161,7 +227,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
         style={{
           padding: '14px 18px',
           borderBottom: '1px solid var(--color-border)',
-          background: 'var(--color-bg-main)',
+          background: 'var(--color-bg-card)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
@@ -231,7 +297,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
           display: 'flex',
           flexDirection: 'column',
           gap: 12,
-          background: 'rgba(5, 11, 24, 0.4)',
+          background: 'var(--color-bg-main)',
         }}
       >
         {messages.length === 0 ? (
@@ -270,7 +336,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                   transition: 'background 0.15s ease',
                   position: 'relative',
                 }}
-                className="chat-message-row"
+                className="chat-message-row chat-message-pop"
               >
                 {/* Avatar with fallback */}
                 {msg.senderAvatar && msg.senderAvatar.startsWith('http') ? (
@@ -293,8 +359,8 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                       width: 32,
                       height: 32,
                       borderRadius: '50%',
-                      background: isMe ? 'linear-gradient(135deg, var(--color-primary), #059669)' : 'linear-gradient(135deg, #0284c7, #0369a1)',
-                      color: '#ffffff',
+                      background: isMe ? 'var(--color-primary)' : 'var(--color-sky)',
+                      color: isMe ? '#041108' : '#ffffff',
                       fontWeight: 800,
                       fontSize: '0.8rem',
                       display: 'flex',
@@ -322,7 +388,8 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                           fontWeight: 700,
                           padding: '1px 5px',
                           borderRadius: 6,
-                          background: isMe ? 'rgba(5, 150, 105, 0.2)' : 'rgba(255, 255, 255, 0.08)',
+                          background: isMe ? 'rgba(5, 150, 105, 0.15)' : 'var(--color-bg-card)',
+                          border: '1px solid var(--color-border)',
                           color: isMe ? 'var(--color-primary)' : 'var(--color-text-dim)',
                         }}
                       >
@@ -342,7 +409,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                         setTimeout(() => inputRef.current?.focus(), 50);
                       }}
                       style={{
-                        background: 'rgba(255, 255, 255, 0.06)',
+                        background: 'var(--color-bg-card)',
                         border: '1px solid var(--color-border)',
                         borderRadius: 6,
                         color: 'var(--color-text-muted)',
@@ -370,9 +437,10 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
 
                   {/* Message Bubble with Embedded Quote */}
                   <div
+                    className={isMe ? 'chat-bubble-glow' : ''}
                     style={{
-                      background: isMe ? 'rgba(5, 150, 105, 0.22)' : 'var(--color-bg-main)',
-                      border: isMe ? '1px solid rgba(5, 150, 105, 0.5)' : '1px solid var(--color-border)',
+                      background: isMe ? 'rgba(5, 150, 105, 0.12)' : 'var(--color-bg-card)',
+                      border: isMe ? '1px solid rgba(5, 150, 105, 0.35)' : '1px solid var(--color-border)',
                       borderRadius: isMe ? '16px 4px 16px 16px' : '4px 16px 16px 16px',
                       padding: '8px 14px',
                       fontSize: '0.84rem',
@@ -380,14 +448,15 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                       lineHeight: 1.5,
                       display: 'inline-block',
                       maxWidth: '100%',
-                      boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                      boxShadow: 'var(--shadow-card)',
+                      transition: 'all 0.2s ease',
                     }}
                   >
                     {/* Quoted Message Header (Only if valid) */}
                     {hasValidQuote && msg.quote && (
                       <div
                         style={{
-                          background: isMe ? 'rgba(0, 0, 0, 0.3)' : 'rgba(255, 255, 255, 0.05)',
+                          background: 'rgba(0, 0, 0, 0.05)',
                           borderLeft: '3px solid var(--color-primary)',
                           padding: '4px 8px',
                           borderRadius: '0 6px 6px 0',
@@ -416,7 +485,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
       {quoteMessage && (
         <div
           style={{
-            background: 'var(--color-bg-main)',
+            background: 'var(--color-bg-card)',
             borderTop: '1px solid var(--color-border)',
             padding: '6px 14px',
             display: 'flex',
@@ -455,7 +524,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
         style={{
           padding: '10px 12px',
           borderTop: '1px solid var(--color-border)',
-          background: 'var(--color-bg-main)',
+          background: 'var(--color-bg-card)',
           display: 'flex',
           alignItems: 'center',
           gap: 8,
@@ -473,16 +542,41 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
             padding: '9px 14px',
             fontSize: '0.84rem',
             borderRadius: 12,
-            background: 'var(--color-bg-card)',
+            background: 'var(--color-bg-main)',
             border: quoteMessage ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)',
             boxShadow: quoteMessage ? '0 0 10px rgba(5, 150, 105, 0.25)' : 'none',
             transition: 'all 0.2s ease',
           }}
         />
 
+        {/* 10-Second Cooldown Countdown Timer Indicator */}
+        {cooldown > 0 && (
+          <div
+            title={`Vui lòng chờ ${cooldown}s để gửi tin nhắn tiếp theo`}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              padding: '6px 10px',
+              borderRadius: 10,
+              background: 'rgba(234, 179, 8, 0.12)',
+              border: '1px solid rgba(234, 179, 8, 0.35)',
+              color: 'var(--color-sun)',
+              fontSize: '0.74rem',
+              fontWeight: 800,
+              animation: 'pulse 1.5s infinite',
+              flexShrink: 0,
+            }}
+          >
+            <IconClock size={12} color="var(--color-sun)" />
+            <span>{cooldown}s</span>
+          </div>
+        )}
+
         <button
           type="submit"
-          disabled={!inputText.trim()}
+          disabled={!inputText.trim() || cooldown > 0}
+          title={cooldown > 0 ? `Vui lòng chờ ${cooldown}s để gửi tiếp` : 'Gửi tin nhắn'}
           className="btn btn-primary interactive-click ripple-fx"
           style={{
             padding: '8px 14px',
@@ -490,11 +584,23 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
             display: 'inline-flex',
             alignItems: 'center',
             justifyContent: 'center',
-            opacity: inputText.trim() ? 1 : 0.5,
-            cursor: inputText.trim() ? 'pointer' : 'default',
+            opacity: inputText.trim() && cooldown === 0 ? 1 : 0.45,
+            cursor: inputText.trim() && cooldown === 0 ? 'pointer' : 'not-allowed',
+            transform: isSending ? 'scale(0.92)' : 'scale(1)',
+            transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
           }}
         >
-          <IconSend size={15} color="#041108" />
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transform: isSending ? 'translate(3px, -3px) rotate(-15deg)' : 'none',
+              transition: 'transform 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+            }}
+          >
+            <IconSend size={15} color="#041108" />
+          </div>
         </button>
       </form>
     </div>

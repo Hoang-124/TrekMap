@@ -95,7 +95,7 @@ export const ThreadDetailModal: React.FC<ThreadDetailModalProps> = ({
       setLoadingComments(true);
     }
     try {
-      const res = await fetch(`http://localhost:5000/api/forum/threads/${threadId}/comments`, {
+      const res = await fetch(`/api/forum/threads/${threadId}/comments`, {
         headers: getApiHeaders(),
       });
       const json = await res.json();
@@ -183,7 +183,7 @@ export const ThreadDetailModal: React.FC<ThreadDetailModalProps> = ({
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
     try {
-      const res = await fetch(`http://localhost:5000/api/forum/threads/${thread.id}/comments`, {
+      const res = await fetch(`/api/forum/threads/${thread.id}/comments`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ content: textToSend }),
@@ -220,7 +220,7 @@ export const ThreadDetailModal: React.FC<ThreadDetailModalProps> = ({
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
     try {
-      const res = await fetch(`http://localhost:5000/api/forum/threads/${thread.id}/comments`, {
+      const res = await fetch(`/api/forum/threads/${thread.id}/comments`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ content: textToSend, parentId }),
@@ -295,7 +295,7 @@ const updateCommentReactionsOptimistically = (
     const prevReaction = commentReactionsState[commentId] || null;
 
     try {
-      const res = await fetch(`http://localhost:5000/api/forum/comments/${commentId}/reaction`, {
+      const res = await fetch(`/api/forum/comments/${commentId}/reaction`, {
         method: 'POST',
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ reactionType, previousReaction: prevReaction }),
@@ -333,7 +333,7 @@ const updateCommentReactionsOptimistically = (
     }
 
     try {
-      const res = await fetch(`http://localhost:5000/api/forum/threads/${thread.id}/reaction`, {
+      const res = await fetch(`/api/forum/threads/${thread.id}/reaction`, {
         method: 'POST',
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ reactionType: r, previousReaction: prev }),

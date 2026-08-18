@@ -5,7 +5,7 @@ import { AuthRequest } from './auth.middleware.js';
  * Middleware to restrict route access to specific roles.
  * Usage: router.post('/admin/path', authMiddleware, requireRole('admin'), handler);
  */
-export const requireRole = (...allowedRoles: Array<'user' | 'guide' | 'admin'>) => {
+export const requireRole = (...allowedRoles: Array<'user' | 'guide' | 'admin' | 'moderator'>) => {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
       return res.status(401).json({

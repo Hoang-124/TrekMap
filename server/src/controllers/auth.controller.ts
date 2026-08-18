@@ -18,14 +18,69 @@ import { AuthRequest } from '../middleware/auth.middleware.js';
 
 export const inMemoryUsersMap = new Map<string, any>();
 
-export const googleAuth = async (req: Request, res: Response) => {
-  const { email, name, picture } = req.body;
+/**
+ * Verifies Google OAuth Token (Access Token or ID Token) against Google's official API
+ */
+async function verifyGoogleToken(googleToken: string): Promise<{ email: string; name: string; picture: string } | null> {
+  try {
+    // 1. Verify Access Token via Google OAuth2 UserInfo Endpoint
+    const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${googleToken}` },
+    });
+    if (res.ok) {
+      const data: any = await res.json();
+      if (data && data.email) {
+        return {
+          email: data.email.toLowerCase().trim(),
+          name: data.name || data.given_name || 'Google Trekker',
+          picture: data.picture || '',
+        };
+      }
+    }
 
-  if (!email) {
-    return res.status(400).json({ success: false, message: 'Thiếu thông tin tài khoản Google.' });
+    // 2. Fallback: Verify ID Token via Google OAuth2 TokenInfo Endpoint
+    const tokenInfoRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(googleToken)}`);
+    if (tokenInfoRes.ok) {
+      const idData: any = await tokenInfoRes.json();
+      if (idData && idData.email) {
+        return {
+          email: idData.email.toLowerCase().trim(),
+          name: idData.name || idData.given_name || 'Google Trekker',
+          picture: idData.picture || '',
+        };
+      }
+    }
+
+    return null;
+  } catch (err) {
+    console.error('[Google OAuth Token Verification Error]:', err);
+    return null;
+  }
+}
+
+export const googleAuth = async (req: Request, res: Response) => {
+  const { token: googleToken, accessToken, idToken } = req.body;
+  const tokenToVerify = googleToken || accessToken || idToken;
+
+  if (!tokenToVerify) {
+    return res.status(400).json({
+      success: false,
+      message: 'Thiếu mã xác thực Google OAuth (Token). Vui lòng đăng nhập lại.',
+    });
   }
 
-  const cleanEmail = email.toLowerCase().trim();
+  // Server-side verification with Google's API to prevent authentication bypass
+  const googleProfile = await verifyGoogleToken(tokenToVerify);
+  if (!googleProfile || !googleProfile.email) {
+    return res.status(401).json({
+      success: false,
+      message: 'Xác thực tài khoản Google không thành công. Token không hợp lệ hoặc đã hết hạn.',
+    });
+  }
+
+  const cleanEmail = googleProfile.email;
+  const name = googleProfile.name;
+  const picture = googleProfile.picture;
 
   try {
     let user: any = null;

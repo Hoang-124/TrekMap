@@ -3,6 +3,7 @@ import { AuthRequest } from '../middleware/auth.middleware';
 import { TripReportModel } from '../models/TripReport';
 import { UserModel } from '../models/User';
 import { ActivityModel } from '../models/Activity';
+import { awardReputationPoints } from '../utils/reputation.js';
 
 // POST /api/trip-reports - Submit a new trip report
 export const createTripReport = async (req: AuthRequest, res: Response) => {
@@ -55,12 +56,17 @@ export const createTripReport = async (req: AuthRequest, res: Response) => {
       rating: rating || 5,
     });
 
-    // Reward +30 reputation points & increment tripReportsCount
-    const author = await UserModel.findByIdAndUpdate(
-      authorId,
-      { $inc: { reputationScore: 30, tripReportsCount: 1 } },
-      { new: true }
-    );
+    // Reward reputation via centralized engine (badge progression included)
+    const author = await UserModel.findById(authorId);
+    let reputationReward = null;
+    if (author) {
+      reputationReward = await awardReputationPoints(
+        authorId,
+        30,
+        'Viết nhật ký chuyến đi'
+      );
+      await UserModel.findByIdAndUpdate(authorId, { $inc: { tripReportsCount: 1 } }).catch(() => {});
+    }
 
     // Create community activity feed item
     if (author) {

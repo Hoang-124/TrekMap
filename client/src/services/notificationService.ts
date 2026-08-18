@@ -1,7 +1,7 @@
 import { getApiHeaders } from '../utils/sessionHeaders.js';
 import type { NotificationItem, NotificationCategory } from '../types.js';
 
-const API_BASE = 'http://localhost:5000/api';
+const API_BASE = '/api';
 
 export async function fetchNotifications(
   page = 1,

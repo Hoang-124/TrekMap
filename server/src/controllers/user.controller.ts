@@ -103,3 +103,46 @@ export const getAdminStats = async (req: AuthRequest, res: Response) => {
     return res.status(500).json({ success: false, message: 'Lỗi khi lấy thống kê hệ thống.' });
   }
 };
+
+// PUT /api/admin/users/:id/role - Change user role (Admin only)
+export const updateUserRoleAdmin = async (req: AuthRequest, res: Response) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Yêu cầu quyền Admin.' });
+    }
+    const { id } = req.params;
+    const { role } = req.body;
+
+    const validRoles = ['admin', 'guide', 'moderator', 'user'];
+    if (!role || !validRoles.includes(role)) {
+      return res.status(400).json({ success: false, message: 'Vai trò không hợp lệ.' });
+    }
+
+    const user = await UserModel.findById(id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy người dùng.' });
+    }
+
+    user.role = role as any;
+    if (role === 'guide' && !user.badges?.includes('Verified Guide')) {
+      if (!user.badges) user.badges = [];
+      user.badges.push('Verified Guide');
+    }
+    await user.save();
+
+    broadcastEvent('userRoleUpdated', {
+      userId: (user._id || user.id).toString(),
+      email: user.email,
+      role: user.role,
+    });
+
+    return res.json({
+      success: true,
+      message: `Đã cập nhật vai trò của ${user.fullName || user.email} thành ${role}!`,
+      data: user,
+    });
+  } catch (err) {
+    console.error('[Update User Role Admin Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi cập nhật vai trò người dùng.' });
+  }
+};

@@ -250,7 +250,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setIsLoading(true);
 
     try {
-      const endpoint = mode === 'register' ? 'http://localhost:5000/api/auth/register' : 'http://localhost:5000/api/auth/login';
+      const endpoint = mode === 'register' ? '/api/auth/register' : '/api/auth/login';
       const body = mode === 'register' ? { email, password, fullName } : { email, password };
 
       const res = await fetch(endpoint, {
@@ -308,7 +308,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     setIsLoading(true);
     try {
-      const res = await fetch('http://localhost:5000/api/auth/forgot-password', {
+      const res = await fetch('/api/auth/forgot-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
@@ -356,7 +356,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     setIsLoading(true);
     try {
-      const res = await fetch('http://localhost:5000/api/auth/reset-password-with-token', {
+      const res = await fetch('/api/auth/reset-password-with-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ resetToken, newPassword }),
@@ -394,7 +394,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     setIsLoading(true);
     try {
-      const res = await fetch('http://localhost:5000/api/auth/verify-code', {
+      const res = await fetch('/api/auth/verify-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, code: otpCode }),
@@ -430,7 +430,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setErrorMessage('');
 
     try {
-      const res = await fetch('http://localhost:5000/api/auth/resend-otp', {
+      const res = await fetch('/api/auth/resend-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
@@ -467,24 +467,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           if (tokenResponse && tokenResponse.access_token) {
             setIsLoading(true);
             try {
-              const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-                headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
-              });
-              const googleProfile = await userInfoRes.json();
-
-              if (!googleProfile.email) {
-                setIsLoading(false);
-                setErrorMessage('Không thể xác thực thông tin tài khoản Google.');
-                return;
-              }
-
-              const res = await fetch('http://localhost:5000/api/auth/google', {
+              const res = await fetch('/api/auth/google', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  email: googleProfile.email,
-                  name: googleProfile.name || googleProfile.given_name || 'Google User',
-                  picture: googleProfile.picture || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=250&q=80',
+                  token: tokenResponse.access_token,
                 }),
               });
 
@@ -494,7 +481,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               if (data.success) {
                 localStorage.setItem('trekmap_token', data.token);
                 if (onShowToast) {
-                  onShowToast(`Đăng nhập Google thành công! Welcome ${data.user.fullName || data.user.email}`, 'success');
+                  onShowToast(`Đăng nhập Google thành công! Chào mừng ${data.user.fullName || data.user.email}`, 'success');
                 }
                 onAuthSuccess(data.user);
                 onClose();
@@ -503,7 +490,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               }
             } catch (err) {
               setIsLoading(false);
-              setErrorMessage('Không thể kết nối lấy dữ liệu từ Google.');
+              setErrorMessage('Không thể kết nối đến máy chủ xác thực.');
             }
           }
         },

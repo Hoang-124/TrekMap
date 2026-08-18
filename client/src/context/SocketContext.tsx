@@ -27,9 +27,15 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    // Connect to server socket with automatic robust reconnection & exponential backoff
-    const socketInstance = io('http://localhost:5000', {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('trekmap_token') : null;
+    const socketUrl = typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+      ? window.location.origin
+      : 'http://localhost:5000';
+
+    // Connect to server socket with automatic robust reconnection & authenticated handshake
+    const socketInstance = io(socketUrl, {
       transports: ['websocket', 'polling'],
+      auth: { token: token || undefined },
       reconnection: true,
       reconnectionAttempts: 15,
       reconnectionDelay: 2000,

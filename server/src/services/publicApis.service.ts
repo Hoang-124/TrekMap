@@ -96,9 +96,9 @@ export async function getNaturalHazardsAlerts() {
 
   try {
     const url = 'https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=8';
-    const fetchPromise = fetch(url, { signal: AbortSignal.timeout(300) });
+    const fetchPromise = fetch(url, { signal: AbortSignal.timeout(3000) });
     const timeoutPromise = new Promise<Response>((_, reject) =>
-      setTimeout(() => reject(new Error('NASA API timeout')), 200)
+      setTimeout(() => reject(new Error('NASA API timeout')), 3000)
     );
 
     const res = await Promise.race([fetchPromise, timeoutPromise]);

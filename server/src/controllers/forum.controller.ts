@@ -10,6 +10,20 @@ import { mockThreads } from '../data/seedData.js';
 import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
 import { awardReputationPoints, deductReputationPoints, REPUTATION_POINTS, PENALTY_POINTS } from '../utils/reputation.js';
 import { NotificationModel } from '../models/Notification.js';
+
+// XML entity escaper for safe GPX export
+function escapeXml(unsafe: string): string {
+  return unsafe.replace(/[<>&'"]/g, (c) => {
+    switch (c) {
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '&': return '&amp;';
+      case "'": return '&apos;';
+      case '"': return '&quot;';
+      default: return c;
+    }
+  });
+}
 import { emitToUser, broadcastEvent } from '../config/socket.js';
 
 export const getThreads = async (req: Request, res: Response) => {
@@ -351,16 +365,18 @@ export const downloadTrailGpx = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: 'Không tìm thấy dữ liệu GPS của cung đường này' });
     }
 
+    const safeName = escapeXml(trail.name || 'TrekMap Trail');
+    const safeDesc = escapeXml(trail.description || 'Cung đường trekking thực địa Việt Nam');
     const gpxPoints = trail.gpxTrack.map((pt: [number, number]) => `      <trkpt lat="${pt[0]}" lon="${pt[1]}"></trkpt>`).join('\n');
     const gpxXml = `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="TrekMap Vietnam - https://trekmap.vn" xmlns="http://www.topografix.com/GPX/1/1">
   <metadata>
-    <name>${trail.name}</name>
-    <desc>${trail.description || 'Cung đường trekking thực địa Việt Nam'}</desc>
+    <name>${safeName}</name>
+    <desc>${safeDesc}</desc>
     <time>${new Date().toISOString()}</time>
   </metadata>
   <trk>
-    <name>${trail.name}</name>
+    <name>${safeName}</name>
     <trkseg>
 ${gpxPoints}
     </trkseg>
@@ -400,5 +416,85 @@ export const getCommunityChatMessages = async (req: Request, res: Response) => {
   } catch (err) {
     console.error('[Get Community Chat Messages Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi tải lịch sử tin nhắn cộng đồng' });
+  }
+};
+
+// PUT /api/admin/threads/:id/pin - Toggle pin thread (Admin only)
+export const pinThreadAdmin = async (req: Request, res: Response) => {
+  try {
+    const id = String(req.params.id || '');
+    const isMongoId = Types.ObjectId.isValid(id);
+    const query = isMongoId ? { $or: [{ id }, { _id: new Types.ObjectId(id) }] } : { id };
+
+    const thread = await ThreadModel.findOne(query);
+    if (!thread) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết.' });
+    }
+
+    thread.isPinned = !thread.isPinned;
+    await thread.save();
+
+    broadcastEvent('threadPinned', { threadId: thread.id, isPinned: thread.isPinned });
+
+    return res.json({
+      success: true,
+      message: thread.isPinned ? 'Đã ghim bài viết lên đầu diễn đàn!' : 'Đã gỡ ghim bài viết.',
+      data: thread,
+    });
+  } catch (err) {
+    console.error('[Pin Thread Admin Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi ghim bài viết.' });
+  }
+};
+
+// PUT /api/admin/threads/:id/lock - Toggle lock comments on thread (Admin only)
+export const lockThreadAdmin = async (req: Request, res: Response) => {
+  try {
+    const id = String(req.params.id || '');
+    const isMongoId = Types.ObjectId.isValid(id);
+    const query = isMongoId ? { $or: [{ id }, { _id: new Types.ObjectId(id) }] } : { id };
+
+    const thread = await ThreadModel.findOne(query);
+    if (!thread) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết.' });
+    }
+
+    thread.isLocked = !thread.isLocked;
+    await thread.save();
+
+    broadcastEvent('threadLocked', { threadId: thread.id, isLocked: thread.isLocked });
+
+    return res.json({
+      success: true,
+      message: thread.isLocked ? 'Đã khóa bình luận bài viết!' : 'Đã mở khóa bình luận bài viết.',
+      data: thread,
+    });
+  } catch (err) {
+    console.error('[Lock Thread Admin Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi khóa bình luận bài viết.' });
+  }
+};
+
+// DELETE /api/admin/threads/:id - Delete thread (Admin only)
+export const deleteThreadAdmin = async (req: Request, res: Response) => {
+  try {
+    const id = String(req.params.id || '');
+    const isMongoId = Types.ObjectId.isValid(id);
+    const query = isMongoId ? { $or: [{ id }, { _id: new Types.ObjectId(id) }] } : { id };
+
+    const thread = await ThreadModel.findOneAndDelete(query);
+    if (!thread) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết để xóa.' });
+    }
+
+    broadcastEvent('threadDeleted', { threadId: thread.id });
+
+    return res.json({
+      success: true,
+      message: `Đã xóa bài viết "${thread.title}" thành công!`,
+    });
+  } catch (err) {
+    console.error('[Delete Thread Admin Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi xóa bài viết.' });
   }
 };

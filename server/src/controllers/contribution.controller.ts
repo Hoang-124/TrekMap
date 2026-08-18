@@ -7,6 +7,7 @@ import { emitToUser } from '../config/socket.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { awardReputationPoints, REPUTATION_POINTS } from '../utils/reputation.js';
 import { sendNotification, notifyAdmins } from '../utils/notification.js';
+import { sanitizeInput } from '../utils/validation.js';
 
 const inMemoryContributions: any[] = [];
 
@@ -104,10 +105,15 @@ export const createContribution = async (req: AuthRequest, res: Response) => {
       {
         ...contribData,
         id: contribId,
+        name: sanitizeInput(contribData.name),
+        description: sanitizeInput(contribData.description || ''),
+        transportationInfo: sanitizeInput(contribData.transportationInfo || ''),
+        difficultyNote: sanitizeInput(contribData.difficultyNote || ''),
+        permitInfo: sanitizeInput(contribData.permitInfo || ''),
         status: contribData.status || 'pending',
         userId: currentUserId || contribData.userId,
         authorEmail: resolvedAuthorEmail,
-        authorName: resolvedAuthorName,
+        authorName: sanitizeInput(resolvedAuthorName),
         authorAvatar: resolvedAuthorAvatar,
         createdAt: new Date().toLocaleDateString('vi-VN'),
       },
@@ -188,7 +194,21 @@ export const updateContribution = async (req: AuthRequest, res: Response) => {
       return res.status(403).json({ success: false, message: 'Bạn không có quyền chỉnh sửa bài đóng góp này.' });
     }
 
-    Object.assign(existing, update);
+    // Whitelist allowed update fields — prevent ownership hijacking via userId/authorEmail injection
+    const ALLOWED_UPDATE_FIELDS = [
+      'name', 'altNames', 'region', 'province', 'district', 'hamlet',
+      'distanceKm', 'elevationGainM', 'maxAltitudeM', 'difficultyLevel', 'difficultyNote',
+      'durationDays', 'durationHoursNote', 'startLat', 'startLng', 'endLat', 'endLng',
+      'description', 'transportationInfo', 'coverImage', 'galleryImages',
+      'permitRequired', 'permitInfo', 'hasCampsite', 'hasWaterSource', 'kidFriendly',
+      'rescueContact', 'waypoints', 'gpxTrack', 'bestMonths', 'avoidMonths', 'status',
+    ];
+    for (const key of ALLOWED_UPDATE_FIELDS) {
+      if (update[key] !== undefined) {
+        const val = update[key];
+        (existing as any)[key] = typeof val === 'string' ? sanitizeInput(val) : val;
+      }
+    }
 
     try {
       await Contribution.findOneAndUpdate({ id }, update, { new: true });

@@ -222,7 +222,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     // 1. Delete from Server DB if token exists
     try {
       if (token) {
-        await fetch(`http://localhost:5000/api/contributions/${targetId}`, {
+        await fetch(`/api/contributions/${targetId}`, {
           method: 'DELETE',
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -277,7 +277,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
     try {
       if (token) {
-        const res = await fetch('http://localhost:5000/api/auth/me', {
+        const res = await fetch('/api/auth/me', {
           headers: { Authorization: `Bearer ${token}` },
         });
         const data = await res.json();
@@ -291,7 +291,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           // Fetch live contributions from Server API and merge with localStorage
           let serverContribs: any[] = [];
           try {
-            const cRes = await fetch('http://localhost:5000/api/contributions', {
+            const cRes = await fetch('/api/contributions', {
               headers: { Authorization: `Bearer ${token}` },
             });
             const cData = await cRes.json();
@@ -350,7 +350,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     }
 
     try {
-      const forumRes = await fetch('http://localhost:5000/api/forum', {
+      const forumRes = await fetch('/api/forum', {
         headers: getApiHeaders(),
       });
       const forumData = await forumRes.json();
@@ -410,7 +410,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
     try {
       if (token) {
-        await fetch('http://localhost:5000/api/auth/profile', {
+        await fetch('/api/auth/profile', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -460,7 +460,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         const token = localStorage.getItem('trekmap_token');
         if (token) {
           try {
-            const res = await fetch('http://localhost:5000/api/auth/profile', {
+            const res = await fetch('/api/auth/profile', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -524,7 +524,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     const token = localStorage.getItem('trekmap_token');
 
     try {
-      const res = await fetch('http://localhost:5000/api/auth/profile', {
+      const res = await fetch('/api/auth/profile', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1732,7 +1732,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           thread={selectedThreadForModal}
           onClose={() => {
             setSelectedThreadForModal(null);
-            fetch('http://localhost:5000/api/forum', { headers: getApiHeaders() })
+            fetch('/api/forum', { headers: getApiHeaders() })
               .then((res) => res.json())
               .then((data) => {
                 if (data.success && Array.isArray(data.data)) {

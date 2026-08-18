@@ -322,273 +322,300 @@ export const Navbar: React.FC<NavbarProps> = ({
               <div
                 style={{
                   position: 'absolute',
-                  top: 'calc(100% + 8px)',
+                  top: 'calc(100% + 10px)',
                   right: 0,
-                  width: 250,
+                  width: 270,
                   background: 'var(--color-bg-card)',
                   border: '1px solid var(--color-border)',
-                  borderRadius: 16,
-                  boxShadow: 'var(--shadow-dropdown, 0 10px 30px rgba(0,0,0,0.25))',
-                  padding: 8,
+                  borderRadius: 20,
+                  boxShadow: '0 20px 48px rgba(0, 0, 0, 0.6), 0 0 24px rgba(16, 185, 129, 0.12)',
+                  padding: 10,
                   zIndex: 1000,
-                  animation: 'fadeIn 0.2s ease',
+                  backdropFilter: 'blur(24px)',
+                  animation: 'fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
                 }}
               >
-                {currentUser && (
-                  <div
-                    style={{
-                      padding: '10px 12px',
-                      borderBottom: '1px solid var(--color-border)',
-                      marginBottom: 6,
-                    }}
-                  >
-                    <div style={{ fontWeight: 800, fontSize: '0.9rem', color: 'var(--color-text-main)' }}>
-                      {currentUser.fullName || currentUser.username}
-                    </div>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-                      {currentUser.email}
-                    </div>
-                    <div style={{ marginTop: 6 }}>
-                      <span
-                        className="badge badge-primary"
-                        style={{ fontSize: '0.68rem', fontWeight: 800, padding: '2px 8px' }}
-                      >
-                        {currentUser.reputationScore || 100} Điểm uy tín
-                      </span>
-                    </div>
-                  </div>
-                )}
-
-                <div style={{ padding: '4px 8px 2px 8px', fontSize: '0.7rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                  Danh Mục Chính
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsUserMenuOpen(false);
-                    onNavigate('home');
-                  }}
-                  style={{
-                    width: '100%',
-                    padding: '9px 12px',
-                    borderRadius: 10,
-                    border: 'none',
-                    background: currentView === 'home' || currentView === 'explore' ? 'rgba(14, 215, 181, 0.12)' : 'transparent',
-                    color: currentView === 'home' || currentView === 'explore' ? 'var(--color-primary)' : 'var(--color-text-main)',
-                    fontSize: '0.85rem',
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                  }}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polygon points="12 2 2 7 12 12 22 7 12 2" />
-                    <polyline points="2 17 12 22 22 17" />
-                    <polyline points="2 12 12 17 22 12" />
-                  </svg>
-                  <span>Bản đồ thám hiểm</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsUserMenuOpen(false);
-                    onNavigate('forum');
-                  }}
-                  style={{
-                    width: '100%',
-                    padding: '9px 12px',
-                    borderRadius: 10,
-                    border: 'none',
-                    background: currentView === 'forum' ? 'rgba(14, 215, 181, 0.12)' : 'transparent',
-                    color: currentView === 'forum' ? 'var(--color-primary)' : 'var(--color-text-main)',
-                    fontSize: '0.85rem',
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                  }}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                  </svg>
-                  <span>Diễn đàn Trekkers</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsUserMenuOpen(false);
-                    if (!currentUser) {
-                      window.location.hash = '#login';
-                      onOpenAuthModal();
-                      return;
-                    }
-                    onNavigate('contribute');
-                  }}
-                  style={{
-                    width: '100%',
-                    padding: '9px 12px',
-                    borderRadius: 10,
-                    border: 'none',
-                    background: currentView === 'contribute' ? 'rgba(14, 215, 181, 0.12)' : 'transparent',
-                    color: currentView === 'contribute' ? 'var(--color-primary)' : 'var(--color-text-main)',
-                    fontSize: '0.85rem',
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                  }}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="12" y1="8" x2="12" y2="16" />
-                    <line x1="8" y1="12" x2="16" y2="12" />
-                  </svg>
-                  <span>Đóng góp cung đường</span>
-                </button>
-
-                {currentUser && (
+                {currentUser ? (
                   <>
-                    <div style={{ height: 1, background: 'var(--color-border)', margin: '6px 0' }} />
-
-                    <div style={{ padding: '4px 8px 2px 8px', fontSize: '0.7rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                      Cá Nhân & Quản Trị
+                    {/* User Header Profile Card */}
+                    <div
+                      style={{
+                        padding: '12px 14px',
+                        background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, var(--color-bg-main) 100%)',
+                        border: '1px solid rgba(16, 185, 129, 0.25)',
+                        borderRadius: 14,
+                        marginBottom: 10,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 12,
+                      }}
+                    >
+                      <img
+                        src={
+                          currentUser.avatarUrl ||
+                          currentUser.avatar ||
+                          'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80'
+                        }
+                        alt={currentUser.fullName}
+                        style={{
+                          width: 42,
+                          height: 42,
+                          borderRadius: '50%',
+                          objectFit: 'cover',
+                          border: '2px solid var(--color-primary)',
+                          flexShrink: 0,
+                        }}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontWeight: 800,
+                            fontSize: '0.92rem',
+                            color: 'var(--color-text-main)',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {currentUser.fullName || currentUser.username}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: '0.72rem',
+                            color: 'var(--color-text-dim)',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            marginTop: 1,
+                          }}
+                        >
+                          {currentUser.email}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                          <span
+                            style={{
+                              fontSize: '0.66rem',
+                              fontWeight: 800,
+                              padding: '2px 7px',
+                              borderRadius: 6,
+                              background: isAdmin ? 'rgba(245, 158, 11, 0.2)' : 'rgba(16, 185, 129, 0.2)',
+                              color: isAdmin ? '#f59e0b' : 'var(--color-primary)',
+                              border: isAdmin ? '1px solid rgba(245, 158, 11, 0.4)' : '1px solid rgba(16, 185, 129, 0.4)',
+                            }}
+                          >
+                            {isAdmin ? '🛡️ Quản Trị Viên' : '🌲 Trekker'}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: '0.66rem',
+                              fontWeight: 800,
+                              padding: '2px 7px',
+                              borderRadius: 6,
+                              background: 'rgba(250, 204, 21, 0.15)',
+                              color: 'var(--color-sun)',
+                              border: '1px solid rgba(250, 204, 21, 0.3)',
+                            }}
+                          >
+                            ⭐ {currentUser.reputationScore || 100} Điểm
+                          </span>
+                        </div>
+                      </div>
                     </div>
 
+                    {/* Section 1: User Actions */}
+                    <div style={{ padding: '4px 8px 2px 8px', fontSize: '0.68rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                      Tài Khoản Của Tôi
+                    </div>
+
+                    {/* Profile */}
                     <button
                       type="button"
                       onClick={() => {
                         setIsUserMenuOpen(false);
                         onNavigate('profile');
                       }}
+                      className="interactive-click"
                       style={{
                         width: '100%',
                         padding: '9px 12px',
                         borderRadius: 10,
                         border: 'none',
-                        background: currentView === 'profile' ? 'rgba(14, 215, 181, 0.12)' : 'transparent',
+                        background: currentView === 'profile' ? 'rgba(16, 185, 129, 0.15)' : 'transparent',
                         color: currentView === 'profile' ? 'var(--color-primary)' : 'var(--color-text-main)',
-                        fontSize: '0.85rem',
-                        fontWeight: 600,
+                        fontSize: '0.84rem',
+                        fontWeight: 700,
                         cursor: 'pointer',
                         textAlign: 'left',
                         display: 'flex',
                         alignItems: 'center',
                         gap: 10,
+                        transition: 'background 0.2s ease',
                       }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(16, 185, 129, 0.1)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = currentView === 'profile' ? 'rgba(16, 185, 129, 0.15)' : 'transparent')}
                     >
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
                         <circle cx="12" cy="7" r="4" />
                       </svg>
-                      <span>Hồ sơ cá nhân</span>
+                      <span>Hồ sơ & Huy hiệu</span>
                     </button>
 
-                    {isAdmin && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsUserMenuOpen(false);
-                          onNavigate('admin');
-                        }}
-                        style={{
-                          width: '100%',
-                          padding: '9px 12px',
-                          borderRadius: 10,
-                          border: 'none',
-                          background: currentView === 'admin' ? 'rgba(245, 158, 11, 0.15)' : 'transparent',
-                          color: '#f59e0b',
-                          fontSize: '0.85rem',
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 10,
-                        }}
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                        </svg>
-                        <span>Bảng quản trị Admin</span>
-                      </button>
-                    )}
-                  </>
-                )}
-
-                <div style={{ height: 1, background: 'var(--color-border)', margin: '6px 0' }} />
-
-                {currentUser ? (
-                  onLogout && (
+                    {/* Contribute Trail */}
                     <button
                       type="button"
                       onClick={() => {
                         setIsUserMenuOpen(false);
-                        onLogout();
+                        onNavigate('contribute');
                       }}
+                      className="interactive-click"
                       style={{
                         width: '100%',
                         padding: '9px 12px',
                         borderRadius: 10,
                         border: 'none',
-                        background: 'transparent',
-                        color: 'var(--color-error, #ef4444)',
-                        fontSize: '0.85rem',
-                        fontWeight: 600,
+                        background: currentView === 'contribute' ? 'rgba(16, 185, 129, 0.15)' : 'transparent',
+                        color: currentView === 'contribute' ? 'var(--color-primary)' : 'var(--color-text-main)',
+                        fontSize: '0.84rem',
+                        fontWeight: 700,
                         cursor: 'pointer',
                         textAlign: 'left',
                         display: 'flex',
                         alignItems: 'center',
                         gap: 10,
+                        transition: 'background 0.2s ease',
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(16, 185, 129, 0.1)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = currentView === 'contribute' ? 'rgba(16, 185, 129, 0.15)' : 'transparent')}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="12" y1="8" x2="12" y2="16" />
+                        <line x1="8" y1="12" x2="16" y2="12" />
+                      </svg>
+                      <span>Đóng góp cung đường mới</span>
+                    </button>
+
+                    {/* Section 2: Admin Dashboard (If Admin) */}
+                    {isAdmin && (
+                      <>
+                        <div style={{ height: 1, background: 'var(--color-border)', margin: '6px 0' }} />
+                        <div style={{ padding: '4px 8px 2px 8px', fontSize: '0.68rem', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                          Quản Trị Hệ Thống
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            onNavigate('admin');
+                          }}
+                          className="interactive-click"
+                          style={{
+                            width: '100%',
+                            padding: '9px 12px',
+                            borderRadius: 10,
+                            border: '1px solid rgba(245, 158, 11, 0.3)',
+                            background: currentView === 'admin' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(245, 158, 11, 0.08)',
+                            color: '#f59e0b',
+                            fontSize: '0.84rem',
+                            fontWeight: 800,
+                            cursor: 'pointer',
+                            textAlign: 'left',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 10,
+                            transition: 'all 0.2s ease',
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(245, 158, 11, 0.18)')}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = currentView === 'admin' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(245, 158, 11, 0.08)')}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                          </svg>
+                          <span>Bảng Điều Khiển Admin</span>
+                        </button>
+                      </>
+                    )}
+
+                    {/* Section 3: Logout */}
+                    <div style={{ height: 1, background: 'var(--color-border)', margin: '6px 0' }} />
+
+                    {onLogout && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsUserMenuOpen(false);
+                          onLogout();
+                        }}
+                        className="interactive-click"
+                        style={{
+                          width: '100%',
+                          padding: '9px 12px',
+                          borderRadius: 10,
+                          border: 'none',
+                          background: 'transparent',
+                          color: 'var(--color-error, #ef4444)',
+                          fontSize: '0.84rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          transition: 'background 0.2s ease',
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)')}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                          <polyline points="16 17 21 12 16 7" />
+                          <line x1="21" y1="12" x2="9" y2="12" />
+                        </svg>
+                        <span>Đăng xuất</span>
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  /* Guest Menu State */
+                  <div style={{ padding: '8px 4px' }}>
+                    <div style={{ padding: '6px 8px 12px 8px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 4 }}>
+                        Chào mừng đến với TrekMap!
+                      </div>
+                      <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', lineHeight: 1.4 }}>
+                        Đăng nhập để lưu cung đường yêu thích, gửi phản hồi và tham gia diễn đàn.
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsUserMenuOpen(false);
+                        onOpenAuthModal();
+                      }}
+                      className="btn btn-primary"
+                      style={{
+                        width: '100%',
+                        padding: '10px 14px',
+                        borderRadius: 12,
+                        fontSize: '0.84rem',
+                        fontWeight: 800,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 8,
                       }}
                     >
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-                        <polyline points="16 17 21 12 16 7" />
-                        <line x1="21" y1="12" x2="9" y2="12" />
+                        <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+                        <polyline points="10 17 15 12 10 7" />
+                        <line x1="15" y1="12" x2="3" y2="12" />
                       </svg>
-                      <span>Đăng xuất</span>
+                      <span>Đăng Nhập / Đăng Ký</span>
                     </button>
-                  )
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsUserMenuOpen(false);
-                      onOpenAuthModal();
-                    }}
-                    style={{
-                      width: '100%',
-                      padding: '9px 12px',
-                      borderRadius: 10,
-                      border: 'none',
-                      background: 'rgba(14, 215, 181, 0.1)',
-                      color: 'var(--color-primary)',
-                      fontSize: '0.85rem',
-                      fontWeight: 700,
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 10,
-                    }}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-                      <polyline points="10 17 15 12 10 7" />
-                      <line x1="15" y1="12" x2="3" y2="12" />
-                    </svg>
-                    <span>Đăng nhập tài khoản</span>
-                  </button>
+                  </div>
                 )}
               </div>
             )}

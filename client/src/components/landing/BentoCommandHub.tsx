@@ -506,7 +506,7 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
     }
     const fetchIncidents = async () => {
       try {
-        const res = await fetch('http://localhost:5000/api/incidents');
+        const res = await fetch('/api/incidents');
         const data = await res.json();
         if (data.success && Array.isArray(data.data) && data.data.length > 0) {
           setIncidents(data.data.slice(0, 4));
@@ -564,7 +564,7 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
   useEffect(() => {
     const fetchPorters = async () => {
       try {
-        const res = await fetch('http://localhost:5000/api/guides');
+        const res = await fetch('/api/guides');
         const data = await res.json();
         if (data.success && Array.isArray(data.data) && data.data.length > 0) {
           setPorters(data.data.slice(0, 4));
@@ -586,13 +586,13 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
   return (
     <section
       style={{
-        padding: '40px 0 50px 0',
+        padding: '24px 0 32px 0',
         maxWidth: 1320,
         margin: '0 auto',
       }}
     >
       {/* Section Header */}
-      <div style={{ textAlign: 'center', marginBottom: 32 }}>
+      <div style={{ textAlign: 'center', marginBottom: 20 }}>
         <div
           style={{
             display: 'inline-flex',

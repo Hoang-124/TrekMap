@@ -1,19 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import type { ForumThread } from '../../types.js';
+import type { ForumThread, Trail } from '../../types.js';
 import {
   IconArrowLeft,
   IconPlus,
   IconDownload,
   IconFileText,
   IconSend,
-  IconSearch,
   IconUsers,
-  IconSparkles,
-  IconShieldCheck,
-  IconRadio,
 } from '../common/SvgIcons.js';
 import { AlpineExpeditionFeed } from './AlpineExpeditionFeed.js';
 import { LiveTrekkerChatroom } from './LiveTrekkerChatroom.js';
+import { SummitAltitudeLadder } from '../landing/SummitAltitudeLadder.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import { useSocket } from '../../hooks/useSocket.js';
 
@@ -27,31 +24,26 @@ interface TopTrekker {
 }
 
 interface TrekForumViewProps {
-  onBack: () => void;
+  onBack?: () => void;
+  isEmbedded?: boolean;
   onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
   currentUser?: any;
   onRequireLogin?: (actionName: string) => void;
+  trails?: Trail[];
+  onSelectTrail?: (trail: Trail) => void;
 }
-
-const POPULAR_PEAKS = [
-  { id: 'all', name: 'Tất Cả Cung Đường' },
-  { id: 'trail-laothan', name: 'Lảo Thẩn (2.860m)' },
-  { id: 'trail-fansipan', name: 'Fansipan (3.143m)' },
-  { id: 'trail-kyquansan', name: 'Kỳ Quan San (3.046m)' },
-  { id: 'trail-putaleng', name: 'Pu Ta Leng (3.049m)' },
-  { id: 'trail-taxua', name: 'Tà Xùa (2.865m)' },
-];
 
 export const TrekForumView: React.FC<TrekForumViewProps> = ({
   onBack,
+  isEmbedded = false,
   onShowToast,
   currentUser,
   onRequireLogin,
+  trails,
+  onSelectTrail,
 }) => {
   const [threads, setThreads] = useState<ForumThread[]>([]);
   const [topTrekkers, setTopTrekkers] = useState<TopTrekker[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedPeak, setSelectedPeak] = useState('all');
   const [isNewThreadOpen, setIsNewThreadOpen] = useState(false);
   const { socket } = useSocket();
 
@@ -164,37 +156,74 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
     }
   };
 
-  // Filtered threads based on search query and peak filter
-  const filteredThreads = threads.filter((t) => {
-    const matchesSearch =
-      !searchQuery.trim() ||
-      t.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      t.content.toLowerCase().includes(searchQuery.toLowerCase());
-
-    const matchesPeak =
-      selectedPeak === 'all' ||
-      t.title.toLowerCase().includes(selectedPeak.replace('trail-', '').toLowerCase()) ||
-      t.content.toLowerCase().includes(selectedPeak.replace('trail-', '').toLowerCase());
-
-    return matchesSearch && matchesPeak;
-  });
-
   return (
-    <div style={{ maxWidth: 1400, margin: '0 auto', padding: '24px 20px 60px' }}>
+    <section
+      id="forum-section"
+      style={{
+        maxWidth: 1320,
+        margin: isEmbedded ? '20px auto 0 auto' : '0 auto',
+        padding: isEmbedded ? '0' : '24px 20px 40px',
+        position: 'relative',
+        zIndex: 10,
+      }}
+    >
       {/* Top Header & Actions Bar */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
-        <button
-          className="btn btn-outline interactive-click"
-          onClick={onBack}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 12 }}
-        >
-          <IconArrowLeft size={16} /> Quay lại trang chủ
-        </button>
+      {!isEmbedded && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
+          {onBack && (
+            <button
+              className="btn btn-outline interactive-click"
+              onClick={onBack}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 12 }}
+            >
+              <IconArrowLeft size={16} /> Quay lại trang chủ
+            </button>
+          )}
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <button
-            className="btn btn-primary interactive-click ripple-fx"
-            onClick={() => {
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button
+              className="btn btn-primary interactive-click ripple-fx"
+              onClick={() => {
+                const token = localStorage.getItem('trekmap_token');
+                if (!currentUser && !token) {
+                  if (onRequireLogin) {
+                    onRequireLogin('tạo bài nhật ký mới trên diễn đàn');
+                  } else if (onShowToast) {
+                    onShowToast('Vui lòng đăng nhập để tạo bài nhật ký mới trên diễn đàn!', 'info');
+                  }
+                  return;
+                }
+                setIsNewThreadOpen(true);
+              }}
+              style={{
+                padding: '9px 18px',
+                borderRadius: 12,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                fontWeight: 800,
+              }}
+            >
+              <IconPlus size={16} color="#041108" /> Viết Bài Đóng Góp
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODULAR BENTO 2-COLUMN CO-EXISTENCE MASTER GRID */}
+      <div className="bento-master-grid" style={{ marginBottom: 0 }}>
+        {/* LEFT COLUMN: LIVE FIELD RADIO & ACTIVE COMMUNITY FEED */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 28, minWidth: 0 }}>
+          {/* 1. Live Trekker Basecamp Radio & Chatroom */}
+          <LiveTrekkerChatroom
+            currentUser={currentUser}
+            onRequireLogin={onRequireLogin}
+          />
+
+          {/* 2. Full Alpine Expedition Feed & Discussions */}
+          <AlpineExpeditionFeed
+            threads={threads}
+            onOpenNewThreadModal={() => {
               const token = localStorage.getItem('trekmap_token');
               if (!currentUser && !token) {
                 if (onRequireLogin) {
@@ -206,290 +235,135 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
               }
               setIsNewThreadOpen(true);
             }}
+          />
+        </div>
+
+        {/* RIGHT TACTICAL SIDEBAR: ALTITUDE LADDER, GPX VAULT, TOP TREKKERS & SAFETY */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 18, position: 'sticky', top: 80 }}>
+          {/* 1. Compact Summit Altitude Ladder Widget */}
+          <SummitAltitudeLadder
+            trails={trails || []}
+            compact={true}
+            onSelectTrail={onSelectTrail}
+          />
+
+          {/* 2. Kho Tracklog GPX 100% Thực Địa */}
+          <div
+            className="card"
             style={{
-              padding: '9px 18px',
-              borderRadius: 12,
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              fontWeight: 800,
+              background: 'var(--color-bg-card)',
+              border: '1px solid var(--color-border)',
+              borderRadius: 20,
+              padding: '18px 20px',
+              boxShadow: 'var(--shadow-card)',
             }}
           >
-            <IconPlus size={16} color="#041108" /> Viết Bài Đóng Góp
-          </button>
-        </div>
-      </div>
+            <h3 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 4px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <IconFileText size={16} color="var(--color-primary)" />
+              Kho Tracklog GPX Thật 100%
+            </h3>
+            <p style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', lineHeight: 1.45, margin: '0 0 12px 0' }}>
+              Tải file GPX chuẩn tọa độ GPS thực địa nạp vào điện thoại/Garmin để điều hướng an toàn offline:
+            </p>
 
-      {/* Hero Community Banner */}
-      <div
-        className="card"
-        style={{
-          background: 'linear-gradient(135deg, rgba(7, 13, 30, 0.95) 0%, rgba(12, 28, 48, 0.95) 100%)',
-          border: '1px solid var(--color-border)',
-          borderRadius: 24,
-          padding: '28px 32px',
-          marginBottom: 28,
-          boxShadow: 'var(--shadow-card)',
-          position: 'relative',
-          overflow: 'hidden',
-        }}
-      >
-        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(5, 150, 105, 0.14)', border: '1px solid rgba(5, 150, 105, 0.3)', padding: '3px 10px', borderRadius: 16, fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-primary)', marginBottom: 10 }}>
-          <IconSparkles size={13} color="var(--color-primary)" />
-          ALPINE COMMUNITY HUB 24/7
-        </div>
-        <h1 style={{ fontSize: '1.8rem', fontWeight: 900, color: 'var(--color-text-main)', margin: '0 0 8px 0', letterSpacing: '-0.02em' }}>
-          Trung Tâm Cộng Đồng & Vô Tuyến Thực Địa
-        </h1>
-        <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem', maxWidth: 840, lineHeight: 1.6, margin: '0 0 18px 0' }}>
-          Không gian kết nối trực tuyến của cộng đồng Trekker Việt Nam: Thảo luận kinh nghiệm cung đường, đàm thoại thực địa và tải xuống tracklog GPX chuẩn GPS.
-        </p>
-
-        {/* Search Bar & Peak Pills inside Banner */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {/* Keyword Search Input */}
-          <div style={{ position: 'relative', maxWidth: 640 }}>
-            <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-dim)' }}>
-              <IconSearch size={16} />
-            </span>
-            <input
-              type="text"
-              className="form-input"
-              placeholder="Tìm kiếm bài viết, kinh nghiệm leo núi, trạm kiểm lâm..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '10px 14px 10px 40px',
-                borderRadius: 14,
-                background: 'var(--color-bg-card)',
-                border: '1px solid var(--color-border)',
-                fontSize: '0.86rem',
-              }}
-            />
-          </div>
-
-          {/* Mountain Peak Selection Pills */}
-          <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
-            {POPULAR_PEAKS.map((peak) => {
-              const isSelected = selectedPeak === peak.id;
-              return (
-                <button
-                  key={peak.id}
-                  type="button"
-                  onClick={() => setSelectedPeak(peak.id)}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {[
+                { id: 'trail-laothan', name: 'Lảo Thẩn Y Tý (2.860m)', dist: '16.0 km' },
+                { id: 'trail-fansipan', name: 'Fansipan Trạm Tôn (3.143m)', dist: '22.4 km' },
+                { id: 'trail-kyquansan', name: 'Kỳ Quan San (3.046m)', dist: '30.0 km' },
+                { id: 'trail-putaleng', name: 'Pu Ta Leng (3.049m)', dist: '34.0 km' },
+                { id: 'trail-taxua', name: 'Tà Xùa Mỏm Cá Heo', dist: '18.5 km' },
+              ].map((item) => (
+                <div
+                  key={item.id}
                   style={{
-                    padding: '5px 12px',
-                    borderRadius: 12,
-                    fontSize: '0.76rem',
-                    fontWeight: 700,
-                    whiteSpace: 'nowrap',
-                    cursor: 'pointer',
-                    background: isSelected ? 'var(--color-primary)' : 'var(--color-bg-card)',
-                    color: isSelected ? '#041108' : 'var(--color-text-muted)',
-                    border: isSelected ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
-                    transition: 'all 0.15s ease',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    background: 'var(--color-bg-main)',
+                    border: '1px solid var(--color-border)',
+                    borderRadius: 10,
+                    padding: '7px 10px',
+                    fontSize: '0.74rem',
                   }}
                 >
-                  {peak.name}
-                </button>
-              );
-            })}
+                  <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 190 }}>
+                    <div style={{ fontWeight: 800, color: 'var(--color-text-main)', textOverflow: 'ellipsis', overflow: 'hidden' }}>{item.name}</div>
+                    <div style={{ fontSize: '0.66rem', color: 'var(--color-sky)', marginTop: 1 }}>{item.dist}</div>
+                  </div>
+                  <a
+                    href={`/api/forum/gpx/${item.id}`}
+                    download={`${item.id}.gpx`}
+                    className="btn btn-outline interactive-click"
+                    style={{ padding: '4px 8px', borderRadius: 8, fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}
+                  >
+                    <IconDownload size={12} color="var(--color-primary)" />
+                    <span>Tải</span>
+                  </a>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
-      </div>
 
-      {/* SECTION 1: CENTERED REAL-TIME EXPEDITION HUB (3 COLUMNS WITH CHATROOM AT CENTER STAGE) */}
-      <div style={{ marginBottom: 40 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '300px minmax(0, 1fr) 300px', gap: 20, alignItems: 'stretch' }}>
-          {/* Left Sub-Widget: GPX Tracklog Downloads & Safety Handbook */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div
-              className="card"
-              style={{
-                background: 'var(--color-bg-card)',
-                border: '1px solid var(--color-border)',
-                borderRadius: 20,
-                padding: '18px 20px',
-                boxShadow: 'var(--shadow-card)',
-                flex: 1,
-              }}
-            >
-              <h3 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 4px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
-                <IconFileText size={16} color="var(--color-primary)" />
-                Kho Tracklog GPX Thật 100%
-              </h3>
-              <p style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', lineHeight: 1.45, margin: '0 0 12px 0' }}>
-                Tải file GPX chuẩn tọa độ GPS thực địa nạp vào điện thoại/Garmin để điều hướng an toàn offline:
-              </p>
+          {/* 3. Top Thành Viên Uy Tín */}
+          <div
+            className="card"
+            style={{
+              background: 'var(--color-bg-card)',
+              border: '1px solid var(--color-border)',
+              borderRadius: 20,
+              padding: '18px 20px',
+              boxShadow: 'var(--shadow-card)',
+            }}
+          >
+            <h3 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 10px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <IconUsers size={16} color="var(--color-sky)" />
+              Top Thành Viên Uy Tín
+            </h3>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {[
-                  { id: 'trail-laothan', name: 'Lảo Thẩn Y Tý (2.860m)', dist: '16.0 km' },
-                  { id: 'trail-fansipan', name: 'Fansipan Trạm Tôn (3.143m)', dist: '22.4 km' },
-                  { id: 'trail-kyquansan', name: 'Kỳ Quan San (3.046m)', dist: '30.0 km' },
-                  { id: 'trail-putaleng', name: 'Pu Ta Leng (3.049m)', dist: '34.0 km' },
-                  { id: 'trail-taxua', name: 'Tà Xùa Mỏm Cá Heo', dist: '18.5 km' },
-                ].map((item) => (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {topTrekkers.length === 0 ? (
+                <div style={{ fontSize: '0.76rem', color: 'var(--color-text-dim)', textAlign: 'center', padding: '12px 0' }}>
+                  Chưa có dữ liệu thành viên
+                </div>
+              ) : (
+                topTrekkers.map((user, idx) => (
                   <div
-                    key={item.id}
+                    key={user._id}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
-                      justifyContent: 'space-between',
-                      background: 'var(--color-bg-main)',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: 10,
-                      padding: '7px 10px',
-                      fontSize: '0.74rem',
+                      gap: 8,
+                      padding: '6px 0',
+                      borderBottom: idx < topTrekkers.length - 1 ? '1px solid var(--color-border)' : 'none',
                     }}
                   >
-                    <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 170 }}>
-                      <div style={{ fontWeight: 800, color: 'var(--color-text-main)', textOverflow: 'ellipsis', overflow: 'hidden' }}>{item.name}</div>
-                      <div style={{ fontSize: '0.66rem', color: 'var(--color-sky)', marginTop: 1 }}>{item.dist}</div>
-                    </div>
-                    <a
-                      href={`/api/forum/gpx/${item.id}`}
-                      download={`${item.id}.gpx`}
-                      className="btn btn-outline interactive-click"
-                      style={{ padding: '4px 8px', borderRadius: 8, fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}
-                    >
-                      <IconDownload size={12} color="var(--color-primary)" />
-                      <span>Tải</span>
-                    </a>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Quick Safety Rule Banner */}
-            <div
-              style={{
-                background: 'rgba(5, 150, 105, 0.08)',
-                border: '1px solid rgba(5, 150, 105, 0.25)',
-                borderRadius: 16,
-                padding: '12px 14px',
-                fontSize: '0.74rem',
-                color: 'var(--color-text-muted)',
-                lineHeight: 1.45,
-              }}
-            >
-              <div style={{ fontWeight: 800, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                <IconShieldCheck size={14} color="var(--color-primary)" />
-                Nguyên Tắc An Toàn
-              </div>
-              Luôn mang tối thiểu 1.5L nước, sạc dự phòng, đèn pin đội đầu và gậy trekking khi vào rừng.
-            </div>
-          </div>
-
-          {/* Center Stage: MAIN LIVE CHATROOM (PROMINENT & SPACIOUS) */}
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <LiveTrekkerChatroom
-              currentUser={currentUser}
-              onRequireLogin={onRequireLogin}
-            />
-          </div>
-
-          {/* Right Sub-Widget: Top Trekkers & Basecamp Status */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div
-              className="card"
-              style={{
-                background: 'var(--color-bg-card)',
-                border: '1px solid var(--color-border)',
-                borderRadius: 20,
-                padding: '18px 20px',
-                boxShadow: 'var(--shadow-card)',
-                flex: 1,
-              }}
-            >
-              <h3 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 10px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
-                <IconUsers size={16} color="var(--color-sky)" />
-                Top Thành Viên Uy Tín
-              </h3>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {topTrekkers.length === 0 ? (
-                  <div style={{ fontSize: '0.76rem', color: 'var(--color-text-dim)', textAlign: 'center', padding: '12px 0' }}>
-                    Chưa có dữ liệu thành viên
-                  </div>
-                ) : (
-                  topTrekkers.map((user, idx) => (
-                    <div
-                      key={user._id}
+                    <img
+                      src={user.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=100&q=80'}
+                      alt={user.fullName}
                       style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        padding: '6px 0',
-                        borderBottom: idx < topTrekkers.length - 1 ? '1px solid var(--color-border)' : 'none',
+                        width: 30,
+                        height: 30,
+                        borderRadius: '50%',
+                        border: '1.5px solid var(--color-primary)',
+                        objectFit: 'cover',
+                        flexShrink: 0,
                       }}
-                    >
-                      <img
-                        src={user.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=100&q=80'}
-                        alt={user.fullName}
-                        style={{
-                          width: 30,
-                          height: 30,
-                          borderRadius: '50%',
-                          border: '1.5px solid var(--color-primary)',
-                          objectFit: 'cover',
-                          flexShrink: 0,
-                        }}
-                      />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {user.fullName}
-                        </div>
-                        <div style={{ fontSize: '0.66rem', color: 'var(--color-primary)', fontWeight: 700 }}>
-                          ★ {user.reputationScore} Điểm uy tín
-                        </div>
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {user.fullName}
+                      </div>
+                      <div style={{ fontSize: '0.66rem', color: 'var(--color-primary)', fontWeight: 700 }}>
+                        ★ {user.reputationScore} Điểm uy tín
                       </div>
                     </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            {/* Basecamp Telemetry Info */}
-            <div
-              style={{
-                background: 'rgba(56, 189, 248, 0.08)',
-                border: '1px solid rgba(56, 189, 248, 0.25)',
-                borderRadius: 16,
-                padding: '12px 14px',
-                fontSize: '0.74rem',
-                color: 'var(--color-text-muted)',
-                lineHeight: 1.45,
-              }}
-            >
-              <div style={{ fontWeight: 800, color: 'var(--color-sky)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                <IconRadio size={14} color="var(--color-sky)" />
-                Trạm Vô Tuyến 4G
-              </div>
-              Hệ thống kết nối trực tiếp với 100 trạm kiểm lâm và cứu hộ Hoàng Liên Sơn - Tây Bắc.
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>
-      </div>
-
-      {/* SECTION 2: FULL-WIDTH EXPEDITION FEED & COMMUNITY FORUM */}
-      <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 32 }}>
-        <AlpineExpeditionFeed
-          threads={filteredThreads}
-          onOpenNewThreadModal={() => {
-            const token = localStorage.getItem('trekmap_token');
-            if (!currentUser && !token) {
-              if (onRequireLogin) {
-                onRequireLogin('tạo bài nhật ký mới trên diễn đàn');
-              } else if (onShowToast) {
-                onShowToast('Vui lòng đăng nhập để tạo bài nhật ký mới trên diễn đàn!', 'info');
-              }
-              return;
-            }
-            setIsNewThreadOpen(true);
-          }}
-        />
       </div>
 
       {/* Create New Thread Modal */}
@@ -582,6 +456,6 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
           </div>
         </div>
       )}
-    </div>
+    </section>
   );
 };

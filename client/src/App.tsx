@@ -10,11 +10,9 @@ import { UserProfileView } from './components/profile/UserProfileView.js';
 import { AdminDashboardView } from './components/admin/AdminDashboardView.js';
 import { AdvancedFilterDrawer } from './components/search/AdvancedFilterDrawer.js';
 import { TrekForumView } from './components/forum/TrekForumView.js';
-import { AlpineExpeditionFeed } from './components/forum/AlpineExpeditionFeed.js';
 import { HeroExpeditionSection } from './components/landing/HeroExpeditionSection.js';
 import { SeasonExpeditionRadar } from './components/landing/SeasonExpeditionRadar.js';
 import { BentoCommandHub } from './components/landing/BentoCommandHub.js';
-import { SummitAltitudeLadder } from './components/landing/SummitAltitudeLadder.js';
 import { InteractiveMapShowcase } from './components/landing/InteractiveMapShowcase.js';
 import { SafetyPledgeSection } from './components/landing/SafetyPledgeSection.js';
 import { MessagesPage } from './components/messages/MessagesPage.js';
@@ -104,11 +102,14 @@ function getInitialRoute(): {
     return { view: 'detail', trailId };
   }
 
-  if (['forum', 'profile', 'messages', 'contribute', 'admin', 'explore', 'notifications'].includes(pathname)) {
+  if (pathname === 'forum' || hash === '#forum') {
+    return { view: 'home', trailId: null };
+  }
+
+  if (['profile', 'messages', 'contribute', 'admin', 'explore', 'notifications'].includes(pathname)) {
     return { view: pathname as any, trailId: null };
   }
 
-  if (hash === '#forum') return { view: 'forum', trailId: null };
   if (hash === '#profile') return { view: 'profile', trailId: null };
   if (hash === '#messages') return { view: 'messages', trailId: null };
   if (hash === '#contribute') return { view: 'contribute', trailId: null };
@@ -290,7 +291,20 @@ export function App() {
       }
 
       // Check clean URL pathname (/forum, /profile, /messages, /contribute, /admin, /explore)
-      if (['forum', 'profile', 'messages', 'contribute', 'admin', 'explore', 'notifications'].includes(pathname)) {
+      if (pathname === 'forum' || hash === '#forum') {
+        setIsAuthModalOpen(false);
+        setCurrentView('home');
+        window.history.replaceState({ view: 'home' }, '', '/#forum');
+        setTimeout(() => {
+          const forumEl = document.getElementById('forum-section');
+          if (forumEl) {
+            forumEl.scrollIntoView({ behavior: 'smooth' });
+          }
+        }, 200);
+        return;
+      }
+
+      if (['profile', 'messages', 'contribute', 'admin', 'explore', 'notifications'].includes(pathname)) {
         setIsAuthModalOpen(false);
         if (hash === '#contribute') {
           setCurrentView('contribute');
@@ -301,7 +315,7 @@ export function App() {
             window.history.replaceState({ view: pathname }, '', `/${pathname}`);
           }
         }
-      } else if (hash === '#forum' || hash === '#profile' || hash === '#messages' || hash === '#contribute' || hash === '#admin') {
+      } else if (hash === '#profile' || hash === '#messages' || hash === '#contribute' || hash === '#admin') {
         setIsAuthModalOpen(false);
         const targetView = hash.replace('#', '');
         setCurrentView(targetView as any);
@@ -351,7 +365,7 @@ export function App() {
     const activateToken = urlParams.get('activateToken');
 
     if (activateToken) {
-      fetch('http://localhost:5000/api/auth/activate-account', {
+      fetch('/api/auth/activate-account', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ activateToken }),
@@ -438,7 +452,7 @@ export function App() {
       if (!token) return;
 
       try {
-        const res = await fetch('http://localhost:5000/api/auth/me', {
+        const res = await fetch('/api/auth/me', {
           headers: { Authorization: `Bearer ${token}` },
         });
         const json = await res.json();
@@ -485,7 +499,7 @@ export function App() {
       setIncidents(incData);
 
       try {
-        const forumRes = await fetch('http://localhost:5000/api/forum', {
+        const forumRes = await fetch('/api/forum', {
           headers: getApiHeaders(),
         });
         const forumJson = await forumRes.json();
@@ -544,6 +558,22 @@ export function App() {
 
     if (targetView === 'home' || targetView === 'explore') {
       setSelectedTrail(null);
+    }
+
+    if (targetView === 'forum') {
+      setSelectedTrail(null);
+      if (currentView !== 'home' && currentView !== 'explore') {
+        setPreviousView(currentView);
+        setCurrentView('home');
+      }
+      window.history.pushState({ view: 'home' }, '', `/#forum${queryString}`);
+      setTimeout(() => {
+        const forumEl = document.getElementById('forum-section');
+        if (forumEl) {
+          forumEl.scrollIntoView({ behavior: 'smooth' });
+        }
+      }, 100);
+      return;
     }
 
     const protectedViews = ['contribute', 'profile', 'admin', 'messages', 'notifications'];
@@ -608,7 +638,7 @@ export function App() {
 
     try {
       const token = localStorage.getItem('trekmap_token');
-      const res = await fetch('http://localhost:5000/api/forum', {
+      const res = await fetch('/api/forum', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -729,17 +759,26 @@ export function App() {
               onSelectRegion={setSelectedRegion}
               searchQuery={searchQuery}
               onSearchChange={setSearchQuery}
+              campsiteOnly={campsiteOnly}
+              onToggleCampsite={() => setCampsiteOnly((prev) => !prev)}
               onOpenAdvancedFilter={() => setIsFilterOpen(true)}
               onScrollToMap={() => {
                 const mapEl = document.getElementById('gis-map-section');
-                if (mapEl) mapEl.scrollIntoView({ behavior: 'smooth' });
+                if (mapEl) {
+                  const offset = 80;
+                  const bodyRect = document.body.getBoundingClientRect().top;
+                  const elementRect = mapEl.getBoundingClientRect().top;
+                  const elementPosition = elementRect - bodyRect;
+                  const offsetPosition = elementPosition - offset;
+                  window.scrollTo({ top: offsetPosition, behavior: 'smooth' });
+                }
               }}
               onExploreClick={() => handleNavigate('explore')}
               onSelectTrail={handleSelectTrail}
             />
 
             {/* Main Content Container */}
-            <div style={{ maxWidth: 1320, margin: '-24px auto 60px auto', padding: '0 24px', position: 'relative', zIndex: 10 }}>
+            <div style={{ maxWidth: 1320, margin: '8px auto 60px auto', padding: '0 24px', position: 'relative', zIndex: 10 }}>
               {/* GIS Interactive 3D Terrain Map Stage */}
               <div id="gis-map-section">
                 <InteractiveMapShowcase
@@ -753,6 +792,20 @@ export function App() {
                   onClearMonthFilter={() => setSelectedSeasonMonth(null)}
                 />
               </div>
+
+              {/* Full Alpine Community, Live Chatroom & Tactical Sidebar Master Hub (ĐẶT NGAY DƯỚI BẢN ĐỒ) */}
+              <TrekForumView
+                isEmbedded={true}
+                currentUser={currentUser}
+                trails={trails}
+                onSelectTrail={handleSelectTrail}
+                onShowToast={(msg, type) => showToast(msg, type)}
+                onRequireLogin={(action) => {
+                  showToast(`Vui lòng đăng nhập tài khoản để ${action}.`, 'info');
+                  setAuthModalInitialMode('login');
+                  setIsAuthModalOpen(true);
+                }}
+              />
 
               {/* 12-Month Season Radar & Best Season Trails */}
               <SeasonExpeditionRadar
@@ -774,20 +827,6 @@ export function App() {
                 onNavigateToForum={() => handleNavigate('forum')}
                 onShowToast={(msg, type) => showToast(msg, type)}
               />
-
-              {/* Top 10 Vietnam Summit Altitude Ladder */}
-              <SummitAltitudeLadder
-                trails={trails}
-                onSelectTrail={handleSelectTrail}
-              />
-
-              {/* Community Alpine Expedition Feed */}
-              <section style={{ marginBottom: 56 }}>
-                <AlpineExpeditionFeed
-                  threads={forumThreads}
-                  onOpenNewThreadModal={() => setIsHomeNewThreadOpen(true)}
-                />
-              </section>
 
               {/* All Trails Catalog (Grid vs Compact Mode) */}
               <section style={{ marginBottom: 56 }}>

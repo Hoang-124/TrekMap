@@ -51,7 +51,7 @@ export const createItinerary = async (req: Request, res: Response) => {
     return res.status(201).json({
       success: true,
       data: itineraryData,
-      shareUrl: `http://localhost:5173/itinerary/${shareToken}`,
+      shareUrl: `${process.env.CLIENT_URL || 'https://trekmap.vn'}/itinerary/${shareToken}`,
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err.message || 'Lỗi khi tạo lịch trình' });
