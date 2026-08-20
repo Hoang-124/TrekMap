@@ -447,7 +447,7 @@ ${trackPointsXml}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {transportSteps.map((stepText: string, idx: number) => (
                   <div key={idx} style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-                    <span style={{ background: 'var(--color-primary)', color: '#071319', fontSize: '0.78rem', fontWeight: 800, width: 24, height: 24, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <span style={{ background: 'var(--color-primary)', color: '#ffffff', fontSize: '0.78rem', fontWeight: 800, width: 24, height: 24, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                       {idx + 1}
                     </span>
                     <div style={{ fontSize: '0.9rem', color: 'var(--color-text-muted)', lineHeight: 1.5, paddingTop: 2 }}>
@@ -629,7 +629,7 @@ ${trackPointsXml}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                   <h4 style={{ fontSize: '1rem', color: 'var(--color-text-main)', fontWeight: 700 }}>{guide.name}</h4>
                   {guide.verified ? (
-                    <span className="badge badge-success" style={{ background: '#10b981', color: '#fff', fontSize: '0.75rem', padding: '3px 10px', borderRadius: 12 }}>
+                    <span className="badge badge-success" style={{ background: 'var(--color-primary)', color: '#ffffff', fontSize: '0.75rem', padding: '3px 10px', borderRadius: 12 }}>
                       Đã Xác Minh
                     </span>
                   ) : (
@@ -700,9 +700,9 @@ ${trackPointsXml}
                   </p>
 
                   {rev.safetyNote && (
-                    <div style={{ background: 'rgba(239, 68, 68, 0.12)', borderLeft: '4px solid #ef4444', border: '1px solid rgba(239, 68, 68, 0.3)', padding: '10px 14px', fontSize: '0.85rem', color: '#fca5a5', borderRadius: 8, marginTop: 8 }}>
-                      <strong style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                        <IconAlertTriangle size={15} color="#ef4444" />
+                    <div style={{ background: 'rgba(239, 68, 68, 0.12)', borderLeft: '4px solid var(--color-error)', border: '1px solid rgba(239, 68, 68, 0.3)', padding: '10px 14px', fontSize: '0.85rem', color: 'var(--color-text-main)', borderRadius: 8, marginTop: 8 }}>
+                      <strong style={{ color: 'var(--color-error)', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                        <IconAlertTriangle size={15} color="var(--color-error)" />
                         CẢNH BÁO AN TOÀN TỪ TREKKER:
                       </strong>
                       {rev.safetyNote}

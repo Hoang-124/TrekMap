@@ -129,7 +129,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                       width: 12,
                       height: 12,
                       borderRadius: '50%',
-                      background: isOnline ? '#10b981' : '#9ca3af',
+                      background: isOnline ? 'var(--color-primary)' : 'var(--color-text-dim)',
                       border: '2px solid var(--color-bg-card)',
                     }}
                     title={isOnline ? 'Trực tuyến' : 'Ngoại tuyến'}

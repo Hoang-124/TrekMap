@@ -63,26 +63,26 @@ export const WeatherTab: React.FC<WeatherTabProps> = ({ trail }) => {
   };
 
   const getTempColor = (temp: number) => {
-    if (temp <= 15) return '#38bdf8'; // Cyan / Lạnh
-    if (temp <= 22) return '#10b981'; // Emerald / Mát mẻ
-    if (temp <= 27) return '#f59e0b'; // Amber / Ấm áp
-    return '#ef4444'; // Red / Nắng nóng
+    if (temp <= 15) return 'var(--color-sky)'; // Cyan / Lạnh
+    if (temp <= 22) return 'var(--color-primary)'; // Emerald / Mát mẻ
+    if (temp <= 27) return 'var(--color-sun)'; // Amber / Ấm áp
+    return 'var(--color-error)'; // Red / Nắng nóng
   };
 
   const getWeatherBadgeStyle = (cond: string) => {
     switch (cond) {
       case 'clear':
-        return { background: 'rgba(245, 158, 11, 0.12)', color: '#fbbf24', border: '1px solid rgba(245, 158, 11, 0.3)' };
+        return { background: 'rgba(250, 204, 21, 0.14)', color: 'var(--color-sun)', border: '1px solid rgba(250, 204, 21, 0.35)' };
       case 'cloudy':
-        return { background: 'rgba(148, 163, 184, 0.12)', color: '#cbd5e1', border: '1px solid rgba(148, 163, 184, 0.3)' };
+        return { background: 'rgba(148, 163, 184, 0.14)', color: 'var(--color-text-muted)', border: '1px solid rgba(148, 163, 184, 0.35)' };
       case 'foggy':
-        return { background: 'rgba(56, 189, 248, 0.12)', color: '#38bdf8', border: '1px solid rgba(56, 189, 248, 0.3)' };
+        return { background: 'rgba(56, 189, 248, 0.14)', color: 'var(--color-sky)', border: '1px solid rgba(56, 189, 248, 0.35)' };
       case 'rainy':
-        return { background: 'rgba(6, 182, 212, 0.12)', color: '#22d3ee', border: '1px solid rgba(6, 182, 212, 0.3)' };
+        return { background: 'rgba(34, 211, 238, 0.14)', color: 'var(--color-stream)', border: '1px solid rgba(34, 211, 238, 0.35)' };
       case 'storm':
-        return { background: 'rgba(239, 68, 68, 0.18)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.4)' };
+        return { background: 'rgba(239, 68, 68, 0.18)', color: 'var(--color-error)', border: '1px solid rgba(239, 68, 68, 0.45)' };
       default:
-        return { background: 'rgba(16, 185, 129, 0.12)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.3)' };
+        return { background: 'rgba(74, 222, 128, 0.14)', color: 'var(--color-primary)', border: '1px solid rgba(74, 222, 128, 0.35)' };
     }
   };
 
@@ -96,7 +96,7 @@ export const WeatherTab: React.FC<WeatherTabProps> = ({ trail }) => {
             border: '2px solid var(--color-error)',
             padding: '16px 20px',
             borderRadius: 16,
-            color: '#fca5a5',
+            color: 'var(--color-error)',
             display: 'flex',
             alignItems: 'center',
             gap: 14,
@@ -157,7 +157,7 @@ export const WeatherTab: React.FC<WeatherTabProps> = ({ trail }) => {
                         position: 'absolute',
                         top: -9,
                         background: 'var(--color-primary)',
-                        color: '#071319',
+                        color: '#ffffff',
                         fontSize: '0.62rem',
                         fontWeight: 900,
                         padding: '2px 8px',
@@ -216,7 +216,7 @@ export const WeatherTab: React.FC<WeatherTabProps> = ({ trail }) => {
 
         {/* P2-7: Cloud Hunting Index (Chỉ số săn mây) */}
         <div>
-          <div className="card" style={{ height: '100%', background: 'linear-gradient(135deg, rgba(14, 215, 181, 0.08) 0%, rgba(14, 165, 233, 0.05) 100%)' }}>
+          <div className="card" style={{ height: '100%', background: 'linear-gradient(135deg, rgba(74, 222, 128, 0.08) 0%, rgba(56, 189, 248, 0.05) 100%)' }}>
             <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 6 }}>
               Chỉ số Săn Mây (Sea of Clouds)
             </h3>
@@ -239,7 +239,7 @@ export const WeatherTab: React.FC<WeatherTabProps> = ({ trail }) => {
                     alignItems: 'center',
                     justifyContent: 'center',
                     padding: 10,
-                    boxShadow: '0 0 20px rgba(14, 215, 181, 0.25)',
+                    boxShadow: '0 0 20px rgba(74, 222, 128, 0.25)',
                   }}
                 >
                   <div
@@ -247,7 +247,7 @@ export const WeatherTab: React.FC<WeatherTabProps> = ({ trail }) => {
                       width: '100%',
                       height: '100%',
                       borderRadius: '50%',
-                      background: '#071319',
+                      background: 'var(--color-bg-card)',
                       display: 'flex',
                       flexDirection: 'column',
                       alignItems: 'center',
@@ -283,11 +283,11 @@ export const WeatherTab: React.FC<WeatherTabProps> = ({ trail }) => {
                   Dữ Liệu Thiên Văn (Sunrise-Sunset API)
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: '0.8rem', color: 'var(--color-text-main)' }}>
-                  <div>Mặt trời mọc: <strong style={{ color: '#fbbf24' }}>{astroData.sunrise || '05:30 SA'}</strong></div>
-                  <div>Mặt trời lặn: <strong style={{ color: '#fb923c' }}>{astroData.sunset || '18:15 CH'}</strong></div>
+                  <div>Mặt trời mọc: <strong style={{ color: 'var(--color-sun)' }}>{astroData.sunrise || '05:30 SA'}</strong></div>
+                  <div>Mặt trời lặn: <strong style={{ color: 'var(--color-earth)' }}>{astroData.sunset || '18:15 CH'}</strong></div>
                 </div>
                 <div style={{ fontSize: '0.74rem', color: 'var(--color-text-dim)', marginTop: 6 }}>
-                  Tổng thời gian ban ngày: {astroData.dayLengthHours || 12.8} giờ • Giờ Vàng (Golden Hour): <span style={{ color: '#fbbf24', fontWeight: 700 }}>{astroData.goldenHourMorning || '05:10 SA - 06:15 SA'}</span>
+                  Tổng thời gian ban ngày: {astroData.dayLengthHours || 12.8} giờ • Giờ Vàng (Golden Hour): <span style={{ color: 'var(--color-sun)', fontWeight: 700 }}>{astroData.goldenHourMorning || '05:10 SA - 06:15 SA'}</span>
                 </div>
               </div>
             )}

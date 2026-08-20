@@ -337,3 +337,32 @@ export interface ContributionItem {
   status: 'pending' | 'approved' | 'rejected';
   createdAt: string;
 }
+
+export interface AiAssistantAction {
+  type: 'trail_card' | 'emergency_sos' | 'gear_checklist' | 'quick_reply';
+  trailId?: string;
+  trailName?: string;
+  trailData?: Partial<Trail>;
+  emergencyContacts?: {
+    name: string;
+    phone: string;
+    rangerContact?: string;
+    region?: string;
+    address?: string;
+  }[];
+  checklistItems?: {
+    category: string;
+    items: string[];
+  }[];
+  suggestions?: string[];
+}
+
+export interface AiChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: string;
+  actions?: AiAssistantAction[];
+  isError?: boolean;
+}
+

@@ -372,7 +372,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
                   value={shareUrl}
                   style={{
                     flex: 1,
-                    background: '#071319',
+                    background: 'var(--color-bg-card)',
                     border: '1px solid var(--color-border)',
                     borderRadius: 6,
                     color: 'var(--color-primary)',

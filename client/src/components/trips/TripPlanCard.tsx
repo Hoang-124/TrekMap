@@ -277,7 +277,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, onJoinSuccess 
               boxShadow: isFull ? 'none' : '0 4px 14px rgba(5, 150, 105, 0.3)',
             }}
           >
-            <IconUserPlus size={15} color={isFull ? 'var(--color-text-dim)' : '#041108'} />
+            <IconUserPlus size={15} color={isFull ? 'var(--color-text-dim)' : '#ffffff'} />
             {isFull ? 'Chuyến Đi Đã Đủ Thành Viên' : 'Xin Ghép Đoàn Ngay'}
           </button>
         )}

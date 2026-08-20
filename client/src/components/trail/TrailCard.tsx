@@ -143,7 +143,7 @@ export const TrailCard: React.FC<TrailCardProps> = ({
               right: 6,
               zIndex: 3,
               background: isSelectedForCompare ? 'var(--color-primary)' : 'rgba(15, 24, 46, 0.85)',
-              color: isSelectedForCompare ? '#070d1e' : '#cbd5e1',
+              color: isSelectedForCompare ? 'var(--color-bg-main)' : 'var(--color-text-muted)',
               border: `1px solid ${isSelectedForCompare ? 'var(--color-primary)' : 'rgba(255, 255, 255, 0.2)'}`,
               borderRadius: 16,
               padding: '2px 7px',

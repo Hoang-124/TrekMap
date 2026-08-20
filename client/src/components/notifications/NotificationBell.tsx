@@ -135,13 +135,13 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ onNavigate }
   const getCategoryColor = (category: string) => {
     switch (category) {
       case 'safety':
-        return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.15)', border: 'rgba(239, 68, 68, 0.35)' };
+        return { color: 'var(--color-error)', bg: 'rgba(239, 68, 68, 0.15)', border: 'rgba(239, 68, 68, 0.35)' };
       case 'moderation':
-        return { color: '#10b981', bg: 'rgba(16, 185, 129, 0.15)', border: 'rgba(16, 185, 129, 0.35)' };
+        return { color: 'var(--color-primary)', bg: 'rgba(74, 222, 128, 0.15)', border: 'rgba(74, 222, 128, 0.35)' };
       case 'social':
-        return { color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.15)', border: 'rgba(56, 189, 248, 0.35)' };
+        return { color: 'var(--color-sky)', bg: 'rgba(56, 189, 248, 0.15)', border: 'rgba(56, 189, 248, 0.35)' };
       default:
-        return { color: 'var(--color-primary)', bg: 'rgba(16, 185, 129, 0.12)', border: 'var(--color-border)' };
+        return { color: 'var(--color-primary)', bg: 'rgba(74, 222, 128, 0.12)', border: 'var(--color-border)' };
     }
   };
 
@@ -247,7 +247,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ onNavigate }
               fontSize: '0.65rem',
               fontWeight: 800,
               color: '#ffffff',
-              background: '#ef4444',
+              background: 'var(--color-error)',
               borderRadius: 10,
               display: 'flex',
               alignItems: 'center',
@@ -298,7 +298,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ onNavigate }
                 <span
                   style={{
                     background: 'rgba(239, 68, 68, 0.15)',
-                    color: '#ef4444',
+                    color: 'var(--color-error)',
                     padding: '2px 6px',
                     borderRadius: 10,
                     fontSize: '0.68rem',

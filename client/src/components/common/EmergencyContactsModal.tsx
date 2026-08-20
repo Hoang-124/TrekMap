@@ -29,13 +29,13 @@ export const EmergencyContactsModal: React.FC<EmergencyContactsModalProps> = ({ 
           padding: 24,
           borderRadius: 24,
           background: 'var(--color-bg-card)',
-          border: '1.5px solid #ef4444',
+          border: '1.5px solid var(--color-error)',
           boxShadow: '0 25px 60px rgba(239, 68, 68, 0.3)',
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <h3 style={{ fontSize: '1.2rem', fontWeight: 900, color: '#ef4444', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <IconShieldAlert size={20} color="#ef4444" />
+          <h3 style={{ fontSize: '1.2rem', fontWeight: 900, color: 'var(--color-error)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <IconShieldAlert size={20} color="var(--color-error)" />
             DANH BẠ HOTLINE CỨU HỘ KHẨN CẤP
           </h3>
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', fontSize: '1.2rem', cursor: 'pointer' }}>

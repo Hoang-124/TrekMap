@@ -262,7 +262,7 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ background: 'var(--color-primary)', color: '#041108', fontSize: '0.68rem', fontWeight: 900, padding: '2px 7px', borderRadius: 6 }}>
+                <span style={{ background: 'var(--color-primary)', color: '#ffffff', fontSize: '0.68rem', fontWeight: 900, padding: '2px 7px', borderRadius: 6 }}>
                   #{selectedSummit.rank}
                 </span>
                 <span style={{ fontSize: '0.86rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
@@ -576,8 +576,8 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
               <div style={{ position: 'relative', zIndex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span
                   style={{
-                    background: 'rgba(234, 179, 8, 0.95)',
-                    color: '#041108',
+                    background: 'var(--color-sun)',
+                    color: '#ffffff',
                     fontWeight: 900,
                     fontSize: '0.68rem',
                     padding: '2px 8px',

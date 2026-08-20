@@ -108,13 +108,13 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
   const getCategoryColor = (category: string) => {
     switch (category) {
       case 'safety':
-        return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.15)', border: 'rgba(239, 68, 68, 0.35)', name: 'An Toàn' };
+        return { color: 'var(--color-error)', bg: 'rgba(239, 68, 68, 0.15)', border: 'rgba(239, 68, 68, 0.35)', name: 'An Toàn' };
       case 'moderation':
-        return { color: '#10b981', bg: 'rgba(16, 185, 129, 0.15)', border: 'rgba(16, 185, 129, 0.35)', name: 'Kiểm Duyệt' };
+        return { color: 'var(--color-primary)', bg: 'rgba(74, 222, 128, 0.15)', border: 'rgba(74, 222, 128, 0.35)', name: 'Kiểm Duyệt' };
       case 'social':
-        return { color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.15)', border: 'rgba(56, 189, 248, 0.35)', name: 'Cộng Đồng' };
+        return { color: 'var(--color-sky)', bg: 'rgba(56, 189, 248, 0.15)', border: 'rgba(56, 189, 248, 0.35)', name: 'Cộng Đồng' };
       default:
-        return { color: 'var(--color-primary)', bg: 'rgba(16, 185, 129, 0.12)', border: 'var(--color-border)', name: 'Hệ Thống' };
+        return { color: 'var(--color-primary)', bg: 'rgba(74, 222, 128, 0.12)', border: 'var(--color-border)', name: 'Hệ Thống' };
     }
   };
 

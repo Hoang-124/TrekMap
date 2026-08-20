@@ -562,8 +562,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     }
   };
 
-  if (isLoading) {
-    return <div style={{ padding: '60px 20px', textAlign: 'center', color: '#94a3b8' }}>Đang tải thông tin hồ sơ...</div>;
+  if (isLoading || !profile) {
+    return <div style={{ padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-dim)' }}>Đang tải thông tin hồ sơ...</div>;
   }
 
   const activeProfile: UserProfile = profile || currentUser || {
@@ -865,8 +865,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       {/* CUSTOM CONFIRM DELETE CONTRIBUTION MODAL */}
       {deletingContribution && (
         <div className="modal-overlay" onClick={() => setDeletingContribution(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420, border: '1.5px solid #ef4444' }}>
-            <h3 style={{ fontSize: 'var(--font-size-base)', color: '#ef4444', fontWeight: 'var(--font-weight-extrabold)', margin: '0 0 12px 0' }}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420, border: '1.5px solid var(--color-error)' }}>
+            <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-error)', fontWeight: 'var(--font-weight-extrabold)', margin: '0 0 12px 0' }}>
               Xác nhận xóa bài đóng góp
             </h3>
 
@@ -885,7 +885,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               <button
                 className="btn btn-primary"
                 onClick={confirmDeleteContribution}
-                style={{ flex: 1, justifyContent: 'center', background: '#ef4444', borderColor: '#ef4444', color: '#fff' }}
+                style={{ flex: 1, justifyContent: 'center', background: 'var(--color-error)', borderColor: 'var(--color-error)', color: '#ffffff' }}
               >
                 Xác nhận xóa
               </button>
@@ -980,7 +980,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               }}
             >
               {fieldErrors.general && (
-                <div style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid #ef4444', borderRadius: 12, padding: '10px 14px', color: '#f87171', fontSize: 'var(--font-size-xs)', fontWeight: 'var(--font-weight-bold)' }}>
+                <div style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid var(--color-error)', borderRadius: 12, padding: '10px 14px', color: 'var(--color-error)', fontSize: 'var(--font-size-xs)', fontWeight: 'var(--font-weight-bold)' }}>
                   {fieldErrors.general}
                 </div>
               )}
@@ -1010,7 +1010,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     type="text"
                     className="form-input"
                     style={{
-                      borderColor: fieldErrors.fullName ? '#ef4444' : undefined,
+                      borderColor: fieldErrors.fullName ? 'var(--color-error)' : undefined,
                       boxShadow: fieldErrors.fullName ? '0 0 12px rgba(239, 68, 68, 0.35)' : undefined,
                     }}
                     value={editFullName}
@@ -1021,8 +1021,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     required
                   />
                   {fieldErrors.fullName && (
-                    <div style={{ fontSize: 'var(--font-size-xs)', color: '#f87171', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <AlertTriangle size={14} color="#f87171" style={{ flexShrink: 0 }} />
+                    <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error)', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <AlertTriangle size={14} color="var(--color-error)" style={{ flexShrink: 0 }} />
                       <span>{fieldErrors.fullName}</span>
                     </div>
                   )}
@@ -1038,7 +1038,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     className="form-input"
                     placeholder="0912 345 678"
                     style={{
-                      borderColor: fieldErrors.phone ? '#ef4444' : undefined,
+                      borderColor: fieldErrors.phone ? 'var(--color-error)' : undefined,
                       boxShadow: fieldErrors.phone ? '0 0 12px rgba(239, 68, 68, 0.35)' : undefined,
                     }}
                     value={editPhone}
@@ -1048,8 +1048,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     }}
                   />
                   {fieldErrors.phone && (
-                    <div style={{ fontSize: 'var(--font-size-xs)', color: '#f87171', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <AlertTriangle size={14} color="#f87171" style={{ flexShrink: 0 }} />
+                    <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error)', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <AlertTriangle size={14} color="var(--color-error)" style={{ flexShrink: 0 }} />
                       <span>{fieldErrors.phone}</span>
                     </div>
                   )}
@@ -1065,7 +1065,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     className="form-input"
                     placeholder="0988 776 655 (Người thân)"
                     style={{
-                      borderColor: fieldErrors.emergencyContact ? '#ef4444' : undefined,
+                      borderColor: fieldErrors.emergencyContact ? 'var(--color-error)' : undefined,
                       boxShadow: fieldErrors.emergencyContact ? '0 0 12px rgba(239, 68, 68, 0.35)' : undefined,
                     }}
                     value={editEmergency}
@@ -1075,8 +1075,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     }}
                   />
                   {fieldErrors.emergencyContact && (
-                    <div style={{ fontSize: 'var(--font-size-xs)', color: '#f87171', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <AlertTriangle size={14} color="#f87171" style={{ flexShrink: 0 }} />
+                    <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error)', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <AlertTriangle size={14} color="var(--color-error)" style={{ flexShrink: 0 }} />
                       <span>{fieldErrors.emergencyContact}</span>
                     </div>
                   )}
@@ -1170,8 +1170,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   </div>
                 </div>
                 {fieldErrors.avatarUrl && (
-                  <div style={{ fontSize: 'var(--font-size-xs)', color: '#f87171', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <AlertTriangle size={14} color="#f87171" style={{ flexShrink: 0 }} />
+                  <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error)', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <AlertTriangle size={14} color="var(--color-error)" style={{ flexShrink: 0 }} />
                     <span>{fieldErrors.avatarUrl}</span>
                   </div>
                 )}
@@ -1187,7 +1187,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   rows={3}
                   placeholder="Chia sẻ kinh nghiệm leo núi, các cung đường đã qua hoặc thông điệp của bạn..."
                   style={{
-                    borderColor: fieldErrors.bio ? '#ef4444' : undefined,
+                    borderColor: fieldErrors.bio ? 'var(--color-error)' : undefined,
                     boxShadow: fieldErrors.bio ? '0 0 12px rgba(239, 68, 68, 0.35)' : undefined,
                   }}
                   value={editBio}
@@ -1197,8 +1197,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   }}
                 />
                 {fieldErrors.bio && (
-                  <div style={{ fontSize: 'var(--font-size-xs)', color: '#f87171', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <AlertTriangle size={14} color="#f87171" style={{ flexShrink: 0 }} />
+                  <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error)', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <AlertTriangle size={14} color="var(--color-error)" style={{ flexShrink: 0 }} />
                     <span>{fieldErrors.bio}</span>
                   </div>
                 )}
@@ -1484,7 +1484,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                         type="button"
                         className="btn btn-outline"
                         onClick={() => handleDeleteContribution(contrib.id, contrib.name)}
-                        style={{ padding: '3px 8px', fontSize: '0.72rem', borderRadius: 6, color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.4)' }}
+                        style={{ padding: '3px 8px', fontSize: '0.72rem', borderRadius: 6, color: 'var(--color-error)', borderColor: 'rgba(239, 68, 68, 0.4)' }}
                       >
                         Xóa
                       </button>

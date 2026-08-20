@@ -26,6 +26,9 @@ import { mockTrails } from './data/seedData.js';
 import { getApiHeaders } from './utils/sessionHeaders.js';
 import { EmergencyContactsModal } from './components/common/EmergencyContactsModal.js';
 import { ErrorBoundary } from './components/common/ErrorBoundary.js';
+import { TrekAssistantFab } from './components/ai-assistant/TrekAssistantFab.js';
+import { TrekAssistantModal } from './components/ai-assistant/TrekAssistantModal.js';
+
 import {
   IconHiking,
   IconShieldAlert,
@@ -241,8 +244,12 @@ export function App() {
     });
   };
 
+  // TrekCopilot AI Assistant State
+  const [isAiAssistantOpen, setIsAiAssistantOpen] = useState(false);
+
   // Floating Scroll-to-Top State
   const [showScrollTop, setShowScrollTop] = useState(false);
+
 
   useEffect(() => {
     const handleScroll = () => {
@@ -532,6 +539,18 @@ export function App() {
   const handleSelectTrail = (trail: Trail) => {
     navigateToTrail(trail);
   };
+
+  const handleSelectTrailById = (trailId: string) => {
+    const found = trails.find((t) => t.id === trailId || (t as any)._id === trailId) || mockTrails.find((t) => t.id === trailId);
+    if (found) {
+      navigateToTrail(found);
+    } else {
+      fetchTrailById(trailId).then((t) => {
+        if (t) navigateToTrail(t);
+      });
+    }
+  };
+
 
   const handleNavigate = (viewOrUrl: string) => {
     if (!viewOrUrl) return;
@@ -1705,6 +1724,21 @@ export function App() {
         </button>
       )}
 
+      {/* TrekCopilot AI Virtual Assistant */}
+      <TrekAssistantFab
+        isOpen={isAiAssistantOpen}
+        onToggle={() => setIsAiAssistantOpen((prev) => !prev)}
+      />
+
+        <TrekAssistantModal
+          isOpen={isAiAssistantOpen}
+          onClose={() => setIsAiAssistantOpen(false)}
+          currentTrail={selectedTrail}
+          currentUser={currentUser}
+          onSelectTrail={handleSelectTrailById}
+        />
+
+
         <Footer />
       </div>
     </SocketProvider>
@@ -1712,3 +1746,4 @@ export function App() {
 }
 
 export default App;
+

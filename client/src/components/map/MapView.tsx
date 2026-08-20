@@ -435,7 +435,7 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: any; onSelec
               {severity === 'critical' ? 'Khẩn cấp SOS' : severity === 'high' ? 'Nguy cấp' : 'Chú ý'}
             </span>
           </div>
-          <div style={{ fontSize: '0.72rem', color: '#fca5a5' }}>
+          <div style={{ fontSize: '0.72rem', color: 'var(--color-error)' }}>
             {incident.description}
           </div>
         </div>
@@ -446,25 +446,25 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: any; onSelec
           display: 'grid',
           gridTemplateColumns: 'repeat(3, 1fr)',
           gap: 4,
-          background: 'rgba(7, 13, 30, 0.6)',
+          background: 'var(--color-bg-card)',
           padding: '6px 8px',
           borderRadius: 8,
           textAlign: 'center',
           marginBottom: 8,
-          border: '1px solid rgba(255, 255, 255, 0.08)',
+          border: '1px solid var(--color-border)',
         }}
       >
         <div>
-          <div style={{ fontSize: '0.68rem', color: '#94a3b8' }}>Độ dài</div>
-          <strong style={{ fontSize: '0.78rem', color: '#4ade80' }}>{trail.distanceKm}km</strong>
+          <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)' }}>Độ dài</div>
+          <strong style={{ fontSize: '0.78rem', color: 'var(--color-primary)' }}>{trail.distanceKm}km</strong>
         </div>
         <div>
-          <div style={{ fontSize: '0.68rem', color: '#94a3b8' }}>Tích lũy</div>
-          <strong style={{ fontSize: '0.78rem', color: '#f97316' }}>+{trail.elevationGainM}m</strong>
+          <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)' }}>Tích lũy</div>
+          <strong style={{ fontSize: '0.78rem', color: 'var(--color-earth)' }}>+{trail.elevationGainM}m</strong>
         </div>
         <div>
-          <div style={{ fontSize: '0.68rem', color: '#94a3b8' }}>Thời gian</div>
-          <strong style={{ fontSize: '0.78rem', color: '#facc15' }}>{trail.durationDays}N</strong>
+          <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)' }}>Thời gian</div>
+          <strong style={{ fontSize: '0.78rem', color: 'var(--color-sun)' }}>{trail.durationDays}N</strong>
         </div>
       </div>
 
@@ -883,14 +883,14 @@ export const MapView: React.FC<MapViewProps> = ({
             transition: 'all 0.2s ease',
           }}
         >
-          <span style={{ color: '#10b981', marginRight: 4, fontWeight: 900 }}>●</span> Dễ (1-2)
+          <span style={{ color: 'var(--color-primary)', marginRight: 4, fontWeight: 900 }}>●</span> Dễ (1-2)
         </button>
         <button
           onClick={() => setDifficultyFilter('medium')}
           style={{
-            background: difficultyFilter === 'medium' ? 'rgba(255, 214, 0, 0.22)' : 'transparent',
-            color: difficultyFilter === 'medium' ? '#ffd600' : 'var(--color-text-muted)',
-            border: difficultyFilter === 'medium' ? '1px solid #ffd600' : '1px solid transparent',
+            background: difficultyFilter === 'medium' ? 'rgba(250, 204, 21, 0.22)' : 'transparent',
+            color: difficultyFilter === 'medium' ? 'var(--color-sun)' : 'var(--color-text-muted)',
+            border: difficultyFilter === 'medium' ? '1px solid var(--color-sun)' : '1px solid transparent',
             borderRadius: 16,
             padding: '5px 12px',
             fontSize: '0.78rem',
@@ -899,14 +899,14 @@ export const MapView: React.FC<MapViewProps> = ({
             transition: 'all 0.2s ease',
           }}
         >
-          <span style={{ color: '#ffd600', marginRight: 4, fontWeight: 900 }}>●</span> Trung Bình (3)
+          <span style={{ color: 'var(--color-sun)', marginRight: 4, fontWeight: 900 }}>●</span> Trung Bình (3)
         </button>
         <button
           onClick={() => setDifficultyFilter('hard')}
           style={{
             background: difficultyFilter === 'hard' ? 'rgba(239, 68, 68, 0.22)' : 'transparent',
-            color: difficultyFilter === 'hard' ? '#ef4444' : 'var(--color-text-muted)',
-            border: difficultyFilter === 'hard' ? '1px solid #ef4444' : '1px solid transparent',
+            color: difficultyFilter === 'hard' ? 'var(--color-error)' : 'var(--color-text-muted)',
+            border: difficultyFilter === 'hard' ? '1px solid var(--color-error)' : '1px solid transparent',
             borderRadius: 16,
             padding: '5px 12px',
             fontSize: '0.78rem',
@@ -915,7 +915,7 @@ export const MapView: React.FC<MapViewProps> = ({
             transition: 'all 0.2s ease',
           }}
         >
-          <span style={{ color: '#ef4444', marginRight: 4, fontWeight: 900 }}>●</span> Khó (4-5)
+          <span style={{ color: 'var(--color-error)', marginRight: 4, fontWeight: 900 }}>●</span> Khó (4-5)
         </button>
       </div>
 
@@ -947,10 +947,10 @@ export const MapView: React.FC<MapViewProps> = ({
             <Marker position={userLocation} icon={createUserGpsIcon()}>
               <Popup>
                 <div style={{ padding: 4 }}>
-                  <div style={{ color: '#38bdf8', fontWeight: 800, fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ color: 'var(--color-sky)', fontWeight: 800, fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 6 }}>
                     Vị Trí Thực Tế Của Bạn
                   </div>
-                  <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginTop: 4 }}>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)', marginTop: 4 }}>
                     Tọa độ: {userLocation[0].toFixed(4)}, {userLocation[1].toFixed(4)}
                   </div>
                 </div>

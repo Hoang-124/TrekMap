@@ -191,7 +191,7 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({ author, 
         {/* SOS Emergency Contact Box */}
         <div style={{ background: 'rgba(239, 68, 68, 0.08)', padding: '12px 16px', borderRadius: 14, border: '1px solid rgba(239, 68, 68, 0.3)', marginBottom: 22, fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span>SOS Emergency Contact:</span>
-          <strong style={{ color: '#ef4444' }}>0988 776 655 (Liên hệ cứu hộ)</strong>
+          <strong style={{ color: 'var(--color-error)' }}>0988 776 655 (Liên hệ cứu hộ)</strong>
         </div>
 
         {/* Action Buttons */}

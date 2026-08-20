@@ -147,7 +147,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   gap: 5,
                 }}
               >
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 8px #10b981' }} />
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--color-primary)', boxShadow: '0 0 8px var(--color-primary)' }} />
                 VÔ TUYẾN BASECAMP
               </span>
             </div>
@@ -253,7 +253,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       position: 'absolute',
                       top: -2,
                       right: -2,
-                      background: '#ef4444',
+                      background: 'var(--color-error)',
                       color: '#ffffff',
                       fontSize: '0.62rem',
                       fontWeight: 800,
@@ -500,7 +500,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     {isAdmin && (
                       <>
                         <div style={{ height: 1, background: 'var(--color-border)', margin: '6px 0' }} />
-                        <div style={{ padding: '4px 8px 2px 8px', fontSize: '0.68rem', fontWeight: 800, color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                        <div style={{ padding: '4px 8px 2px 8px', fontSize: '0.68rem', fontWeight: 800, color: 'var(--color-sun)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                           Quản Trị Hệ Thống
                         </div>
 
@@ -515,9 +515,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                             width: '100%',
                             padding: '9px 12px',
                             borderRadius: 10,
-                            border: '1px solid rgba(245, 158, 11, 0.3)',
-                            background: currentView === 'admin' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(245, 158, 11, 0.08)',
-                            color: '#f59e0b',
+                            border: '1px solid rgba(250, 204, 21, 0.35)',
+                            background: currentView === 'admin' ? 'rgba(250, 204, 21, 0.2)' : 'rgba(250, 204, 21, 0.08)',
+                            color: 'var(--color-sun)',
                             fontSize: '0.84rem',
                             fontWeight: 800,
                             cursor: 'pointer',
@@ -527,7 +527,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                             gap: 10,
                             transition: 'all 0.2s ease',
                           }}
-                          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(245, 158, 11, 0.18)')}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(250, 204, 21, 0.18)')}
                           onMouseLeave={(e) => (e.currentTarget.style.background = currentView === 'admin' ? 'rgba(245, 158, 11, 0.2)' : 'rgba(245, 158, 11, 0.08)')}
                         >
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">

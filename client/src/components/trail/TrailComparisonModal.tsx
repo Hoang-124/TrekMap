@@ -140,7 +140,7 @@ export const TrailComparisonModal: React.FC<TrailComparisonModalProps> = ({
                     zIndex: 4,
                     background: 'rgba(0, 0, 0, 0.75)',
                     border: '1px solid rgba(239, 68, 68, 0.4)',
-                    color: '#f87171',
+                    color: 'var(--color-error)',
                     borderRadius: '50%',
                     width: 26,
                     height: 26,
@@ -174,7 +174,7 @@ export const TrailComparisonModal: React.FC<TrailComparisonModalProps> = ({
                       borderRadius: 6,
                       fontSize: '0.7rem',
                       fontWeight: 700,
-                      color: '#38bdf8',
+                      color: 'var(--color-sky)',
                     }}
                   >
                     {t.province}
@@ -235,7 +235,7 @@ export const TrailComparisonModal: React.FC<TrailComparisonModalProps> = ({
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ color: 'var(--color-text-dim)' }}>Mức độ khó:</span>
-                    <strong style={{ color: t.difficultyLevel >= 4 ? '#f87171' : '#4ade80' }}>
+                    <strong style={{ color: t.difficultyLevel >= 4 ? 'var(--color-error)' : 'var(--color-primary)' }}>
                       {t.difficultyLevel}/5
                     </strong>
                   </div>
@@ -262,12 +262,12 @@ export const TrailComparisonModal: React.FC<TrailComparisonModalProps> = ({
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ color: t.hasCampsite ? '#10b981' : '#ef4444', fontWeight: 600 }}>
+                    <span style={{ color: t.hasCampsite ? 'var(--color-primary)' : 'var(--color-error)', fontWeight: 600 }}>
                       {t.hasCampsite ? '✓ Có điểm cắm trại / Lán' : '✗ Chưa có lán trại'}
                     </span>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ color: t.hasWaterSource ? '#38bdf8' : '#f59e0b', fontWeight: 600 }}>
+                    <span style={{ color: t.hasWaterSource ? 'var(--color-sky)' : 'var(--color-sun)', fontWeight: 600 }}>
                       {t.hasWaterSource ? '✓ Có suối & nguồn nước' : '! Cần tự mang đủ nước'}
                     </span>
                   </div>

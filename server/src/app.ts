@@ -20,6 +20,8 @@ import followRoutes from './routes/follow.routes.js';
 import trailConditionRoutes from './routes/trailCondition.routes.js';
 import tripReportRoutes from './routes/tripReport.routes.js';
 import tripRoutes from './routes/trip.routes.js';
+import aiRoutes from './routes/ai.routes.js';
+
 
 import mongoose from 'mongoose';
 import { globalRateLimiter, authRateLimiter, uploadRateLimiter } from './middleware/rateLimiter.middleware.js';
@@ -113,8 +115,10 @@ app.use('/api', followRoutes);
 app.use('/api', trailConditionRoutes);
 app.use('/api', tripReportRoutes);
 app.use('/api', tripRoutes);
+app.use('/api/ai', aiRoutes);
 
 // Global Error Handler Middleware (Must be last)
+
 app.use(errorHandler);
 
 

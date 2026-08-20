@@ -272,13 +272,13 @@ export const IncidentReportModal: React.FC<ModalProps> = ({
             lineHeight: 1.35,
           }}
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--color-error)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
             <circle cx="12" cy="12" r="10" />
             <line x1="12" y1="8" x2="12" y2="12" />
             <line x1="12" y1="16" x2="12.01" y2="16" />
           </svg>
           <div>
-            Cảnh báo sẽ đồng bộ tức thì lên Bản đồ. <strong style={{ color: '#ef4444' }}>Báo động giả sẽ bị xử lý cảnh cáo và khóa vĩnh viễn tài khoản.</strong>
+            Cảnh báo sẽ đồng bộ tức thì lên Bản đồ. <strong style={{ color: 'var(--color-error)' }}>Báo động giả sẽ bị xử lý cảnh cáo và khóa vĩnh viễn tài khoản.</strong>
           </div>
         </div>
 

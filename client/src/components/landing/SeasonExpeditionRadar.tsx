@@ -381,7 +381,7 @@ export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
                     position: 'absolute',
                     top: -6,
                     background: 'var(--color-primary)',
-                    color: '#041108',
+                    color: '#ffffff',
                     fontSize: '0.55rem',
                     fontWeight: 800,
                     padding: '1px 5px',
