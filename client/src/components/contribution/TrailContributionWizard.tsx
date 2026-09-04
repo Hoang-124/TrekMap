@@ -131,26 +131,6 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
   const [isCustomWard, setIsCustomWard] = useState(false);
   const [customWardText, setCustomWardText] = useState('');
 
-  if (!currentUser) {
-    return (
-      <div style={{ maxWidth: 760, margin: '60px auto', padding: '48px 32px', textAlign: 'center', background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', borderRadius: 24, boxShadow: 'var(--shadow-card)' }}>
-        <div style={{ background: 'rgba(16, 185, 129, 0.12)', width: 64, height: 64, borderRadius: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px auto' }}>
-          <IconCompass size={32} color="var(--color-primary)" />
-        </div>
-        <h2 style={{ fontSize: '1.6rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 12 }}>
-          Yêu Cầu Đăng Nhập Để Đóng Góp Cung Đường
-        </h2>
-        <p style={{ color: 'var(--color-text-muted)', fontSize: '0.95rem', marginBottom: 28, lineHeight: 1.6, maxWidth: 540, margin: '0 auto 28px auto' }}>
-          Để đảm bảo tính xác thực 100% dữ liệu thực địa trên Database và ghi nhận điểm thưởng Trekker (+50 điểm), bạn cần đăng nhập trước khi đóng góp.
-        </p>
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 14 }}>
-          <button className="btn btn-outline" onClick={onBack} style={{ borderRadius: 12, padding: '10px 24px', fontSize: '0.9rem' }}>Quay lại</button>
-          <button className="btn btn-primary" onClick={() => { window.location.hash = '#login'; }} style={{ borderRadius: 12, padding: '10px 28px', fontSize: '0.9rem', fontWeight: 700 }}>Đăng nhập ngay</button>
-        </div>
-      </div>
-    );
-  }
-
   const isEditing = !!localStorage.getItem('trekmap_editing_contribution');
   const [pinMode, setPinMode] = useState<'start' | 'end'>('start');
   const [mapTileType, setMapTileType] = useState<'satellite' | 'terrain' | 'osm'>('satellite');
@@ -218,6 +198,26 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
       }
     }
   }, []);
+
+  if (!currentUser) {
+    return (
+      <div style={{ maxWidth: 760, margin: '60px auto', padding: '48px 32px', textAlign: 'center', background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', borderRadius: 24, boxShadow: 'var(--shadow-card)' }}>
+        <div style={{ background: 'rgba(16, 185, 129, 0.12)', width: 64, height: 64, borderRadius: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px auto' }}>
+          <IconCompass size={32} color="var(--color-primary)" />
+        </div>
+        <h2 style={{ fontSize: '1.6rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 12 }}>
+          Yêu Cầu Đăng Nhập Để Đóng Góp Cung Đường
+        </h2>
+        <p style={{ color: 'var(--color-text-muted)', fontSize: '0.95rem', marginBottom: 28, lineHeight: 1.6, maxWidth: 540, margin: '0 auto 28px auto' }}>
+          Để đảm bảo tính xác thực 100% dữ liệu thực địa trên Database và ghi nhận điểm thưởng Trekker (+50 điểm), bạn cần đăng nhập trước khi đóng góp.
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 14 }}>
+          <button className="btn btn-outline" onClick={onBack} style={{ borderRadius: 12, padding: '10px 24px', fontSize: '0.9rem' }}>Quay lại</button>
+          <button className="btn btn-primary" onClick={() => { window.location.hash = '#login'; }} style={{ borderRadius: 12, padding: '10px 28px', fontSize: '0.9rem', fontWeight: 700 }}>Đăng nhập ngay</button>
+        </div>
+      </div>
+    );
+  }
 
   const handleRegionChange = (newRegion: Region) => {
     const provinces = VIETNAM_ADMINISTRATIVE_DATA[newRegion] || [];
@@ -627,8 +627,10 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
         </div>
       </div>
 
-      {/* ================= STEP 1: SPACIOUS 2-COLUMN VIEWPORT LAYOUT ================= */}
-      {step === 1 && (
+      {/* Sliding Steps Container */}
+      <div key={step} className="tab-content-slide">
+        {/* ================= STEP 1: SPACIOUS 2-COLUMN VIEWPORT LAYOUT ================= */}
+        {step === 1 && (
         <div className="card" style={{ padding: '26px 32px', borderRadius: 20, boxShadow: 'var(--shadow-card)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
             <IconCompass size={22} color="var(--color-primary)" />
@@ -851,9 +853,15 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                 <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
                   <IconCalendar size={16} color="var(--color-primary)" /> Lịch 12 Tháng Trekking *
                 </label>
-                <div style={{ display: 'flex', gap: 10, fontSize: '0.74rem' }}>
-                  <span style={{ color: 'var(--color-primary)', fontWeight: 800 }}>🟢 Mùa lý tưởng</span>
-                  <span style={{ color: 'var(--color-error)', fontWeight: 800 }}>🔴 Tránh mưa bão</span>
+                <div style={{ display: 'flex', gap: 12, fontSize: '0.74rem' }}>
+                  <span style={{ color: 'var(--color-primary)', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--color-primary)', display: 'inline-block', boxShadow: '0 0 6px var(--color-primary)' }} />
+                    Mùa lý tưởng
+                  </span>
+                  <span style={{ color: 'var(--color-error)', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--color-error)', display: 'inline-block', boxShadow: '0 0 6px var(--color-error)' }} />
+                    Tránh mưa bão
+                  </span>
                 </div>
               </div>
               <div style={{ fontSize: '0.75rem', color: 'var(--color-text-dim)', marginBottom: 12 }}>
@@ -1360,6 +1368,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 };

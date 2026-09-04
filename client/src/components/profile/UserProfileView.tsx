@@ -497,7 +497,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
     // 2. Phone Number Inline Validation (Vietnamese Format)
     if (editPhone.trim()) {
-      const cleanPhone = editPhone.trim().replace(/[\s\-\.]/g, '');
+      const cleanPhone = editPhone.trim().replace(/[\s.-]/g, '');
       const phoneRegex = /^(0|\+84)[35789][0-9]{8}$/;
       if (!phoneRegex.test(cleanPhone)) {
         newErrors.phone = 'Số điện thoại liên lạc không đúng định dạng Việt Nam (Ví dụ hợp lệ: 0912345678).';

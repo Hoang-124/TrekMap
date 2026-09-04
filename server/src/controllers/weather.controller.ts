@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import { WeatherForecastModel } from '../models/WeatherForecast.js';
 import { TrailModel } from '../models/Trail.js';
+import { mockTrails } from '../data/seedData.js';
 import { getLiveWeatherForecast, getSunriseSunsetData } from '../services/publicApis.service.js';
 
 export const getWeatherByTrailId = async (req: Request, res: Response) => {
@@ -14,9 +15,15 @@ export const getWeatherByTrailId = async (req: Request, res: Response) => {
     if (isMongoId) {
       trail = await TrailModel.findById(trailId).exec();
     }
+    if (!trail) {
+      trail = await TrailModel.findOne({ id: trailId }).exec();
+    }
+    if (!trail) {
+      trail = mockTrails.find((t) => t.id === trailId || (t as any)._id === trailId || (t as any).slug === trailId);
+    }
 
-    const lat = trail?.startLat || 22.3364;
-    const lng = trail?.startLng || 103.8438;
+    const lat = Number(trail?.startLat) || 22.3364;
+    const lng = Number(trail?.startLng) || 103.8438;
 
     // Fetch Public APIs concurrently: Open-Meteo & Sunrise-Sunset
     const [liveMeteo, astroData] = await Promise.all([

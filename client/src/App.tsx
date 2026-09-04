@@ -1,22 +1,14 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { Navbar } from './components/layout/Navbar.js';
 import { Footer } from './components/layout/Footer.js';
 import { TrailCard } from './components/trail/TrailCard.js';
 import { TrailDetailView } from './components/trail/TrailDetailView.js';
-import { TrailComparisonModal } from './components/trail/TrailComparisonModal.js';
-import { TrailContributionWizard } from './components/contribution/TrailContributionWizard.js';
-import { IncidentReportModal } from './components/incidents/IncidentReportModal.js';
-import { UserProfileView } from './components/profile/UserProfileView.js';
-import { AdminDashboardView } from './components/admin/AdminDashboardView.js';
 import { AdvancedFilterDrawer } from './components/search/AdvancedFilterDrawer.js';
-import { TrekForumView } from './components/forum/TrekForumView.js';
 import { HeroExpeditionSection } from './components/landing/HeroExpeditionSection.js';
 import { SeasonExpeditionRadar } from './components/landing/SeasonExpeditionRadar.js';
 import { BentoCommandHub } from './components/landing/BentoCommandHub.js';
 import { InteractiveMapShowcase } from './components/landing/InteractiveMapShowcase.js';
 import { SafetyPledgeSection } from './components/landing/SafetyPledgeSection.js';
-import { MessagesPage } from './components/messages/MessagesPage.js';
-import { NotificationsPage } from './components/notifications/NotificationsPage.js';
 import { SocketProvider, useSocket } from './context/SocketContext.js';
 import { AuthModal } from './components/auth/AuthModal.js';
 import { LogoutConfirmModal } from './components/auth/LogoutConfirmModal.js';
@@ -27,7 +19,25 @@ import { getApiHeaders } from './utils/sessionHeaders.js';
 import { EmergencyContactsModal } from './components/common/EmergencyContactsModal.js';
 import { ErrorBoundary } from './components/common/ErrorBoundary.js';
 import { TrekAssistantFab } from './components/ai-assistant/TrekAssistantFab.js';
-import { TrekAssistantModal } from './components/ai-assistant/TrekAssistantModal.js';
+
+// Lazy-loaded heavy views and modals for peak bundle performance & fast initial load
+const TrailComparisonModal = lazy(() => import('./components/trail/TrailComparisonModal.js').then((m) => ({ default: m.TrailComparisonModal })));
+const TrailContributionWizard = lazy(() => import('./components/contribution/TrailContributionWizard.js').then((m) => ({ default: m.TrailContributionWizard })));
+const IncidentReportModal = lazy(() => import('./components/incidents/IncidentReportModal.js').then((m) => ({ default: m.IncidentReportModal })));
+const UserProfileView = lazy(() => import('./components/profile/UserProfileView.js').then((m) => ({ default: m.UserProfileView })));
+const AdminDashboardView = lazy(() => import('./components/admin/AdminDashboardView.js').then((m) => ({ default: m.AdminDashboardView })));
+const TrekForumView = lazy(() => import('./components/forum/TrekForumView.js').then((m) => ({ default: m.TrekForumView })));
+const MessagesPage = lazy(() => import('./components/messages/MessagesPage.js').then((m) => ({ default: m.MessagesPage })));
+const NotificationsPage = lazy(() => import('./components/notifications/NotificationsPage.js').then((m) => ({ default: m.NotificationsPage })));
+const TrekAssistantModal = lazy(() => import('./components/ai-assistant/TrekAssistantModal.js').then((m) => ({ default: m.TrekAssistantModal })));
+const SharedItineraryModal = lazy(() => import('./components/trail/SharedItineraryModal.js').then((m) => ({ default: m.SharedItineraryModal })));
+
+const PageLoadingFallback: React.FC = () => (
+  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '35vh', gap: 12, color: 'var(--color-primary)' }}>
+    <div style={{ width: 24, height: 24, border: '2.5px solid var(--color-border)', borderTopColor: 'var(--color-primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+    <span style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--color-text-muted)' }}>Đang tải giao diện...</span>
+  </div>
+);
 
 import {
   IconHiking,
@@ -39,6 +49,10 @@ import {
   IconTent,
   IconDroplet,
   IconClock,
+  IconScale,
+  IconX,
+  IconStar,
+  IconCheck,
 } from './components/common/SvgIcons.js';
 import type { Trail, Incident, ForumThread, UserProfile } from './types.js';
 import './App.css';
@@ -95,32 +109,39 @@ const Send = ({ size = 18, color = 'currentColor', style }: { size?: number; col
 function getInitialRoute(): {
   view: 'home' | 'explore' | 'detail' | 'contribute' | 'profile' | 'forum' | 'admin' | 'messages' | 'notifications';
   trailId: string | null;
+  sharedItineraryToken: string | null;
 } {
-  if (typeof window === 'undefined') return { view: 'home', trailId: null };
+  if (typeof window === 'undefined') return { view: 'home', trailId: null, sharedItineraryToken: null };
   const pathname = window.location.pathname.replace(/^\//, '');
   const hash = window.location.hash;
 
   if (hash.startsWith('#trail/')) {
     const trailId = hash.replace('#trail/', '');
-    return { view: 'detail', trailId };
+    return { view: 'detail', trailId, sharedItineraryToken: null };
+  }
+
+  if (hash.startsWith('#itinerary/')) {
+    const token = hash.replace('#itinerary/', '');
+    return { view: 'home', trailId: null, sharedItineraryToken: token };
   }
 
   if (pathname === 'forum' || hash === '#forum') {
-    return { view: 'home', trailId: null };
+    return { view: 'forum', trailId: null, sharedItineraryToken: null };
   }
 
-  if (['profile', 'messages', 'contribute', 'admin', 'explore', 'notifications'].includes(pathname)) {
-    return { view: pathname as any, trailId: null };
+  if (['profile', 'messages', 'contribute', 'admin', 'explore', 'notifications', 'forum'].includes(pathname)) {
+    return { view: pathname as any, trailId: null, sharedItineraryToken: null };
   }
 
-  if (hash === '#profile') return { view: 'profile', trailId: null };
-  if (hash === '#messages') return { view: 'messages', trailId: null };
-  if (hash === '#contribute') return { view: 'contribute', trailId: null };
-  if (hash === '#admin') return { view: 'admin', trailId: null };
-  if (hash === '#explore') return { view: 'explore', trailId: null };
-  if (hash === '#notifications') return { view: 'notifications', trailId: null };
+  if (hash === '#profile') return { view: 'profile', trailId: null, sharedItineraryToken: null };
+  if (hash === '#messages') return { view: 'messages', trailId: null, sharedItineraryToken: null };
+  if (hash === '#contribute') return { view: 'contribute', trailId: null, sharedItineraryToken: null };
+  if (hash === '#admin') return { view: 'admin', trailId: null, sharedItineraryToken: null };
+  if (hash === '#explore') return { view: 'explore', trailId: null, sharedItineraryToken: null };
+  if (hash === '#notifications') return { view: 'notifications', trailId: null, sharedItineraryToken: null };
+  if (hash === '#forum') return { view: 'forum', trailId: null, sharedItineraryToken: null };
 
-  return { view: 'home', trailId: null };
+  return { view: 'home', trailId: null, sharedItineraryToken: null };
 }
 
 function getInitialTrail(trailId: string | null): Trail | null {
@@ -188,6 +209,7 @@ export function App() {
   const initialRoute = getInitialRoute();
   const [currentView, setCurrentView] = useState<'home' | 'explore' | 'detail' | 'contribute' | 'profile' | 'forum' | 'admin' | 'messages' | 'notifications'>(initialRoute.view);
   const [previousView, setPreviousView] = useState<'home' | 'explore' | 'detail' | 'contribute' | 'profile' | 'forum' | 'admin' | 'messages' | 'notifications'>('home');
+  const [sharedItineraryToken, setSharedItineraryToken] = useState<string | null>(initialRoute.sharedItineraryToken);
   const [trails, setTrails] = useState<Trail[]>([]);
   const [selectedTrail, setSelectedTrail] = useState<Trail | null>(() => getInitialTrail(initialRoute.trailId));
   const [selectedSeasonMonth, setSelectedSeasonMonth] = useState<number | null>(null);
@@ -206,6 +228,36 @@ export function App() {
         }
       });
     }
+  }, []);
+
+  // Listen for browser Back/Forward navigation buttons (popstate & hashchange)
+  useEffect(() => {
+    const handlePopState = () => {
+      const route = getInitialRoute();
+      setCurrentView(route.view);
+      if (route.sharedItineraryToken) {
+        setSharedItineraryToken(route.sharedItineraryToken);
+      } else if (!window.location.hash.startsWith('#itinerary/')) {
+        setSharedItineraryToken(null);
+      }
+      if (route.trailId) {
+        const tr = getInitialTrail(route.trailId);
+        if (tr) {
+          setSelectedTrail(tr);
+        } else {
+          fetchTrailById(route.trailId).then((trail) => {
+            if (trail) setSelectedTrail(trail);
+          });
+        }
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    window.addEventListener('hashchange', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('hashchange', handlePopState);
+    };
   }, []);
 
   // Auto-rotate ticker every 5 seconds
@@ -519,7 +571,7 @@ export function App() {
   }, [selectedRegion, selectedDifficulty, searchQuery, selectedDuration, campsiteOnly, kidFriendlyOnly, sortBy]);
 
   useEffect(() => {
-    window.scrollTo(0, 0);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [currentView]);
 
   const navigateToTrail = (trail: Trail) => {
@@ -564,16 +616,9 @@ export function App() {
       return;
     }
 
-    let targetView = viewOrUrl;
-    let queryString = '';
-
-    if (viewOrUrl.includes('?')) {
-      const parts = viewOrUrl.split('?');
-      targetView = parts[0].replace(/^\//, '');
-      queryString = `?${parts[1]}`;
-    } else {
-      targetView = viewOrUrl.replace(/^\//, '');
-    }
+    const [pathPart, queryPart] = viewOrUrl.split('?');
+    const targetView = pathPart.replace(/^\//, '');
+    const queryString = queryPart ? `?${queryPart}` : '';
 
     if (targetView === 'home' || targetView === 'explore') {
       setSelectedTrail(null);
@@ -614,7 +659,7 @@ export function App() {
       const newUrl = `${cleanPath}${queryString}`;
       window.history.pushState({ view: targetView }, '', newUrl);
     }
-    window.scrollTo(0, 0);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleResetFilters = () => {
@@ -759,7 +804,7 @@ export function App() {
               onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(0, 0, 0, 0.45)')}
               onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(0, 0, 0, 0.25)')}
             >
-              <span>✕</span>
+              <IconX size={13} />
               <span>Ẩn</span>
             </button>
           </div>
@@ -767,7 +812,7 @@ export function App() {
       })()}
 
       <ErrorBoundary fallbackTitle="Không thể tải nội dung trang">
-        <main key={currentView} className="view-fade-in" style={{ flex: 1 }}>
+        <main key={currentView} className="page-view-slide" style={{ flex: 1 }}>
         {/* VIEW 1: HOME & EXPLORE */}
         {(currentView === 'home' || currentView === 'explore') && (
           <div>
@@ -813,18 +858,20 @@ export function App() {
               </div>
 
               {/* Full Alpine Community, Live Chatroom & Tactical Sidebar Master Hub (ĐẶT NGAY DƯỚI BẢN ĐỒ) */}
-              <TrekForumView
-                isEmbedded={true}
-                currentUser={currentUser}
-                trails={trails}
-                onSelectTrail={handleSelectTrail}
-                onShowToast={(msg, type) => showToast(msg, type)}
-                onRequireLogin={(action) => {
-                  showToast(`Vui lòng đăng nhập tài khoản để ${action}.`, 'info');
-                  setAuthModalInitialMode('login');
-                  setIsAuthModalOpen(true);
-                }}
-              />
+              <Suspense fallback={<PageLoadingFallback />}>
+                <TrekForumView
+                  isEmbedded={true}
+                  currentUser={currentUser}
+                  trails={trails}
+                  onSelectTrail={handleSelectTrail}
+                  onShowToast={(msg, type) => showToast(msg, type)}
+                  onRequireLogin={(action) => {
+                    showToast(`Vui lòng đăng nhập tài khoản để ${action}.`, 'info');
+                    setAuthModalInitialMode('login');
+                    setIsAuthModalOpen(true);
+                  }}
+                />
+              </Suspense>
 
               {/* 12-Month Season Radar & Best Season Trails */}
               <SeasonExpeditionRadar
@@ -1012,7 +1059,10 @@ export function App() {
                               }}
                             >
                               {t.reviewCount && t.reviewCount > 0 && t.rating ? (
-                                `★ ${Number(t.rating).toFixed(1)} (${t.reviewCount})`
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                  <IconStar size={11} color="var(--color-sun)" fill="var(--color-sun)" />
+                                  {`${Number(t.rating).toFixed(1)} (${t.reviewCount})`}
+                                </span>
                               ) : (
                                 'Mới'
                               )}
@@ -1127,7 +1177,13 @@ export function App() {
                                 whiteSpace: 'nowrap',
                               }}
                             >
-                              {isSelected ? '✓ Đã chọn' : '+ So sánh'}
+                              {isSelected ? (
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                  <IconCheck size={12} /> Đã chọn
+                                </span>
+                              ) : (
+                                '+ So sánh'
+                              )}
                             </button>
                             <button
                               type="button"
@@ -1241,22 +1297,24 @@ export function App() {
               </button>
             </div>
           ) : (
-            <TrailContributionWizard
-              currentUser={currentUser}
-              onBack={() => {
-                const isEditing = !!localStorage.getItem('trekmap_editing_contribution');
-                localStorage.removeItem('trekmap_editing_contribution');
-                if (isEditing) {
+            <Suspense fallback={<PageLoadingFallback />}>
+              <TrailContributionWizard
+                currentUser={currentUser}
+                onBack={() => {
+                  const isEditing = !!localStorage.getItem('trekmap_editing_contribution');
+                  localStorage.removeItem('trekmap_editing_contribution');
+                  if (isEditing) {
+                    handleNavigate('profile');
+                  } else {
+                    handleNavigate('home');
+                  }
+                }}
+                onSuccess={() => {
                   handleNavigate('profile');
-                } else {
-                  handleNavigate('home');
-                }
-              }}
-              onSuccess={() => {
-                handleNavigate('profile');
-              }}
-              onShowToast={(msg, type) => showToast(msg, type)}
-            />
+                }}
+                onShowToast={(msg, type) => showToast(msg, type)}
+              />
+            </Suspense>
           )
         )}
 
@@ -1279,33 +1337,37 @@ export function App() {
               </button>
             </div>
           ) : (
-            <UserProfileView
-              currentUser={currentUser}
-              onBack={() => {
-                handleNavigate('home');
-              }}
-              onSelectTrail={handleSelectTrail}
-              onShowToast={(msg, type) => showToast(msg, type)}
-              onProfileUpdate={(updatedUser) => setCurrentUser(updatedUser)}
-              onNavigateToContribute={() => {
-                handleNavigate('contribute');
-              }}
-            />
+            <Suspense fallback={<PageLoadingFallback />}>
+              <UserProfileView
+                currentUser={currentUser}
+                onBack={() => {
+                  handleNavigate('home');
+                }}
+                onSelectTrail={handleSelectTrail}
+                onShowToast={(msg, type) => showToast(msg, type)}
+                onProfileUpdate={(updatedUser) => setCurrentUser(updatedUser)}
+                onNavigateToContribute={() => {
+                  handleNavigate('contribute');
+                }}
+              />
+            </Suspense>
           )
         )}
 
         {/* VIEW 5: FORUM VIEW (ALPINE EXPEDITION HUB) */}
         {currentView === 'forum' && (
-          <TrekForumView
-            currentUser={currentUser}
-            onBack={() => handleNavigate('home')}
-            onShowToast={(msg, type) => showToast(msg, type)}
-            onRequireLogin={(action) => {
-              showToast(`Vui lòng đăng nhập tài khoản để ${action}.`, 'info');
-              setAuthModalInitialMode('login');
-              setIsAuthModalOpen(true);
-            }}
-          />
+          <Suspense fallback={<PageLoadingFallback />}>
+            <TrekForumView
+              currentUser={currentUser}
+              onBack={() => handleNavigate('home')}
+              onShowToast={(msg, type) => showToast(msg, type)}
+              onRequireLogin={(action) => {
+                showToast(`Vui lòng đăng nhập tài khoản để ${action}.`, 'info');
+                setAuthModalInitialMode('login');
+                setIsAuthModalOpen(true);
+              }}
+            />
+          </Suspense>
         )}
 
         {/* VIEW 6: ADMIN DASHBOARD (APPROVAL PORTAL) */}
@@ -1328,30 +1390,36 @@ export function App() {
               </button>
             </div>
           ) : (
-            <AdminDashboardView
-              onBack={() => {
-                handleNavigate('home');
-              }}
-              onShowToast={(msg, type) => showToast(msg, type)}
-              currentUser={currentUser}
-            />
+            <Suspense fallback={<PageLoadingFallback />}>
+              <AdminDashboardView
+                onBack={() => {
+                  handleNavigate('home');
+                }}
+                onShowToast={(msg, type) => showToast(msg, type)}
+                currentUser={currentUser}
+              />
+            </Suspense>
           )
         )}
 
         {/* VIEW 7: MESSAGES PAGE */}
         {currentView === 'messages' && (
-          <MessagesPage
-            currentUser={currentUser}
-            onShowToast={(msg, type) => showToast(msg, type)}
-          />
+          <Suspense fallback={<PageLoadingFallback />}>
+            <MessagesPage
+              currentUser={currentUser}
+              onShowToast={(msg, type) => showToast(msg, type)}
+            />
+          </Suspense>
         )}
 
         {/* VIEW 8: NOTIFICATIONS PAGE */}
         {currentView === 'notifications' && (
-          <NotificationsPage
-            currentUser={currentUser}
-            onNavigate={handleNavigate}
-          />
+          <Suspense fallback={<PageLoadingFallback />}>
+            <NotificationsPage
+              currentUser={currentUser}
+              onNavigate={handleNavigate}
+            />
+          </Suspense>
         )}
       </main>
       </ErrorBoundary>
@@ -1473,20 +1541,24 @@ export function App() {
         onReset={handleResetFilters}
       />
 
-      <IncidentReportModal
-        isOpen={isIncidentModalOpen}
-        onClose={() => setIsIncidentModalOpen(false)}
-        trailName={selectedTrail ? selectedTrail.name : undefined}
-        trailId={selectedTrail ? (selectedTrail.id || (selectedTrail as any)._id) : undefined}
-        trails={trails}
-        incidents={incidents}
-        currentUser={currentUser}
-        onSuccess={async () => {
-          const incData = await fetchIncidents();
-          setIncidents(incData);
-        }}
-        onShowToast={(msg, type) => showToast(msg, type)}
-      />
+      {isIncidentModalOpen && (
+        <Suspense fallback={null}>
+          <IncidentReportModal
+            isOpen={isIncidentModalOpen}
+            onClose={() => setIsIncidentModalOpen(false)}
+            trailName={selectedTrail ? selectedTrail.name : undefined}
+            trailId={selectedTrail ? (selectedTrail.id || (selectedTrail as any)._id) : undefined}
+            trails={trails}
+            incidents={incidents}
+            currentUser={currentUser}
+            onSuccess={async () => {
+              const incData = await fetchIncidents();
+              setIncidents(incData);
+            }}
+            onShowToast={(msg, type) => showToast(msg, type)}
+          />
+        </Suspense>
+      )}
 
       {/* Emergency Incident Detail Modal */}
       {selectedIncidentDetail && (
@@ -1507,9 +1579,11 @@ export function App() {
               <button
                 type="button"
                 onClick={() => setSelectedIncidentDetail(null)}
-                style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '1.2rem', padding: 4 }}
+                title="Đóng"
+                aria-label="Đóng"
+                style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 4 }}
               >
-                ✕
+                <IconX size={18} />
               </button>
             </div>
 
@@ -1521,7 +1595,7 @@ export function App() {
                     MỨC ĐỘ: {selectedIncidentDetail.severity?.toUpperCase() || 'KHẨN CẤP'}
                   </span>
                   <span style={{ background: 'rgba(16, 185, 129, 0.2)', color: '#10b981', border: '1px solid rgba(16, 185, 129, 0.4)', fontSize: '0.74rem', fontWeight: 800, padding: '3px 10px', borderRadius: 20, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    ✓ ĐÃ XÁC MINH HIỆN TRƯỜNG
+                    <IconCheck size={12} color="#10b981" /> ĐÃ XÁC MINH HIỆN TRƯỜNG
                   </span>
                 </div>
                 <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
@@ -1638,7 +1712,7 @@ export function App() {
           }}
         >
           <div style={{ fontSize: '0.84rem', fontWeight: 800, color: '#fff', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span>⚖️</span>
+            <IconScale size={18} color="var(--color-primary)" />
             <span>Đã chọn {comparedTrails.length}/3 cung đường</span>
           </div>
 
@@ -1675,13 +1749,17 @@ export function App() {
       )}
 
       {/* Trail Comparison Modal */}
-      <TrailComparisonModal
-        trails={comparedTrails}
-        isOpen={isCompareModalOpen}
-        onClose={() => setIsCompareModalOpen(false)}
-        onRemoveTrail={(trailId) => setComparedTrails((prev) => prev.filter((t) => t.id !== trailId))}
-        onSelectTrail={handleSelectTrail}
-      />
+      {isCompareModalOpen && (
+        <Suspense fallback={null}>
+          <TrailComparisonModal
+            trails={comparedTrails}
+            isOpen={isCompareModalOpen}
+            onClose={() => setIsCompareModalOpen(false)}
+            onRemoveTrail={(trailId) => setComparedTrails((prev) => prev.filter((t) => t.id !== trailId))}
+            onSelectTrail={handleSelectTrail}
+          />
+        </Suspense>
+      )}
 
       {/* Floating Scroll-to-Top Button */}
       {showScrollTop && (
@@ -1725,18 +1803,42 @@ export function App() {
       )}
 
       {/* TrekCopilot AI Virtual Assistant */}
-      <TrekAssistantFab
-        isOpen={isAiAssistantOpen}
-        onToggle={() => setIsAiAssistantOpen((prev) => !prev)}
-      />
-
-        <TrekAssistantModal
+      {!isAiAssistantOpen && (
+        <TrekAssistantFab
           isOpen={isAiAssistantOpen}
-          onClose={() => setIsAiAssistantOpen(false)}
-          currentTrail={selectedTrail}
-          currentUser={currentUser}
-          onSelectTrail={handleSelectTrailById}
+          onToggle={() => setIsAiAssistantOpen((prev) => !prev)}
+          hasScrollTop={showScrollTop}
         />
+      )}
+
+      {isAiAssistantOpen && (
+        <Suspense fallback={null}>
+          <TrekAssistantModal
+            isOpen={isAiAssistantOpen}
+            onClose={() => setIsAiAssistantOpen(false)}
+            currentTrail={selectedTrail}
+            currentUser={currentUser}
+            onSelectTrail={handleSelectTrailById}
+          />
+        </Suspense>
+      )}
+
+      {/* Shared Expedition Itinerary Modal */}
+      {sharedItineraryToken && (
+        <Suspense fallback={null}>
+          <SharedItineraryModal
+            shareToken={sharedItineraryToken}
+            isOpen={!!sharedItineraryToken}
+            onClose={() => {
+              setSharedItineraryToken(null);
+              if (window.location.hash.startsWith('#itinerary/')) {
+                history.replaceState(null, '', window.location.pathname + window.location.search);
+              }
+            }}
+            onViewTrail={(tId) => handleSelectTrailById(tId)}
+          />
+        </Suspense>
+      )}
 
 
         <Footer />

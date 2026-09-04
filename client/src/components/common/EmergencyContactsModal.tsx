@@ -1,5 +1,5 @@
 import React from 'react';
-import { IconShieldAlert, IconPhone } from './SvgIcons.js';
+import { IconShieldAlert, IconPhone, IconX } from './SvgIcons.js';
 
 interface EmergencyContactsModalProps {
   isOpen: boolean;
@@ -38,8 +38,13 @@ export const EmergencyContactsModal: React.FC<EmergencyContactsModalProps> = ({ 
             <IconShieldAlert size={20} color="var(--color-error)" />
             DANH BẠ HOTLINE CỨU HỘ KHẨN CẤP
           </h3>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', fontSize: '1.2rem', cursor: 'pointer' }}>
-            ✕
+          <button
+            onClick={onClose}
+            title="Đóng"
+            aria-label="Đóng"
+            style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: 4 }}
+          >
+            <IconX size={18} />
           </button>
         </div>
 

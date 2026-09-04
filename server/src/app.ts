@@ -32,6 +32,9 @@ dotenv.config();
 export const app = express();
 export const httpServer = createServer(app);
 
+// Trust reverse proxy headers (e.g. X-Forwarded-For) for rate limiting & security
+app.set('trust proxy', true);
+
 // Initialize single real-time Socket.io server instance
 initSocketServer(httpServer);
 

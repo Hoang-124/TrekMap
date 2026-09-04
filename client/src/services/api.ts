@@ -35,7 +35,7 @@ export async function fetchTrails(params?: {
   kidFriendly?: boolean;
   sortBy?: string;
 }): Promise<Trail[]> {
-  let list: Trail[] = [];
+  let list: Trail[];
 
   try {
     const query = new URLSearchParams();
@@ -416,17 +416,34 @@ export async function createExpeditionItinerary(itineraryData: any) {
       body: JSON.stringify(itineraryData),
     });
     const json = await res.json();
+    if (json && json.data && json.data.shareToken) {
+      try {
+        const cached = JSON.parse(localStorage.getItem('trekmap_local_itineraries') || '{}');
+        cached[json.data.shareToken] = { ...itineraryData, ...json.data };
+        localStorage.setItem('trekmap_local_itineraries', JSON.stringify(cached));
+      } catch (e) {}
+      return {
+        ...json,
+        shareUrl: `${window.location.origin}/#itinerary/${json.data.shareToken}`,
+      };
+    }
     return json;
   } catch (err) {
     console.warn('Itinerary API fallback used:', err);
     const shareToken = `trek-${Math.random().toString(36).substring(2, 9)}`;
+    const fallbackItem = {
+      ...itineraryData,
+      shareToken,
+    };
+    try {
+      const cached = JSON.parse(localStorage.getItem('trekmap_local_itineraries') || '{}');
+      cached[shareToken] = fallbackItem;
+      localStorage.setItem('trekmap_local_itineraries', JSON.stringify(cached));
+    } catch (e) {}
     return {
       success: true,
-      data: {
-        ...itineraryData,
-        shareToken,
-      },
-      shareUrl: `http://localhost:5173/itinerary/${shareToken}`,
+      data: fallbackItem,
+      shareUrl: `${window.location.origin}/#itinerary/${shareToken}`,
     };
   }
 }
@@ -434,12 +451,23 @@ export async function createExpeditionItinerary(itineraryData: any) {
 export async function fetchItineraryByToken(shareToken: string) {
   try {
     const res = await fetch(`${API_BASE}/itineraries/share/${shareToken}`);
-    if (!res.ok) throw new Error('Itinerary not found');
-    const json = await res.json();
-    return json.data;
+    if (res.ok) {
+      const json = await res.json();
+      if (json.data) return json.data;
+    }
   } catch (err) {
-    return null;
+    console.warn('Backend fetch itinerary error, trying local cache:', err);
   }
+
+  // Fallback to local storage cache
+  try {
+    const cached = JSON.parse(localStorage.getItem('trekmap_local_itineraries') || '{}');
+    if (cached[shareToken]) {
+      return cached[shareToken];
+    }
+  } catch (e) {}
+
+  return null;
 }
 
 export async function reverseGeocode(lat: number, lng: number) {

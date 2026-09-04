@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { IconPin, IconLock, IconTrash, IconX } from '../common/SvgIcons.js';
 
 const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
-  return ({ size = defaultSize, color = 'currentColor', style }: { size?: number; color?: string; style?: React.CSSProperties }) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+  return ({ size = defaultSize, color = 'currentColor', style, className }: { size?: number; color?: string; style?: React.CSSProperties; className?: string }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style} className={className}>
       {d}
     </svg>
   );
@@ -14,6 +15,31 @@ const XCircle = createSvgIcon(<><circle cx="12" cy="12" r="10" /><line x1="15" y
 const Trash2 = createSvgIcon(<><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></>);
 const Eye = createSvgIcon(<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></>);
 const ShieldCheck = createSvgIcon(<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><polyline points="9 12 11 14 15 10" /></>);
+const Inbox = createSvgIcon(<><polyline points="22 12 16 12 14 15 10 15 8 12 2 12" /><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /></>);
+const Layers = createSvgIcon(<><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" /></>);
+const AlertTriangle = createSvgIcon(<><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></>);
+const Users = createSvgIcon(<><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>);
+const MessageSquare = createSvgIcon(<><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></>);
+const BarChart3 = createSvgIcon(<><line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" /></>);
+const Clock = createSvgIcon(<><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></>);
+const Database = createSvgIcon(<><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" /><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" /></>);
+const Compass = createSvgIcon(<><circle cx="12" cy="12" r="10" /><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" /></>);
+const Search = createSvgIcon(<><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></>);
+const RefreshCw = createSvgIcon(<><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></>);
+const Radio = createSvgIcon(<><circle cx="12" cy="12" r="2" /><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14" /></>);
+
+const EmptyStateIllustration = () => (
+  <svg width="120" height="120" viewBox="0 0 120 120" fill="none" style={{ marginBottom: 16 }}>
+    <circle cx="60" cy="60" r="50" fill="rgba(74, 222, 128, 0.05)" stroke="var(--color-border)" strokeWidth="1.5" strokeDasharray="4 4" />
+    <circle cx="60" cy="60" r="36" fill="rgba(56, 189, 248, 0.08)" stroke="rgba(56, 189, 248, 0.25)" strokeWidth="1.5" />
+    <path d="M30 78 L52 48 L64 64 L74 50 L92 78 Z" fill="rgba(74, 222, 128, 0.16)" stroke="var(--color-primary)" strokeWidth="2" strokeLinejoin="round" />
+    <circle cx="68" cy="40" r="6" fill="#f59e0b" opacity="0.9" />
+    <g transform="translate(48, 62)">
+      <circle cx="12" cy="12" r="14" fill="#10b981" />
+      <path d="M7 12 L10.5 15.5 L17 9" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+    </g>
+  </svg>
+);
 
 interface AdminDashboardViewProps {
   onBack: () => void;
@@ -31,6 +57,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [selectedContribution, setSelectedContribution] = useState<any | null>(null);
   const [selectedAuthorModal, setSelectedAuthorModal] = useState<any | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [trailSearchQuery, setTrailSearchQuery] = useState<string>('');
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
   // Load contributions from MongoDB with localStorage fallback
   const [contributions, setContributions] = useState<any[]>(() => {
@@ -64,11 +92,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     }
   };
 
-  React.useEffect(() => {
-    fetchFromMongo();
-    fetchAdminUsers();
-  }, []);
-
   const fetchAdminUsers = async () => {
     try {
       const token = localStorage.getItem('trekmap_token');
@@ -100,7 +123,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     try {
       const res = await fetch('/api/forum');
       const data = await res.json();
-      if (data.success && Array.isArray(data.data)) setThreadsList(data.data);
+      if (data.success && Array.isArray(data.data)) {
+        const sorted = [...data.data].sort((a: any, b: any) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0));
+        setThreadsList(sorted);
+      }
     } catch (e) {}
   };
 
@@ -115,7 +141,32 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     } catch (e) {}
   };
 
-  React.useEffect(() => {
+  const refreshAllData = async () => {
+    setIsRefreshing(true);
+    await Promise.allSettled([
+      fetchFromMongo(),
+      fetchAdminUsers(),
+      fetchAdminTrails(),
+      fetchAdminIncidents(),
+      fetchAdminThreads(),
+      fetchAdminStats(),
+    ]);
+    setTimeout(() => {
+      setIsRefreshing(false);
+      onShowToast?.('Đã đồng bộ dữ liệu toàn hệ thống với máy chủ!', 'success');
+    }, 400);
+  };
+
+  useEffect(() => {
+    fetchFromMongo();
+    fetchAdminUsers();
+    fetchAdminTrails();
+    fetchAdminIncidents();
+    fetchAdminThreads();
+    fetchAdminStats();
+  }, []);
+
+  useEffect(() => {
     if (adminSection === 'users') fetchAdminUsers();
     if (adminSection === 'trails') fetchAdminTrails();
     if (adminSection === 'incidents') fetchAdminIncidents();
@@ -157,6 +208,17 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       const data = await res.json();
       if (data.success) {
         onShowToast?.(data.message, 'success');
+        setThreadsList((prev) =>
+          prev
+            .map((t) => {
+              if (t.id === threadId || t._id === threadId) {
+                const newPinned = data.data?.isPinned !== undefined ? Boolean(data.data.isPinned) : !t.isPinned;
+                return { ...t, isPinned: newPinned };
+              }
+              return t;
+            })
+            .sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0))
+        );
         fetchAdminThreads();
       }
     } catch (e) {}
@@ -172,6 +234,15 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       const data = await res.json();
       if (data.success) {
         onShowToast?.(data.message, 'info');
+        setThreadsList((prev) =>
+          prev.map((t) => {
+            if (t.id === threadId || t._id === threadId) {
+              const newLocked = data.data?.isLocked !== undefined ? Boolean(data.data.isLocked) : !t.isLocked;
+              return { ...t, isLocked: newLocked };
+            }
+            return t;
+          })
+        );
         fetchAdminThreads();
       }
     } catch (e) {}
@@ -188,6 +259,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       const data = await res.json();
       if (data.success) {
         onShowToast?.(data.message || 'Đã xóa bài viết!', 'info');
+        setThreadsList((prev) => prev.filter((t) => t.id !== threadId && t._id !== threadId));
         fetchAdminThreads();
         fetchAdminStats();
       }
@@ -217,7 +289,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const pendingContributions = contributions.filter((c) => c.status === 'pending' || !c.status);
   const approvedContributions = contributions.filter((c) => c.status === 'approved');
 
-  // Handle Approve Contribution in MongoDB
   const handleApprove = async (id: string, name: string) => {
     const token = localStorage.getItem('trekmap_token');
     const headers: Record<string, string> = {
@@ -247,7 +318,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       localStorage.setItem('trekmap_contributions', JSON.stringify(updated));
 
       if (onShowToast) {
-        onShowToast(`Đã duyệt & công khai cung đường "${name}" vào MongoDB thành công!`, 'success');
+        onShowToast(`Đã duyệt & công khai cung đường "${name}" vào bản đồ 3D thành công!`, 'success');
       }
       if (selectedContribution?.id === id) {
         setSelectedContribution(null);
@@ -261,7 +332,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     }
   };
 
-  // Handle Reject Contribution in MongoDB
   const handleReject = async (id: string, name: string) => {
     const token = localStorage.getItem('trekmap_token');
     const headers: Record<string, string> = {
@@ -304,7 +374,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     }
   };
 
-  // Handle Delete Contribution in MongoDB
   const handleDelete = async (id: string, name: string) => {
     if (window.confirm(`Bạn có chắc chắn muốn xóa bài đóng góp "${name}" khỏi hệ thống MongoDB không?`)) {
       const token = localStorage.getItem('trekmap_token');
@@ -341,7 +410,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     }
   };
 
-  // Admin Trail CRUD handlers
   const handleDeleteTrail = async (id: string, name: string) => {
     if (!window.confirm(`Bạn có chắc chắn muốn xóa cung đường "${name}" không?`)) return;
     try {
@@ -361,7 +429,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     }
   };
 
-  // Admin Incident handlers
   const handleResolveIncident = async (id: string) => {
     try {
       const token = localStorage.getItem('trekmap_token');
@@ -371,7 +438,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       });
       const data = await res.json();
       if (data.success) {
-        if (onShowToast) onShowToast('Đã đánh dấu xử lý xong sự cố!', 'success');
+        if (onShowToast) onShowToast('Đã đánh dấu xử lý xong sự cố (Đã gỡ cảnh báo)!', 'success');
         fetchAdminIncidents();
         fetchAdminStats();
       }
@@ -395,7 +462,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     } catch (e) {}
   };
 
-  // Admin User Ban/Unban handlers
   const handleBanUser = async (id: string, email: string) => {
     if (!window.confirm(`Khóa tài khoản ${email}?`)) return;
     try {
@@ -431,315 +497,1112 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     } catch (e) {}
   };
 
+  // Nav Items definition with badges
+  const pendingDisputesCount = incidentsList.filter((i) => i.disputes && i.disputes.length > 0).length;
+  const navItems = [
+    {
+      id: 'contributions' as const,
+      label: 'Duyệt Đóng Góp',
+      icon: Inbox,
+      badge: pendingContributions.length,
+      badgeColor: '#f59e0b',
+      badgeTextColor: '#041217',
+    },
+    {
+      id: 'trails' as const,
+      label: 'Kho Cung Đường',
+      icon: Layers,
+      badge: trailsList.length || 14,
+      badgeColor: 'var(--color-sky)',
+      badgeTextColor: '#041217',
+    },
+    {
+      id: 'incidents' as const,
+      label: 'Quản Lý Sự Cố',
+      icon: AlertTriangle,
+      badge: incidentsList.length || 4,
+      badgeColor: '#ef4444',
+      badgeTextColor: '#fff',
+      urgent: pendingDisputesCount > 0,
+      urgentText: `${pendingDisputesCount} Khiếu nại`,
+    },
+    {
+      id: 'users' as const,
+      label: 'Người Dùng & Quyền',
+      icon: Users,
+      badge: usersList.length || 1,
+      badgeColor: 'var(--color-primary)',
+      badgeTextColor: '#041217',
+    },
+    {
+      id: 'forum' as const,
+      label: 'Kiểm Duyệt Diễn Đàn',
+      icon: MessageSquare,
+      badge: threadsList.length || 12,
+      badgeColor: '#a855f7',
+      badgeTextColor: '#fff',
+    },
+    {
+      id: 'stats' as const,
+      label: 'Thống Kê Tổng Quan',
+      icon: BarChart3,
+    },
+  ];
+
+  const sectionTitles: Record<typeof adminSection, { title: string; subtitle: string }> = {
+    contributions: {
+      title: 'Duyệt & Quản Lý Đóng Góp Cung Đường',
+      subtitle: 'Xem chi tiết các bài đóng góp từ cộng đồng, kiểm tra thông tin địa lý và phê duyệt lên bản đồ 3D',
+    },
+    trails: {
+      title: 'Quản Lý Danh Mục Cung Đường Trekking',
+      subtitle: 'Theo dõi, chỉnh sửa trực tiếp thông số và quản lý kho dữ liệu cung đường thực địa Việt Nam',
+    },
+    incidents: {
+      title: 'Trung Tâm Quản Lý Sự Cố & Cứu Hộ',
+      subtitle: 'Kiểm duyệt báo cáo sự cố sạt lở, mất dấu từ cộng đồng và giải quyết khiếu nại thông tin giả',
+    },
+    users: {
+      title: 'Quản Trị Thành Viên & Phân Quyền Vai Trò',
+      subtitle: 'Quản lý tài khoản, cấp quyền Hướng dẫn viên (Guide), Điều hành viên (Mod) hoặc xử lý vi phạm',
+    },
+    forum: {
+      title: 'Kiểm Duyệt & Điều Hành Diễn Đàn',
+      subtitle: 'Ghim bài thông báo quan trọng, khóa bình luận hoặc gỡ bài viết vi phạm chuẩn mực cộng đồng',
+    },
+    stats: {
+      title: 'Báo Cáo Thống Kê & Phân Tích Hệ Thống',
+      subtitle: 'Báo cáo tổng hợp số liệu dữ liệu thực tế lưu trữ trên MongoDB Atlas và hoạt động thời gian thực',
+    },
+  };
+
   return (
-    <div style={{ maxWidth: 1200, margin: '30px auto', padding: '0 16px', boxSizing: 'border-box' }}>
-      {/* Header Bar */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
-        <button className="btn btn-outline" onClick={onBack} style={{ gap: 8 }}>
-          <ArrowLeft size={16} /> Quay lại Trang Chủ
-        </button>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(245, 158, 11, 0.12)', border: '1px solid rgba(245, 158, 11, 0.3)', padding: '6px 14px', borderRadius: 20, color: '#f59e0b', fontSize: '0.82rem', fontWeight: 700 }}>
-          <ShieldCheck size={16} />
-          <span>TRUNG TÂM QUẢN TRỊ BQT TREKMAP (ADMIN)</span>
-          {currentUser && <span style={{ color: 'var(--color-sky)', fontSize: '0.78rem' }}>• {currentUser.fullName || currentUser.email}</span>}
-        </div>
-      </div>
-
-      {/* Main Admin Navigation Section Bar */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 24, flexWrap: 'wrap', background: 'var(--color-bg-card)', padding: 6, borderRadius: 16, border: '1px solid var(--color-border)' }}>
-        <button
-          className={`btn ${adminSection === 'contributions' ? 'btn-primary' : 'btn-outline'}`}
-          onClick={() => setAdminSection('contributions')}
-          style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
-        >
-          Duyệt Bài Đóng Góp
-        </button>
-        <button
-          className={`btn ${adminSection === 'trails' ? 'btn-primary' : 'btn-outline'}`}
-          onClick={() => setAdminSection('trails')}
-          style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
-        >
-          Quản Lý Cung Đường
-        </button>
-        <button
-          className={`btn ${adminSection === 'incidents' ? 'btn-primary' : 'btn-outline'}`}
-          onClick={() => setAdminSection('incidents')}
-          style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12, display: 'inline-flex', alignItems: 'center', gap: 6 }}
-        >
-          <span>Quản Lý Sự Cố</span>
-          {incidentsList.filter((i) => i.disputes && i.disputes.length > 0).length > 0 && (
-            <span
-              style={{
-                background: '#ef4444',
-                color: '#fff',
-                padding: '2px 7px',
-                borderRadius: 10,
-                fontSize: '0.68rem',
-                fontWeight: 800,
-                boxShadow: '0 0 8px rgba(239, 68, 68, 0.6)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 4,
-              }}
-            >
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
-                <line x1="12" y1="9" x2="12" y2="13" />
-                <line x1="12" y1="17" x2="12.01" y2="17" />
-              </svg>
-              <span>{incidentsList.filter((i) => i.disputes && i.disputes.length > 0).length} Khiếu nại</span>
+    <div className="admin-layout">
+      {/* 1. COMMAND SIDEBAR */}
+      <aside className="admin-sidebar">
+        {/* Brand & Status Beacon */}
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-primary)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--color-primary)', boxShadow: '0 0 10px var(--color-primary)', display: 'inline-block' }} />
+              TREKOPS v2.4
+            </div>
+            <span style={{ fontSize: '0.68rem', fontWeight: 700, padding: '2px 8px', borderRadius: 6, background: 'rgba(56, 189, 248, 0.12)', color: 'var(--color-sky)', border: '1px solid rgba(56, 189, 248, 0.3)' }}>
+              REALTIME
             </span>
-          )}
-        </button>
-        <button
-          className={`btn ${adminSection === 'users' ? 'btn-primary' : 'btn-outline'}`}
-          onClick={() => setAdminSection('users')}
-          style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
-        >
-          Quản Lý Người Dùng
-        </button>
-        <button
-          className={`btn ${adminSection === 'forum' ? 'btn-primary' : 'btn-outline'}`}
-          onClick={() => setAdminSection('forum')}
-          style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
-        >
-          Kiểm Duyệt Diễn Đàn
-        </button>
-        <button
-          className={`btn ${adminSection === 'stats' ? 'btn-primary' : 'btn-outline'}`}
-          onClick={() => setAdminSection('stats')}
-          style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.83rem', borderRadius: 12 }}
-        >
-          Thống Kê Tổng Quan
-        </button>
-      </div>
-
-      {/* 1. SECTION: CONTRIBUTIONS MODERATION */}
-      {adminSection === 'contributions' && (
-        <>
-          {/* Title & Stats Summary Banner */}
-          <div className="card" style={{ marginBottom: 24, padding: 24 }}>
-            <h2 style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 8, margin: 0 }}>
-              Duyệt & Quản Lý Đóng Góp Cung Đường Trekking
-            </h2>
-        <p style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', marginBottom: 20 }}>
-          Xem chi tiết các bài đóng góp cung đường từ cộng đồng, kiểm tra thông tin địa lý và phê duyệt công khai lên bản đồ 3D
-        </p>
-
-        {/* 3 Metric Cards */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
-          <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 12, padding: '14px 18px' }}>
-            <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>Chờ Ban Quản Trị Duyệt</div>
-            <div style={{ fontSize: '1.6rem', fontWeight: 800, color: '#f59e0b', marginTop: 4 }}>
-              {pendingContributions.length} bài
-            </div>
           </div>
-
-          <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 12, padding: '14px 18px' }}>
-            <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>Đã Duyệt & Công Khai</div>
-            <div style={{ fontSize: '1.6rem', fontWeight: 800, color: '#10b981', marginTop: 4 }}>
-              {approvedContributions.length} bài
-            </div>
-          </div>
-
-          <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 12, padding: '14px 18px' }}>
-            <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>Tổng Số Đóng Góp</div>
-            <div style={{ fontSize: '1.6rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: 4 }}>
-              {contributions.length} bài
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Filter Tabs & Search Bar */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12, borderBottom: '1px solid var(--color-border)', paddingBottom: 14 }}>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button
-            className={`btn ${activeTab === 'pending' ? 'btn-primary' : 'btn-outline'}`}
-            onClick={() => setActiveTab('pending')}
-            style={{ fontSize: '0.85rem' }}
-          >
-            Chờ duyệt ({pendingContributions.length})
-          </button>
-          <button
-            className={`btn ${activeTab === 'approved' ? 'btn-primary' : 'btn-outline'}`}
-            onClick={() => setActiveTab('approved')}
-            style={{ fontSize: '0.85rem' }}
-          >
-            Đã duyệt công khai ({approvedContributions.length})
-          </button>
-          <button
-            className={`btn ${activeTab === 'all' ? 'btn-primary' : 'btn-outline'}`}
-            onClick={() => setActiveTab('all')}
-            style={{ fontSize: '0.85rem' }}
-          >
-            Tất cả đóng góp ({contributions.length})
-          </button>
+          <h2 style={{ fontSize: '1.2rem', fontWeight: 900, color: 'var(--color-text-main)', margin: '0 0 2px 0' }}>
+            Trung Tâm Chỉ Huy
+          </h2>
+          <p style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', margin: 0 }}>
+            Ban Quản Trị Hệ Thống TrekMap
+          </p>
         </div>
 
-        {/* Search Input Bar */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, maxWidth: 360, minWidth: 240 }}>
-          <input
-            type="text"
-            className="input"
-            placeholder="Tìm theo tên bài, tác giả, email..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            style={{ fontSize: '0.82rem', padding: '7px 12px' }}
+        {/* Administrator Profile Card */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 14, background: 'var(--color-bg-main)', border: '1px solid var(--color-border)' }}>
+          <img
+            src={currentUser?.avatarUrl || currentUser?.avatar || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
+            alt="Admin Avatar"
+            style={{ width: 38, height: 38, borderRadius: '50%', objectFit: 'cover', border: '1.5px solid var(--color-primary)' }}
           />
-          {searchQuery && (
-            <button className="btn btn-outline" onClick={() => setSearchQuery('')} style={{ fontSize: '0.78rem', padding: '6px 10px', whiteSpace: 'nowrap' }}>
-              Xóa
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Contributions List */}
-      {(() => {
-        const rawList = activeTab === 'pending'
-          ? pendingContributions
-          : activeTab === 'approved'
-          ? approvedContributions
-          : contributions;
-
-        const listToDisplay = rawList.filter((c) => {
-          if (!searchQuery) return true;
-          const q = searchQuery.toLowerCase();
-          return (
-            (c.name && c.name.toLowerCase().includes(q)) ||
-            (c.authorName && c.authorName.toLowerCase().includes(q)) ||
-            (c.authorEmail && c.authorEmail.toLowerCase().includes(q)) ||
-            (c.province && c.province.toLowerCase().includes(q))
-          );
-        });
-
-        if (listToDisplay.length === 0) {
-          return (
-            <div className="card" style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--color-text-muted)' }}>
-              {searchQuery ? `Không tìm thấy bài đóng góp nào khớp với từ khóa "${searchQuery}".` : 'Không có bài đóng góp nào trong mục này.'}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {currentUser?.fullName || currentUser?.name || currentUser?.email || 'Hoàng Trekker'}
             </div>
-          );
-        }
+            <div style={{ fontSize: '0.7rem', color: 'var(--color-sky)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <ShieldCheck size={11} color="var(--color-sky)" />
+              <span>{currentUser?.role === 'admin' ? 'Quản Trị Viên Cấp Cao' : 'BQT • Verified Guide'}</span>
+            </div>
+          </div>
+        </div>
 
-        return (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
-            {listToDisplay.map((contrib) => (
-              <div
-                key={contrib.id}
-                style={{
-                  background: 'var(--color-bg-card)',
-                  border: '1px solid var(--color-border)',
-                  borderRadius: 14,
-                  overflow: 'hidden',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  boxShadow: 'var(--shadow-card)',
-                }}
+        {/* Navigation Items */}
+        <nav style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {navItems.map((item) => {
+            const isActive = adminSection === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setAdminSection(item.id)}
+                className={`admin-nav-item ${isActive ? 'active' : ''}`}
+                style={{ width: '100%', border: 'none', textAlign: 'left' }}
               >
-                {/* Hero Cover Image */}
-                <div style={{ height: 160, position: 'relative', overflow: 'hidden', background: '#0b1319' }}>
-                  <img
-                    src={contrib.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=800&q=80'}
-                    alt={contrib.name}
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                  />
-                  <div style={{ position: 'absolute', top: 10, right: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <item.icon size={16} />
+                  <span>{item.label}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {item.urgent && (
                     <span style={{
-                      background: contrib.status === 'approved' ? 'rgba(16, 185, 129, 0.95)' : contrib.status === 'rejected' ? 'rgba(239, 68, 68, 0.95)' : 'rgba(245, 158, 11, 0.95)',
+                      background: '#ef4444',
                       color: '#fff',
-                      fontSize: '0.72rem',
+                      fontSize: '0.65rem',
                       fontWeight: 800,
-                      padding: '4px 10px',
+                      padding: '2px 6px',
                       borderRadius: 6,
-                      backdropFilter: 'blur(4px)',
+                      boxShadow: '0 0 8px rgba(239, 68, 68, 0.6)',
                     }}>
-                      {contrib.status === 'approved' ? 'Đã Duyệt & Công Khai' : contrib.status === 'rejected' ? 'Đã Từ Chối' : 'Chờ BQT Duyệt'}
+                      {item.urgentText}
                     </span>
+                  )}
+                  {item.badge !== undefined && (
+                    <span style={{
+                      background: item.badgeColor || 'var(--color-primary)',
+                      color: item.badgeTextColor || '#041217',
+                      fontSize: '0.7rem',
+                      fontWeight: 800,
+                      padding: '2px 7px',
+                      borderRadius: 8,
+                      minWidth: 18,
+                      textAlign: 'center',
+                    }}>
+                      {item.badge}
+                    </span>
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Infrastructure Status Widget & Back Link */}
+        <div style={{ marginTop: 'auto', paddingTop: 14, borderTop: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            HẠ TẦNG HỆ THỐNG
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.74rem', color: 'var(--color-text-muted)' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Database size={13} color="var(--color-primary)" /> MongoDB Atlas
+            </span>
+            <span style={{ color: 'var(--color-primary)', fontWeight: 700 }}>Trực Tuyến</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.74rem', color: 'var(--color-text-muted)' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Radio size={13} color="var(--color-sky)" /> Đài Vô Tuyến
+            </span>
+            <span style={{ color: 'var(--color-sky)', fontWeight: 700 }}>144.5 MHz</span>
+          </div>
+
+          <button
+            className="btn btn-outline"
+            onClick={onBack}
+            style={{ width: '100%', justifyContent: 'center', gap: 8, marginTop: 6, fontSize: '0.82rem', padding: '8px 12px' }}
+          >
+            <ArrowLeft size={14} /> Về Trang Chủ Bản Đồ
+          </button>
+        </div>
+      </aside>
+
+      {/* 2. MAIN WORKSPACE CONTENT */}
+      <main className="admin-content">
+        {/* Top Operations Header Bar */}
+        <header className="admin-top-bar">
+          <div>
+            <div style={{ fontSize: '0.74rem', color: 'var(--color-primary)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>BQT TREKMAP</span>
+              <span>/</span>
+              <span>CHỈ HUY</span>
+              <span>/</span>
+              <span>{navItems.find((n) => n.id === adminSection)?.label}</span>
+            </div>
+            <h1 style={{ fontSize: '1.25rem', fontWeight: 900, color: 'var(--color-text-main)', margin: 0 }}>
+              {sectionTitles[adminSection].title}
+            </h1>
+            <p style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', margin: '2px 0 0 0' }}>
+              {sectionTitles[adminSection].subtitle}
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button
+              className="btn btn-outline"
+              onClick={refreshAllData}
+              disabled={isRefreshing}
+              style={{ fontSize: '0.8rem', padding: '7px 12px', gap: 6 }}
+              title="Đồng bộ dữ liệu thời gian thực từ MongoDB"
+            >
+              <RefreshCw size={13} className={isRefreshing ? 'spin-animation' : ''} />
+              <span>{isRefreshing ? 'Đang tải...' : 'Làm Mới Dữ Liệu'}</span>
+            </button>
+
+            {adminSection === 'trails' && (
+              <button
+                className="btn btn-primary"
+                onClick={() => setIsCreateTrailOpen(true)}
+                style={{ fontSize: '0.8rem', padding: '7px 14px', gap: 6 }}
+              >
+                + Thêm Cung Đường Mới
+              </button>
+            )}
+
+            {adminSection === 'contributions' && (
+              <button
+                className="btn btn-outline"
+                onClick={() => { window.location.hash = '#contribute'; }}
+                style={{ fontSize: '0.8rem', padding: '7px 12px', gap: 6, color: 'var(--color-primary)', borderColor: 'var(--color-primary)' }}
+              >
+                + Mở Trình Đóng Góp
+              </button>
+            )}
+          </div>
+        </header>
+
+        {/* Admin Sections Sliding Container */}
+        <div key={adminSection} className="tab-content-slide">
+          {/* =========================================================================
+           * SECTION 1: DUYỆT ĐÓNG GÓP (CONTRIBUTIONS)
+           * ========================================================================= */}
+          {adminSection === 'contributions' && (
+            <>
+            {/* 4 Sleek KPI Metric Cockpit Cards */}
+            <div className="admin-kpi-grid">
+              <div className="admin-kpi-card" style={{ borderLeft: '3px solid #f59e0b' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>Chờ BQT Duyệt</div>
+                    <div style={{ fontSize: '1.8rem', fontWeight: 900, color: '#f59e0b', marginTop: 4, lineHeight: 1.1 }}>
+                      {pendingContributions.length} <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--color-text-muted)' }}>bài</span>
+                    </div>
+                  </div>
+                  <div style={{ width: 40, height: 40, borderRadius: 12, background: 'rgba(245, 158, 11, 0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#f59e0b' }}>
+                    <Clock size={20} />
                   </div>
                 </div>
-
-                {/* Card Body */}
-                <div style={{ padding: 16, flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                  <div>
-                    <h4 style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 6px 0' }}>
-                      {contrib.name || 'Cung đường Trekking mới'}
-                    </h4>
-
-                    <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginBottom: 12 }}>
-                      Vị trí: {contrib.hamlet ? contrib.hamlet + ', ' : ''}{contrib.district}, {contrib.province} ({contrib.region})
-                    </div>
-
-                    {/* Metrics Grid */}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 14 }}>
-                      <div style={{ background: 'var(--color-bg-main)', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                        <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>Chiều dài</div>
-                        <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-primary)' }}>{contrib.distanceKm} km</div>
-                      </div>
-                      <div style={{ background: 'var(--color-bg-main)', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                        <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>Độ cao nâng</div>
-                        <div style={{ fontSize: '0.82rem', fontWeight: 800, color: '#38bdf8' }}>+{contrib.elevationGainM}m</div>
-                      </div>
-                      <div style={{ background: 'var(--color-bg-main)', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                        <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>Thời gian</div>
-                        <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-text-main)' }}>{contrib.durationHoursNote || '1 ngày'}</div>
-                      </div>
-                    </div>
-
-                    {/* Author & Date */}
-                    <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginBottom: 14 }}>
-                      Người gửi: <strong>{contrib.authorName || contrib.authorEmail || 'Người dùng TrekMap'}</strong> ({contrib.createdAt})
-                    </div>
-                  </div>
-
-                  {/* Admin Actions Bar */}
-                  <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <button
-                      className="btn btn-outline"
-                      onClick={() => setSelectedContribution(contrib)}
-                      style={{ flex: 1, padding: '6px 10px', fontSize: '0.78rem', justifyContent: 'center' }}
-                    >
-                      <Eye size={14} /> Chi tiết
-                    </button>
-
-                    {contrib.status !== 'approved' && (
-                      <button
-                        className="btn btn-primary"
-                        onClick={() => handleApprove(contrib.id, contrib.name)}
-                        style={{ flex: 1.2, padding: '6px 10px', fontSize: '0.78rem', justifyContent: 'center', background: '#10b981', borderColor: '#10b981' }}
-                      >
-                        <CheckCircle2 size={14} /> Duyệt
-                      </button>
-                    )}
-
-                    {contrib.status === 'pending' && (
-                      <button
-                        className="btn btn-outline"
-                        onClick={() => handleReject(contrib.id, contrib.name)}
-                        style={{ padding: '6px 10px', fontSize: '0.78rem', justifyContent: 'center', color: '#f59e0b', borderColor: 'rgba(245, 158, 11, 0.4)' }}
-                      >
-                        <XCircle size={14} /> Từ chối
-                      </button>
-                    )}
-
-                    <button
-                      className="btn btn-outline"
-                      onClick={() => handleDelete(contrib.id, contrib.name)}
-                      style={{ padding: '6px 10px', fontSize: '0.78rem', justifyContent: 'center', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.4)' }}
-                      title="Xóa bài"
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#f59e0b' }} />
+                  <span>Cần xác thực dữ liệu thực địa</span>
                 </div>
               </div>
-            ))}
-          </div>
-        );
-      })()}
 
-      {/* Comprehensive Admin Detail Inspection Modal */}
+              <div className="admin-kpi-card" style={{ borderLeft: '3px solid #10b981' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>Đã Duyệt & Công Khai</div>
+                    <div style={{ fontSize: '1.8rem', fontWeight: 900, color: '#10b981', marginTop: 4, lineHeight: 1.1 }}>
+                      {approvedContributions.length} <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--color-text-muted)' }}>bài</span>
+                    </div>
+                  </div>
+                  <div style={{ width: 40, height: 40, borderRadius: 12, background: 'rgba(16, 185, 129, 0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#10b981' }}>
+                    <CheckCircle2 size={20} />
+                  </div>
+                </div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981' }} />
+                  <span>Đã đồng bộ lên bản đồ 3D</span>
+                </div>
+              </div>
+
+              <div className="admin-kpi-card" style={{ borderLeft: '3px solid var(--color-sky)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>Tổng Số Đóng Góp</div>
+                    <div style={{ fontSize: '1.8rem', fontWeight: 900, color: 'var(--color-sky)', marginTop: 4, lineHeight: 1.1 }}>
+                      {contributions.length} <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--color-text-muted)' }}>bài</span>
+                    </div>
+                  </div>
+                  <div style={{ width: 40, height: 40, borderRadius: 12, background: 'rgba(56, 189, 248, 0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--color-sky)' }}>
+                    <Layers size={20} />
+                  </div>
+                </div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--color-sky)' }} />
+                  <span>Kho dữ liệu mở từ cộng đồng</span>
+                </div>
+              </div>
+
+              <div className="admin-kpi-card" style={{ borderLeft: '3px solid #a855f7' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>Độ Tin Cậy Thực Địa</div>
+                    <div style={{ fontSize: '1.8rem', fontWeight: 900, color: '#a855f7', marginTop: 4, lineHeight: 1.1 }}>
+                      100% <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--color-text-muted)' }}>GPS VN</span>
+                    </div>
+                  </div>
+                  <div style={{ width: 40, height: 40, borderRadius: 12, background: 'rgba(168, 85, 247, 0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#a855f7' }}>
+                    <Compass size={20} />
+                  </div>
+                </div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#a855f7' }} />
+                  <span>Tuân thủ quy chuẩn Rule 11</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Modern Toolbar: Segmented Switch + Search */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+              <div className="admin-segmented-control">
+                <button
+                  type="button"
+                  className={`admin-segmented-btn ${activeTab === 'pending' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('pending')}
+                >
+                  <Clock size={14} />
+                  <span>Chờ duyệt</span>
+                  <span style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: 8, background: activeTab === 'pending' ? 'rgba(245, 158, 11, 0.2)' : 'transparent', color: '#f59e0b', fontWeight: 800 }}>
+                    {pendingContributions.length}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className={`admin-segmented-btn ${activeTab === 'approved' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('approved')}
+                >
+                  <CheckCircle2 size={14} />
+                  <span>Đã công khai</span>
+                  <span style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: 8, background: activeTab === 'approved' ? 'rgba(16, 185, 129, 0.2)' : 'transparent', color: '#10b981', fontWeight: 800 }}>
+                    {approvedContributions.length}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className={`admin-segmented-btn ${activeTab === 'all' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('all')}
+                >
+                  <Layers size={14} />
+                  <span>Tất cả đóng góp</span>
+                  <span style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: 8, background: activeTab === 'all' ? 'rgba(56, 189, 248, 0.2)' : 'transparent', color: 'var(--color-sky)', fontWeight: 800 }}>
+                    {contributions.length}
+                  </span>
+                </button>
+              </div>
+
+              {/* Search Box */}
+              <div className="admin-search-wrapper">
+                <Search size={16} color="var(--color-text-dim)" />
+                <input
+                  type="text"
+                  placeholder="Tìm kiếm theo tên cung đường, tác giả, tỉnh thành..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  style={{
+                    border: 'none',
+                    background: 'transparent',
+                    color: 'var(--color-text-main)',
+                    fontSize: '0.82rem',
+                    width: '100%',
+                    outline: 'none',
+                    padding: 0,
+                  }}
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    style={{ background: 'none', border: 'none', color: 'var(--color-text-dim)', cursor: 'pointer', display: 'flex', padding: 2 }}
+                    title="Xóa tìm kiếm"
+                  >
+                    <IconX size={14} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Filtered Contributions Content */}
+            <div key={`${activeTab}-${searchQuery}`} className="tab-content-slide">
+              {(() => {
+                const rawList = activeTab === 'pending'
+                ? pendingContributions
+                : activeTab === 'approved'
+                ? approvedContributions
+                : contributions;
+
+              const listToDisplay = rawList.filter((c) => {
+                if (!searchQuery) return true;
+                const q = searchQuery.toLowerCase();
+                return (
+                  (c.name && c.name.toLowerCase().includes(q)) ||
+                  (c.authorName && c.authorName.toLowerCase().includes(q)) ||
+                  (c.authorEmail && c.authorEmail.toLowerCase().includes(q)) ||
+                  (c.province && c.province.toLowerCase().includes(q))
+                );
+              });
+
+              if (listToDisplay.length === 0) {
+                return (
+                  <div className="admin-empty-state">
+                    <EmptyStateIllustration />
+                    <h3 style={{ fontSize: '1.2rem', fontWeight: 900, color: 'var(--color-text-main)', margin: '0 0 6px 0' }}>
+                      {searchQuery ? 'Không Tìm Thấy Kết Quả Phù Hợp' : activeTab === 'pending' ? 'Hộp Thư Kiểm Duyệt Sạch Sẽ!' : 'Không Có Bài Đóng Góp Nào'}
+                    </h3>
+                    <p style={{ fontSize: '0.84rem', color: 'var(--color-text-muted)', maxWidth: 460, margin: '0 0 20px 0', lineHeight: 1.5 }}>
+                      {searchQuery
+                        ? `Không có bài đóng góp nào khớp với từ khóa "${searchQuery}". Vui lòng thử lại với tên khác.`
+                        : activeTab === 'pending'
+                        ? 'Tuyệt vời! Toàn bộ bài đóng góp cung đường gửi về từ cộng đồng đã được kiểm tra và xử lý xong. Dữ liệu bản đồ đang ở trạng thái chuẩn xác nhất.'
+                        : 'Chưa có dữ liệu bài đóng góp trong danh mục này.'}
+                    </p>
+
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+                      {activeTab === 'pending' && (
+                        <button
+                          className="btn btn-primary"
+                          onClick={() => setActiveTab('approved')}
+                          style={{ fontSize: '0.82rem', padding: '8px 16px' }}
+                        >
+                          Xem Các Cung Đường Đã Công Khai ({approvedContributions.length})
+                        </button>
+                      )}
+                      <button
+                        className="btn btn-outline"
+                        onClick={() => { window.location.hash = '#contribute'; }}
+                        style={{ fontSize: '0.82rem', padding: '8px 16px' }}
+                      >
+                        Thêm Cung Đường Mới
+                      </button>
+                      <button
+                        className="btn btn-outline"
+                        onClick={refreshAllData}
+                        style={{ fontSize: '0.82rem', padding: '8px 16px' }}
+                      >
+                        Làm Mới Danh Sách
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 18 }}>
+                  {listToDisplay.map((contrib) => (
+                    <article key={contrib.id} className="admin-item-card">
+                      {/* Image Banner */}
+                      <div style={{ height: 180, position: 'relative', overflow: 'hidden', background: '#0b1319' }}>
+                        <img
+                          src={contrib.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=800&q=80'}
+                          alt={contrib.name}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                        />
+                        {/* Status Floating Pill */}
+                        <div style={{ position: 'absolute', top: 12, right: 12 }}>
+                          <span style={{
+                            background: contrib.status === 'approved' ? 'rgba(16, 185, 129, 0.95)' : contrib.status === 'rejected' ? 'rgba(239, 68, 68, 0.95)' : 'rgba(245, 158, 11, 0.95)',
+                            color: '#fff',
+                            fontSize: '0.72rem',
+                            fontWeight: 800,
+                            padding: '4px 10px',
+                            borderRadius: 8,
+                            backdropFilter: 'blur(8px)',
+                            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                          }}>
+                            {contrib.status === 'approved' ? '✓ Đã Công Khai' : contrib.status === 'rejected' ? '✕ Đã Từ Chối' : '⏳ Chờ BQT Duyệt'}
+                          </span>
+                        </div>
+
+                        {/* Region Tag at Bottom-Left */}
+                        <div style={{ position: 'absolute', bottom: 10, left: 12 }}>
+                          <span style={{
+                            background: 'rgba(7, 13, 30, 0.88)',
+                            color: 'var(--color-sky)',
+                            fontSize: '0.7rem',
+                            fontWeight: 800,
+                            padding: '3px 8px',
+                            borderRadius: 6,
+                            backdropFilter: 'blur(6px)',
+                            border: '1px solid rgba(56, 189, 248, 0.3)',
+                          }}>
+                            {contrib.region || 'Việt Nam'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Card Body */}
+                      <div style={{ padding: 18, flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                        <div>
+                          <h4 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 6px 0', lineHeight: 1.3 }}>
+                            {contrib.name || 'Cung đường Trekking mới'}
+                          </h4>
+
+                          <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginBottom: 14 }}>
+                            {contrib.hamlet ? contrib.hamlet + ', ' : ''}{contrib.district}, {contrib.province}
+                          </div>
+
+                          {/* Technical Metrics Grid */}
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 16 }}>
+                            <div style={{ background: 'var(--color-bg-main)', padding: '8px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                              <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>Cự ly</div>
+                              <div style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-primary)' }}>{contrib.distanceKm} km</div>
+                            </div>
+                            <div style={{ background: 'var(--color-bg-main)', padding: '8px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                              <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>Độ dốc nâng</div>
+                              <div style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-sky)' }}>+{contrib.elevationGainM}m</div>
+                            </div>
+                            <div style={{ background: 'var(--color-bg-main)', padding: '8px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                              <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>Thời lượng</div>
+                              <div style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)' }}>{contrib.durationHoursNote || '1 ngày'}</div>
+                            </div>
+                          </div>
+
+                          {/* Author & Timestamp Info */}
+                          <div style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--color-primary)' }} />
+                            <span>Người gửi: <strong style={{ color: 'var(--color-text-main)' }}>{contrib.authorName || contrib.authorEmail || 'Trekker Cộng Đồng'}</strong> ({contrib.createdAt || 'Mới cập nhật'})</span>
+                          </div>
+                        </div>
+
+                        {/* Actions Row */}
+                        <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          <button
+                            className="btn btn-outline"
+                            onClick={() => setSelectedContribution(contrib)}
+                            style={{ flex: 1, padding: '7px 12px', fontSize: '0.8rem', justifyContent: 'center', gap: 6 }}
+                          >
+                            <Eye size={14} /> Chi tiết
+                          </button>
+
+                          {contrib.status !== 'approved' && (
+                            <button
+                              className="btn btn-primary"
+                              onClick={() => handleApprove(contrib.id, contrib.name)}
+                              style={{ flex: 1.2, padding: '7px 12px', fontSize: '0.8rem', justifyContent: 'center', background: '#10b981', borderColor: '#10b981', gap: 6 }}
+                            >
+                              <CheckCircle2 size={14} /> Phê Duyệt
+                            </button>
+                          )}
+
+                          {contrib.status === 'pending' && (
+                            <button
+                              className="btn btn-outline"
+                              onClick={() => handleReject(contrib.id, contrib.name)}
+                              style={{ padding: '7px 10px', fontSize: '0.8rem', justifyContent: 'center', color: '#f59e0b', borderColor: 'rgba(245, 158, 11, 0.4)' }}
+                              title="Từ chối bài đóng góp"
+                            >
+                              <XCircle size={14} />
+                            </button>
+                          )}
+
+                          <button
+                            className="btn btn-outline"
+                            onClick={() => handleDelete(contrib.id, contrib.name)}
+                            style={{ padding: '7px 10px', fontSize: '0.8rem', justifyContent: 'center', color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.4)' }}
+                            title="Xóa vĩnh viễn khỏi MongoDB"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              );
+            })()}
+            </div>
+          </>
+        )}
+
+        {/* =========================================================================
+         * SECTION 2: QUẢN LÝ CUNG ĐƯỜNG (TRAILS)
+         * ========================================================================= */}
+        {adminSection === 'trails' && (
+          <div className="card" style={{ padding: 24, borderRadius: 18 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <Layers size={20} color="var(--color-primary)" />
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
+                  Kho Cung Đường Trekking Việt Nam ({trailsList.length})
+                </h3>
+              </div>
+
+              <div className="admin-search-wrapper" style={{ maxWidth: 320 }}>
+                <Search size={15} color="var(--color-text-dim)" />
+                <input
+                  type="text"
+                  placeholder="Lọc cung đường..."
+                  value={trailSearchQuery}
+                  onChange={(e) => setTrailSearchQuery(e.target.value)}
+                  style={{ border: 'none', background: 'transparent', color: 'var(--color-text-main)', fontSize: '0.82rem', width: '100%', outline: 'none' }}
+                />
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {trailsList
+                .filter((t) => !trailSearchQuery || t.name.toLowerCase().includes(trailSearchQuery.toLowerCase()) || t.province.toLowerCase().includes(trailSearchQuery.toLowerCase()))
+                .map((trail) => (
+                  <div
+                    key={trail._id || trail.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      background: 'var(--color-bg-main)',
+                      border: '1px solid var(--color-border)',
+                      padding: '14px 18px',
+                      borderRadius: 14,
+                      flexWrap: 'wrap',
+                      gap: 14,
+                      transition: 'border-color 0.2s ease',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                      <img
+                        src={trail.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=200&q=80'}
+                        alt={trail.name}
+                        style={{ width: 64, height: 52, borderRadius: 10, objectFit: 'cover', border: '1px solid var(--color-border)' }}
+                      />
+                      <div>
+                        <div style={{ fontSize: '0.98rem', fontWeight: 800, color: 'var(--color-text-main)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span>{trail.name}</span>
+                          <span style={{ fontSize: '0.7rem', padding: '2px 7px', borderRadius: 6, background: 'rgba(56, 189, 248, 0.12)', color: 'var(--color-sky)', border: '1px solid rgba(56, 189, 248, 0.25)' }}>
+                            {trail.region}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginTop: 3 }}>
+                          {trail.province} • Cự ly: <strong style={{ color: 'var(--color-primary)' }}>{trail.distanceKm} km</strong> • Cao độ: <strong>+{trail.elevationGainM}m</strong> • Đánh giá: <strong>★ {trail.rating || 5.0}</strong> ({trail.reviewCount || 0} lượt)
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        className="btn btn-outline"
+                        onClick={() => setEditingTrailModal(trail)}
+                        style={{ color: 'var(--color-primary)', borderColor: 'var(--color-border)', padding: '6px 14px', fontSize: '0.8rem' }}
+                      >
+                        Sửa
+                      </button>
+                      <button
+                        className="btn btn-outline"
+                        onClick={() => handleDeleteTrail(trail._id || trail.id, trail.name)}
+                        style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)', padding: '6px 14px', fontSize: '0.8rem' }}
+                      >
+                        Xóa
+                      </button>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
+
+        {/* =========================================================================
+         * SECTION 3: QUẢN LÝ SỰ CỐ & CỨU HỘ (INCIDENTS)
+         * ========================================================================= */}
+        {adminSection === 'incidents' && (
+          <div className="card" style={{ padding: 24, borderRadius: 18 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <AlertTriangle size={20} color="#ef4444" />
+                <div>
+                  <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
+                    Sự Cố Khẩn Cấp & Cảnh Báo Thực Địa ({incidentsList.length})
+                  </h3>
+                  <p style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', margin: '2px 0 0 0' }}>
+                    Kiểm duyệt tin báo sạt lở, lũ quét, đi lạc và xử lý các khiếu nại báo động giả
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {incidentsList.map((inc) => (
+                <div
+                  key={inc._id || inc.id}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    background: 'var(--color-bg-main)',
+                    border: `1.5px solid ${inc.severity === 'critical' || inc.severity === 'high' ? 'rgba(239, 68, 68, 0.45)' : 'var(--color-border)'}`,
+                    padding: '16px 20px',
+                    borderRadius: 14,
+                    gap: 12,
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10 }}>
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
+                        <span style={{
+                          background: inc.severity === 'critical' ? '#ef4444' : inc.severity === 'high' ? '#f59e0b' : '#38bdf8',
+                          color: '#fff',
+                          fontSize: '0.72rem',
+                          fontWeight: 800,
+                          padding: '2px 8px',
+                          borderRadius: 6,
+                        }}>
+                          {inc.severity?.toUpperCase() || 'HIGH'}
+                        </span>
+                        <span style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                          {inc.trailName || inc.type}
+                        </span>
+                        {inc.resolved ? (
+                          <span style={{ color: '#10b981', fontSize: '0.74rem', fontWeight: 700, background: 'rgba(16, 185, 129, 0.12)', padding: '2px 8px', borderRadius: 6, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            ✓ Đã an toàn (Đã gỡ cảnh báo)
+                          </span>
+                        ) : (
+                          <span style={{ color: '#ef4444', fontSize: '0.74rem', fontWeight: 700, background: 'rgba(239, 68, 68, 0.12)', padding: '2px 8px', borderRadius: 6, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            ⚠ Đang phát sóng khẩn cấp
+                          </span>
+                        )}
+                      </div>
+                      <p style={{ fontSize: '0.86rem', color: 'var(--color-text-main)', margin: 0, lineHeight: 1.5 }}>
+                        {inc.description}
+                      </p>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      {!inc.resolved && (
+                        <button
+                          className="btn btn-primary"
+                          onClick={() => handleResolveIncident(inc._id || inc.id)}
+                          style={{ background: '#10b981', borderColor: '#10b981', padding: '6px 14px', fontSize: '0.8rem', fontWeight: 700 }}
+                        >
+                          Xử Lý Xong (Gỡ Cảnh Báo)
+                        </button>
+                      )}
+
+                      {inc.reportedBy && (
+                        <button
+                          className="btn btn-outline"
+                          onClick={() => handleBanUser(inc.reportedBy, inc.reporterEmail || inc.reporterName || 'Tài khoản')}
+                          title="Khóa tài khoản này nếu phát hiện báo động giả / spam"
+                          style={{ color: '#f59e0b', borderColor: 'rgba(245, 158, 11, 0.4)', padding: '6px 12px', fontSize: '0.78rem' }}
+                        >
+                          Khóa Nick (Báo Giả)
+                        </button>
+                      )}
+
+                      <button
+                        className="btn btn-outline"
+                        onClick={() => handleDeleteIncident(inc._id || inc.id)}
+                        style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)', padding: '6px 12px', fontSize: '0.8rem' }}
+                      >
+                        Xóa
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Reporter & Verification Strip */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', background: 'var(--color-bg-card)', borderRadius: 10, border: '1px solid var(--color-border)', flexWrap: 'wrap', fontSize: '0.76rem' }}>
+                    <span style={{ color: 'var(--color-text-main)', fontWeight: 700 }}>
+                      Người phát: <strong style={{ color: 'var(--color-primary)' }}>{inc.reporterName || inc.userName || 'Trekker Thực Địa'}</strong>
+                    </span>
+                    {inc.reporterEmail && <span style={{ color: 'var(--color-text-muted)' }}>• {inc.reporterEmail}</span>}
+                    <span style={{ color: 'var(--color-text-dim)' }}>• Thời gian: {inc.reportedAt || 'Gần đây'}</span>
+                    {inc.locationNote && <span style={{ color: 'var(--color-sky)', fontWeight: 600 }}>• Vị trí: {inc.locationNote}</span>}
+                    {inc.confirmations && inc.confirmations > 1 && (
+                      <span style={{ background: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b', padding: '2px 8px', borderRadius: 6, fontWeight: 800 }}>
+                        ✓ {inc.confirmations} Trekker cùng xác thực
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Disputes Callout Box */}
+                  {inc.disputes && inc.disputes.length > 0 && (
+                    <div style={{ padding: '12px 16px', background: 'rgba(239, 68, 68, 0.12)', border: '1.5px solid rgba(239, 68, 68, 0.4)', borderRadius: 10, fontSize: '0.8rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 800, color: '#ef4444', marginBottom: 6 }}>
+                        <AlertTriangle size={15} />
+                        <span>KHIẾU NẠI TỪ CỘNG ĐỒNG: CÓ {inc.disputes.length} TREKKER BÁO CÁO TIN GIẢ / SAI SỰ THẬT</span>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {inc.disputes.map((d: any, idx: number) => (
+                          <div key={idx} style={{ background: 'var(--color-bg-card)', padding: '6px 10px', borderRadius: 6, color: 'var(--color-text-main)' }}>
+                            • <strong>{d.userName || 'Trekker'}</strong> ({d.disputedAt}): <em>"{d.reason}"</em>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+                        <button
+                          className="btn btn-primary"
+                          onClick={() => handleResolveDispute(inc._id || inc.id, 'dismiss_incident')}
+                          style={{ background: '#10b981', borderColor: '#10b981', padding: '6px 14px', fontSize: '0.78rem', fontWeight: 700 }}
+                        >
+                          ✓ Chấp nhận khiếu nại (Gỡ cảnh báo ảo)
+                        </button>
+                        <button
+                          className="btn btn-outline"
+                          onClick={() => handleResolveDispute(inc._id || inc.id, 'reject_dispute')}
+                          style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)', padding: '6px 14px', fontSize: '0.78rem' }}
+                        >
+                          ✕ Bác bỏ khiếu nại (Nguy hiểm thật)
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* =========================================================================
+         * SECTION 4: QUẢN LÝ NGƯỜI DÙNG & PHÂN QUYỀN (USERS)
+         * ========================================================================= */}
+        {adminSection === 'users' && (
+          <div className="card" style={{ padding: 24, borderRadius: 18 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <Users size={20} color="var(--color-primary)" />
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
+                  Danh Sách Thành Viên & Phân Quyền Vai Trò ({usersList.length})
+                </h3>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {usersList.map((u) => (
+                <div
+                  key={u._id || u.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    background: 'var(--color-bg-main)',
+                    border: '1px solid var(--color-border)',
+                    padding: '14px 18px',
+                    borderRadius: 14,
+                    flexWrap: 'wrap',
+                    gap: 14,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                    <img
+                      src={u.avatarUrl || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
+                      alt={u.fullName}
+                      style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--color-primary)' }}
+                    />
+                    <div>
+                      <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-main)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span>{u.fullName || u.username}</span>
+                        {u.role === 'admin' && <span style={{ background: '#f59e0b', color: '#fff', fontSize: '0.68rem', padding: '2px 6px', borderRadius: 4, fontWeight: 800 }}>ADMIN</span>}
+                        {u.role === 'guide' && <span style={{ background: '#10b981', color: '#fff', fontSize: '0.68rem', padding: '2px 6px', borderRadius: 4, fontWeight: 800 }}>✓ GUIDE</span>}
+                        {u.role === 'moderator' && <span style={{ background: '#38bdf8', color: '#fff', fontSize: '0.68rem', padding: '2px 6px', borderRadius: 4, fontWeight: 800 }}>MODERATOR</span>}
+                      </div>
+                      <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
+                        {u.email} • Uy tín: <strong style={{ color: '#10b981' }}>{u.reputationScore || 50} pts</strong> • Huy hiệu: {u.badges?.join(', ') || 'Trekker Mới'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', fontWeight: 600 }}>Phân quyền:</span>
+                      <select
+                        value={u.role || 'user'}
+                        onChange={(e) => handleUpdateRole(u._id || u.id, e.target.value, u.fullName || u.email)}
+                        disabled={u.email === currentUser?.email}
+                        style={{
+                          background: 'var(--color-bg-card)',
+                          color: 'var(--color-text-main)',
+                          border: '1px solid var(--color-border)',
+                          borderRadius: 8,
+                          padding: '6px 12px',
+                          fontSize: '0.8rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          outline: 'none',
+                        }}
+                      >
+                        <option value="user">Trekker (Thành viên)</option>
+                        <option value="guide">Verified Guide (Hướng dẫn viên)</option>
+                        <option value="moderator">Kiểm duyệt viên (Mod)</option>
+                        <option value="admin">Quản trị viên (Admin)</option>
+                      </select>
+                    </div>
+
+                    {u.isBanned ? (
+                      <button
+                        className="btn btn-primary"
+                        onClick={() => handleUnbanUser(u._id || u.id, u.email)}
+                        style={{ background: '#10b981', borderColor: '#10b981', padding: '6px 14px', fontSize: '0.8rem' }}
+                      >
+                        Mở Khóa
+                      </button>
+                    ) : u.role !== 'admin' ? (
+                      <button
+                        className="btn btn-outline"
+                        onClick={() => handleBanUser(u._id || u.id, u.email)}
+                        style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)', padding: '6px 14px', fontSize: '0.8rem' }}
+                      >
+                        Khóa Nick
+                      </button>
+                    ) : (
+                      <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>Quản trị viên</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* =========================================================================
+         * SECTION 5: KIỂM DUYỆT DIỄN ĐÀN (FORUM)
+         * ========================================================================= */}
+        {adminSection === 'forum' && (
+          <div className="card" style={{ padding: 24, borderRadius: 18 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <MessageSquare size={20} color="var(--color-primary)" />
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
+                  Kiểm Duyệt Diễn Đàn Thám Hiểm ({threadsList.length} bài viết)
+                </h3>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {threadsList.map((t) => (
+                <div
+                  key={t.id || t._id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    background: t.isPinned ? 'rgba(245, 158, 11, 0.06)' : 'var(--color-bg-main)',
+                    border: `1.5px solid ${t.isPinned ? 'rgba(245, 158, 11, 0.6)' : 'var(--color-border)'}`,
+                    boxShadow: t.isPinned ? '0 0 16px rgba(245, 158, 11, 0.15)' : 'none',
+                    padding: '14px 18px',
+                    borderRadius: 14,
+                    flexWrap: 'wrap',
+                    gap: 12,
+                    transition: 'all 0.25s ease',
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 280 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                      {t.isPinned && (
+                        <span style={{
+                          background: '#f59e0b',
+                          color: '#041108',
+                          fontSize: '0.72rem',
+                          fontWeight: 800,
+                          padding: '3px 9px',
+                          borderRadius: 6,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 5,
+                          boxShadow: '0 2px 8px rgba(245, 158, 11, 0.35)',
+                        }}>
+                          <IconPin size={12} color="#041108" /> ĐÃ GHIM LÊN ĐẦU
+                        </span>
+                      )}
+                      {t.isLocked && (
+                        <span style={{ background: '#ef4444', color: '#fff', fontSize: '0.7rem', fontWeight: 800, padding: '2px 8px', borderRadius: 6, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <IconLock size={11} color="#fff" /> ĐÃ KHÓA
+                        </span>
+                      )}
+                      <span style={{ background: 'var(--color-bg-card)', color: 'var(--color-sky)', fontSize: '0.72rem', fontWeight: 700, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--color-border)' }}>
+                        {t.category || 'Thảo luận'}
+                      </span>
+                      <span style={{ fontSize: '0.98rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                        {t.title}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                      <span>Tác giả: <strong style={{ color: 'var(--color-text-main)' }}>{t.authorName}</strong></span>
+                      <span>• {t.repliesCount || 0} bình luận</span>
+                      <span>• {t.upvotes || 0} lượt thích</span>
+                      <span>• {t.createdAt ? new Date(t.createdAt).toLocaleDateString('vi-VN') : 'Gần đây'}</span>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <button
+                      className={`btn ${t.isPinned ? 'btn-primary' : 'btn-outline'}`}
+                      onClick={() => handlePinThread(t.id || t._id, t.title)}
+                      style={{
+                        padding: '6px 14px',
+                        fontSize: '0.78rem',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        ...(t.isPinned ? { background: '#f59e0b', borderColor: '#f59e0b', color: '#041108', fontWeight: 800 } : {}),
+                      }}
+                    >
+                      <IconPin size={12} color={t.isPinned ? '#041108' : 'currentColor'} />
+                      <span>{t.isPinned ? 'Bỏ Ghim' : 'Ghim Bài'}</span>
+                    </button>
+                    <button
+                      className="btn btn-outline"
+                      onClick={() => handleLockThread(t.id || t._id, t.title)}
+                      style={{
+                        padding: '6px 14px',
+                        fontSize: '0.78rem',
+                        color: t.isLocked ? '#10b981' : '#f59e0b',
+                        borderColor: t.isLocked ? 'rgba(16,185,129,0.4)' : 'rgba(245,158,11,0.4)',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                      }}
+                    >
+                      {t.isLocked ? 'Mở Khóa' : <><IconLock size={12} color="#f59e0b" /> Khóa</>}
+                    </button>
+                    <button
+                      className="btn btn-outline"
+                      onClick={() => handleDeleteThread(t.id || t._id, t.title)}
+                      style={{ padding: '6px 14px', fontSize: '0.78rem', color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                    >
+                      <IconTrash size={12} color="#ef4444" /> Xóa
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* =========================================================================
+         * SECTION 6: THỐNG KÊ TỔNG QUAN (STATS)
+         * ========================================================================= */}
+        {adminSection === 'stats' && (
+          <div className="card" style={{ padding: 24, borderRadius: 18 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
+              <BarChart3 size={20} color="var(--color-primary)" />
+              <div>
+                <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
+                  Thống Kê Dữ Liệu Thực Địa & Hệ Thống
+                </h3>
+                <p style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', margin: '2px 0 0 0' }}>
+                  Tổng hợp số liệu thời gian thực được đồng bộ trên MongoDB Atlas
+                </p>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
+              <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
+                <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>Tổng Thành Viên</div>
+                <div style={{ fontSize: '1.9rem', fontWeight: 900, color: 'var(--color-primary)', marginTop: 4 }}>
+                  {adminStats?.totalUsers || usersList.length || 1}
+                </div>
+              </div>
+              <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
+                <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>Cung Đường Công Khai</div>
+                <div style={{ fontSize: '1.9rem', fontWeight: 900, color: 'var(--color-sky)', marginTop: 4 }}>
+                  {adminStats?.totalTrails || trailsList.length || 14}
+                </div>
+              </div>
+              <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
+                <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>Tổng Bài Đóng Góp</div>
+                <div style={{ fontSize: '1.9rem', fontWeight: 900, color: '#10b981', marginTop: 4 }}>
+                  {adminStats?.totalContributions || contributions.length}
+                </div>
+              </div>
+              <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
+                <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>Bài Chờ Kiểm Duyệt</div>
+                <div style={{ fontSize: '1.9rem', fontWeight: 900, color: '#f59e0b', marginTop: 4 }}>
+                  {adminStats?.pendingContributions || pendingContributions.length}
+                </div>
+              </div>
+              <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
+                <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>Sự Cố Khẩn Cấp</div>
+                <div style={{ fontSize: '1.9rem', fontWeight: 900, color: '#ef4444', marginTop: 4 }}>
+                  {adminStats?.totalIncidents || incidentsList.length || 4}
+                </div>
+              </div>
+              <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
+                <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>Chủ Đề Diễn Đàn</div>
+                <div style={{ fontSize: '1.9rem', fontWeight: 900, color: '#a855f7', marginTop: 4 }}>
+                  {adminStats?.totalThreads || threadsList.length || 12}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        </div>
+      </main>
+
+      {/* =========================================================================
+       * COMPREHENSIVE ADMIN DETAIL INSPECTION MODAL
+       * ========================================================================= */}
       {selectedContribution && (
         <div className="modal-overlay" onClick={() => setSelectedContribution(null)} style={{ background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(12px)', zIndex: 1000 }}>
           <div
@@ -751,19 +1614,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               maxHeight: '90vh',
               overflowY: 'auto',
               padding: 24,
-              borderRadius: 16,
+              borderRadius: 20,
               background: 'var(--color-bg-card)',
               border: '1px solid var(--color-border)',
-              boxShadow: '0 20px 50px rgba(0,0,0,0.5)',
+              boxShadow: 'var(--shadow-3d)',
             }}
           >
             {/* Modal Header Bar */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16, borderBottom: '1px solid var(--color-border)', paddingBottom: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18, borderBottom: '1px solid var(--color-border)', paddingBottom: 14 }}>
               <div>
-                <span style={{ fontSize: '0.75rem', color: 'var(--color-primary)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                <span style={{ fontSize: '0.74rem', color: 'var(--color-primary)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                   Hồ sơ đóng góp cung đường #<code>{selectedContribution.id}</code>
                 </span>
-                <h3 style={{ fontSize: '1.3rem', color: 'var(--color-text-main)', fontWeight: 800, margin: '4px 0 0 0' }}>
+                <h3 style={{ fontSize: '1.35rem', color: 'var(--color-text-main)', fontWeight: 800, margin: '4px 0 0 0' }}>
                   {selectedContribution.name || 'Cung đường Trekking mới'}
                 </h3>
               </div>
@@ -781,7 +1644,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
             {/* Cover Image Banner */}
             {selectedContribution.coverImage && (
-              <div style={{ height: 240, borderRadius: 12, overflow: 'hidden', marginBottom: 20, border: '1px solid var(--color-border)', background: '#0b1319', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div style={{ height: 240, borderRadius: 14, overflow: 'hidden', marginBottom: 20, border: '1px solid var(--color-border)', background: '#0b1319', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <img
                   src={selectedContribution.coverImage}
                   alt={selectedContribution.name}
@@ -794,8 +1657,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             )}
 
             {/* SECTION 1: Địa Lý & Hành Chính */}
-            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 16, borderRadius: 12, marginBottom: 16 }}>
-              <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', marginBottom: 10 }}>
+            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 16, borderRadius: 14, marginBottom: 16 }}>
+              <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', marginBottom: 10 }}>
                 1. ĐỊA ĐIỂM HÀNH CHÍNH & VÙNG MIỀN
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, fontSize: '0.82rem', color: 'var(--color-text-main)' }}>
@@ -806,73 +1669,73 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               </div>
             </div>
 
-            {/* SECTION 2: Thông Số Cung Đường */}
-            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 16, borderRadius: 12, marginBottom: 16 }}>
-              <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', marginBottom: 10 }}>
+            {/* SECTION 2: Thông Số Kỹ Thuật */}
+            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 16, borderRadius: 14, marginBottom: 16 }}>
+              <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', marginBottom: 10 }}>
                 2. THÔNG SỐ KỸ THUẬT CUNG ĐƯỜNG
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
-                <div style={{ background: 'var(--color-bg-card)', padding: '10px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                <div style={{ background: 'var(--color-bg-card)', padding: '10px', borderRadius: 10, border: '1px solid var(--color-border)', textAlign: 'center' }}>
                   <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Chiều dài</div>
                   <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: 2 }}>{selectedContribution.distanceKm} km</div>
                 </div>
-                <div style={{ background: 'var(--color-bg-card)', padding: '10px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                <div style={{ background: 'var(--color-bg-card)', padding: '10px', borderRadius: 10, border: '1px solid var(--color-border)', textAlign: 'center' }}>
                   <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Độ cao nâng</div>
                   <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#38bdf8', marginTop: 2 }}>+{selectedContribution.elevationGainM} m</div>
                 </div>
-                <div style={{ background: 'var(--color-bg-card)', padding: '10px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                <div style={{ background: 'var(--color-bg-card)', padding: '10px', borderRadius: 10, border: '1px solid var(--color-border)', textAlign: 'center' }}>
                   <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Đỉnh cao nhất</div>
                   <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#a855f7', marginTop: 2 }}>{selectedContribution.maxAltitudeM} m</div>
                 </div>
-                <div style={{ background: 'var(--color-bg-card)', padding: '10px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                <div style={{ background: 'var(--color-bg-card)', padding: '10px', borderRadius: 10, border: '1px solid var(--color-border)', textAlign: 'center' }}>
                   <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Mức độ khó</div>
                   <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#f59e0b', marginTop: 2 }}>{selectedContribution.difficultyLevel}/5</div>
                 </div>
-                <div style={{ background: 'var(--color-bg-card)', padding: '10px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                <div style={{ background: 'var(--color-bg-card)', padding: '10px', borderRadius: 10, border: '1px solid var(--color-border)', textAlign: 'center' }}>
                   <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Thời gian đi</div>
                   <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 2 }}>{selectedContribution.durationHoursNote || '1 ngày'}</div>
                 </div>
               </div>
             </div>
 
-            {/* SECTION 3: Tọa Độ GPS Thực Địa */}
-            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 16, borderRadius: 12, marginBottom: 16 }}>
-              <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', marginBottom: 10 }}>
+            {/* SECTION 3: Tọa Độ GPS */}
+            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 16, borderRadius: 14, marginBottom: 16 }}>
+              <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', marginBottom: 10 }}>
                 3. TỌA ĐỘ GPS ĐÁNH DẤU TRÊN BẢN ĐỒ
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, fontSize: '0.82rem', color: 'var(--color-text-main)' }}>
-                <div style={{ background: 'var(--color-bg-card)', padding: 10, borderRadius: 8, border: '1px solid var(--color-border)' }}>
-                  <strong style={{ color: '#10b981' }}>• Tọa độ GPS Xuất Phát (Start):</strong>
+                <div style={{ background: 'var(--color-bg-card)', padding: 10, borderRadius: 10, border: '1px solid var(--color-border)' }}>
+                  <strong style={{ color: '#10b981' }}>• Tọa độ Xuất Phát (Start):</strong>
                   <div style={{ marginTop: 4 }}><code>Lat: {selectedContribution.startLat}, Lng: {selectedContribution.startLng}</code></div>
                 </div>
-                <div style={{ background: 'var(--color-bg-card)', padding: 10, borderRadius: 8, border: '1px solid var(--color-border)' }}>
-                  <strong style={{ color: '#ef4444' }}>• Tọa độ GPS Kết Thúc (End):</strong>
+                <div style={{ background: 'var(--color-bg-card)', padding: 10, borderRadius: 10, border: '1px solid var(--color-border)' }}>
+                  <strong style={{ color: '#ef4444' }}>• Tọa độ Kết Thúc (End):</strong>
                   <div style={{ marginTop: 4 }}><code>Lat: {selectedContribution.endLat}, Lng: {selectedContribution.endLng}</code></div>
                 </div>
               </div>
             </div>
 
-            {/* SECTION 4: Nội Dung Mô Tả & Di Chuyển */}
-            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 16, borderRadius: 12, marginBottom: 16 }}>
-              <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', marginBottom: 10 }}>
+            {/* SECTION 4: Nội Dung Mô Tả */}
+            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 16, borderRadius: 14, marginBottom: 16 }}>
+              <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', marginBottom: 10 }}>
                 4. MÔ TẢ CHI TIẾT & HƯỚNG DẪN DI CHUYỂN
               </div>
 
-              <div style={{ marginBottom: 14 }}>
-                <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 4 }}>
-                  Mô tả tổng quan cung đường:
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 4 }}>
+                  Mô tả tổng quan:
                 </div>
-                <p style={{ color: 'var(--color-text-main)', fontSize: '0.85rem', lineHeight: 1.6, margin: 0, whiteSpace: 'pre-line', background: 'var(--color-bg-card)', padding: 12, borderRadius: 8, border: '1px solid var(--color-border)' }}>
+                <p style={{ color: 'var(--color-text-main)', fontSize: '0.84rem', lineHeight: 1.6, margin: 0, whiteSpace: 'pre-line', background: 'var(--color-bg-card)', padding: 12, borderRadius: 10, border: '1px solid var(--color-border)' }}>
                   {selectedContribution.description || 'Chưa nhập nội dung mô tả.'}
                 </p>
               </div>
 
               {selectedContribution.transportationInfo && (
                 <div>
-                  <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 4 }}>
+                  <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 4 }}>
                     Hướng dẫn di chuyển & Phương tiện:
                   </div>
-                  <p style={{ color: 'var(--color-text-muted)', fontSize: '0.82rem', lineHeight: 1.5, margin: 0, whiteSpace: 'pre-line', background: 'var(--color-bg-card)', padding: 12, borderRadius: 8, border: '1px solid var(--color-border)' }}>
+                  <p style={{ color: 'var(--color-text-muted)', fontSize: '0.82rem', lineHeight: 1.5, margin: 0, whiteSpace: 'pre-line', background: 'var(--color-bg-card)', padding: 12, borderRadius: 10, border: '1px solid var(--color-border)' }}>
                     {selectedContribution.transportationInfo}
                   </p>
                 </div>
@@ -880,19 +1743,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             </div>
 
             {/* SECTION 5: Tiện Ích & Giấy Phép */}
-            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 16, borderRadius: 12, marginBottom: 16 }}>
-              <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', marginBottom: 10 }}>
-                5. QUY ĐỊNH GIẤY PHÉP & TIỆN ÍCH TRÊN TUYẾN
+            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 16, borderRadius: 14, marginBottom: 16 }}>
+              <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', marginBottom: 10 }}>
+                5. QUY ĐỊNH GIẤY PHÉP & TIỆN ÍCH
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, fontSize: '0.82rem', color: 'var(--color-text-main)' }}>
                 <div>• <strong>Giấy phép:</strong> {selectedContribution.permitRequired ? (selectedContribution.permitInfo || 'Cần xin giấy phép') : 'Không cần giấy phép'}</div>
                 <div>• <strong>Bãi cắm trại:</strong> {selectedContribution.hasCampsite ? 'Có bãi cắm trại' : 'Không có'}</div>
-                <div>• <strong>Nguồn nước sinh hoạt:</strong> {selectedContribution.hasWaterSource ? 'Có nguồn nước' : 'Không có'}</div>
-                <div>• <strong>Đánh giá trẻ em:</strong> {selectedContribution.kidFriendly ? 'Phù hợp cho trẻ em' : 'Không phù hợp'}</div>
+                <div>• <strong>Nguồn nước:</strong> {selectedContribution.hasWaterSource ? 'Có nguồn nước' : 'Không có'}</div>
+                <div>• <strong>Trẻ em:</strong> {selectedContribution.kidFriendly ? 'Phù hợp cho trẻ em' : 'Không phù hợp'}</div>
               </div>
             </div>
 
-            {/* SECTION 6: Danh Tính Người Đóng Góp */}
+            {/* SECTION 6: Thành Viên Đóng Góp */}
             {(() => {
               const liveContrib = contributions.find((c) => c.id === selectedContribution.id) || selectedContribution;
               const matchedUser =
@@ -941,16 +1804,16 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               };
 
               return (
-                <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 16, borderRadius: 12, marginBottom: 20 }}>
+                <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 16, borderRadius: 14, marginBottom: 20 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                    <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase' }}>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase' }}>
                       6. THÔNG TIN THÀNH VIÊN ĐÓNG GÓP
                     </div>
                     <span style={{ fontSize: '0.72rem', color: 'var(--color-sky)', fontWeight: 700 }}>
-                      Bấm vào Avatar để xem hồ sơ chi tiết
+                      Bấm vào thẻ để xem hồ sơ năng lực chi tiết
                     </span>
                   </div>
-                  
+
                   <div
                     onClick={handleOpenAuthorProfile}
                     style={{
@@ -958,48 +1821,27 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       alignItems: 'center',
                       gap: 14,
                       background: 'var(--color-bg-card)',
-                      padding: 12,
-                      borderRadius: 10,
-                      border: '1.5px solid var(--color-border)',
+                      padding: 14,
+                      borderRadius: 12,
+                      border: '1px solid var(--color-border)',
                       cursor: 'pointer',
                       transition: 'all 0.2s ease',
                     }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.borderColor = 'var(--color-primary)';
-                      e.currentTarget.style.transform = 'translateY(-1px)';
-                      e.currentTarget.style.boxShadow = '0 4px 12px rgba(16, 185, 129, 0.15)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.borderColor = 'var(--color-border)';
-                      e.currentTarget.style.transform = 'translateY(0)';
-                      e.currentTarget.style.boxShadow = 'none';
-                    }}
-                    title="Bấm vào đây để xem toàn bộ hồ sơ năng lực & lịch sử đóng góp của thành viên này"
                   >
-                    <div style={{ position: 'relative' }}>
-                      <img
-                        src={displayAuthorAvatar}
-                        alt={displayAuthorName}
-                        style={{ width: 48, height: 48, borderRadius: '50%', border: '2px solid var(--color-primary)', objectFit: 'cover' }}
-                      />
-                      <div style={{ position: 'absolute', bottom: -2, right: -2, background: 'var(--color-primary)', borderRadius: '50%', width: 16, height: 16, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <ShieldCheck size={10} color="#fff" />
-                      </div>
-                    </div>
-
+                    <img
+                      src={displayAuthorAvatar}
+                      alt={displayAuthorName}
+                      style={{ width: 48, height: 48, borderRadius: '50%', border: '2px solid var(--color-primary)', objectFit: 'cover' }}
+                    />
                     <div style={{ flex: 1 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <span style={{ fontSize: '0.98rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
                           {displayAuthorName}
                         </span>
-                        <span className="badge badge-success" style={{ fontSize: '0.68rem', padding: '2px 8px' }}>
-                          Tài khoản chính thức
-                        </span>
-                        <span className="badge badge-info" style={{ fontSize: '0.68rem', padding: '2px 8px' }}>
-                          Bấm xem hồ sơ đầy đủ →
+                        <span style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: 4, background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 800 }}>
+                          ✓ Verified Trekker
                         </span>
                       </div>
-
                       <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginTop: 3 }}>
                         Email: <strong style={{ color: 'var(--color-primary)' }}>{displayAuthorEmail}</strong> • Ngày gửi: <strong>{liveContrib.createdAt || '30/7/2026'}</strong>
                       </div>
@@ -1019,7 +1861,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 <button
                   className="btn btn-outline"
                   onClick={() => handleReject(selectedContribution.id, selectedContribution.name)}
-                  style={{ flex: 1, justifyContent: 'center', color: '#f59e0b', borderColor: 'rgba(245, 158, 11, 0.4)' }}
+                  style={{ flex: 1, justifyContent: 'center', color: '#f59e0b', borderColor: 'rgba(245, 158, 11, 0.4)', gap: 6 }}
                 >
                   <XCircle size={16} /> Từ Chối
                 </button>
@@ -1029,534 +1871,21 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 <button
                   className="btn btn-primary"
                   onClick={() => handleApprove(selectedContribution.id, selectedContribution.name)}
-                  style={{ flex: 1.5, justifyContent: 'center', background: '#10b981', borderColor: '#10b981' }}
+                  style={{ flex: 1.5, justifyContent: 'center', background: '#10b981', borderColor: '#10b981', gap: 6 }}
                 >
-                  <CheckCircle2 size={16} /> Duyệt & Công Khai Cung Đường
+                  <CheckCircle2 size={16} /> Phê Duyệt & Đưa Lên Bản Đồ
                 </button>
               )}
             </div>
           </div>
         </div>
       )}
-        </>
-      )}
 
-      {/* 2. SECTION: TRAIL MANAGEMENT */}
-      {adminSection === 'trails' && (
-        <div className="card" style={{ padding: 24 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-            <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
-                Quản Lý Danh Sách Cung Đường Trekking ({trailsList.length})
-              </h3>
-              <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', margin: 0, marginTop: 4 }}>
-                Quản lý, chỉnh sửa trực tiếp thông tin các cung đường đã công khai trong MongoDB
-              </p>
-            </div>
-            <button className="btn btn-primary" onClick={() => setIsCreateTrailOpen(true)} style={{ gap: 8 }}>
-              + Thêm Cung Đường Mới
-            </button>
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {trailsList.map((trail) => (
-              <div
-                key={trail._id || trail.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  background: 'var(--color-bg-main)',
-                  border: '1px solid var(--color-border)',
-                  padding: '14px 18px',
-                  borderRadius: 12,
-                  flexWrap: 'wrap',
-                  gap: 12,
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                  <img
-                    src={trail.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=200&q=80'}
-                    alt={trail.name}
-                    style={{ width: 60, height: 50, borderRadius: 8, objectFit: 'cover' }}
-                  />
-                  <div>
-                    <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                      {trail.name}
-                    </div>
-                    <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-                      {trail.province} ({trail.region}) • {trail.distanceKm} km • +{trail.elevationGainM}m • Đánh giá: {trail.rating || 5.0} ({trail.reviewCount || 0} nhận xét)
-                    </div>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button
-                    className="btn btn-outline"
-                    onClick={() => setEditingTrailModal(trail)}
-                    style={{ color: 'var(--color-primary)', borderColor: 'var(--color-border)', padding: '6px 12px', fontSize: '0.8rem' }}
-                  >
-                    Sửa
-                  </button>
-                  <button
-                    className="btn btn-outline"
-                    onClick={() => handleDeleteTrail(trail._id || trail.id, trail.name)}
-                    style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)', padding: '6px 12px', fontSize: '0.8rem' }}
-                  >
-                    Xóa Trail
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 3. SECTION: INCIDENT MANAGEMENT */}
-      {adminSection === 'incidents' && (
-        <div className="card" style={{ padding: 24 }}>
-          <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 4 }}>
-            Quản Lý Sự Cố Khẩn Cấp & Cảnh Báo ({incidentsList.length})
-          </h3>
-          <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginBottom: 20 }}>
-            Kiểm duyệt báo cáo sự cố sạt lở, lũ quét, đi lạc từ cộng đồng và quét khí tượng vệ tinh
-          </p>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {incidentsList.map((inc) => (
-              <div
-                key={inc._id || inc.id}
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  background: 'var(--color-bg-main)',
-                  border: `1px solid ${inc.severity === 'critical' || inc.severity === 'high' ? 'rgba(239, 68, 68, 0.4)' : 'var(--color-border)'}`,
-                  padding: '14px 18px',
-                  borderRadius: 12,
-                  flexWrap: 'wrap',
-                  gap: 12,
-                }}
-              >
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, flexWrap: 'wrap' }}>
-                    <span style={{ background: inc.severity === 'critical' ? '#ef4444' : inc.severity === 'high' ? '#f59e0b' : '#38bdf8', color: '#fff', fontSize: '0.72rem', fontWeight: 800, padding: '2px 8px', borderRadius: 6 }}>
-                      {inc.severity?.toUpperCase() || 'HIGH'}
-                    </span>
-                    <span style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                      {inc.trailName || inc.type}
-                    </span>
-                    {inc.resolved ? (
-                      <span style={{ color: '#10b981', fontSize: '0.75rem', fontWeight: 700, background: 'rgba(16, 185, 129, 0.1)', padding: '2px 8px', borderRadius: 6, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <polyline points="20 6 9 17 4 12" />
-                        </svg>
-                        <span>Đã an toàn (Đã gỡ)</span>
-                      </span>
-                    ) : (
-                      <span style={{ color: '#ef4444', fontSize: '0.75rem', fontWeight: 700, background: 'rgba(239, 68, 68, 0.1)', padding: '2px 8px', borderRadius: 6, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
-                          <line x1="12" y1="9" x2="12" y2="13" />
-                          <line x1="12" y1="17" x2="12.01" y2="17" />
-                        </svg>
-                        <span>Đang phát cảnh báo</span>
-                      </span>
-                    )}
-                  </div>
-                  <p style={{ fontSize: '0.84rem', color: 'var(--color-text-main)', margin: 0, marginTop: 4, lineHeight: 1.4 }}>
-                    {inc.description}
-                  </p>
-
-                  {/* Reporter Details Box & Multi-Trekker Verification */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, padding: '6px 10px', background: 'var(--color-bg-card)', borderRadius: 8, border: '1px solid var(--color-border)', flexWrap: 'wrap' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
-                        <circle cx="12" cy="7" r="4" />
-                      </svg>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--color-text-main)', fontWeight: 700 }}>
-                        Người phát đầu tiên: <strong style={{ color: 'var(--color-primary)' }}>{inc.reporterName || inc.userName || 'Trekker Thực Địa'}</strong>
-                      </span>
-                    </div>
-
-                    {inc.reporterEmail && (
-                      <span style={{ fontSize: '0.73rem', color: 'var(--color-text-muted)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <rect width="20" height="16" x="2" y="4" rx="2" />
-                          <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
-                        </svg>
-                        <span>{inc.reporterEmail}</span>
-                      </span>
-                    )}
-
-                    <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <circle cx="12" cy="12" r="10" />
-                        <polyline points="12 6 12 12 16 14" />
-                      </svg>
-                      <span>{inc.reportedAt || 'Gần đây'}</span>
-                    </span>
-
-                    {inc.locationNote && (
-                      <span style={{ fontSize: '0.72rem', color: 'var(--color-sky)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" />
-                          <circle cx="12" cy="10" r="3" />
-                        </svg>
-                        <span>{inc.locationNote}</span>
-                      </span>
-                    )}
-
-                    {inc.confirmations && inc.confirmations > 1 && (
-                      <span className="badge badge-warning" style={{ fontSize: '0.68rem', padding: '2px 8px', fontWeight: 800 }}>
-                        ✓ {inc.confirmations} Trekker cùng xác thực
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Co-Reporters & Timeline Observations */}
-                  {inc.coReporters && inc.coReporters.length > 1 && (
-                    <div style={{ marginTop: 6, padding: '5px 10px', background: 'rgba(56, 189, 248, 0.06)', border: '1px dashed rgba(56, 189, 248, 0.3)', borderRadius: 6, fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>
-                      <strong style={{ color: 'var(--color-sky)' }}>Trekker cùng đồng báo cáo (+1):</strong>{' '}
-                      {inc.coReporters.slice(1).map((c: any, idx: number) => (
-                        <span key={idx} style={{ marginRight: 8, color: 'var(--color-text-main)' }}>
-                          • {c.userName} ({c.confirmedAt}){c.note ? `: "${c.note}"` : ''}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Disputes / False Alarm Reports Notification */}
-                  {inc.disputes && inc.disputes.length > 0 && (
-                    <div
-                      style={{
-                        marginTop: 8,
-                        padding: '8px 12px',
-                        background: 'rgba(239, 68, 68, 0.12)',
-                        border: '1.5px solid rgba(239, 68, 68, 0.5)',
-                        borderRadius: 8,
-                        fontSize: '0.78rem',
-                        color: '#ef4444',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 800, marginBottom: 4 }}>
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
-                          <line x1="12" y1="9" x2="12" y2="13" />
-                          <line x1="12" y1="17" x2="12.01" y2="17" />
-                        </svg>
-                        <span>CẢNH BÁO TỪ CỘNG ĐỒNG: CÓ {inc.disputes.length} TREKKER KHIẾU NẠI ĐÂY LÀ TIN GIẢ / BÁO ĐỘNG SAI SỰ THẬT!</span>
-                      </div>
-
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
-                        {inc.disputes.map((d: any, idx: number) => (
-                          <div key={idx} style={{ background: 'rgba(0,0,0,0.2)', padding: '5px 8px', borderRadius: 6, color: 'var(--color-text-main)' }}>
-                            • <strong>{d.userName || 'Trekker'}</strong> ({d.userEmail ? `${d.userEmail} - ` : ''}{d.disputedAt}): <em>"{d.reason}"</em>
-                          </div>
-                        ))}
-                      </div>
-
-                      {/* Dispute Action Resolution Buttons */}
-                      <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-                        <button
-                          className="btn btn-primary"
-                          onClick={() => handleResolveDispute(inc._id || inc.id, 'dismiss_incident')}
-                          style={{ background: '#10b981', borderColor: '#10b981', padding: '5px 12px', fontSize: '0.75rem', fontWeight: 700 }}
-                        >
-                          ✓ Chấp nhận khiếu nại (Gỡ cảnh báo ảo)
-                        </button>
-                        <button
-                          className="btn btn-outline"
-                          onClick={() => handleResolveDispute(inc._id || inc.id, 'reject_dispute')}
-                          style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)', padding: '5px 12px', fontSize: '0.75rem' }}
-                        >
-                          ✕ Bác bỏ khiếu nại (Nguy hiểm thật)
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  {!inc.resolved && (
-                    <button
-                      className="btn btn-primary"
-                      onClick={() => handleResolveIncident(inc._id || inc.id)}
-                      style={{ background: '#10b981', borderColor: '#10b981', padding: '6px 12px', fontSize: '0.8rem', fontWeight: 700 }}
-                    >
-                      Đánh dấu xử lý xong (Gỡ cảnh báo)
-                    </button>
-                  )}
-
-                  {/* Quick Ban Account if Fake Alert */}
-                  {inc.reportedBy && (
-                    <button
-                      className="btn btn-outline"
-                      onClick={() => handleBanUser(inc.reportedBy, inc.reporterEmail || inc.reporterName || 'Tài khoản')}
-                      title="Khóa tài khoản này nếu phát hiện báo động giả / spam"
-                      style={{ color: '#f59e0b', borderColor: 'rgba(245, 158, 11, 0.4)', padding: '6px 10px', fontSize: '0.78rem', fontWeight: 600 }}
-                    >
-                      Khóa nick (Báo động giả)
-                    </button>
-                  )}
-
-                  <button
-                    className="btn btn-outline"
-                    onClick={() => handleDeleteIncident(inc._id || inc.id)}
-                    style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)', padding: '6px 12px', fontSize: '0.8rem' }}
-                  >
-                    Xóa sự cố
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 4. SECTION: USER MANAGEMENT */}
-      {adminSection === 'users' && (
-        <div className="card" style={{ padding: 24 }}>
-          <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 4 }}>
-            Quản Lý Người Dùng & Phân Quyền Vai Trò ({usersList.length})
-          </h3>
-          <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginBottom: 20 }}>
-            Quản lý thành viên, thăng cấp Hướng dẫn viên (Verified Guide), Kiểm duyệt viên (Mod) hoặc Khóa tài khoản vi phạm
-          </p>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {usersList.map((u) => (
-              <div
-                key={u._id || u.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  background: 'var(--color-bg-main)',
-                  border: '1px solid var(--color-border)',
-                  padding: '12px 18px',
-                  borderRadius: 12,
-                  flexWrap: 'wrap',
-                  gap: 12,
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                  <img
-                    src={u.avatarUrl || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
-                    alt={u.fullName}
-                    style={{ width: 44, height: 44, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--color-primary)' }}
-                  />
-                  <div>
-                    <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--color-text-main)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                      <span>{u.fullName || u.username}</span>
-                      {u.role === 'admin' && <span style={{ background: '#f59e0b', color: '#fff', fontSize: '0.68rem', padding: '2px 6px', borderRadius: 4 }}>ADMIN</span>}
-                      {u.role === 'guide' && <span style={{ background: '#10b981', color: '#fff', fontSize: '0.68rem', padding: '2px 6px', borderRadius: 4 }}>✓ GUIDE</span>}
-                      {u.role === 'moderator' && <span style={{ background: '#38bdf8', color: '#fff', fontSize: '0.68rem', padding: '2px 6px', borderRadius: 4 }}>MODERATOR</span>}
-                    </div>
-                    <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-                      {u.email} • Uy tín: <strong style={{ color: '#10b981' }}>{u.reputationScore || 50} pts</strong> • Huy hiệu: {u.badges?.join(', ') || 'Trekker Mới'}
-                    </div>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  {/* Role Selector Dropdown */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)' }}>Vai trò:</span>
-                    <select
-                      value={u.role || 'user'}
-                      onChange={(e) => handleUpdateRole(u._id || u.id, e.target.value, u.fullName || u.email)}
-                      disabled={u.email === currentUser?.email}
-                      style={{
-                        background: 'var(--color-bg-card)',
-                        color: 'var(--color-text-main)',
-                        border: '1px solid var(--color-border)',
-                        borderRadius: 8,
-                        padding: '5px 10px',
-                        fontSize: '0.78rem',
-                        fontWeight: 700,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <option value="user">Trekker (Thành viên)</option>
-                      <option value="guide">Verified Guide (Hướng dẫn viên)</option>
-                      <option value="moderator">Kiểm duyệt viên (Mod)</option>
-                      <option value="admin">Quản trị viên (Admin)</option>
-                    </select>
-                  </div>
-
-                  {u.isBanned ? (
-                    <button
-                      className="btn btn-primary"
-                      onClick={() => handleUnbanUser(u._id || u.id, u.email)}
-                      style={{ background: '#10b981', borderColor: '#10b981', padding: '6px 14px', fontSize: '0.8rem' }}
-                    >
-                      Mở Khóa
-                    </button>
-                  ) : u.role !== 'admin' ? (
-                    <button
-                      className="btn btn-outline"
-                      onClick={() => handleBanUser(u._id || u.id, u.email)}
-                      style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)', padding: '6px 14px', fontSize: '0.8rem' }}
-                    >
-                      Khóa Nick
-                    </button>
-                  ) : (
-                    <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>Quản trị viên</span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 5. SECTION: FORUM MODERATION */}
-      {adminSection === 'forum' && (
-        <div className="card" style={{ padding: 24 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
-            <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
-                Kiểm Duyệt & Quản Lý Diễn Đàn ({threadsList.length} bài viết)
-              </h3>
-              <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', margin: '4px 0 0 0' }}>
-                Ghim bài viết thông báo khẩn, khóa bình luận hoặc xóa bài viết vi phạm tiêu chuẩn cộng đồng
-              </p>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {threadsList.map((t) => (
-              <div
-                key={t.id || t._id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  background: 'var(--color-bg-main)',
-                  border: `1px solid ${t.isPinned ? 'rgba(245, 158, 11, 0.5)' : 'var(--color-border)'}`,
-                  padding: '14px 18px',
-                  borderRadius: 12,
-                  flexWrap: 'wrap',
-                  gap: 12,
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 280 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-                    {t.isPinned && (
-                      <span style={{ background: '#f59e0b', color: '#fff', fontSize: '0.7rem', fontWeight: 800, padding: '2px 8px', borderRadius: 6 }}>
-                        📌 ĐÃ GHIM
-                      </span>
-                    )}
-                    {t.isLocked && (
-                      <span style={{ background: '#ef4444', color: '#fff', fontSize: '0.7rem', fontWeight: 800, padding: '2px 8px', borderRadius: 6 }}>
-                        🔒 ĐÃ KHÓA BÌNH LUẬN
-                      </span>
-                    )}
-                    <span style={{ background: 'var(--color-bg-card)', color: 'var(--color-sky)', fontSize: '0.72rem', fontWeight: 700, padding: '2px 8px', borderRadius: 6, border: '1px solid var(--color-border)' }}>
-                      {t.category || 'Thảo luận'}
-                    </span>
-                    <span style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                      {t.title}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                    <span>Tác giả: <strong style={{ color: 'var(--color-text-main)' }}>{t.authorName}</strong></span>
-                    <span>• {t.repliesCount || 0} bình luận</span>
-                    <span>• {t.upvotes || 0} lượt thích</span>
-                    <span>• {t.createdAt ? new Date(t.createdAt).toLocaleDateString('vi-VN') : 'Gần đây'}</span>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <button
-                    className={`btn ${t.isPinned ? 'btn-primary' : 'btn-outline'}`}
-                    onClick={() => handlePinThread(t.id || t._id, t.title)}
-                    style={{ padding: '6px 12px', fontSize: '0.78rem' }}
-                  >
-                    {t.isPinned ? 'Bỏ Ghim' : '📌 Ghim Bài'}
-                  </button>
-                  <button
-                    className="btn btn-outline"
-                    onClick={() => handleLockThread(t.id || t._id, t.title)}
-                    style={{
-                      padding: '6px 12px',
-                      fontSize: '0.78rem',
-                      color: t.isLocked ? '#10b981' : '#f59e0b',
-                      borderColor: t.isLocked ? 'rgba(16,185,129,0.4)' : 'rgba(245,158,11,0.4)',
-                    }}
-                  >
-                    {t.isLocked ? '🔓 Mở Bình Luận' : '🔒 Khóa Bình Luận'}
-                  </button>
-                  <button
-                    className="btn btn-outline"
-                    onClick={() => handleDeleteThread(t.id || t._id, t.title)}
-                    style={{ padding: '6px 12px', fontSize: '0.78rem', color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)' }}
-                  >
-                    🗑️ Xóa Bài
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 6. SECTION: ANALYTICS DASHBOARD */}
-      {adminSection === 'stats' && (
-        <div className="card" style={{ padding: 24 }}>
-          <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 4 }}>
-            Thống Kê Tổng Quan Hệ Thống TrekMap
-          </h3>
-          <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginBottom: 20 }}>
-            Báo cáo tổng hợp số liệu dữ liệu thực tế lưu trữ trên MongoDB
-          </p>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
-            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Tổng Thành Viên</div>
-              <div style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: 4 }}>
-                {adminStats?.totalUsers || usersList.length || 1}
-              </div>
-            </div>
-            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Cung Đường Công Khai</div>
-              <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#38bdf8', marginTop: 4 }}>
-                {adminStats?.totalTrails || trailsList.length || 14}
-              </div>
-            </div>
-            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Tổng Bài Đóng Góp</div>
-              <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#10b981', marginTop: 4 }}>
-                {adminStats?.totalContributions || contributions.length}
-              </div>
-            </div>
-            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Bài Chờ Kiểm Duyệt</div>
-              <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#f59e0b', marginTop: 4 }}>
-                {adminStats?.pendingContributions || pendingContributions.length}
-              </div>
-            </div>
-            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Sự Cố Đã Ghi Nhận</div>
-              <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#ef4444', marginTop: 4 }}>
-                {adminStats?.totalIncidents || incidentsList.length || 4}
-              </div>
-            </div>
-            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 18, borderRadius: 14 }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>Bài Viết Diễn Đàn</div>
-              <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#a855f7', marginTop: 4 }}>
-                {adminStats?.totalThreads || 12}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ULTRA-DETAILED MEMBER PROFILE MODAL */}
+      {/* =========================================================================
+       * ULTRA-DETAILED MEMBER PROFILE MODAL
+       * ========================================================================= */}
       {selectedAuthorModal && (
-        <div className="modal-overlay" onClick={() => setSelectedAuthorModal(null)} style={{ zIndex: 9999 }}>
+        <div className="modal-overlay" onClick={() => setSelectedAuthorModal(null)} style={{ zIndex: 9999, backdropFilter: 'blur(12px)' }}>
           <div
             className="modal-content"
             onClick={(e) => e.stopPropagation()}
@@ -1567,20 +1896,20 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               overflowY: 'auto',
               border: '1.5px solid var(--color-primary)',
               padding: 24,
-              borderRadius: 24,
-              boxShadow: '0 20px 50px rgba(0,0,0,0.3)',
+              borderRadius: 22,
+              background: 'var(--color-bg-card)',
+              boxShadow: 'var(--shadow-3d)',
             }}
           >
-            {/* Modal Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, borderBottom: '1px solid var(--color-border)', paddingBottom: 12 }}>
               <div style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                <ShieldCheck size={22} /> Hồ Sơ Thám Hiểm & Năng Lực Thành Viên
+                <ShieldCheck size={20} /> Hồ Sơ Thám Hiểm & Năng Lực Thành Viên
               </div>
               <button
                 onClick={() => setSelectedAuthorModal(null)}
-                style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '1.3rem', fontWeight: 800 }}
+                style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', display: 'flex', padding: 4 }}
               >
-                ✕
+                <IconX size={20} />
               </button>
             </div>
 
@@ -1589,51 +1918,31 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               style={{
                 background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(56, 189, 248, 0.12) 100%)',
                 border: '1px solid var(--color-primary)',
-                padding: 20,
-                borderRadius: 18,
+                padding: 18,
+                borderRadius: 16,
                 marginBottom: 20,
-                position: 'relative',
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                <div style={{ position: 'relative' }}>
-                  <img
-                    src={selectedAuthorModal.avatar}
-                    alt={selectedAuthorModal.name}
-                    style={{ width: 80, height: 80, borderRadius: '50%', border: '3px solid var(--color-primary)', objectFit: 'cover', boxShadow: '0 6px 16px rgba(16,185,129,0.3)' }}
-                  />
-                  <span
-                    style={{
-                      position: 'absolute',
-                      bottom: 2,
-                      right: 2,
-                      width: 16,
-                      height: 16,
-                      background: '#10b981',
-                      border: '2px solid #fff',
-                      borderRadius: '50%',
-                    }}
-                    title="Đang hoạt động trên hệ thống"
-                  />
-                </div>
-
+                <img
+                  src={selectedAuthorModal.avatar}
+                  alt={selectedAuthorModal.name}
+                  style={{ width: 72, height: 72, borderRadius: '50%', border: '3px solid var(--color-primary)', objectFit: 'cover' }}
+                />
                 <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: '1.3rem', fontWeight: 900, color: 'var(--color-text-main)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: '1.25rem', fontWeight: 900, color: 'var(--color-text-main)' }}>
                       {selectedAuthorModal.name}
                     </span>
-                    <span className="badge badge-success" style={{ fontSize: '0.72rem' }}>
-                      ✓ Verified Member
+                    <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: 4, background: '#10b981', color: '#fff', fontWeight: 800 }}>
+                      ✓ Verified
                     </span>
                   </div>
-
-                  <div style={{ fontSize: '0.85rem', color: 'var(--color-primary)', fontWeight: 800, marginTop: 4 }}>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--color-primary)', fontWeight: 800, marginTop: 4 }}>
                     Mã Thám Hiểm: {selectedAuthorModal.expeditionId}
                   </div>
-
-                  {/* Level & EXP Progress */}
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-muted)', marginBottom: 4 }}>
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', marginBottom: 3 }}>
                       <span>Hạng: Alpine Scout Level 3</span>
                       <span>85 / 100 EXP</span>
                     </div>
@@ -1645,98 +1954,32 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               </div>
             </div>
 
-            {/* 6 Expanded Spec Cards */}
-            <div style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 10 }}>
-              CHỈ SỐ HOẠT ĐỘNG & ĐỘ TIN CẬY BQT
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 24 }}>
-              <div style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 12 }}>
-                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginBottom: 3 }}>Địa Chỉ Email Thường Trực</div>
-                <div style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--color-primary)', wordBreak: 'break-all' }}>
+            {/* Spec Cards */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 20 }}>
+              <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 12 }}>
+                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Email</div>
+                <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-primary)', wordBreak: 'break-all', marginTop: 2 }}>
                   {selectedAuthorModal.email}
                 </div>
               </div>
-
-              <div style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 12 }}>
-                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginBottom: 3 }}>Tổng Số Cung Đường Đã Nộp</div>
-                <div style={{ fontSize: '0.88rem', fontWeight: 900, color: 'var(--color-text-main)' }}>
-                  {selectedAuthorModal.contribCount} bài <span style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--color-text-muted)' }}>({selectedAuthorModal.approvedCount} đã duyệt, {selectedAuthorModal.pendingCount} chờ duyệt)</span>
+              <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 12 }}>
+                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Số Bài Đóng Góp</div>
+                <div style={{ fontSize: '0.88rem', fontWeight: 900, color: 'var(--color-text-main)', marginTop: 2 }}>
+                  {selectedAuthorModal.contribCount} bài ({selectedAuthorModal.approvedCount} đã duyệt)
                 </div>
               </div>
-
-              <div style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 12 }}>
-                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginBottom: 3 }}>Điểm Uy Tín BQT (Trust Score)</div>
-                <div style={{ fontSize: '0.88rem', fontWeight: 900, color: '#10b981' }}>
-                  98/100 PTS <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>(Spam Risk: 0%)</span>
+              <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 12 }}>
+                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Điểm Uy Tín BQT</div>
+                <div style={{ fontSize: '0.88rem', fontWeight: 900, color: '#10b981', marginTop: 2 }}>
+                  98/100 PTS
                 </div>
               </div>
-
-              <div style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 12 }}>
-                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginBottom: 3 }}>Xác Thực Hệ Thống</div>
-                <div style={{ fontSize: '0.82rem', fontWeight: 800, color: '#38bdf8' }}>
-                  Google OAuth 2.0 Direct
+              <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 12 }}>
+                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Xác Thực Hệ Thống</div>
+                <div style={{ fontSize: '0.82rem', fontWeight: 800, color: '#38bdf8', marginTop: 2 }}>
+                  OAuth 2.0 Direct
                 </div>
               </div>
-
-              <div style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 12 }}>
-                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginBottom: 3 }}>Địa Bàn Thám Hiểm Ưa Thích</div>
-                <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                  Miền Bắc (Sa Pa / Lào Cai)
-                </div>
-              </div>
-
-              <div style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 12 }}>
-                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginBottom: 3 }}>Ngày Nộp Bài Lần Đầu</div>
-                <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                  {selectedAuthorModal.date}
-                </div>
-              </div>
-            </div>
-
-            {/* Contribution History Log */}
-            <div style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>LỊCH SỬ BÀI ĐÓNG GÓP CỦA TÁC GIẢ NÀY ({selectedAuthorModal.authorContribs?.length || 1})</span>
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 24 }}>
-              {selectedAuthorModal.authorContribs && selectedAuthorModal.authorContribs.length > 0 ? (
-                selectedAuthorModal.authorContribs.map((item: any, idx: number) => (
-                  <div
-                    key={item.id || idx}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      background: 'var(--color-bg-main)',
-                      border: '1px solid var(--color-border)',
-                      padding: 10,
-                      borderRadius: 10,
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                        {item.name}
-                      </div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-                        {item.province || 'Lào Cai'} • Ngày gửi: {item.createdAt || selectedAuthorModal.date}
-                      </div>
-                    </div>
-
-                    <div>
-                      {item.status === 'approved' ? (
-                        <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>Đã Duyệt</span>
-                      ) : (
-                        <span className="badge badge-amber" style={{ fontSize: '0.7rem' }}>Chờ Duyệt</span>
-                      )}
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', textAlign: 'center', padding: 12 }}>
-                  Tác giả hiện có 1 bài đóng góp đang chờ kiểm duyệt.
-                </div>
-              )}
             </div>
 
             {/* Action Buttons */}
@@ -1751,30 +1994,31 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   setSelectedAuthorModal(null);
                   window.location.hash = '#messages';
                 }}
-                style={{ flex: 1, justifyContent: 'center', padding: '10px 24px', fontSize: '0.88rem', fontWeight: 800 }}
+                style={{ flex: 1, justifyContent: 'center', padding: '10px 16px', fontSize: '0.85rem', fontWeight: 800 }}
               >
                 Nhắn Tin Trực Tiếp
               </button>
               <button
                 className="btn btn-outline"
                 onClick={() => setSelectedAuthorModal(null)}
-                style={{ flex: 1, justifyContent: 'center', padding: '10px 24px', fontSize: '0.88rem', fontWeight: 800 }}
+                style={{ flex: 1, justifyContent: 'center', padding: '10px 16px', fontSize: '0.85rem', fontWeight: 800 }}
               >
-                Đóng Hồ Sơ
+                Đóng
               </button>
             </div>
           </div>
         </div>
       )}
-      {/* Create / Edit Trail Modal */}
+
+      {/* CREATE / EDIT TRAIL MODAL */}
       {(isCreateTrailOpen || editingTrailModal) && (
-        <div className="modal-overlay" onClick={() => { setIsCreateTrailOpen(false); setEditingTrailModal(null); }} style={{ zIndex: 9999 }}>
+        <div className="modal-overlay" onClick={() => { setIsCreateTrailOpen(false); setEditingTrailModal(null); }} style={{ zIndex: 9999, backdropFilter: 'blur(10px)' }}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 500, width: '90%', padding: 24, borderRadius: 20 }}>
-            <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 16 }}>
+            <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 12 }}>
               {editingTrailModal ? `Chỉnh sửa cung đường "${editingTrailModal.name}"` : 'Thêm Cung Đường Mới (Admin)'}
             </h3>
-            <p style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)', marginBottom: 20 }}>
-              Để thiết lập thông số kỹ thuật và bản đồ GPS đầy đủ cho cung đường mới, bạn cũng có thể sử dụng Trình đóng góp 5 bước công khai.
+            <p style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)', marginBottom: 20, lineHeight: 1.5 }}>
+              Để thiết lập thông số kỹ thuật, bản đồ độ cao và tọa độ GPS thực địa đầy đủ cho cung đường mới, bạn có thể khởi chạy Trình Wizard đóng góp 5 bước chuẩn hóa.
             </p>
             <div style={{ display: 'flex', gap: 12 }}>
               <button

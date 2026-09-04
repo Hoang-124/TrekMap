@@ -16,6 +16,8 @@ import {
   IconSparkles,
   IconFlame,
   IconMapPin,
+  IconX,
+  IconCheck,
 } from '../common/SvgIcons.js';
 
 interface HeroExpeditionSectionProps {
@@ -78,7 +80,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
       style={{
         position: 'relative',
         padding: '24px 20px 32px 20px',
-        background: 'radial-gradient(ellipse at 50% 0%, rgba(16, 185, 129, 0.16) 0%, rgba(7, 13, 30, 0.9) 55%, var(--color-bg-main) 100%), url(https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1920&q=80)',
+        background: 'var(--hero-bg-gradient), url(https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1920&q=80)',
         backgroundSize: 'cover',
         backgroundPosition: 'center 30%',
         display: 'flex',
@@ -94,8 +96,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
         style={{
           position: 'absolute',
           inset: 0,
-          backgroundImage: `radial-gradient(circle at 50% 25%, rgba(56, 189, 248, 0.07) 0%, transparent 65%),
-                            linear-gradient(to bottom, transparent 0%, var(--color-bg-main) 100%)`,
+          backgroundImage: 'var(--hero-contour-overlay)',
           pointerEvents: 'none',
           zIndex: 1,
         }}
@@ -301,7 +302,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
                   fontSize: '0.75rem',
                 }}
               >
-                ✕
+                <IconX size={12} />
               </button>
             )}
 
@@ -449,7 +450,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
                   border: isSelected ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
                   background: isSelected
                     ? 'linear-gradient(135deg, var(--color-primary) 0%, #059669 100%)'
-                    : 'var(--color-bg-card)',
+                    : 'var(--color-bg-glass)',
                   color: isSelected ? '#ffffff' : 'var(--color-text-main)',
                   boxShadow: isSelected ? '0 0 12px rgba(16, 185, 129, 0.4)' : 'none',
                   display: 'inline-flex',
@@ -494,7 +495,13 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
                 }}
               >
                 <IconCloud size={13} color={isCloudActive ? '#ffffff' : 'var(--color-sky)'} />
-                {isCloudActive ? '✓ Đang Lọc Săn Mây' : 'Săn Mây'}
+                {isCloudActive ? (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <IconCheck size={12} /> Đang Lọc Săn Mây
+                  </span>
+                ) : (
+                  'Săn Mây'
+                )}
               </button>
             );
           })()}
@@ -528,7 +535,13 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
             }}
           >
             <IconTent size={13} color={campsiteOnly ? '#ffffff' : 'var(--color-primary)'} />
-            {campsiteOnly ? '✓ Đang Lọc Bãi Trại' : 'Cắm Trại Rừng'}
+            {campsiteOnly ? (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <IconCheck size={12} /> Đang Lọc Bãi Trại
+              </span>
+            ) : (
+              'Cắm Trại Rừng'
+            )}
           </button>
 
           {/* Smooth Scroll To Map Button */}
@@ -557,15 +570,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
         </div>
 
         {/* 5. Streamlined 4 Metric Stat Cards (Clickable & Scrolls to Map) */}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-            gap: 12,
-            maxWidth: 960,
-            margin: '0 auto',
-          }}
-        >
+        <div className="hero-stats-grid">
           {/* Metric 1 */}
           <div
             onClick={() => onScrollToMap()}

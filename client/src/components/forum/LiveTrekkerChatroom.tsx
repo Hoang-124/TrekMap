@@ -5,6 +5,7 @@ import {
   IconSparkles,
   IconQuote,
   IconClock,
+  IconX,
 } from '../common/SvgIcons.js';
 import { useSocket } from '../../hooks/useSocket.js';
 
@@ -513,7 +514,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
               padding: '0 4px',
             }}
           >
-            ✕
+            <IconX size={12} />
           </button>
         </div>
       )}

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, Circle, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import type { Trail } from '../../types.js';
 import { fetchNearbyTrails, reverseGeocode } from '../../services/api.js';
@@ -548,7 +548,8 @@ const MapController: React.FC<{
   selectedTrail?: Trail | null;
   flyToPos?: [number, number] | null;
   currentTileKey?: string;
-}> = ({ selectedTrail, flyToPos, currentTileKey }) => {
+  isLiveTracking?: boolean;
+}> = ({ selectedTrail, flyToPos, currentTileKey, isLiveTracking }) => {
   const map = useMap();
   const prevTileRef = useRef(currentTileKey);
 
@@ -571,13 +572,17 @@ const MapController: React.FC<{
 
   useEffect(() => {
     if (flyToPos) {
-      map.flyTo(flyToPos, 13, { duration: 1.5 });
+      if (isLiveTracking) {
+        map.panTo(flyToPos, { animate: true, duration: 0.8 });
+      } else {
+        map.flyTo(flyToPos, 13, { duration: 1.5 });
+      }
     } else if (selectedTrail) {
       map.flyTo([selectedTrail.startLat, selectedTrail.startLng], 12, { duration: 1.5 });
     } else {
       map.flyTo([16.0470, 108.2062], 6, { duration: 1.2 });
     }
-  }, [selectedTrail, flyToPos, map]);
+  }, [selectedTrail, flyToPos, isLiveTracking, map]);
 
   // Keep center and zoom persistent when changing map tile layers
   useEffect(() => {
@@ -607,6 +612,11 @@ export const MapView: React.FC<MapViewProps> = ({
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [flyToPos, setFlyToPos] = useState<[number, number] | null>(null);
   const [isLocating, setIsLocating] = useState(false);
+  const [isLiveTracking, setIsLiveTracking] = useState(false);
+  const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
+  const [gpsAltitude, setGpsAltitude] = useState<number | null>(null);
+  const [gpsSpeed, setGpsSpeed] = useState<number | null>(null);
+  const watchIdRef = useRef<number | null>(null);
   const [isTileDropdownOpen, setIsTileDropdownOpen] = useState(false);
   const [difficultyFilter, setDifficultyFilter] = useState<'all' | 'easy' | 'medium' | 'hard'>('all');
   const [showGpxTracks, setShowGpxTracks] = useState(true);
@@ -683,6 +693,54 @@ export const MapView: React.FC<MapViewProps> = ({
     );
   };
 
+  useEffect(() => {
+    return () => {
+      if (watchIdRef.current !== null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
+    };
+  }, []);
+
+  const handleToggleLiveTracking = () => {
+    if (isLiveTracking) {
+      if (watchIdRef.current !== null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
+      setIsLiveTracking(false);
+      if (onShowToast) onShowToast('Đã dừng chế độ theo dõi GPS thực địa', 'info');
+    } else {
+      if (!navigator.geolocation) {
+        if (onShowToast) onShowToast('Trình duyệt không hỗ trợ cảm biến định vị GPS', 'error');
+        return;
+      }
+      setIsLiveTracking(true);
+      if (onShowToast) onShowToast('Đang kích hoạt theo dõi GPS thực địa trực tiếp...', 'info');
+
+      try {
+        watchIdRef.current = navigator.geolocation.watchPosition(
+          (position) => {
+            const { latitude, longitude, accuracy, altitude, speed } = position.coords;
+            const coords: [number, number] = [latitude, longitude];
+            setUserLocation(coords);
+            setGpsAccuracy(accuracy);
+            if (altitude !== null && altitude !== undefined) setGpsAltitude(Math.round(altitude));
+            if (speed !== null && speed !== undefined) setGpsSpeed(Math.max(0, Math.round(speed * 3.6)));
+            setFlyToPos(coords);
+          },
+          (err) => {
+            console.warn('GPS Watch Error:', err);
+            if (onShowToast) onShowToast('Mất tín hiệu vệ tinh GPS', 'error');
+            setIsLiveTracking(false);
+          },
+          { enableHighAccuracy: true, maximumAge: 2000, timeout: 12000 }
+        );
+      } catch {
+        setIsLiveTracking(false);
+      }
+    }
+  };
+
   // Memoize active trails to render GPX track polylines for
   const activeGpxTrails = useMemo(() => {
     return selectedTrail
@@ -731,6 +789,41 @@ export const MapView: React.FC<MapViewProps> = ({
         >
           <Activity size={15} color={showGpxTracks ? 'var(--color-primary)' : 'var(--color-text-dim)'} />
           <span>{showGpxTracks ? 'Đường GPX' : 'Tắt GPX'}</span>
+        </button>
+
+        {/* Live GPS Tracking Toggle Button */}
+        <button
+          onClick={handleToggleLiveTracking}
+          style={{
+            background: isLiveTracking
+              ? 'linear-gradient(135deg, rgba(74, 222, 128, 0.28) 0%, rgba(34, 197, 94, 0.18) 100%)'
+              : 'var(--color-bg-main)',
+            color: isLiveTracking ? 'var(--color-primary)' : 'var(--color-text-main)',
+            border: `1.5px solid ${isLiveTracking ? 'var(--color-primary)' : 'var(--color-border)'}`,
+            borderRadius: 24,
+            padding: '8px 14px',
+            fontSize: 'var(--font-size-sm)',
+            fontWeight: 'var(--font-weight-bold)',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            transition: 'all 0.2s ease',
+            whiteSpace: 'nowrap',
+            boxShadow: isLiveTracking ? '0 0 12px rgba(74, 222, 128, 0.4)' : 'none',
+          }}
+        >
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              background: isLiveTracking ? 'var(--color-primary)' : 'var(--color-text-dim)',
+              boxShadow: isLiveTracking ? '0 0 8px var(--color-primary)' : 'none',
+              display: 'inline-block',
+            }}
+          />
+          <span>{isLiveTracking ? 'Theo dõi GPS: Bật' : 'Theo dõi GPS'}</span>
         </button>
 
         {/* Locate Me GPS Button */}
@@ -934,7 +1027,7 @@ export const MapView: React.FC<MapViewProps> = ({
           preferCanvas={true}
           style={{ width: '100%', height: '100%', borderRadius: 24 }}
         >
-          <MapController selectedTrail={selectedTrail} flyToPos={flyToPos} currentTileKey={currentTileKey} />
+          <MapController selectedTrail={selectedTrail} flyToPos={flyToPos} currentTileKey={currentTileKey} isLiveTracking={isLiveTracking} />
 
           <TileLayer
             key={currentTileKey}
@@ -942,17 +1035,44 @@ export const MapView: React.FC<MapViewProps> = ({
             url={currentTile.url}
           />
 
+          {/* User GPS Location Accuracy Radius Circle */}
+          {userLocation && gpsAccuracy && gpsAccuracy > 0 && (
+            <Circle
+              center={userLocation}
+              radius={gpsAccuracy}
+              pathOptions={{
+                color: '#38bdf8',
+                fillColor: '#38bdf8',
+                fillOpacity: 0.12,
+                weight: 1.5,
+                dashArray: '4, 4',
+              }}
+            />
+          )}
+
           {/* User GPS Location Marker */}
           {userLocation && (
             <Marker position={userLocation} icon={createUserGpsIcon()}>
               <Popup>
-                <div style={{ padding: 4 }}>
-                  <div style={{ color: 'var(--color-sky)', fontWeight: 800, fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 6 }}>
-                    Vị Trí Thực Tế Của Bạn
+                <div style={{ padding: 4, minWidth: 160 }}>
+                  <div style={{ color: 'var(--color-sky)', fontWeight: 800, fontSize: '0.88rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#38bdf8', display: 'inline-block' }}></span>
+                    Vị Trí Thực Tế (GPS)
                   </div>
                   <div style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)', marginTop: 4 }}>
-                    Tọa độ: {userLocation[0].toFixed(4)}, {userLocation[1].toFixed(4)}
+                    Tọa độ: {userLocation[0].toFixed(5)}, {userLocation[1].toFixed(5)}
                   </div>
+                  {gpsAccuracy && (
+                    <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
+                      Độ chính xác: ±{Math.round(gpsAccuracy)}m
+                    </div>
+                  )}
+                  {(gpsAltitude !== null || gpsSpeed !== null) && (
+                    <div style={{ display: 'flex', gap: 8, marginTop: 4, fontSize: '0.72rem', color: 'var(--color-primary)' }}>
+                      {gpsAltitude !== null && <span>Cao độ: {gpsAltitude}m</span>}
+                      {gpsSpeed !== null && <span>Tốc độ: {gpsSpeed} km/h</span>}
+                    </div>
+                  )}
                 </div>
               </Popup>
             </Marker>

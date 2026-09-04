@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import mongoose from 'mongoose';
 import { mockTrails, mockGuides } from '../data/seedData.js';
 import { Trail } from '../types.js';
 import { TrailModel } from '../models/Trail.js';
@@ -94,7 +95,15 @@ export const getTrails = async (req: Request, res: Response) => {
       sortOptions.durationDays = -1;
     }
 
-    const dbTrails = await TrailModel.find(query).sort(sortOptions).exec();
+    const page = parseInt(req.query.page as string, 10);
+    const limit = parseInt(req.query.limit as string, 10);
+
+    let queryBuilder = TrailModel.find(query).sort(sortOptions);
+    if (!isNaN(page) && !isNaN(limit) && page > 0 && limit > 0) {
+      queryBuilder = queryBuilder.skip((page - 1) * limit).limit(limit);
+    }
+
+    const dbTrails = await queryBuilder.exec();
     return res.json({ success: true, count: dbTrails.length, data: dbTrails });
   } catch (err) {
     // Fallthrough to in-memory store if DB query fails
@@ -268,17 +277,23 @@ export const getNearbyTrails = async (req: Request, res: Response) => {
 };
 
 export const getTrailById = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = String(req.params.id || '');
 
   try {
-    const dbTrail = await TrailModel.findOne({ $or: [{ _id: id }, { id: id }] }).exec();
+    const isMongoId = mongoose.Types.ObjectId.isValid(id);
+    const dbTrail = await TrailModel.findOne(
+      isMongoId ? { $or: [{ _id: id }, { id: id }] } : { id: id }
+    ).exec();
     if (dbTrail) {
       return res.json({ success: true, data: dbTrail });
     }
   } catch (err) {}
 
   try {
-    const contrib = await Contribution.findOne({ $or: [{ _id: id }, { id: id }] }).lean().exec();
+    const isMongoId = mongoose.Types.ObjectId.isValid(id);
+    const contrib = await Contribution.findOne(
+      isMongoId ? { $or: [{ _id: id }, { id: id }] } : { id: id }
+    ).lean().exec();
     if (contrib) {
       const mappedTrail = {
         id: contrib.id || `contrib-${contrib._id}`,

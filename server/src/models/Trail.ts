@@ -11,6 +11,7 @@ export interface ITrailWaypoint {
 }
 
 export interface ITrail extends Document {
+  id?: string;
   name: string;
   altNames: string[];
   region: 'Miền Bắc' | 'Miền Trung' | 'Miền Nam';
@@ -56,6 +57,7 @@ export interface ITrail extends Document {
 
 const trailSchema = new Schema<ITrail>(
   {
+    id: { type: String, unique: true, sparse: true, index: true },
     name: { type: String, required: true, index: 'text' },
     altNames: [{ type: String }],
     region: { type: String, enum: ['Miền Bắc', 'Miền Trung', 'Miền Nam'], required: true, index: true },

@@ -17,6 +17,9 @@ const Award = createSvgIcon(<><circle cx="12" cy="8" r="7" /><polyline points="8
 const QrCode = createSvgIcon(<><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></>);
 
 export interface AuthorProfileData {
+  id?: string;
+  _id?: string;
+  userId?: string;
   name: string;
   avatar: string;
   role?: string;
@@ -26,6 +29,7 @@ export interface AuthorProfileData {
   preferredStyle?: string;
   email?: string;
   phone?: string;
+  followersCount?: number;
 }
 
 interface AuthorProfileModalProps {
@@ -39,6 +43,66 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({ author, 
 
   const isTop = author.name.includes('Top Contributor') || (author.badges && author.badges.includes('Top Contributor'));
   const cleanName = author.name.replace(/\s*\([^)]*\)/g, '');
+  const authorTargetId = author._id || author.id || author.userId || author.email || cleanName;
+
+  const [isFollowing, setIsFollowing] = React.useState(false);
+  const [followersCount, setFollowersCount] = React.useState(author.followersCount || (isTop ? 28 : 12));
+  const [loadingFollow, setLoadingFollow] = React.useState(false);
+
+  React.useEffect(() => {
+    const token = localStorage.getItem('trekmap_token');
+    if (token && authorTargetId) {
+      fetch(`/api/users/${authorTargetId}/follow-status`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && typeof data.isFollowing === 'boolean') {
+            setIsFollowing(data.isFollowing);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [authorTargetId]);
+
+  const handleToggleFollow = async () => {
+    const token = localStorage.getItem('trekmap_token');
+    if (!token) {
+      window.dispatchEvent(new CustomEvent('trekmap:show-toast', {
+        detail: { message: 'Vui lòng đăng nhập để theo dõi tác giả này!', type: 'info' },
+      }));
+      return;
+    }
+
+    setLoadingFollow(true);
+    try {
+      const res = await fetch(`/api/users/${authorTargetId}/follow`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const data = await res.json();
+      if (data.success) {
+        setIsFollowing(data.isFollowing);
+        setFollowersCount((prev) => (data.isFollowing ? prev + 1 : Math.max(0, prev - 1)));
+        window.dispatchEvent(new CustomEvent('trekmap:show-toast', {
+          detail: { message: data.message || (data.isFollowing ? 'Đã theo dõi tác giả!' : 'Đã bỏ theo dõi.'), type: 'success' },
+        }));
+      } else {
+        window.dispatchEvent(new CustomEvent('trekmap:show-toast', {
+          detail: { message: data.message || 'Không thể cập nhật theo dõi.', type: 'error' },
+        }));
+      }
+    } catch (err) {
+      window.dispatchEvent(new CustomEvent('trekmap:show-toast', {
+        detail: { message: 'Lỗi kết nối máy chủ.', type: 'error' },
+      }));
+    } finally {
+      setLoadingFollow(false);
+    }
+  };
 
   const score = author.reputationScore !== undefined ? author.reputationScore : (isTop ? 85 : 50);
   const badgesList = author.badges || (isTop ? ['Trekker Mới', 'Verified Trekker', 'Top Contributor', 'Alpine Master'] : ['Trekker Mới', 'Verified Trekker']);
@@ -121,6 +185,9 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({ author, 
                   TOP CONTRIBUTOR
                 </span>
               )}
+              <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-sky)', background: 'rgba(56, 189, 248, 0.12)', border: '1px solid rgba(56, 189, 248, 0.3)', padding: '2px 8px', borderRadius: 12, fontWeight: 700 }}>
+                {followersCount} người theo dõi
+              </span>
             </div>
           </div>
         </div>
@@ -195,9 +262,30 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({ author, 
         </div>
 
         {/* Action Buttons */}
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           <button
-            className="btn btn-primary"
+            type="button"
+            className={isFollowing ? 'btn btn-outline' : 'btn btn-primary'}
+            onClick={handleToggleFollow}
+            disabled={loadingFollow}
+            style={{
+              flex: 1,
+              fontWeight: 800,
+              justifyContent: 'center',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              background: isFollowing ? 'rgba(16, 185, 129, 0.12)' : undefined,
+              borderColor: isFollowing ? 'var(--color-primary)' : undefined,
+              color: isFollowing ? 'var(--color-primary)' : undefined,
+            }}
+          >
+            {isFollowing ? <ShieldCheck size={16} color="var(--color-primary)" /> : <Award size={16} />}
+            {loadingFollow ? 'Đang cập nhật...' : (isFollowing ? '✓ Đang Theo Dõi' : '+ Theo Dõi')}
+          </button>
+
+          <button
+            className="btn btn-outline"
             onClick={() => {
               onClose();
               const target = author.email || author.name;
@@ -212,9 +300,10 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({ author, 
             }}
             style={{ flex: 1, fontWeight: 800, justifyContent: 'center' }}
           >
-            Nhắn Tin Trực Tiếp
+            Nhắn Tin
           </button>
-          <button className="btn btn-outline" onClick={onClose} style={{ flex: 1, fontWeight: 800, justifyContent: 'center' }}>
+
+          <button className="btn btn-outline" onClick={onClose} style={{ flex: 0.8, fontWeight: 700, justifyContent: 'center' }}>
             Đóng Cửa Sổ
           </button>
         </div>

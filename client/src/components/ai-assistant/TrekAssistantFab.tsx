@@ -1,105 +1,133 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { IconBot, IconSparkles } from '../common/SvgIcons.js';
 
 interface TrekAssistantFabProps {
   isOpen: boolean;
   onToggle: () => void;
   unreadCount?: number;
+  hasScrollTop?: boolean;
 }
 
 export const TrekAssistantFab: React.FC<TrekAssistantFabProps> = ({
   isOpen,
   onToggle,
   unreadCount = 0,
+  hasScrollTop = false,
 }) => {
+  const [isHovered, setIsHovered] = useState(false);
+
+  // Position nicely: bottom 28px when scroll-to-top is hidden, bottom 84px when scroll-to-top is shown
+  const bottomPosition = hasScrollTop ? 84 : 28;
+
   return (
     <div
       style={{
         position: 'fixed',
-        bottom: 84,
+        bottom: bottomPosition,
         right: 28,
         zIndex: 9990,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
+        transition: 'bottom 0.35s cubic-bezier(0.16, 1, 0.3, 1)',
       }}
     >
       <button
         type="button"
         onClick={onToggle}
-        title={isOpen ? 'Thu nhỏ Trợ lý ảo TrekCopilot AI' : 'Mở Trợ lý ảo TrekCopilot AI (Hỏi đáp, Cứu hộ & Sinh tồn)'}
-        aria-label="TrekCopilot AI Virtual Assistant"
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        title={isOpen ? 'Đóng cửa sổ Hỏi đáp AI' : 'Mở trợ lý Hỏi đáp AI (Tư vấn cung đường, thời tiết & sinh tồn)'}
+        aria-label="Mở trợ lý Hỏi đáp AI"
         style={{
           display: 'flex',
           alignItems: 'center',
           gap: 10,
-          padding: isOpen ? '10px 16px' : '10px 20px',
-          background: 'linear-gradient(135deg, rgba(15, 24, 46, 0.95) 0%, rgba(7, 13, 30, 0.98) 100%)',
-          border: '1.5px solid var(--color-primary)',
-          borderRadius: 30,
+          padding: '8px 16px 8px 10px',
+          background: isHovered
+            ? 'linear-gradient(135deg, rgba(20, 32, 60, 0.98) 0%, rgba(12, 20, 42, 0.98) 100%)'
+            : 'linear-gradient(135deg, rgba(14, 23, 44, 0.94) 0%, rgba(8, 14, 28, 0.96) 100%)',
+          border: isHovered
+            ? '1px solid rgba(74, 222, 128, 0.55)'
+            : '1px solid rgba(74, 222, 128, 0.28)',
+          borderRadius: 9999,
           color: 'var(--color-text-main)',
-          fontSize: 'var(--font-size-sm)',
-          fontWeight: 700,
           cursor: 'pointer',
-          boxShadow: '0 8px 32px rgba(0, 0, 0, 0.6), 0 0 20px rgba(74, 222, 128, 0.35)',
+          boxShadow: isHovered
+            ? '0 12px 32px rgba(0, 0, 0, 0.65), 0 0 20px rgba(74, 222, 128, 0.35)'
+            : '0 8px 24px rgba(0, 0, 0, 0.5), 0 0 12px rgba(74, 222, 128, 0.15)',
           backdropFilter: 'blur(16px)',
-          transition: 'all 0.3s var(--ease-out-expo)',
-          transform: isOpen ? 'scale(0.95)' : 'scale(1)',
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.transform = 'translateY(-3px) scale(1.03)';
-          e.currentTarget.style.boxShadow = '0 12px 36px rgba(0, 0, 0, 0.7), 0 0 28px rgba(74, 222, 128, 0.6)';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.transform = isOpen ? 'scale(0.95)' : 'scale(1)';
-          e.currentTarget.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.6), 0 0 20px rgba(74, 222, 128, 0.35)';
+          WebkitBackdropFilter: 'blur(16px)',
+          transition: 'all 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+          transform: isHovered ? 'translateY(-2px) scale(1.02)' : 'translateY(0) scale(1)',
+          userSelect: 'none',
         }}
       >
+        {/* Modern Bot Icon Avatar with Live Pulse Indicator */}
         <div
           style={{
             position: 'relative',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            width: 28,
-            height: 28,
+            width: 32,
+            height: 32,
             borderRadius: '50%',
-            background: 'rgba(74, 222, 128, 0.15)',
-            border: '1px solid var(--color-primary)',
+            background: 'linear-gradient(135deg, rgba(74, 222, 128, 0.18) 0%, rgba(56, 189, 248, 0.12) 100%)',
+            border: '1px solid rgba(74, 222, 128, 0.35)',
             color: 'var(--color-primary)',
+            flexShrink: 0,
           }}
         >
-          <IconBot size={18} color="var(--color-primary)" />
-          {/* Pulsing online green dot */}
+          <IconBot size={17} color="var(--color-primary)" />
+          {/* Subtle Live Beacon Dot */}
           <span
             style={{
               position: 'absolute',
-              top: -2,
-              right: -2,
+              bottom: -1,
+              right: -1,
               width: 8,
               height: 8,
               borderRadius: '50%',
               background: '#22c55e',
-              boxShadow: '0 0 8px #22c55e',
+              border: '1.5px solid #0b1326',
+              boxShadow: '0 0 6px #22c55e',
             }}
           />
         </div>
 
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6, letterSpacing: '0.02em' }}>
-          TrekCopilot AI
-          <IconSparkles size={14} color="var(--color-primary)" />
-        </span>
+        {/* Text Label: Hỏi đáp AI */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span
+            style={{
+              fontWeight: 700,
+              fontSize: '0.86rem',
+              letterSpacing: '-0.01em',
+              color: 'var(--color-text-main)',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Hỏi đáp AI
+          </span>
+          <IconSparkles
+            size={14}
+            color={isHovered ? 'var(--color-primary)' : 'rgba(74, 222, 128, 0.75)'}
+            style={{
+              transition: 'transform 0.25s ease, color 0.25s ease',
+              transform: isHovered ? 'rotate(15deg) scale(1.15)' : 'none',
+            }}
+          />
+        </div>
 
+        {/* Unread Counter Badge (if any) */}
         {unreadCount > 0 && !isOpen && (
           <span
             style={{
               background: 'var(--color-error)',
               color: '#ffffff',
-              fontSize: '0.7rem',
+              fontSize: '0.68rem',
               fontWeight: 800,
               padding: '2px 6px',
-              borderRadius: 12,
+              borderRadius: 9999,
               boxShadow: '0 0 8px rgba(239, 68, 68, 0.6)',
+              lineHeight: 1,
             }}
           >
             {unreadCount}
@@ -109,3 +137,4 @@ export const TrekAssistantFab: React.FC<TrekAssistantFabProps> = ({
     </div>
   );
 };
+

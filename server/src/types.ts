@@ -166,6 +166,7 @@ export interface ForumThread {
   viewsCount: number;
   createdAt: string;
   isPinned?: boolean;
+  isLocked?: boolean;
 }
 
 export interface AiAssistantAction {

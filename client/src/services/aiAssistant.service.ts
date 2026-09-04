@@ -34,8 +34,23 @@ export interface ChatResponse {
 export function removeEmojis(str: string): string {
   if (!str) return '';
   return str
-    .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{1FA70}-\u{1FAFF}\u{200D}\u{FE0F}]/gu, '')
-    .replace(/\s{2,}/g, ' ')
+    .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{1FA70}-\u{1FAFF}]/gu, '')
+    .replace(/\u200D|\uFE0F/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+/**
+ * Normalizes Vietnamese string to lower-case ASCII without diacritics for fast fuzzy matching
+ */
+export function removeVietnameseDiacritics(str: string): string {
+  if (!str) return '';
+  return str
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
     .trim();
 }
 
@@ -195,8 +210,78 @@ Em có thể hỗ trợ bạn:
     };
   }
 
+  // 4.1. EDGE-CASE & EXTREME SURVIVAL OFFLINE FALLBACKS
+  if (q.includes('bung đế') || q.includes('hỏng giày') || q.includes('rách đế') || q.includes('đứt giày')) {
+    return {
+      reply: `**CẤP CỨU SINH TỒN: BUNG ĐẾ GIÀY NGOÀI THỰC ĐỊA:**
+1. **Quấn Băng dính bạc (Duct Tape)**: Quấn chặt 5-7 vòng quanh thân và đế giày, chừa gai mũi và gót để bám đất.
+2. **Dây rút nhựa (Zip-ties)**: Luồn 3-4 sợi dây rút quanh thân siết chặt vào đế.
+3. **Đan dây Paracord hình xích**: Buộc zíc-zắc dưới lòng đế bàn chân tạo độ ma sát chống trượt.
+4. **Bước chân ngắn**: Hạ trọng tâm, bước tiếp đất bằng cả bàn chân phẳng, san sẻ 4-5kg đồ nặng cho đồng đội mang giúp.`,
+      actions: [{ type: 'quick_reply', suggestions: ['Checklist đồ sinh tồn dã ngoại', 'Tiêu chuẩn chọn giày trekking', 'Cứu hộ khẩn cấp 114'] }],
+      modelUsed: 'trekmap-knowledge-engine',
+    };
+  }
+
+  if (q.includes('sét') || q.includes('chống sét') || q.includes('sấm sét') || q.includes('giông sét')) {
+    return {
+      reply: `**PHÒNG TRÁNH SÉT ĐÁNH TRÊN ĐỈNH NÚI & SỐNG LƯNG TRỌC:**
+1. **Hạ thấp độ cao khẩn trương**: Tránh xa mỏm đá nhô cao, gờ đá cô độc và cây cao trơ trọi.
+2. **Vứt gậy kim loại**: Đặt gậy leo núi, balo khung nhôm ra xa chỗ ngồi tối thiểu 20 mét.
+3. **Tư thế Lightning Squat**: Ngồi xổm, hai gót chân chụm sát nhau, gục đầu vào gối, bịt tai. **CẤM nằm áp bụng xuống đất** vì dòng điện đất lan truyền rất nguy hiểm.`,
+      actions: [{ type: 'quick_reply', suggestions: ['Cấp cứu khẩn cấp', 'Quy tắc S.T.O.P khi gặp bão', 'Hotline cứu hộ Sa Pa / Y Tý'] }],
+      modelUsed: 'trekmap-knowledge-engine',
+    };
+  }
+
+  if (q.includes('rắn cắn') || q.includes('rắn độc')) {
+    return {
+      reply: `**SƠ CỨU RẮN ĐỘC CẮN CHUẨN Y TẾ DÃ NGOẠI (WFA):**
+1. **Bất động chi bị cắn**: Để nạn nhân nằm yên, giữ vị trí cắn THẤP HƠN TIM để làm chậm nọc độc.
+2. **Quấn băng ép đàn hồi**: Quấn từ ngón chân/tay lên trên với lực vừa phải (vẫn sờ thấy mạch).
+3. **CẤM KỴ TUYỆT ĐỐI**: CẤM rạch da hút nọc, CẤM đắp lá rừng, CẤM garo thắt chặt gây hoại tử chi.
+4. **Cáng bộ khẩn cấp**: Đưa ngay nạn nhân xuống bệnh viện gần nhất có huyết thanh kháng nọc; chụp ảnh rắn nếu an toàn. Hotline: **114 / 115**.`,
+      actions: [{ type: 'quick_reply', suggestions: ['Hotline cứu hộ 114 / 115', 'Nhận diện rắn lục đuôi đỏ', 'Túi y tế dã ngoại'] }],
+      modelUsed: 'trekmap-knowledge-engine',
+    };
+  }
+
+  if (q.includes('dép tổ ong') || q.includes('dép tông') || q.includes('dép lào') || q.includes('đi dép')) {
+    return {
+      reply: `**CẢNH BÁO AN TOÀN: TUYỆT ĐỐI KHÔNG ĐI DÉP TỔ ONG / DÉP TÔNG LEO NÚI:**
+- **Nguy cơ lật sơ mi 99%**: Dép hở không cố định cổ chân, bước xuống bậc đá dốc 45-60 độ sẽ làm trẹo và đứt dây chằng cổ chân ngay.
+- **Mất ma sát**: Đế nhựa trơn bóng khi gặp bùn rêu Hoàng Liên Sơn sẽ khiến bạn trượt ngã xuống vực.
+- **Dập móng & nhiễm lạnh**: Ngón chân va đập trực tiếp vào đá sắc; nhiệt độ ban đêm 0°C-5°C sẽ gây cóng buốt tê liệt.
+
+*Hãy đầu tư một đôi giày trekking cổ lửng đế gai Vibram chuyên dụng để bảo vệ tính mạng nhé!*`,
+      actions: [{ type: 'quick_reply', suggestions: ['Tiêu chuẩn chọn giày trekking', 'Checklist đồ leo Fansipan', 'Lịch trình Fansipan 2N1Đ'] }],
+      modelUsed: 'trekmap-knowledge-engine',
+    };
+  }
+
+  if (q.includes('loa kéo') || q.includes('nướng bbq') || q.includes('than hoa')) {
+    return {
+      reply: `**QUY ĐỊNH BẢO TỒN VƯỜN QUỐC GIA: TUYỆT ĐỐI CẤM:**
+1. **Vi phạm PCCC rừng**: Rừng quốc gia có cấp cháy rừng IV-V. Nhóm lửa than hoa tự do bị phạt từ **5 - 10 triệu VNĐ** theo Nghị định 35/2019/NĐ-CP.
+2. **Ô nhiễm tiếng ồn**: Loa kéo làm hoảng loạn động vật hoang dã và phá vỡ sự bình yên của rừng nguyên sinh.
+3. **Leave No Trace**: Bữa tối ấm cúng được nấu tại **bếp lán quy định** do Porter chuẩn bị là nét văn hóa tuyệt vời nhất!`,
+      actions: [{ type: 'quick_reply', suggestions: ['Nội quy bảo vệ rừng quốc gia', '7 nguyên tắc Leave No Trace', 'Thuê Porter dẫn đường'] }],
+      modelUsed: 'trekmap-knowledge-engine',
+    };
+  }
+
   // 5. TRAIL RECOMMENDATIONS
-  const matched = mockTrails.filter((t) => q.includes(t.name.toLowerCase()) || q.includes(t.province.toLowerCase()));
+  const qNorm = removeVietnameseDiacritics(q);
+  const matched = mockTrails.filter((t) => {
+    const nameNorm = removeVietnameseDiacritics(t.name);
+    const provNorm = removeVietnameseDiacritics(t.province);
+    return (
+      q.includes(t.name.toLowerCase()) ||
+      qNorm.includes(nameNorm) ||
+      q.includes(t.province.toLowerCase()) ||
+      qNorm.includes(provNorm)
+    );
+  });
   const chosen = matched.length > 0 ? matched : mockTrails.slice(0, 2);
 
   for (const tr of chosen.slice(0, 2)) {
@@ -274,7 +359,7 @@ export async function fetchQuickPrompts(currentTrail?: { name?: string; province
         return json.data.map(removeEmojis);
       }
     }
-  } catch (error) {
+  } catch {
     // Fallback
   }
 

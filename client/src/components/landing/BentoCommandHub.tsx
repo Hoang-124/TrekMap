@@ -452,6 +452,7 @@ function playRealisticNatureAmbient(
 export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
   incidents: propIncidents,
   onOpenIncidentModal,
+  onNavigateToForum,
   onShowToast,
 }) => {
   // --- 1. Basecamp Radio State & Instant Zero-Latency Synthesizer Player ---
@@ -1074,6 +1075,32 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
               ))}
             </div>
           </div>
+
+          {onNavigateToForum && (
+            <button
+              type="button"
+              onClick={onNavigateToForum}
+              className="btn btn-outline interactive-click"
+              style={{
+                width: '100%',
+                padding: '8px 12px',
+                borderRadius: 12,
+                fontSize: '0.82rem',
+                fontWeight: 700,
+                marginTop: 8,
+                marginBottom: 8,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                color: 'var(--color-primary)',
+                borderColor: 'var(--color-border-glow)',
+              }}
+            >
+              <IconCompass size={14} color="var(--color-primary)" />
+              Tham Gia Diễn Đàn & Ghép Đoàn
+            </button>
+          )}
 
           <div style={{ fontSize: '0.73rem', color: 'var(--color-text-dim)', textAlign: 'center', lineHeight: 1.4, padding: '6px 10px', background: 'var(--color-bg-main)', borderRadius: 10, border: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
             <IconShieldAlert size={13} color="var(--color-sky)" />

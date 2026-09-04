@@ -85,9 +85,9 @@ MONGODB_URI=mongodb://localhost:27017/trekmap
 JWT_SECRET=trekmap-jwt-secret-key-2026
 
 # Cloudinary CDN Credentials
-CLOUDINARY_CLOUD_NAME=dsxbuk4pe
-CLOUDINARY_API_KEY=434322971269149
-CLOUDINARY_API_SECRET=HyemSH59e0Qjk1bthG4WL2_o_mU
+CLOUDINARY_CLOUD_NAME=your_cloudinary_cloud_name
+CLOUDINARY_API_KEY=your_cloudinary_api_key
+CLOUDINARY_API_SECRET=your_cloudinary_api_secret
 ```
 
 ### 4. Khởi Chạy Dự Án

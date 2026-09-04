@@ -26,6 +26,7 @@ import { getApiHeaders, notifyForumUpdated } from '../../utils/sessionHeaders.js
 import { TripPlanCard } from '../trips/TripPlanCard.js';
 import type { TripPlanItem } from '../trips/TripPlanCard.js';
 import { CreateTripModal } from '../trips/CreateTripModal.js';
+import { CreateTripReportModal } from '../trip-reports/CreateTripReportModal.js';
 import { TripReportCard } from '../trip-reports/TripReportCard.js';
 import type { TripReportItem } from '../trip-reports/TripReportCard.js';
 
@@ -42,6 +43,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
   const [trips, setTrips] = useState<TripPlanItem[]>([]);
   const [tripReports, setTripReports] = useState<TripReportItem[]>([]);
   const [isCreateTripOpen, setIsCreateTripOpen] = useState(false);
+  const [isCreateReportOpen, setIsCreateReportOpen] = useState(false);
 
   // Modals state
   const [activeAuthor, setActiveAuthor] = useState<AuthorProfileData | null>(null);
@@ -295,13 +297,39 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
               <IconUserPlus size={16} color="#041108" />
               Mở Chuyến Ghép Đoàn
             </button>
+          ) : selectedCategory === 'Nhật Ký' ? (
+            <button
+              className="btn btn-primary interactive-click ripple-fx"
+              onClick={() => {
+                const token = localStorage.getItem('trekmap_token');
+                if (!token) {
+                  window.dispatchEvent(new CustomEvent('trekmap:show-toast', { detail: { message: 'Vui lòng đăng nhập để viết bài nhật ký chuyến đi!', type: 'info' } }));
+                  window.location.hash = '#login';
+                  return;
+                }
+                setIsCreateReportOpen(true);
+              }}
+              style={{
+                borderRadius: 14,
+                padding: '9px 18px',
+                fontSize: '0.84rem',
+                fontWeight: 800,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                boxShadow: '0 4px 14px rgba(5, 150, 105, 0.35)',
+              }}
+            >
+              <IconMountain size={16} color="#041108" />
+              Viết Nhật Ký Chuyến Đi
+            </button>
           ) : (
             <button
               className="btn btn-primary interactive-click ripple-fx"
               onClick={() => {
                 const token = localStorage.getItem('trekmap_token');
                 if (!token) {
-                  window.dispatchEvent(new CustomEvent('trekmap:show-toast', { detail: { message: 'Vui lòng đăng nhập để tạo bài nhật ký mới trên diễn đàn!', type: 'info' } }));
+                  window.dispatchEvent(new CustomEvent('trekmap:show-toast', { detail: { message: 'Vui lòng đăng nhập để tạo bài thảo luận mới trên diễn đàn!', type: 'info' } }));
                   window.location.hash = '#login';
                   return;
                 }
@@ -329,6 +357,12 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
         isOpen={isCreateTripOpen}
         onClose={() => setIsCreateTripOpen(false)}
         onSuccess={loadTrips}
+      />
+
+      <CreateTripReportModal
+        isOpen={isCreateReportOpen}
+        onClose={() => setIsCreateReportOpen(false)}
+        onSuccess={loadTripReports}
       />
 
       {/* Category Filter Pills (Refined Glassmorphism Bar) */}
@@ -408,8 +442,9 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
         })}
       </div>
 
-      {/* Conditional rendering for Ghép Đoàn & Nhật Ký vs Standard Threads */}
-      {selectedCategory === 'Ghép Đoàn' ? (
+      {/* Conditional rendering for Ghép Đoàn & Nhật Ký vs Standard Threads (Smooth Slide Transition) */}
+      <div key={selectedCategory} className="tab-content-slide">
+        {selectedCategory === 'Ghép Đoàn' ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 20 }}>
           {trips.length === 0 ? (
             <div
@@ -520,7 +555,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                   cursor: 'pointer',
                   transition: 'all 0.22s cubic-bezier(0.16, 1, 0.3, 1)',
                   position: 'relative',
-                  overflow: 'hidden',
+                  overflow: 'visible',
                 }}
                 onClick={() => setActiveThread(thread)}
               >
@@ -728,6 +763,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
           })}
         </div>
       )}
+      </div>
     </div>
   );
 };

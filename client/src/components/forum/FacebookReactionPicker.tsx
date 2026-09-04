@@ -1,23 +1,13 @@
 import React, { useState, useRef } from 'react';
+import { TrekReactionSvg, type ReactionType } from './TrekReactionSvg.js';
 
-// Custom TrekMap Reaction Image Component (Direct PNG Assets with Vibrancy Boost)
-export const TrekReactionImg = ({ name, size = 30, alt = '' }: { name: string; size?: number; alt?: string }) => (
-  <img
-    src={`/reactions/${name}.png`}
-    alt={alt || name}
-    style={{
-      width: size,
-      height: size,
-      objectFit: 'contain',
-      display: 'inline-block',
-      verticalAlign: 'middle',
-      filter: 'brightness(1.15) contrast(1.15) saturate(1.3) drop-shadow(0 2px 6px rgba(0,0,0,0.4))',
-      transition: 'all 0.2s ease',
-    }}
-  />
+export { TrekReactionSvg };
+export type { ReactionType };
+
+// Backwards compatibility alias for TrekReactionImg -> purely renders pure Vector SVG
+export const TrekReactionImg = ({ name, size = 28, alt: _alt = '' }: { name: string; size?: number; alt?: string }) => (
+  <TrekReactionSvg name={name as ReactionType} size={size} />
 );
-
-export type ReactionType = 'like' | 'dislike' | 'haha' | 'wow' | 'buon' | 'huhu' | 'angry' | 'love' | 'sad' | null;
 
 export interface ReactionItem {
   id: ReactionType;
@@ -28,13 +18,14 @@ export interface ReactionItem {
 }
 
 export const REACTION_LIST: ReactionItem[] = [
-  { id: 'like', label: 'Thích', emoji: '👍', color: '#fbbf24', icon: <TrekReactionImg name="like" size={28} alt="Thích" /> },
-  { id: 'dislike', label: 'Không thích', emoji: '👎', color: '#cbd5e1', icon: <TrekReactionImg name="dislike" size={28} alt="Không thích" /> },
-  { id: 'haha', label: 'Haha', emoji: '😆', color: '#f97316', icon: <TrekReactionImg name="haha" size={28} alt="Haha" /> },
-  { id: 'wow', label: 'Wow', emoji: '😮', color: '#38bdf8', icon: <TrekReactionImg name="wow" size={28} alt="Wow" /> },
-  { id: 'buon', label: 'Buồn', emoji: '😢', color: '#818cf8', icon: <TrekReactionImg name="buon" size={28} alt="Buồn" /> },
-  { id: 'huhu', label: 'Huhu', emoji: '😭', color: '#22d3ee', icon: <TrekReactionImg name="huhu" size={28} alt="Huhu" /> },
-  { id: 'angry', label: 'Phẫn nộ', emoji: '😡', color: '#f87171', icon: <TrekReactionImg name="angry" size={28} alt="Phẫn nộ" /> },
+  { id: 'like', label: 'Thích', emoji: '👍', color: '#38bdf8', icon: <TrekReactionSvg name="like" size={28} /> },
+  { id: 'love', label: 'Yêu thích', emoji: '❤️', color: '#f43f5e', icon: <TrekReactionSvg name="love" size={28} /> },
+  { id: 'haha', label: 'Haha', emoji: '😆', color: '#fbbf24', icon: <TrekReactionSvg name="haha" size={28} /> },
+  { id: 'wow', label: 'Wow', emoji: '😮', color: '#f59e0b', icon: <TrekReactionSvg name="wow" size={28} /> },
+  { id: 'buon', label: 'Buồn', emoji: '😢', color: '#60a5fa', icon: <TrekReactionSvg name="buon" size={28} /> },
+  { id: 'huhu', label: 'Huhu', emoji: '😭', color: '#38bdf8', icon: <TrekReactionSvg name="huhu" size={28} /> },
+  { id: 'angry', label: 'Phẫn nộ', emoji: '😡', color: '#ef4444', icon: <TrekReactionSvg name="angry" size={28} /> },
+  { id: 'dislike', label: 'Không thích', emoji: '👎', color: '#94a3b8', icon: <TrekReactionSvg name="dislike" size={28} /> },
 ];
 
 interface FacebookReactionPickerProps {
@@ -117,6 +108,7 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
           onMouseLeave={handleMouseLeave}
         >
           <div
+            className="reaction-bar-slide"
             style={{
               background: 'var(--color-bg-card)',
               backdropFilter: 'blur(20px)',
@@ -242,13 +234,13 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
                   overflow: 'hidden',
                 }}
               >
-                <TrekReactionImg name={item.id as string} size={16} alt={item.label} />
+                <TrekReactionSvg name={item.id as string} size={16} />
               </div>
             ))}
           </div>
         ) : (
           <div style={{ display: 'flex', alignItems: 'center' }}>
-            <TrekReactionImg name={activeItem ? (activeItem.id as string) : 'like'} size={18} alt={activeItem ? activeItem.label : 'Thích'} />
+            <TrekReactionSvg name={activeItem ? (activeItem.id as string) : 'like'} size={18} />
           </div>
         )}
 

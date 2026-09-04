@@ -111,13 +111,21 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
     e.preventDefault();
     setSubmitting(true);
 
+    const effectiveStartDate = startDate || new Date().toISOString().split('T')[0];
     const payload = {
       trailId: trail.id,
       trailName: trail.name,
-      title,
-      startDate,
-      memberCount,
+      title: title || `Kế Hoạch Khám Phá ${trail.name}`,
+      startDate: effectiveStartDate,
+      memberCount: memberCount || 4,
       steps,
+      timelineSteps: steps.map((s) => ({
+        day: s.day,
+        time: s.time,
+        activity: s.title,
+        location: s.locationNote,
+        notes: s.description,
+      })),
     };
 
     const res = await createExpeditionItinerary(payload);
@@ -127,6 +135,11 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
       setShareUrl(res.shareUrl);
     } else {
       const mockToken = `itinerary-${Date.now()}`;
+      try {
+        const cached = JSON.parse(localStorage.getItem('trekmap_local_itineraries') || '{}');
+        cached[mockToken] = { ...payload, shareToken: mockToken };
+        localStorage.setItem('trekmap_local_itineraries', JSON.stringify(cached));
+      } catch (err) {}
       setShareUrl(`${window.location.origin}/#itinerary/${mockToken}`);
     }
   };

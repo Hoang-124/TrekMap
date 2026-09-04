@@ -4,6 +4,7 @@ import { ThemeToggle } from '../common/ThemeToggle.js';
 import { NotificationBell } from '../notifications/NotificationBell.js';
 import { fetchConversations } from '../../services/messageService.js';
 import { useSocket } from '../../hooks/useSocket.js';
+import { IconShieldCheck, IconTree, IconStar } from '../common/SvgIcons.js';
 
 interface NavbarProps {
   currentView: string;
@@ -401,9 +402,20 @@ export const Navbar: React.FC<NavbarProps> = ({
                               background: isAdmin ? 'rgba(245, 158, 11, 0.2)' : 'rgba(16, 185, 129, 0.2)',
                               color: isAdmin ? '#f59e0b' : 'var(--color-primary)',
                               border: isAdmin ? '1px solid rgba(245, 158, 11, 0.4)' : '1px solid rgba(16, 185, 129, 0.4)',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
                             }}
                           >
-                            {isAdmin ? '🛡️ Quản Trị Viên' : '🌲 Trekker'}
+                            {isAdmin ? (
+                              <>
+                                <IconShieldCheck size={12} color="#f59e0b" /> Quản Trị Viên
+                              </>
+                            ) : (
+                              <>
+                                <IconTree size={12} color="var(--color-primary)" /> Trekker
+                              </>
+                            )}
                           </span>
                           <span
                             style={{
@@ -414,9 +426,12 @@ export const Navbar: React.FC<NavbarProps> = ({
                               background: 'rgba(250, 204, 21, 0.15)',
                               color: 'var(--color-sun)',
                               border: '1px solid rgba(250, 204, 21, 0.3)',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
                             }}
                           >
-                            ⭐ {currentUser.reputationScore || 100} Điểm
+                            <IconStar size={11} color="var(--color-sun)" fill="var(--color-sun)" /> {currentUser.reputationScore || 100} Điểm
                           </span>
                         </div>
                       </div>
@@ -494,6 +509,39 @@ export const Navbar: React.FC<NavbarProps> = ({
                         <line x1="8" y1="12" x2="16" y2="12" />
                       </svg>
                       <span>Đóng góp cung đường mới</span>
+                    </button>
+
+                    {/* Forum / Community */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsUserMenuOpen(false);
+                        onNavigate('forum');
+                      }}
+                      className="interactive-click"
+                      style={{
+                        width: '100%',
+                        padding: '9px 12px',
+                        borderRadius: 10,
+                        border: 'none',
+                        background: currentView === 'forum' ? 'rgba(16, 185, 129, 0.15)' : 'transparent',
+                        color: currentView === 'forum' ? 'var(--color-primary)' : 'var(--color-text-main)',
+                        fontSize: '0.84rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                        transition: 'background 0.2s ease',
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(16, 185, 129, 0.1)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = currentView === 'forum' ? 'rgba(16, 185, 129, 0.15)' : 'transparent')}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                      </svg>
+                      <span>Diễn đàn & Ghép đoàn</span>
                     </button>
 
                     {/* Section 2: Admin Dashboard (If Admin) */}

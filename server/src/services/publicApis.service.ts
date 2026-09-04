@@ -3,22 +3,53 @@
  * Interfaces with open-source, keyless Public APIs from github.com/public-apis/public-apis
  */
 
-// 1. Open-Meteo Live Weather API
+interface CacheEntry<T> {
+  data: T;
+  timestamp: number;
+}
+
+const weatherCache = new Map<string, CacheEntry<any>>();
+const WEATHER_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+// 1. Open-Meteo Live Weather API with 10-minute In-Memory TTL Cache
 export async function getLiveWeatherForecast(lat: number, lng: number) {
+  const cacheKey = `${lat.toFixed(2)},${lng.toFixed(2)}`;
+  const cached = weatherCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && now - cached.timestamp < WEATHER_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
   try {
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max,relative_humidity_2m_max&current_weather=true&timezone=Asia%2FBangkok`;
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) throw new Error('Open-Meteo HTTP Error');
     const data = await res.json();
+    weatherCache.set(cacheKey, { data, timestamp: now });
+    if (weatherCache.size > 200) {
+      const oldestKey = weatherCache.keys().next().value;
+      if (oldestKey) weatherCache.delete(oldestKey);
+    }
     return data;
   } catch (err) {
+    if (cached) return cached.data; // Stale cache fallback on network timeout
     console.warn('Open-Meteo API unreachable or timed out:', err);
     return null;
   }
 }
 
-// 2. Sunrise-Sunset Astronomical API
+const astroCache = new Map<string, CacheEntry<any>>();
+const ASTRO_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// 2. Sunrise-Sunset Astronomical API with 1-hour In-Memory TTL Cache
 export async function getSunriseSunsetData(lat: number, lng: number) {
+  const cacheKey = `${lat.toFixed(2)},${lng.toFixed(2)}`;
+  const cached = astroCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && now - cached.timestamp < ASTRO_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
   try {
     const url = `https://api.sunrise-sunset.org/json?lat=${lat}&lng=${lng}&formatted=0`;
     const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
@@ -31,14 +62,21 @@ export async function getSunriseSunsetData(lat: number, lng: number) {
       const formatVN = (d: Date) =>
         d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Ho_Chi_Minh' });
 
-      return {
+      const data = {
         sunrise: formatVN(sunriseUTC),
         sunset: formatVN(sunsetUTC),
         dayLengthHours: Math.round((json.results.day_length / 3600) * 10) / 10,
         goldenHourMorning: `${formatVN(new Date(sunriseUTC.getTime() - 20 * 60000))} - ${formatVN(new Date(sunriseUTC.getTime() + 45 * 60000))}`,
       };
+      astroCache.set(cacheKey, { data, timestamp: now });
+      if (astroCache.size > 200) {
+        const oldestKey = astroCache.keys().next().value;
+        if (oldestKey) astroCache.delete(oldestKey);
+      }
+      return data;
     }
   } catch (err) {
+    if (cached) return cached.data;
     console.warn('Sunrise-Sunset API unreachable:', err);
   }
   return {
@@ -49,8 +87,18 @@ export async function getSunriseSunsetData(lat: number, lng: number) {
   };
 }
 
-// 3. OpenStreetMap Nominatim Reverse Geocoding API
+const geocodeCache = new Map<string, CacheEntry<any>>();
+const GEOCODE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// 3. OpenStreetMap Nominatim Reverse Geocoding API with 24-hour cache
 export async function reverseGeocodeLocation(lat: number, lng: number) {
+  const cacheKey = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+  const cached = geocodeCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && now - cached.timestamp < GEOCODE_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
   try {
     const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=vi&zoom=18&addressdetails=1`;
     const res = await fetch(url, {
@@ -71,15 +119,22 @@ export async function reverseGeocodeLocation(lat: number, lng: number) {
       if (district && district !== wardOrQuarter) parts.push(district);
       if (state && state !== district && state !== wardOrQuarter) parts.push(state);
 
-      return {
+      const data = {
         displayName: json.display_name,
         formattedAddress: parts.length > 0 ? parts.join(', ') : json.display_name,
         province: state,
         district,
         village: wardOrQuarter,
       };
+      geocodeCache.set(cacheKey, { data, timestamp: now });
+      if (geocodeCache.size > 500) {
+        const oldestKey = geocodeCache.keys().next().value;
+        if (oldestKey) geocodeCache.delete(oldestKey);
+      }
+      return data;
     }
   } catch (err) {
+    if (cached) return cached.data;
     console.warn('Nominatim Geocoding API unreachable:', err);
   }
   return null;
@@ -151,6 +206,10 @@ export async function calculateDrivingRoute(
 
         const result = { roadDistanceKm, travelDurationMin: totalMinutes, travelDurationFormatted };
         routingCache.set(cacheKey, result);
+        if (routingCache.size > 500) {
+          const oldest = routingCache.keys().next().value;
+          if (oldest) routingCache.delete(oldest);
+        }
         return result;
       }
     }
@@ -175,5 +234,9 @@ export async function calculateDrivingRoute(
 
   const fallbackResult = { roadDistanceKm, travelDurationMin: totalMinutes, travelDurationFormatted };
   routingCache.set(cacheKey, fallbackResult);
+  if (routingCache.size > 500) {
+    const oldest = routingCache.keys().next().value;
+    if (oldest) routingCache.delete(oldest);
+  }
   return fallbackResult;
 }

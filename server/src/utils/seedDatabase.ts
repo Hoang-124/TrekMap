@@ -7,7 +7,9 @@ import { ReviewModel } from '../models/Review.js';
 import { ThreadModel } from '../models/Thread.js';
 import { WeatherForecastModel } from '../models/WeatherForecast.js';
 import { AuditLogModel } from '../models/AuditLog.js';
+import { AiKnowledgeModel } from '../models/AiKnowledge.js';
 import { mockTrails, mockGuides } from '../data/seedData.js';
+import { masterKnowledgeDataset } from '../data/trekkerKnowledgeDataset.js';
 
 import { hashPassword } from './auth.js';
 
@@ -63,11 +65,12 @@ export const seedAll13Collections = async () => {
 
     // 4. Force Seed/Upsert ALL 12 Trails directly into MongoDB `trails` collection
     for (const t of mockTrails) {
-      const { id, createdBy, ...trailBody } = t;
+      const { createdBy, ...trailBody } = t;
       await TrailModel.findOneAndUpdate(
         { name: t.name },
         {
           ...trailBody,
+          id: t.id,
           createdBy: adminUser._id as any,
           startLocation: {
             type: 'Point',
@@ -165,7 +168,29 @@ export const seedAll13Collections = async () => {
       });
     }
 
-    console.log('🎉 [MongoDB Seeder]: ALL 12 real Vietnam trails persisted into MongoDB database!');
+    // 10. Seed/Sync AI Master Knowledge Base into MongoDB
+    const aiKnowledgeCount = await AiKnowledgeModel.countDocuments();
+    if (aiKnowledgeCount < masterKnowledgeDataset.length) {
+      console.log(`🤖 [MongoDB Seeder]: Syncing ${masterKnowledgeDataset.length} AI Knowledge items into MongoDB...`);
+      await AiKnowledgeModel.deleteMany({});
+      await AiKnowledgeModel.insertMany(
+        masterKnowledgeDataset.map((item) => ({
+          category: item.category,
+          trailId: item.trailId,
+          trailName: item.trailName,
+          question: item.question,
+          keywords: item.keywords,
+          answer: item.answer,
+          difficultyLevel: item.difficultyLevel,
+          sourceOrHotline: item.sourceOrHotline,
+          isActive: true,
+          viewCount: 0,
+        }))
+      );
+      console.log(`✅ [MongoDB Seeder]: Successfully seeded ${masterKnowledgeDataset.length} AI Knowledge items into MongoDB!`);
+    }
+
+    console.log('🎉 [MongoDB Seeder]: ALL real Vietnam trails and AI Knowledge persisted into MongoDB database!');
   } catch (error) {
     console.error('⚠️ [MongoDB Seeder Notice]:', (error as Error).message);
   }

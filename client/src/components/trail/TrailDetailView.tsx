@@ -8,7 +8,7 @@ import { WeatherTab } from './WeatherTab.js';
 import { GearChecklistTab } from './GearChecklistTab.js';
 import { ItineraryTab } from './ItineraryTab.js';
 import { TrailConditionSection } from './TrailConditionSection.js';
-import { IconPhone, IconAlertTriangle } from '../common/SvgIcons.js';
+import { IconPhone, IconAlertTriangle, IconStar } from '../common/SvgIcons.js';
 
 interface TrailDetailViewProps {
   trail: Trail;
@@ -255,14 +255,14 @@ ${trackPointsXml}
               <div style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--color-sun)', display: 'flex', alignItems: 'center', gap: 4 }}>
                 {reviewsList.length > 0 ? (
                   <>
-                    <span>★</span> {(reviewsList.reduce((acc, r) => acc + (r.rating || 5), 0) / reviewsList.length).toFixed(1)}{' '}
+                    <IconStar size={18} color="var(--color-sun)" fill="var(--color-sun)" /> {(reviewsList.reduce((acc, r) => acc + (r.rating || 5), 0) / reviewsList.length).toFixed(1)}{' '}
                     <span style={{ fontSize: '0.85rem', color: 'var(--color-text-dim)', fontWeight: 500 }}>
                       ({reviewsList.length} bài)
                     </span>
                   </>
                 ) : (trail.reviewCount && trail.reviewCount > 0 && trail.rating && trail.rating > 0 && trail.reviewCount !== 1) ? (
                   <>
-                    <span>★</span> {Number(trail.rating).toFixed(1)}{' '}
+                    <IconStar size={18} color="var(--color-sun)" fill="var(--color-sun)" /> {Number(trail.rating).toFixed(1)}{' '}
                     <span style={{ fontSize: '0.85rem', color: 'var(--color-text-dim)', fontWeight: 500 }}>
                       ({trail.reviewCount} bài)
                     </span>
@@ -400,8 +400,10 @@ ${trackPointsXml}
         })}
       </div>
 
-      {/* TAB 1: OVERVIEW */}
-      {activeTab === 'overview' && (
+      {/* Sliding Tab Contents */}
+      <div key={activeTab} className="tab-content-slide">
+        {/* TAB 1: OVERVIEW */}
+        {activeTab === 'overview' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 28 }}>
           <div>
             {/* SVG Elevation Profile Graph */}
@@ -771,6 +773,7 @@ ${trackPointsXml}
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 };

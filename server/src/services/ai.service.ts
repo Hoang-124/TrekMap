@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { TrailModel } from '../models/Trail.js';
 import { AiKnowledgeModel } from '../models/AiKnowledge.js';
 import { mockTrails } from '../data/seedData.js';
@@ -39,7 +40,7 @@ export function removeEmojis(str: string): string {
   if (!str) return '';
   return str
     .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{1FA70}-\u{1FAFF}\u{200D}\u{FE0F}]/gu, '')
-    .replace(/\s{2,}/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
     .trim();
 }
 
@@ -121,12 +122,43 @@ NGUYÊN TẮC BẮT BUỘC VỀ DỮ LIỆU & AN TOÀN:
    - Núi Bà Đen: 986m (Tây Ninh)
    - Núi Dinh: 504m (Bà Rịa - Vũng Tàu)
    - Bidoup Núi Bà: 2.287m (Lạc Dương, Lâm Đồng)
+   - Giếng Trời Bà Nà: 520m (Hòa Vang, TP. Đà Nẵng - đệ nhất trekking suối thác Đà Nẵng)
+   - Vườn quốc gia Bạch Mã: 1.450m (Thừa Thiên Huế - cách Đà Nẵng 60km)
 
 2. CỨU HỘ & AN TOÀN SINH TỒN:
    - Khi người dùng gặp nguy cấp (lạc đường, sốc độ cao AMS, hạ thân nhiệt, chấn thương, lũ quét, rắn cắn), luôn đưa ra hướng dẫn sơ cấp cứu theo chuẩn y tế dã ngoại trước tiên và cung cấp ngay số cứu hộ thực tế.
    - Lạc đường: Dừng lại (S.T.O.P), giữ nguyên vị trí, không đi bừa xuống vực/khe suối cạn dễ gặp thác cụt, phát tín hiệu còi 3 hồi ngắn hoặc tạo khói.
    - Sốc độ cao (AMS): Giảm độ cao ngay lập tức, giữ ấm, uống nước oresol, không gắng sức.
-   - Hạ thân nhiệt: Thay đồ khô ngay lập tức, cách ly khỏi mặt đất lạnh, uống nước ấm có đường, ủ ấm ngực/nách/bẹn.`;
+   - Hạ thân nhiệt: Thay đồ khô ngay lập tức, cách ly khỏi mặt đất lạnh, uống nước ấm có đường, ủ ấm ngực/nách/bẹn.
+
+3. GỢI Ý CUNG SUỐI THÁC & ĐỊA ĐIỂM GẦN NGƯỜI DÙNG:
+   - Khi người dùng cho biết họ đang ở địa phương cụ thể (ví dụ: Đà Nẵng, Hà Nội, TP.HCM, Tây Nguyên...): BẮT BUỘC PHẢI ƯU TIÊN 100% CÁC ĐỊA ĐIỂM SUỐI THÁC THUỘC ĐÚNG ĐỊA PHƯƠNG ĐÓ HOẶC LÂN CẬN (bán kính hợp lý <60km). Tuyệt đối KHÔNG gợi ý địa phương khác nếu không được yêu cầu.
+   - Nếu người dùng ở Đà Nẵng: Gợi ý **Giếng Trời (Hòa Ninh, Hòa Vang)**, **Khe Ram - Hòa Bắc (Hòa Vang)**, **Suối Mơ & Suối Hoa (Hòa Phú)**, **Thác Ba Đờ Banh (Hòa Phú Thành)**, **Thác Đỗ Quyên & Ngũ Hồ (Bạch Mã, cách Đà Nẵng 60km)**.
+   - Nếu có tọa độ GPS trong ngữ cảnh, tính toán khoảng cách ước tính và gợi ý cung đường có suối thác gần nhất.
+   - Nếu người dùng chưa cung cấp vị trí và hỏi chung chung, giải thích và liệt kê rõ theo từng vùng miền (Đà Nẵng & Miền Trung, Hà Nội & Miền Bắc, TP.HCM & Đông Nam Bộ).
+   - BẮT BUỘC NHẮC NHỞ 3 QUY TẮC AN TOÀN SỐNG CÒN KHI ĐI SUỐI:
+     * **Cảnh báo Lũ quét (Flash Flood)**: Khi thấy nước suối từ trong chuyển đục ngầu phù sa cuốn theo cành lá khô từ thượng nguồn, lập tức tháo chạy lên đồi cao ngay!
+     * **Không cắm trại sát mép nước**: Lều phải cách mép suối tối thiểu **50m** và cao hơn mức nước ít nhất **3m**.
+     * **Lội suối an toàn**: Cởi chốt đai hông và đai ngực balo để kịp vứt balo thoát thân nếu bị trượt chân; mang giày/sandal dã ngoại có gai chống trơn rêu.
+
+4. XỬ LÝ CÁC TÌNH HUỐNG HIỂM HÓC, OÁI OĂM & CỰC HẠN (DILEMMAS & EXTREME SURVIVAL):
+   - **Bung toạc đế giày**: Ưu tiên hướng dẫn gia cố sinh tồn ngay (băng dính bạc Duct Tape quấn 5-7 vòng, dây rút zip-tie, đan dây paracord hình xích dưới đế, ruột săm xe máy).
+   - **Rách lều / gãy cọc lều trong bão đêm**: Hạ phẳng lều thành túi Bivy khẩn cấp, dùng áo mưa poncho căng lều chữ A siêu thấp (50cm) tránh gió bão.
+   - **Mất nguồn lửa**: Sấy khô đá lửa của bật lửa bánh xe trên vải jean, chập pin đèn pin/điện thoại vào giấy bạc tạo lửa châm bùi nhùi bông tẩm dầu gió.
+   - **Mất điện thoại / hết pin trong rừng đêm**: Hướng dẫn định vị thiên văn bằng Sao Bắc Đẩu (chòm Đại Hùng) ở miền Bắc hoặc Chòm Nam Thập Tự ở miền Nam; thổi còi sinh tồn 3 hồi ngắn SOS quốc tế.
+   - **Cơn hoảng loạn (Panic Attack) trên vách hẹp / Sống lưng khủng long**: Hạ thấp trọng tâm ngồi bệt hoặc bò 4 chi, thở hộp Box Breathing (4-4-4), kỹ thuật neo giác quan 5-4-3-2-1, nhìn tập trung vào gót chân người dẫn đường (Tunnel Vision).
+   - **Trekker nữ gặp kỳ kinh nguyệt đột xuất**: Túi zip 2 lớp khử mùi bằng trà khô, không chôn rác trong rừng tránh dẫn dụ thú hoang, dán miếng giữ nhiệt bụng dưới, uống nước ấm gừng đường và bổ sung sắt/magie.
+   - **Bệnh lý nền (Hen suyễn, tụt đường huyết)**: Tư thế kiềng 3 chân (Tripod) thở chúm môi, giữ ấm đường thở; nạp 15g đường nhanh (kẹo glucose, mật ong).
+   - **Quên giấy tờ tại vành đai biên giới**: Hợp tác tuyệt đối, mở VNeID mức độ 2, nhờ porter bản địa liên hệ chính quyền xã bảo lãnh.
+   - **Phạm điều kiêng kỵ bản địa**: Chân thành cúi đầu xin lỗi, nhờ porter hướng dẫn tạ lễ rượu bản/muối tạ thần rừng.
+   - **Thú dữ (Lợn rừng, khỉ hoang)**: Không chạy, giơ cao gậy và balo uy hiếp kích thước cơ thể, lùi chậm chéo trèo lên cây to cao >1.5m; không giằng co đồ ăn với khỉ để phòng dại.
+
+5. ĐỐI PHÓ VỚI CÂU HỎI TRÉO NGOE, NGHỊCH LÝ HOẶC "TROLL":
+   - Luôn giữ thái độ lịch thiệp, thông minh, pha chút hài hước duyên dáng nhưng **tuyệt đối kiên định với quy chuẩn an toàn và pháp luật bảo vệ rừng**:
+     + "Đi dép tổ ong leo Fansipan": Cảnh báo nguy cơ lật sơ mi 99%, mất ma sát trên đá ướt, dập móng và cóng buốt nhiệt độ 0°C.
+     + "Mang loa kéo nướng BBQ lên đỉnh": Viện dẫn nghiêm ngặt Nghị định 35/2019/NĐ-CP về PCCC rừng cấp IV-V, bảo tồn sinh thái và Leave No Trace.
+     + "Hái lan rừng, bẻ cành đỗ quyên": Nêu rõ quy định cấm khai thác thực vật rừng nguy cấp quý hiếm, nguy cơ cây chết khô ở đồng bằng và văn hóa trekker chân chính.
+     + "Lái xe máy lên Pu Si Lung": Giải thích địa hình vách đá dựng đứng 70-80 độ, rừng trúc lùn ken dày và hiểm trở thực tế.`;
 
 // In-memory local cache for instant zero-latency trail lookups
 let cachedTrails: Trail[] = mockTrails;
@@ -140,6 +172,12 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 async function getAllAvailableTrails(): Promise<Trail[]> {
   const now = Date.now();
   if (cachedTrails.length > 0 && now - lastCacheTimestamp < CACHE_TTL_MS) {
+    return cachedTrails;
+  }
+
+  if (mongoose.connection.readyState !== 1) {
+    cachedTrails = mockTrails;
+    lastCacheTimestamp = now;
     return cachedTrails;
   }
 
@@ -216,7 +254,12 @@ async function generateWithGemini(
   }
 
   try {
-    const candidateModels = ['gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-flash-latest'];
+    const candidateModels = [
+      'gemini-3.6-flash',
+      'gemini-flash-latest',
+      'gemini-pro-latest',
+      'gemini-3-flash-preview',
+    ];
     let lastError = null;
 
     const contents = [
@@ -252,12 +295,12 @@ async function generateWithGemini(
         const response = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          signal: AbortSignal.timeout(6500),
+          signal: AbortSignal.timeout(12000),
           body: JSON.stringify({
             contents,
             generationConfig: {
               temperature: 0.35,
-              topP: 0.85,
+              topP: 0.9,
               maxOutputTokens: 8192,
             },
           }),
@@ -289,13 +332,29 @@ async function generateWithGemini(
 
 
 /**
+ * Haversine Distance in Kilometers
+ */
+function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(R * c);
+}
+
+/**
  * Intelligent Real Knowledge Engine (Offline-Ready / Zero-Latency Fallback)
  */
 function processWithKnowledgeEngine(
   rawQuery: string,
   trails: Trail[],
   currentTrailContext?: ChatRequestPayload['currentTrailContext'],
-  userName?: string
+  userName?: string,
+  userCoordinates?: ChatRequestPayload['userCoordinates']
 ): { reply: string; actions: AiAssistantAction[] } {
   const query = removeEmojis(rawQuery).toLowerCase().trim();
   const actions: AiAssistantAction[] = [];
@@ -353,6 +412,171 @@ Em có thể giúp bạn giải quyết các vấn đề sau:
     const reply = `Dạ không có gì ạ! Chúc ${displayName ? displayName : 'bạn'} luôn có những chuyến đi an toàn, chân cứng đá mềm và chinh phục được nhiều đỉnh núi hùng vĩ của Việt Nam!
 
 Nếu cần hỗ trợ bất kỳ lúc nào trên hành trình, hãy cứ mở TrekCopilot AI lên nhé!`;
+    return { reply: removeEmojis(reply), actions };
+  }
+
+  // 2.5. Intelligent Multi-Criteria Master Knowledge Matcher
+  const matchedKnowledge = queryKnowledgeDataset(rawQuery, 2);
+  if (matchedKnowledge.length > 0) {
+    const primary = matchedKnowledge[0];
+    let reply = `${primary.answer}`;
+    if (matchedKnowledge.length > 1 && matchedKnowledge[1].id !== primary.id) {
+      reply += `\n\n---\n**CÓ THỂ BẠN CŨNG QUAN TÂM:**\n\n${matchedKnowledge[1].answer}`;
+    }
+
+    const isStreamTopic = /suối|thác|lội nước|băng suối|lũ quét/i.test(query + ' ' + primary.question);
+    const isCloudOrChill = /mây|săn mây|chill|mát mẻ|không mưa/i.test(query + ' ' + primary.question);
+    const isDaNangOrCentral = /đà nẵng|da nang|quảng nam|quang nam|huế|hue|thừa thiên|khe ram|giếng trời|hòa bắc|bà nà|hải vân/i.test(query + ' ' + primary.question);
+    const isNorthern = /hà nội|ha noi|thái nguyên|ba vì|cửa tử|lào cai|sa pa|lai châu|sơn la|yên bái/i.test(query + ' ' + primary.question);
+    const isSouthern = /hồ chí minh|tp\.hcm|sài gòn|vũng tàu|bà rịa|đồng nai|bình dương|tây ninh|bình thuận|núi dinh/i.test(query + ' ' + primary.question);
+
+    let targetTrail: Trail | undefined;
+    if (primary.trailName) {
+      targetTrail = trails.find(
+        (t) =>
+          t.name.toLowerCase().includes(primary.trailName!.toLowerCase()) ||
+          primary.trailName!.toLowerCase().includes(t.name.toLowerCase())
+      );
+    } else if (isStreamTopic) {
+      if (userCoordinates) {
+        // Find closest trail with water source
+        const waterTrails = trails.filter(
+          (t) => t.hasWaterSource || t.name.includes('Suối') || t.name.includes('Thác') || t.id === 'trail-giengtroi' || t.id === 'trail-bachma' || t.id === 'trail-nuidinh' || t.id === 'trail-thack50'
+        );
+        let closestDist = Infinity;
+        for (const wt of waterTrails) {
+          const dist = calculateDistanceKm(userCoordinates.lat, userCoordinates.lng, wt.startLat, wt.startLng);
+          if (dist < closestDist) {
+            closestDist = dist;
+            targetTrail = wt;
+          }
+        }
+      }
+      if (!targetTrail) {
+        if (isDaNangOrCentral) {
+          targetTrail = trails.find((t) => t.id === 'trail-giengtroi') || trails.find((t) => t.id === 'trail-bachma');
+        } else if (isNorthern) {
+          targetTrail = trails.find((t) => t.id === 'trail-nhiucosan') || trails.find((t) => t.id === 'trail-putaleng');
+        } else if (isSouthern) {
+          targetTrail = trails.find((t) => t.id === 'trail-nuidinh');
+        } else {
+          targetTrail = trails.find((t) => t.id === 'trail-giengtroi') || trails.find((t) => t.id === 'trail-bachma') || trails.find((t) => t.id === 'trail-nuidinh');
+        }
+      }
+    } else if (isCloudOrChill) {
+      targetTrail = trails.find((t) => t.id === 'trail-laothan') || trails.find((t) => t.id === 'trail-taxua');
+    }
+
+    if (targetTrail) {
+      actions.push({
+        type: 'trail_card',
+        trailId: targetTrail.id,
+        trailName: targetTrail.name,
+        trailData: {
+          id: targetTrail.id,
+          name: targetTrail.name,
+          province: targetTrail.province,
+          region: targetTrail.region,
+          distanceKm: targetTrail.distanceKm,
+          elevationGainM: targetTrail.elevationGainM,
+          maxAltitudeM: targetTrail.maxAltitudeM,
+          difficultyLevel: targetTrail.difficultyLevel,
+          difficultyNote: targetTrail.difficultyNote,
+          durationHoursNote: targetTrail.durationHoursNote,
+          coverImage: targetTrail.coverImage,
+        },
+      });
+    }
+
+    if (isStreamTopic) {
+      let suggestions: string[] = [];
+      if (isDaNangOrCentral) {
+        suggestions = [
+          'Suối Giếng Trời (KBT Bà Nà - Núi Chúa)',
+          'Khe Ram - Hòa Bắc (Cắm trại ven suối)',
+          'Thác Đỗ Quyên & Ngũ Hồ (Bạch Mã)',
+          'Kỹ thuật lội suối an toàn & Tránh lũ quét',
+        ];
+      } else if (isNorthern) {
+        suggestions = [
+          'Suối Cửa Tử (Thái Nguyên)',
+          'Suối Mơ & Thác Bạc (Ba Vì)',
+          'Kỹ thuật lội suối & Thoát hiểm lũ quét',
+          'Checklist đồ dùng lội suối dã ngoại',
+        ];
+      } else {
+        suggestions = [
+          'Suối thác quanh Đà Nẵng (Giếng Trời, Khe Ram)',
+          'Suối thác quanh TP.HCM (Núi Dinh, Suối Trúc)',
+          'Suối thác quanh Hà Nội (Cửa Tử, Ba Vì)',
+          'Kỹ thuật lội suối & Thoát hiểm lũ quét',
+        ];
+      }
+      actions.push({
+        type: 'quick_reply',
+        suggestions,
+      });
+    } else if (isCloudOrChill) {
+      actions.push({
+        type: 'quick_reply',
+        suggestions: [
+          'Lịch trình chi tiết săn mây Lảo Thẩn 2N1Đ',
+          'Homestay & Điểm ngắm mây chill tại Tà Xùa',
+          'Công thức xem thời tiết săn biển mây 95%',
+          'Checklist đồ cắm trại ngắm bình minh',
+        ],
+      });
+    } else if (primary.id.startsWith('edge-troll')) {
+      actions.push({
+        type: 'quick_reply',
+        suggestions: [
+          'Nội quy bảo vệ Vườn Quốc Gia Hoàng Liên',
+          '7 nguyên tắc Không Để Lại Rác (Leave No Trace)',
+          'Checklist giày và trang bị leo Fansipan chuẩn',
+          'Lịch trình Fansipan 2N1Đ an toàn',
+        ],
+      });
+    } else if (primary.id === 'edge-sole-broken' || primary.id === 'edge-tent-ripped' || primary.id === 'edge-lost-fire') {
+      actions.push({
+        type: 'quick_reply',
+        suggestions: [
+          'Checklist bộ kit sửa chữa sinh tồn dã ngoại',
+          'Tiêu chuẩn chọn giày trekking bền bỉ',
+          'Kỹ thuật dựng lều chống bão',
+          'Hotline cứu hộ khẩn cấp 114',
+        ],
+      });
+    } else if (primary.id === 'edge-panic-attack' || primary.id === 'edge-period-female' || primary.id === 'edge-asthma-diabetes') {
+      actions.push({
+        type: 'quick_reply',
+        suggestions: [
+          'Kỹ thuật hít thở Box Breathing 4-4-4',
+          'Túi sơ cứu y tế cá nhân cần có gì',
+          'Lưu ý sức khỏe trước khi leo núi',
+          'Cách chọn tour leo núi có porter tận tâm',
+        ],
+      });
+    } else if (primary.id === 'edge-wasp-swarm-attack' || primary.id === 'edge-toxic-mushrooms' || primary.id === 'edge-heat-stroke-south' || primary.id === 'edge-fracture-cliff') {
+      actions.push({
+        type: 'quick_reply',
+        suggestions: [
+          'Quy trình sơ cứu dã ngoại WFA',
+          'Hotline cứu hộ khẩn cấp 114 / 115',
+          'Nhận biết các loài độc thực địa',
+          'Kỹ thuật cố định chấn thương dã ngoại',
+        ],
+      });
+    } else {
+      actions.push({
+        type: 'quick_reply',
+        suggestions: [
+          primary.trailName ? `Lịch trình chi tiết ${primary.trailName}` : 'Checklist đồ dùng leo núi 2N1Đ',
+          primary.trailName ? `Hotline cứu hộ & Porter tại ${primary.trailName}` : 'Kỹ thuật xử lý sốc độ cao (AMS)',
+          'Quy tắc S.T.O.P khi bị lạc đường',
+        ],
+      });
+    }
+
     return { reply: removeEmojis(reply), actions };
   }
 
@@ -644,6 +868,10 @@ Một hành trình trekking an toàn bắt đầu từ chiếc balo chuẩn bị
  * Search Master Knowledge directly from MongoDB Database (with text index score)
  */
 async function searchDatabaseKnowledge(userQuery: string, limit: number = 3): Promise<Array<{ question: string; answer: string }>> {
+  if (mongoose.connection.readyState !== 1) {
+    return queryKnowledgeDataset(userQuery, limit).map((r) => ({ question: r.question, answer: r.answer }));
+  }
+
   try {
     const cleanQ = removeEmojis(userQuery).trim();
     if (!cleanQ) return [];
@@ -709,8 +937,174 @@ export async function getAiResponse(payload: ChatRequestPayload): Promise<ChatRe
 
   if (geminiText) {
     const cleanGemini = removeEmojis(geminiText);
-    // Detect actions from response and query
-    const { actions } = processWithKnowledgeEngine(message + ' ' + cleanGemini, availableTrails, currentTrailContext, userName);
+    const actions: AiAssistantAction[] = [];
+
+    // Check if any trail was discussed and attach card
+    const lowerText = (message + ' ' + cleanGemini).toLowerCase();
+    for (const trail of availableTrails) {
+      if (lowerText.includes(trail.name.toLowerCase()) || (trail.altNames && trail.altNames.some((alt) => lowerText.includes(alt.toLowerCase())))) {
+        actions.push({
+          type: 'trail_card',
+          trailId: trail.id,
+          trailName: trail.name,
+          trailData: {
+            id: trail.id,
+            name: trail.name,
+            province: trail.province,
+            region: trail.region,
+            distanceKm: trail.distanceKm,
+            elevationGainM: trail.elevationGainM,
+            maxAltitudeM: trail.maxAltitudeM,
+            difficultyLevel: trail.difficultyLevel,
+            difficultyNote: trail.difficultyNote,
+            durationHoursNote: trail.durationHoursNote,
+            coverImage: trail.coverImage,
+          },
+        });
+        break;
+      }
+    }
+
+    // Dynamic contextual quick reply suggestions
+    const isEmergency = /cứu hộ|khẩn cấp|lạc đường|tai nạn|rắn cắn|sốc độ cao|ams|hạ thân nhiệt/i.test(lowerText);
+    const isStream = /suối|thác|lội nước|băng suối|lũ quét/i.test(lowerText);
+    const isCloudOrChill = /mây|săn mây|chill|mát mẻ|không mưa|biển mây/i.test(lowerText);
+    const isDaNangOrCentral = /đà nẵng|da nang|quảng nam|quang nam|huế|hue|thừa thiên|khe ram|giếng trời|hòa bắc|bà nà|hải vân/i.test(lowerText);
+    const isNorthern = /hà nội|ha noi|thái nguyên|ba vì|cửa tử|lào cai|sa pa|lai châu|sơn la|yên bái/i.test(lowerText);
+    const isSouthern = /hồ chí minh|tp\.hcm|sài gòn|vũng tàu|bà rịa|đồng nai|bình dương|tây ninh|bình thuận|núi dinh/i.test(lowerText);
+
+    if (isEmergency) {
+      actions.push({
+        type: 'quick_reply',
+        suggestions: [
+          'Hotline cứu hộ Sa Pa / Y Tý',
+          'Sơ cứu khẩn cấp: R.I.C.E cho bong gân',
+          'Tư thế phòng tránh sét đánh trên đỉnh',
+        ],
+      });
+    } else if (isStream) {
+      if (!actions.some((a) => a.type === 'trail_card')) {
+        let streamTrail: Trail | undefined;
+        if (userCoordinates) {
+          const waterTrails = availableTrails.filter(
+            (t) => t.hasWaterSource || t.name.includes('Suối') || t.name.includes('Thác') || t.id === 'trail-giengtroi' || t.id === 'trail-bachma' || t.id === 'trail-nuidinh' || t.id === 'trail-thack50'
+          );
+          let closestDist = Infinity;
+          for (const wt of waterTrails) {
+            const dist = calculateDistanceKm(userCoordinates.lat, userCoordinates.lng, wt.startLat, wt.startLng);
+            if (dist < closestDist) {
+              closestDist = dist;
+              streamTrail = wt;
+            }
+          }
+        }
+        if (!streamTrail) {
+          if (isDaNangOrCentral) {
+            streamTrail = availableTrails.find((t) => t.id === 'trail-giengtroi') || availableTrails.find((t) => t.id === 'trail-bachma');
+          } else if (isNorthern) {
+            streamTrail = availableTrails.find((t) => t.id === 'trail-nhiucosan') || availableTrails.find((t) => t.id === 'trail-putaleng');
+          } else if (isSouthern) {
+            streamTrail = availableTrails.find((t) => t.id === 'trail-nuidinh');
+          } else {
+            streamTrail = availableTrails.find((t) => t.id === 'trail-giengtroi') || availableTrails.find((t) => t.id === 'trail-bachma') || availableTrails.find((t) => t.id === 'trail-nuidinh');
+          }
+        }
+        if (streamTrail) {
+          actions.push({
+            type: 'trail_card',
+            trailId: streamTrail.id,
+            trailName: streamTrail.name,
+            trailData: {
+              id: streamTrail.id,
+              name: streamTrail.name,
+              province: streamTrail.province,
+              region: streamTrail.region,
+              distanceKm: streamTrail.distanceKm,
+              elevationGainM: streamTrail.elevationGainM,
+              maxAltitudeM: streamTrail.maxAltitudeM,
+              difficultyLevel: streamTrail.difficultyLevel,
+              difficultyNote: streamTrail.difficultyNote,
+              durationHoursNote: streamTrail.durationHoursNote,
+              coverImage: streamTrail.coverImage,
+            },
+          });
+        }
+      }
+
+      let suggestions: string[] = [];
+      if (isDaNangOrCentral) {
+        suggestions = [
+          'Suối Giếng Trời (KBT Bà Nà - Núi Chúa)',
+          'Khe Ram - Hòa Bắc (Cắm trại ven suối)',
+          'Thác Đỗ Quyên & Ngũ Hồ (Bạch Mã)',
+          'Kỹ thuật lội suối an toàn & Tránh lũ quét',
+        ];
+      } else if (isNorthern) {
+        suggestions = [
+          'Suối Cửa Tử (Thái Nguyên)',
+          'Suối Mơ & Thác Bạc (Ba Vì)',
+          'Kỹ thuật lội suối & Thoát hiểm lũ quét',
+          'Checklist đồ dùng lội suối dã ngoại',
+        ];
+      } else {
+        suggestions = [
+          'Suối thác quanh Đà Nẵng (Giếng Trời, Khe Ram)',
+          'Suối thác quanh TP.HCM (Núi Dinh, Suối Trúc)',
+          'Suối thác quanh Hà Nội (Cửa Tử, Ba Vì)',
+          'Kỹ thuật lội suối & Thoát hiểm lũ quét',
+        ];
+      }
+
+      actions.push({
+        type: 'quick_reply',
+        suggestions,
+      });
+    } else if (isCloudOrChill) {
+      if (!actions.some((a) => a.type === 'trail_card')) {
+        const cloudTrail = availableTrails.find((t) => t.id === 'trail-laothan') || availableTrails.find((t) => t.id === 'trail-taxua');
+        if (cloudTrail) {
+          actions.push({
+            type: 'trail_card',
+            trailId: cloudTrail.id,
+            trailName: cloudTrail.name,
+            trailData: {
+              id: cloudTrail.id,
+              name: cloudTrail.name,
+              province: cloudTrail.province,
+              region: cloudTrail.region,
+              distanceKm: cloudTrail.distanceKm,
+              elevationGainM: cloudTrail.elevationGainM,
+              maxAltitudeM: cloudTrail.maxAltitudeM,
+              difficultyLevel: cloudTrail.difficultyLevel,
+              difficultyNote: cloudTrail.difficultyNote,
+              durationHoursNote: cloudTrail.durationHoursNote,
+              coverImage: cloudTrail.coverImage,
+            },
+          });
+        }
+      }
+
+      actions.push({
+        type: 'quick_reply',
+        suggestions: [
+          'Lịch trình chi tiết săn mây Lảo Thẩn 2N1Đ',
+          'Homestay & Điểm ngắm mây chill tại Tà Xùa',
+          'Công thức xem thời tiết săn biển mây 95%',
+          'Checklist đồ cắm trại ngắm bình minh',
+        ],
+      });
+    } else {
+      actions.push({
+        type: 'quick_reply',
+        suggestions: [
+          'Kế hoạch tập thể lực 4 tuần',
+          'Quy tắc 3 lớp áo giữ ấm đêm',
+          'Gợi ý cung săn mây đẹp nhất',
+          'Thủ tục xin giấy phép VQG / Biên phòng',
+        ],
+      });
+    }
+
     return {
       reply: cleanGemini,
       actions,
@@ -719,7 +1113,7 @@ export async function getAiResponse(payload: ChatRequestPayload): Promise<ChatRe
   }
 
   // 2. Knowledge Engine Intelligent Fallback
-  const { reply, actions } = processWithKnowledgeEngine(message, availableTrails, currentTrailContext, userName);
+  const { reply, actions } = processWithKnowledgeEngine(message, availableTrails, currentTrailContext, userName, userCoordinates);
   return {
     reply: removeEmojis(reply),
     actions,

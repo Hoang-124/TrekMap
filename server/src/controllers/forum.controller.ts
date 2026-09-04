@@ -32,9 +32,9 @@ export const getThreads = async (req: Request, res: Response) => {
 
     let mongoThreads: any[] = [];
     try {
-      const threadQuery = ThreadModel.find().maxTimeMS(200).lean().sort({ createdAt: -1 });
+      const threadQuery = ThreadModel.find().maxTimeMS(2000).lean().sort({ isPinned: -1, createdAt: -1 });
       const timeoutRace = new Promise<any[]>((_, reject) =>
-        setTimeout(() => reject(new Error('Forum DB query timeout')), 150)
+        setTimeout(() => reject(new Error('Forum DB query timeout')), 1500)
       );
       mongoThreads = await Promise.race([threadQuery, timeoutRace]);
     } catch (dbErr) {
@@ -74,12 +74,19 @@ export const getThreads = async (req: Request, res: Response) => {
             userReaction: currentUserReaction || null,
             repliesCount: t.repliesCount,
             viewsCount: t.viewsCount,
+            isPinned: Boolean(t.isPinned),
+            isLocked: Boolean(t.isLocked),
             createdAt: t.createdAt ? new Date(t.createdAt).toISOString() : new Date().toISOString(),
           };
         }),
       });
     }
-    return res.json({ success: true, data: mockThreads });
+    return res.json({
+      success: true,
+      data: mockThreads
+        .map((t) => ({ ...t, isPinned: Boolean(t.isPinned), isLocked: Boolean(t.isLocked) }))
+        .sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0)),
+    });
   } catch (err) {
     return res.json({ success: true, data: mockThreads });
   }
@@ -426,8 +433,22 @@ export const pinThreadAdmin = async (req: Request, res: Response) => {
     const isMongoId = Types.ObjectId.isValid(id);
     const query = isMongoId ? { $or: [{ id }, { _id: new Types.ObjectId(id) }] } : { id };
 
-    const thread = await ThreadModel.findOne(query);
+    let thread = await ThreadModel.findOne(query);
     if (!thread) {
+      const mockFound = mockThreads.find((m) => m.id === id || (m as any)._id === id);
+      if (mockFound) {
+        mockFound.isPinned = !mockFound.isPinned;
+        broadcastEvent('threadPinned', { threadId: mockFound.id, isPinned: mockFound.isPinned });
+        return res.json({
+          success: true,
+          message: mockFound.isPinned ? 'Đã ghim bài viết lên đầu diễn đàn!' : 'Đã gỡ ghim bài viết.',
+          data: {
+            id: mockFound.id,
+            isPinned: mockFound.isPinned,
+            isLocked: Boolean(mockFound.isLocked),
+          },
+        });
+      }
       return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết.' });
     }
 
@@ -439,7 +460,12 @@ export const pinThreadAdmin = async (req: Request, res: Response) => {
     return res.json({
       success: true,
       message: thread.isPinned ? 'Đã ghim bài viết lên đầu diễn đàn!' : 'Đã gỡ ghim bài viết.',
-      data: thread,
+      data: {
+        id: thread.id,
+        _id: thread._id,
+        isPinned: thread.isPinned,
+        isLocked: Boolean(thread.isLocked),
+      },
     });
   } catch (err) {
     console.error('[Pin Thread Admin Error]:', err);
@@ -454,8 +480,22 @@ export const lockThreadAdmin = async (req: Request, res: Response) => {
     const isMongoId = Types.ObjectId.isValid(id);
     const query = isMongoId ? { $or: [{ id }, { _id: new Types.ObjectId(id) }] } : { id };
 
-    const thread = await ThreadModel.findOne(query);
+    let thread = await ThreadModel.findOne(query);
     if (!thread) {
+      const mockFound = mockThreads.find((m) => m.id === id || (m as any)._id === id);
+      if (mockFound) {
+        mockFound.isLocked = !mockFound.isLocked;
+        broadcastEvent('threadLocked', { threadId: mockFound.id, isLocked: mockFound.isLocked });
+        return res.json({
+          success: true,
+          message: mockFound.isLocked ? 'Đã khóa bình luận bài viết!' : 'Đã mở khóa bình luận bài viết.',
+          data: {
+            id: mockFound.id,
+            isPinned: Boolean(mockFound.isPinned),
+            isLocked: mockFound.isLocked,
+          },
+        });
+      }
       return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết.' });
     }
 
@@ -467,7 +507,12 @@ export const lockThreadAdmin = async (req: Request, res: Response) => {
     return res.json({
       success: true,
       message: thread.isLocked ? 'Đã khóa bình luận bài viết!' : 'Đã mở khóa bình luận bài viết.',
-      data: thread,
+      data: {
+        id: thread.id,
+        _id: thread._id,
+        isPinned: Boolean(thread.isPinned),
+        isLocked: thread.isLocked,
+      },
     });
   } catch (err) {
     console.error('[Lock Thread Admin Error]:', err);
@@ -484,6 +529,15 @@ export const deleteThreadAdmin = async (req: Request, res: Response) => {
 
     const thread = await ThreadModel.findOneAndDelete(query);
     if (!thread) {
+      const mockIndex = mockThreads.findIndex((m) => m.id === id || (m as any)._id === id);
+      if (mockIndex !== -1) {
+        const deleted = mockThreads.splice(mockIndex, 1)[0];
+        broadcastEvent('threadDeleted', { threadId: deleted.id });
+        return res.json({
+          success: true,
+          message: `Đã xóa bài viết "${deleted.title}" thành công!`,
+        });
+      }
       return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết để xóa.' });
     }
 

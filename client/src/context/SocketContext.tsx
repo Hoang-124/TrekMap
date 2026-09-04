@@ -47,6 +47,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
     socketInstance.on('connect', () => {
       console.log('⚡ [Socket.io Client] Connected to server:', socketInstance.id);
       setIsConnected(true);
+      setSocket(socketInstance);
 
       const userId = currentUser?.id || (currentUser as any)?._id || currentUser?.email;
       if (userId) {
@@ -92,11 +93,10 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
       setIsConnected(false);
     });
 
-    setSocket(socketInstance);
-
     return () => {
       clearInterval(pingInterval);
       socketInstance.disconnect();
+      setSocket(null);
     };
   }, [currentUser]);
 
