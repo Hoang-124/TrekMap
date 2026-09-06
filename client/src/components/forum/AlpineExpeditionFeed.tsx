@@ -29,14 +29,17 @@ import { CreateTripModal } from '../trips/CreateTripModal.js';
 import { CreateTripReportModal } from '../trip-reports/CreateTripReportModal.js';
 import { TripReportCard } from '../trip-reports/TripReportCard.js';
 import type { TripReportItem } from '../trip-reports/TripReportCard.js';
+import type { UserProfile } from '../../types.js';
 
 interface AlpineExpeditionFeedProps {
   threads: ForumThread[];
+  currentUser?: UserProfile | null;
   onOpenNewThreadModal: () => void;
 }
 
 export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
   threads,
+  currentUser,
   onOpenNewThreadModal,
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
@@ -199,20 +202,29 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
       {/* Author Profile Modal */}
       <AuthorProfileModal
         author={activeAuthor}
+        currentUser={currentUser}
         onClose={() => setActiveAuthor(null)}
       />
 
       {/* Thread Detail & Comments Modal */}
       <ThreadDetailModal
         thread={activeThread}
+        currentUser={currentUser}
         onClose={() => setActiveThread(null)}
-        onOpenAuthorProfile={(auth) => setActiveAuthor({ name: auth.name, avatar: auth.avatar })}
+        onOpenAuthorProfile={(auth) => setActiveAuthor({
+          name: auth.name,
+          avatar: auth.avatar,
+          userId: auth.userId || activeThread?.userId,
+        })}
         onUpdateThreadUpvotes={(tId, upvotes) => setThreadUpvotesMap((prev) => ({ ...prev, [tId]: upvotes }))}
         onUpdateCommentCount={(threadId, count) => setThreadCommentCounts((prev) => ({ ...prev, [threadId]: count }))}
         onUpdateThreadReaction={(tId, r, summary, u) => {
           setThreadReactions((prev) => ({ ...prev, [tId]: r }));
           setThreadReactionsSummaryMap((prev) => ({ ...prev, [tId]: summary }));
           setThreadUpvotesMap((prev) => ({ ...prev, [tId]: u }));
+        }}
+        onShowToast={(msg, type) => {
+          window.dispatchEvent(new CustomEvent('trekmap:show-toast', { detail: { message: msg, type: type || 'info' } }));
         }}
       />
 
@@ -649,6 +661,39 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                     {thread.title}
                   </h3>
 
+                  {/* Attached Real Images Gallery Preview */}
+                  {thread.images && thread.images.length > 0 && (
+                    <div style={{ marginBottom: 12 }}>
+                      {thread.images.length === 1 && (
+                        <div style={{ height: 160, borderRadius: 12, overflow: 'hidden', border: '1px solid var(--color-border)', position: 'relative' }}>
+                          <img src={thread.images[0]} alt={thread.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        </div>
+                      )}
+                      {thread.images.length === 2 && (
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, height: 120 }}>
+                          <img src={thread.images[0]} alt={thread.title} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 10, border: '1px solid var(--color-border)' }} />
+                          <img src={thread.images[1]} alt={thread.title} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 10, border: '1px solid var(--color-border)' }} />
+                        </div>
+                      )}
+                      {thread.images.length >= 3 && (
+                        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 6, height: 135 }}>
+                          <img src={thread.images[0]} alt={thread.title} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 10, border: '1px solid var(--color-border)' }} />
+                          <div style={{ display: 'grid', gridTemplateRows: '1fr 1fr', gap: 6, height: '100%' }}>
+                            <img src={thread.images[1]} alt={thread.title} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8, border: '1px solid var(--color-border)' }} />
+                            <div style={{ position: 'relative', borderRadius: 8, overflow: 'hidden', border: '1px solid var(--color-border)' }}>
+                              <img src={thread.images[2]} alt={thread.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                              {thread.images.length > 3 && (
+                                <div style={{ position: 'absolute', inset: 0, background: 'rgba(3, 8, 14, 0.72)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '0.85rem', fontWeight: 800 }}>
+                                  +{thread.images.length - 2}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Snippet Content */}
                   <p
                     style={{
@@ -670,48 +715,67 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                 <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 12 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.8rem', gap: 10 }}>
                     {/* Author Info */}
-                    <div
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActiveAuthor({
-                          name: thread.authorName.replace(/\(.*\)/, '').trim(),
-                          avatar: thread.authorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80',
-                        });
-                      }}
-                      style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', minWidth: 0 }}
-                      title="Bấm để xem hồ sơ tác giả"
-                    >
-                      <img
-                        src={thread.authorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80'}
-                        alt={thread.authorName}
-                        referrerPolicy="no-referrer"
-                        style={{
-                          width: 28,
-                          height: 28,
-                          borderRadius: '50%',
-                          border: '1.5px solid var(--color-primary)',
-                          objectFit: 'cover',
-                          flexShrink: 0,
-                        }}
-                      />
-                      <div style={{ minWidth: 0 }}>
+                    {(() => {
+                      const isCurrentUserAuthor = Boolean(
+                        currentUser && (
+                          (thread.userId && currentUser.id && String(thread.userId) === String(currentUser.id)) ||
+                          (currentUser.fullName && thread.authorName.toLowerCase().includes(currentUser.fullName.toLowerCase())) ||
+                          (currentUser.username && thread.authorName.toLowerCase().includes(currentUser.username.toLowerCase()))
+                        )
+                      );
+                      const effectiveAvatar = (isCurrentUserAuthor && (currentUser?.avatarUrl || currentUser?.avatar))
+                        ? (currentUser.avatarUrl || currentUser.avatar)
+                        : (thread.authorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80');
+
+                      return (
                         <div
-                          style={{
-                            color: 'var(--color-primary)',
-                            fontWeight: 700,
-                            fontSize: '0.8rem',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveAuthor({
+                              userId: thread.userId,
+                              name: thread.authorName.replace(/\(.*\)/, '').trim(),
+                              avatar: effectiveAvatar || '',
+                              role: (isCurrentUserAuthor && currentUser) ? currentUser.role : undefined,
+                              badges: (isCurrentUserAuthor && currentUser) ? currentUser.badges : undefined,
+                              reputationScore: (isCurrentUserAuthor && currentUser) ? currentUser.reputationScore : undefined,
+                            });
                           }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', minWidth: 0 }}
+                          title="Bấm để xem hồ sơ tác giả"
                         >
-                          {thread.authorName.replace(/\(.*\)/, '').trim()}
+                          <img
+                            src={effectiveAvatar}
+                            alt={thread.authorName}
+                            referrerPolicy="no-referrer"
+                            style={{
+                              width: 28,
+                              height: 28,
+                              borderRadius: '50%',
+                              border: '1.5px solid var(--color-primary)',
+                              objectFit: 'cover',
+                              flexShrink: 0,
+                            }}
+                          />
+                          <div style={{ minWidth: 0 }}>
+                            <div
+                              style={{
+                                color: 'var(--color-primary)',
+                                fontWeight: 700,
+                                fontSize: '0.8rem',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {thread.authorName.replace(/\(.*\)/, '').trim()}
+                            </div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)' }}>
+                              {formatDate(thread.createdAt)}
+                            </div>
+                          </div>
                         </div>
-                        <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', lineHeight: 1 }}>
-                          {formatDate(thread.createdAt)}
-                        </div>
-                      </div>
-                    </div>
+                      );
+                    })()}
 
                     {/* Metrics & Facebook Reaction Bar */}
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
@@ -722,22 +786,32 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                         onSelectReaction={(r) => handleToggleReaction(thread.id, r)}
                       />
 
-                      <span
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveThread(thread);
+                        }}
+                        className="interactive-click"
+                        title="Bấm để xem và viết bình luận"
                         style={{
                           display: 'inline-flex',
                           alignItems: 'center',
-                          gap: 4,
-                          color: 'var(--color-text-muted)',
+                          gap: 5,
+                          color: 'var(--color-sky)',
                           fontSize: '0.78rem',
+                          fontWeight: 700,
                           background: 'var(--color-bg-main)',
-                          padding: '4px 8px',
+                          padding: '4px 9px',
                           borderRadius: 14,
                           border: '1px solid var(--color-border)',
+                          cursor: 'pointer',
+                          transition: 'all 0.18s ease',
                         }}
                       >
                         <IconMessageSquare size={13} color="var(--color-sky)" />
-                        <strong>{threadCommentCounts[thread.id] !== undefined ? threadCommentCounts[thread.id] : (thread.repliesCount || 0)}</strong>
-                      </span>
+                        <span>{threadCommentCounts[thread.id] !== undefined ? threadCommentCounts[thread.id] : (thread.repliesCount || 0)}</span>
+                      </button>
 
                       <span
                         style={{

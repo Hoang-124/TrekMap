@@ -2,12 +2,16 @@
  * High-Speed Profanity & Toxic Content Moderation Filter for TrekMap
  */
 
-// Common toxic, profanity, and offensive keywords (Vietnamese & English)
-const PROFANITY_KEYWORDS = [
-  'dm', 'dkm', 'đkm', 'đm', 'vkl', 'vcl', 'vl', 'đéo', 'deo', 'lon', 'lồn', 
-  'cặc', 'cac', 'buồi', 'buoi', 'đĩ', 'di~', 'chó đẻ', 'cho de', 'đái', 'ỉa',
-  'fuck', 'bitch', 'shit', 'asshole', 'bastard', 'dick', 'cunt', 'pussy',
-  'lừa đảo', 'lừa tiền', 'scam', 'bắn chết', 'giết'
+// Words that require exact accent/diacritics because their accentless form collides with common Vietnamese words
+// (e.g. "đi" vs "đĩ", "đèo" vs "đéo", "buổi" vs "buồi", "các" vs "cặc", "lon" vs "lồn")
+const STRICT_ACCENTED_PROFANITY = [
+  'đĩ', 'di~', 'lồn', 'cặc', 'buồi', 'đéo', 'đkm', 'đm', 'chó đẻ', 'đái', 'ỉa'
+];
+
+// Unaccented toxic words that are unequivocally profane/toxic
+const UNACCENTED_PROFANITY = [
+  'dkm', 'vkl', 'vcl', 'fuck', 'bitch', 'shit', 'asshole', 'bastard', 'dick', 'cunt', 'pussy',
+  'lừa đảo', 'lừa tiền', 'scam', 'bắn chết'
 ];
 
 /**
@@ -30,17 +34,20 @@ export function containsProfanity(text: string): boolean {
   
   const lowerRaw = text.toLowerCase();
   const normalized = normalizeText(text);
-  const wordsRaw = lowerRaw.split(/\s+/);
-  const wordsNorm = normalized.split(/\s+/);
 
-  for (const kw of PROFANITY_KEYWORDS) {
-    const normKw = normalizeText(kw);
-    // Exact word or substring match
-    if (wordsRaw.includes(kw) || wordsNorm.includes(normKw)) {
+  // 1. Check exact accented profanities (must match exact word boundary in raw text)
+  for (const kw of STRICT_ACCENTED_PROFANITY) {
+    const escaped = kw.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+    const regex = new RegExp(`(^|\\s|[^\\p{L}\\p{N}])${escaped}($|\\s|[^\\p{L}\\p{N}])`, 'iu');
+    if (regex.test(lowerRaw)) {
       return true;
     }
-    // Check regex pattern for boundary match
-    const regex = new RegExp(`\\b${normKw.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`, 'i');
+  }
+
+  // 2. Check unaccented profanities against normalized text
+  for (const kw of UNACCENTED_PROFANITY) {
+    const normKw = normalizeText(kw).trim();
+    const regex = new RegExp(`(^|\\s)${normKw}($|\\s)`, 'i');
     if (regex.test(normalized)) {
       return true;
     }
@@ -54,11 +61,20 @@ export function containsProfanity(text: string): boolean {
  */
 export function getProfanityMatch(text: string): string | null {
   if (!text) return null;
+  const lowerRaw = text.toLowerCase();
   const normalized = normalizeText(text);
 
-  for (const kw of PROFANITY_KEYWORDS) {
-    const normKw = normalizeText(kw);
-    const regex = new RegExp(`\\b${normKw.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`, 'i');
+  for (const kw of STRICT_ACCENTED_PROFANITY) {
+    const escaped = kw.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+    const regex = new RegExp(`(^|\\s|[^\\p{L}\\p{N}])${escaped}($|\\s|[^\\p{L}\\p{N}])`, 'iu');
+    if (regex.test(lowerRaw)) {
+      return kw;
+    }
+  }
+
+  for (const kw of UNACCENTED_PROFANITY) {
+    const normKw = normalizeText(kw).trim();
+    const regex = new RegExp(`(^|\\s)${normKw}($|\\s)`, 'i');
     if (regex.test(normalized)) {
       return kw;
     }
@@ -73,8 +89,9 @@ export function getProfanityMatch(text: string): string | null {
 export function censorProfanity(text: string): string {
   if (!text) return '';
   let censored = text;
+  const allKeywords = [...STRICT_ACCENTED_PROFANITY, ...UNACCENTED_PROFANITY];
 
-  for (const kw of PROFANITY_KEYWORDS) {
+  for (const kw of allKeywords) {
     const regex = new RegExp(`\\b${kw}\\b`, 'gi');
     censored = censored.replace(regex, '***');
   }

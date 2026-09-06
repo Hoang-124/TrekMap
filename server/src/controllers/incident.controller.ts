@@ -13,6 +13,36 @@ export const getIncidents = async (req: Request, res: Response) => {
   let dbIncidents: any[] = [];
   try {
     dbIncidents = await IncidentModel.find({ active: { $ne: false } }).sort({ createdAt: -1 }).lean().exec();
+    const userIds = dbIncidents.map((i) => i.reportedBy).filter(Boolean);
+    const emails = dbIncidents.map((i) => i.reporterEmail).filter(Boolean);
+    if (userIds.length > 0 || emails.length > 0) {
+      const users = await UserModel.find({
+        $or: [
+          { _id: { $in: userIds } },
+          { email: { $in: emails } },
+        ],
+      }).select('fullName username email avatarUrl role').lean();
+
+      const userMap = new Map<string, any>();
+      users.forEach((u: any) => {
+        userMap.set(u._id.toString(), u);
+        if (u.email) userMap.set(u.email.toLowerCase(), u);
+      });
+
+      dbIncidents = dbIncidents.map((inc: any) => {
+        const liveUser = (inc.reportedBy && userMap.get(inc.reportedBy.toString())) ||
+                         (inc.reporterEmail && userMap.get(inc.reporterEmail.toLowerCase()));
+        if (liveUser) {
+          return {
+            ...inc,
+            reporterName: liveUser.fullName || inc.reporterName,
+            reporterAvatar: liveUser.avatarUrl || inc.reporterAvatar,
+            reporterRole: liveUser.role || inc.reporterRole,
+          };
+        }
+        return inc;
+      });
+    }
   } catch (err) {}
 
   const REGIONS = [

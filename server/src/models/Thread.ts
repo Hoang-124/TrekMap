@@ -21,6 +21,7 @@ export interface IThread extends Document {
   userId?: Schema.Types.ObjectId;
   category: string;
   content: string;
+  images?: string[];
   upvotes: number;
   reactions: IThreadReactions;
   userReactionsMap?: Record<string, string>;
@@ -42,6 +43,7 @@ const threadSchema = new Schema<IThread>(
     userId: { type: Schema.Types.ObjectId, ref: 'User' },
     category: { type: String, default: 'Kinh Nghiệm', index: true },
     content: { type: String, required: true },
+    images: { type: [String], default: [] },
     upvotes: { type: Number, default: 0 },
     reactions: {
       like: { type: Number, default: 0 },

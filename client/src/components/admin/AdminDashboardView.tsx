@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { IconPin, IconLock, IconTrash, IconX } from '../common/SvgIcons.js';
 
 const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
@@ -1603,8 +1604,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       {/* =========================================================================
        * COMPREHENSIVE ADMIN DETAIL INSPECTION MODAL
        * ========================================================================= */}
-      {selectedContribution && (
-        <div className="modal-overlay" onClick={() => setSelectedContribution(null)} style={{ background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(12px)', zIndex: 1000 }}>
+      {selectedContribution && createPortal(
+        <div className="modal-overlay" onClick={() => setSelectedContribution(null)} style={{ background: 'rgba(3,8,14,0.88)', backdropFilter: 'blur(16px)', zIndex: 99999999 }}>
           <div
             className="modal-content"
             onClick={(e) => e.stopPropagation()}
@@ -1878,14 +1879,15 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               )}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* =========================================================================
        * ULTRA-DETAILED MEMBER PROFILE MODAL
        * ========================================================================= */}
-      {selectedAuthorModal && (
-        <div className="modal-overlay" onClick={() => setSelectedAuthorModal(null)} style={{ zIndex: 9999, backdropFilter: 'blur(12px)' }}>
+      {selectedAuthorModal && createPortal(
+        <div className="modal-overlay" onClick={() => setSelectedAuthorModal(null)} style={{ zIndex: 99999999, background: 'rgba(3,8,14,0.88)', backdropFilter: 'blur(16px)' }}>
           <div
             className="modal-content"
             onClick={(e) => e.stopPropagation()}
@@ -2007,12 +2009,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* CREATE / EDIT TRAIL MODAL */}
-      {(isCreateTrailOpen || editingTrailModal) && (
-        <div className="modal-overlay" onClick={() => { setIsCreateTrailOpen(false); setEditingTrailModal(null); }} style={{ zIndex: 9999, backdropFilter: 'blur(10px)' }}>
+      {(isCreateTrailOpen || editingTrailModal) && createPortal(
+        <div className="modal-overlay" onClick={() => { setIsCreateTrailOpen(false); setEditingTrailModal(null); }} style={{ zIndex: 99999999, background: 'rgba(3,8,14,0.88)', backdropFilter: 'blur(16px)' }}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 500, width: '90%', padding: 24, borderRadius: 20 }}>
             <h3 style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 12 }}>
               {editingTrailModal ? `Chỉnh sửa cung đường "${editingTrailModal.name}"` : 'Thêm Cung Đường Mới (Admin)'}
@@ -2041,7 +2044,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

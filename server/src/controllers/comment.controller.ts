@@ -132,7 +132,7 @@ export const createComment = async (req: Request, res: Response) => {
     });
   }
 
-  let authorName = 'Thiên Thiên';
+  let authorName = 'Trekker Cộng Đồng';
   let authorAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(authorName)}&background=0ed7b5&color=041217&bold=true`;
   let userIdObj: any = undefined;
   let reputationReward = null;
@@ -161,6 +161,16 @@ export const createComment = async (req: Request, res: Response) => {
       } catch (err) {
         console.error('[Comment User Lookup Error]:', err);
       }
+    }
+  }
+
+  // If not logged in, allow authorName/authorAvatar from request body if passed
+  if (!userIdObj && req.body.authorName && typeof req.body.authorName === 'string' && req.body.authorName.trim()) {
+    authorName = req.body.authorName.trim();
+    if (req.body.authorAvatar && typeof req.body.authorAvatar === 'string') {
+      authorAvatar = req.body.authorAvatar;
+    } else {
+      authorAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(authorName)}&background=0ed7b5&color=041217&bold=true`;
     }
   }
 
@@ -319,16 +329,30 @@ export const reactToComment = async (req: Request, res: Response) => {
 
     if (currentReaction === reactionType) {
       newReaction = null;
-      if (isMapInstance) mapObj.delete(targetKey);
-      else delete mapObj[targetKey];
+      if (isMapInstance) {
+        mapObj.delete(targetKey);
+        mapObj.delete(primaryKey);
+      } else {
+        delete mapObj[targetKey];
+        delete mapObj[primaryKey];
+      }
     } else if (reactionType) {
       newReaction = reactionType;
+      if (targetKey !== primaryKey) {
+        if (isMapInstance) mapObj.delete(targetKey);
+        else delete mapObj[targetKey];
+      }
       if (isMapInstance) mapObj.set(primaryKey, reactionType);
       else mapObj[primaryKey] = reactionType;
     } else {
       newReaction = null;
-      if (isMapInstance) mapObj.delete(targetKey);
-      else delete mapObj[targetKey];
+      if (isMapInstance) {
+        mapObj.delete(targetKey);
+        mapObj.delete(primaryKey);
+      } else {
+        delete mapObj[targetKey];
+        delete mapObj[primaryKey];
+      }
     }
 
     const counts: Record<string, number> = {

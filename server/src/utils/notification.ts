@@ -27,7 +27,7 @@ export const sendNotification = async (params: SendNotificationParams) => {
       sender: params.sender || {
         id: 'system',
         name: 'Ban Quản Trị TrekMap',
-        avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=250&q=80',
+        avatarUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg',
       },
       type: params.type,
       category: params.category || 'system',

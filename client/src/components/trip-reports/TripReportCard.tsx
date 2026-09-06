@@ -44,6 +44,22 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report }) => {
   const [likes, setLikes] = useState(report.reactions?.like || 0);
   const [liked, setLiked] = useState(false);
 
+  let loggedInUser: any = null;
+  try {
+    const userStr = typeof window !== 'undefined' ? localStorage.getItem('trekmap_user') : null;
+    loggedInUser = userStr ? JSON.parse(userStr) : null;
+  } catch (e) {}
+
+  const isAuthorSelf = Boolean(
+    loggedInUser && (
+      (report.authorId?._id && loggedInUser.id && String(report.authorId._id) === String(loggedInUser.id)) ||
+      (loggedInUser.fullName && report.authorId?.fullName && report.authorId.fullName.toLowerCase() === loggedInUser.fullName.toLowerCase())
+    )
+  );
+  const effectiveAuthorAvatar = (isAuthorSelf && (loggedInUser?.avatarUrl || loggedInUser?.avatar))
+    ? (loggedInUser.avatarUrl || loggedInUser.avatar)
+    : (report.authorId?.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80');
+
   const handleReact = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
@@ -174,7 +190,7 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report }) => {
           {/* Author Header */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
             <img
-              src={report.authorId?.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80'}
+              src={effectiveAuthorAvatar}
               alt={report.authorId?.fullName || 'Trekker'}
               style={{
                 width: 26,

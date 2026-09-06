@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { IconShieldAlert, IconPhone, IconX } from './SvgIcons.js';
 
 interface EmergencyContactsModalProps {
@@ -18,8 +19,26 @@ export const EmergencyContactsModal: React.FC<EmergencyContactsModalProps> = ({ 
     { title: 'SOS Quốc Tế & Cứu Nạn Núi 112', phone: '112', subtitle: 'Đầu số tìm kiếm cứu nạn tổng hợp Việt Nam', color: '#ec4899' },
   ];
 
-  return (
-    <div className="modal-overlay" onClick={onClose} style={{ zIndex: 99999 }}>
+  return createPortal(
+    <div
+      className="modal-overlay"
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        width: '100vw',
+        height: '100vh',
+        background: 'rgba(3, 8, 14, 0.88)',
+        backdropFilter: 'blur(16px)',
+        WebkitBackdropFilter: 'blur(16px)',
+        zIndex: 99999999,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '24px 16px',
+        boxSizing: 'border-box',
+      }}
+    >
       <div
         className="modal-content"
         onClick={(e) => e.stopPropagation()}
@@ -107,6 +126,7 @@ export const EmergencyContactsModal: React.FC<EmergencyContactsModalProps> = ({ 
           Đóng Danh Bạ
         </button>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

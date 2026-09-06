@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 
 interface LogoutConfirmModalProps {
   isOpen: boolean;
@@ -15,13 +16,13 @@ export const LogoutConfirmModal: React.FC<LogoutConfirmModalProps> = ({
 }) => {
   if (!isOpen) return null;
 
-  return (
+  return createPortal(
     <div
       style={{
         position: 'fixed',
         inset: 0,
-        zIndex: 999999,
-        background: 'rgba(0, 0, 0, 0.25)',
+        zIndex: 99999999,
+        background: 'rgba(0, 0, 0, 0.45)',
       }}
       onClick={onClose}
     >
@@ -126,6 +127,7 @@ export const LogoutConfirmModal: React.FC<LogoutConfirmModalProps> = ({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

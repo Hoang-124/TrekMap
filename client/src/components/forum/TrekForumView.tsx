@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import type { ForumThread, Trail } from '../../types.js';
 import {
   IconArrowLeft,
@@ -7,6 +8,8 @@ import {
   IconFileText,
   IconSend,
   IconUsers,
+  IconCamera,
+  IconImage,
 } from '../common/SvgIcons.js';
 import { AlpineExpeditionFeed } from './AlpineExpeditionFeed.js';
 import { LiveTrekkerChatroom } from './LiveTrekkerChatroom.js';
@@ -51,6 +54,77 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
   const [newTitle, setNewTitle] = useState('');
   const [newCategory, setNewCategory] = useState<'Hỏi Đáp' | 'Kinh Nghiệm' | 'Tìm Đồng Đội' | 'Cảnh Báo'>('Kinh Nghiệm');
   const [newContent, setNewContent] = useState('');
+  const [newImages, setNewImages] = useState<string[]>([]);
+  const [imageUrlInput, setImageUrlInput] = useState('');
+
+  const handleImageFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    if (newImages.length + files.length > 8) {
+      if (onShowToast) onShowToast('Bạn có thể đính kèm tối đa 8 hình ảnh thực tế.', 'info');
+    }
+
+    const availableSlots = 8 - newImages.length;
+    const filesToProcess = Array.from(files).slice(0, availableSlots);
+
+    filesToProcess.forEach((file) => {
+      if (!file.type.startsWith('image/')) {
+        if (onShowToast) onShowToast('Chỉ chấp nhận định dạng ảnh (JPG, PNG, WebP).', 'error');
+        return;
+      }
+      if (file.size > 5 * 1024 * 1024) {
+        if (onShowToast) onShowToast('Kích thước ảnh tối đa 5MB.', 'error');
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const result = event.target?.result as string;
+        if (result) {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const MAX_WIDTH = 1280;
+            const scale = Math.min(1, MAX_WIDTH / img.width);
+            canvas.width = img.width * scale;
+            canvas.height = img.height * scale;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              const compressed = canvas.toDataURL('image/jpeg', 0.82);
+              setNewImages((prev) => (prev.length < 8 ? [...prev, compressed] : prev));
+            } else {
+              setNewImages((prev) => (prev.length < 8 ? [...prev, result] : prev));
+            }
+          };
+          img.src = result;
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+
+    e.target.value = '';
+  };
+
+  const handleAddImageUrl = () => {
+    const trimmed = imageUrlInput.trim();
+    if (!trimmed) return;
+    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://') && !trimmed.startsWith('data:image')) {
+      if (onShowToast) onShowToast('Vui lòng nhập đường link ảnh hợp lệ (https://...)', 'error');
+      return;
+    }
+    if (newImages.length >= 8) {
+      if (onShowToast) onShowToast('Bạn có thể đính kèm tối đa 8 hình ảnh.', 'info');
+      return;
+    }
+    setNewImages((prev) => [...prev, trimmed]);
+    setImageUrlInput('');
+  };
+
+  const handleRemoveImage = (indexToRemove: number) => {
+    setNewImages((prev) => prev.filter((_, idx) => idx !== indexToRemove));
+  };
 
   const fetchThreads = useCallback(async () => {
     try {
@@ -136,6 +210,7 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
           title: newTitle,
           category: newCategory,
           content: newContent,
+          images: newImages,
         }),
       });
 
@@ -145,6 +220,8 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
         setIsNewThreadOpen(false);
         setNewTitle('');
         setNewContent('');
+        setNewImages([]);
+        setImageUrlInput('');
         if (onShowToast) {
           onShowToast('Tạo bài đóng góp nhật ký mới thành công! Bạn nhận +15 điểm uy tín.', 'success');
         }
@@ -223,6 +300,7 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
           {/* 2. Full Alpine Expedition Feed & Discussions */}
           <AlpineExpeditionFeed
             threads={threads}
+            currentUser={currentUser}
             onOpenNewThreadModal={() => {
               const token = localStorage.getItem('trekmap_token');
               if (!currentUser && !token) {
@@ -367,24 +445,58 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
       </div>
 
       {/* Create New Thread Modal */}
-      {isNewThreadOpen && (
-        <div className="modal-overlay" onClick={() => setIsNewThreadOpen(false)}>
+      {isNewThreadOpen && createPortal(
+        <div
+          className="modal-overlay"
+          onClick={() => setIsNewThreadOpen(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            width: '100vw',
+            height: '100vh',
+            background: 'rgba(3, 8, 14, 0.88)',
+            backdropFilter: 'blur(16px)',
+            WebkitBackdropFilter: 'blur(16px)',
+            zIndex: 99999999,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px 16px',
+            boxSizing: 'border-box',
+            overflowY: 'auto',
+          }}
+        >
           <div
             className="modal-content"
             onClick={(e) => e.stopPropagation()}
             style={{
               background: 'var(--color-bg-card)',
-              border: '1px solid var(--color-border)',
+              border: '1.5px solid var(--color-border)',
               borderRadius: 22,
-              padding: '28px 30px',
-              maxWidth: 560,
+              padding: '26px 28px',
+              maxWidth: 580,
               width: '100%',
-              boxShadow: 'var(--shadow-card)',
+              maxHeight: 'min(86vh, 720px)',
+              overflowY: 'auto',
+              boxShadow: '0 25px 60px rgba(0, 0, 0, 0.9), 0 0 30px rgba(5, 150, 105, 0.18)',
+              position: 'relative',
+              zIndex: 100000000,
+              margin: 0,
             }}
           >
-            <h3 style={{ fontSize: '1.25rem', color: 'var(--color-text-main)', fontWeight: 800, margin: '0 0 18px 0' }}>
-              Viết Bài Đóng Góp Nhật Ký Băng Rừng
-            </h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ fontSize: '1.25rem', color: 'var(--color-text-main)', fontWeight: 800, margin: 0 }}>
+                Viết Bài Đóng Góp Nhật Ký Băng Rừng
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsNewThreadOpen(false)}
+                style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '1.1rem', padding: 4 }}
+                title="Đóng cửa sổ"
+              >
+                ✕
+              </button>
+            </div>
 
             <form onSubmit={handleCreateThread}>
               <div className="form-group" style={{ marginBottom: 14 }}>
@@ -434,6 +546,135 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
                 />
               </div>
 
+              {/* Hình ảnh thực tế từ chuyến đi (Tối đa 8 ảnh) */}
+              <div className="form-group" style={{ marginBottom: 20 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: 6, color: 'var(--color-text-main)' }}>
+                    <IconCamera size={16} color="var(--color-primary)" />
+                    Hình ảnh thực tế từ chuyến đi
+                  </label>
+                  <span style={{ fontSize: '0.74rem', color: newImages.length >= 8 ? 'var(--color-primary)' : 'var(--color-text-muted)', fontWeight: 600 }}>
+                    {newImages.length}/8 ảnh
+                  </span>
+                </div>
+
+                {/* Danh sách ảnh đã chọn */}
+                {newImages.length > 0 && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(95px, 1fr))', gap: 10, marginBottom: 12 }}>
+                    {newImages.map((imgSrc, idx) => (
+                      <div
+                        key={idx}
+                        style={{
+                          position: 'relative',
+                          height: 75,
+                          borderRadius: 12,
+                          overflow: 'hidden',
+                          border: '1.5px solid var(--color-border)',
+                          background: '#040b12',
+                          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.4)',
+                        }}
+                      >
+                        <img
+                          src={imgSrc}
+                          alt={`Ảnh đính kèm ${idx + 1}`}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveImage(idx)}
+                          style={{
+                            position: 'absolute',
+                            top: 4,
+                            right: 4,
+                            width: 22,
+                            height: 22,
+                            borderRadius: '50%',
+                            background: 'rgba(0, 0, 0, 0.75)',
+                            border: '1px solid rgba(255, 255, 255, 0.2)',
+                            color: '#fff',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            cursor: 'pointer',
+                            fontSize: '0.7rem',
+                            lineHeight: 1,
+                            padding: 0,
+                          }}
+                          title="Xóa ảnh này"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Công cụ thêm ảnh: Tải từ máy tính & Nhập Link */}
+                {newImages.length < 8 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      {/* Nút Chọn Ảnh Từ Thiết Bị */}
+                      <label
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '8px 14px',
+                          borderRadius: 10,
+                          background: 'rgba(74, 222, 128, 0.12)',
+                          border: '1px dashed var(--color-primary)',
+                          color: 'var(--color-primary)',
+                          fontSize: '0.78rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        <IconImage size={15} color="var(--color-primary)" />
+                        <span>Tải ảnh từ máy</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          onChange={handleImageFilesChange}
+                          style={{ display: 'none' }}
+                        />
+                      </label>
+
+                      {/* Hoặc Nhập URL Ảnh */}
+                      <div style={{ display: 'flex', flex: 1, gap: 6 }}>
+                        <input
+                          type="url"
+                          className="form-input"
+                          placeholder="Hoặc dán URL ảnh (https://...)"
+                          value={imageUrlInput}
+                          onChange={(e) => setImageUrlInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddImageUrl();
+                            }
+                          }}
+                          style={{ flex: 1, padding: '7px 10px', borderRadius: 10, fontSize: '0.78rem' }}
+                        />
+                        <button
+                          type="button"
+                          onClick={handleAddImageUrl}
+                          className="btn btn-outline"
+                          style={{ padding: '7px 12px', borderRadius: 10, fontSize: '0.78rem', fontWeight: 700, whiteSpace: 'nowrap' }}
+                        >
+                          + Thêm
+                        </button>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)' }}>
+                      Tối đa 8 ảnh thực tế (JPG, PNG, WebP hoặc link online) giúp nhật ký chân thật và sống động hơn.
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
                 <button
                   type="button"
@@ -454,7 +695,8 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </section>
   );

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   IconBot,
   IconTrash,
@@ -892,7 +893,7 @@ Em có thể giúp bạn:
 
   if (!isOpen) return null;
 
-  return (
+  return createPortal(
     <>
       {/* Backdrop when expanded */}
       {isExpanded && (
@@ -1888,6 +1889,7 @@ Em có thể giúp bạn:
         </>
       )}
     </div>
-    </>
+    </>,
+    document.body
   );
 };

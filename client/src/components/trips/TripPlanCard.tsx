@@ -43,6 +43,22 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, onJoinSuccess 
   const [submitted, setSubmitted] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
+  let loggedInUser: any = null;
+  try {
+    const userStr = typeof window !== 'undefined' ? localStorage.getItem('trekmap_user') : null;
+    loggedInUser = userStr ? JSON.parse(userStr) : null;
+  } catch (e) {}
+
+  const isCreatorSelf = Boolean(
+    loggedInUser && (
+      (trip.creatorId?._id && loggedInUser.id && String(trip.creatorId._id) === String(loggedInUser.id)) ||
+      (loggedInUser.fullName && trip.creatorId?.fullName && trip.creatorId.fullName.toLowerCase() === loggedInUser.fullName.toLowerCase())
+    )
+  );
+  const effectiveCreatorAvatar = (isCreatorSelf && (loggedInUser?.avatarUrl || loggedInUser?.avatar))
+    ? (loggedInUser.avatarUrl || loggedInUser.avatar)
+    : (trip.creatorId?.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80');
+
   const formattedStartDate = new Date(trip.startDate).toLocaleDateString('vi-VN', {
     day: '2-digit',
     month: '2-digit',
@@ -60,10 +76,15 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, onJoinSuccess 
     try {
       const token = localStorage.getItem('trekmap_token');
       if (!token) {
-        setErrorMsg('Bạn cần đăng nhập để xin ghép đoàn.');
+        window.dispatchEvent(
+          new CustomEvent('trekmap:show-toast', {
+            detail: { message: 'Vui lòng đăng nhập để tham gia nhóm leo núi!', type: 'info' },
+          })
+        );
         return;
       }
 
+      setIsJoining(true);
       const res = await fetch(`/api/trips/${trip._id}/join`, {
         method: 'POST',
         headers: {
@@ -72,31 +93,32 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, onJoinSuccess 
         },
         body: JSON.stringify({ message: joinMsg }),
       });
-
       const data = await res.json();
       if (data.success) {
         setSubmitted(true);
         if (onJoinSuccess) onJoinSuccess();
       } else {
-        setErrorMsg(data.message || 'Lỗi khi gửi yêu cầu.');
+        setErrorMsg(data.message || 'Không thể gửi yêu cầu.');
       }
     } catch (err) {
-      setErrorMsg('Không thể kết nối máy chủ.');
+      setErrorMsg('Lỗi kết nối máy chủ.');
+    } finally {
+      setIsJoining(false);
     }
   };
 
   return (
     <div
-      className="card interactive-click card-hover-lift"
+      className="card interactive-card"
       style={{
-        background: 'var(--color-bg-card)',
-        border: isFull ? '1px solid var(--color-border)' : '1px solid var(--color-border)',
-        borderRadius: 20,
-        padding: '20px 22px',
-        boxShadow: 'var(--shadow-card)',
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'space-between',
+        borderRadius: 20,
+        padding: 22,
+        background: 'var(--color-bg-card)',
+        border: '1px solid var(--color-border)',
+        boxShadow: 'var(--shadow-card)',
         transition: 'all 0.22s cubic-bezier(0.16, 1, 0.3, 1)',
       }}
     >
@@ -105,7 +127,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, onJoinSuccess 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <img
-              src={trip.creatorId?.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80'}
+              src={effectiveCreatorAvatar}
               alt={trip.creatorId?.fullName || 'Trekker'}
               style={{
                 width: 38,

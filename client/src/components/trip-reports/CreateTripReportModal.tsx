@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   IconMountain,
   IconX,
@@ -140,8 +141,26 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
     letterSpacing: '0.04em',
   };
 
-  return (
-    <div className="modal-overlay" onClick={onClose} style={{ zIndex: 99999 }}>
+  return createPortal(
+    <div
+      className="modal-overlay"
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        width: '100vw',
+        height: '100vh',
+        background: 'rgba(3, 8, 14, 0.88)',
+        backdropFilter: 'blur(16px)',
+        WebkitBackdropFilter: 'blur(16px)',
+        zIndex: 99999999,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '24px 16px',
+        boxSizing: 'border-box',
+      }}
+    >
       <div
         className="modal-content"
         onClick={(e) => e.stopPropagation()}
@@ -435,6 +454,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
           </div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

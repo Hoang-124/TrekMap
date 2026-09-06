@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, Circle, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, Circle, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import type { Trail } from '../../types.js';
 import { fetchNearbyTrails, reverseGeocode } from '../../services/api.js';
@@ -17,6 +17,9 @@ const Layers = createSvgIcon(<><polygon points="12 2 2 7 12 12 22 7 12 2" /><pol
 const Check = createSvgIcon(<polyline points="20 6 9 17 4 12" />);
 const Filter = createSvgIcon(<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />);
 const Activity = createSvgIcon(<polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />);
+const AlertTriangle = createSvgIcon(<><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></>);
+const X = createSvgIcon(<><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></>);
+const ShieldCheck = createSvgIcon(<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><polyline points="9 12 11 14 15 10" /></>);
 
 // Fix default leaflet icons
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -57,6 +60,22 @@ export const getDifficultyInfo = (difficulty: number) => {
   };
 };
 
+// Tactical Helper to match an incident to a trail by ID or normalized name
+export const matchTrailIncident = (trail: Trail, incidents: any[] = []) => {
+  if (!incidents || incidents.length === 0) return undefined;
+  const tid = trail.id || (trail as any)._id;
+  return incidents.find((inc) => {
+    if (!inc) return false;
+    if (inc.trailId && (inc.trailId === tid || inc.trailId === trail.id)) return true;
+    if (inc.trailName && trail.name) {
+      const normInc = inc.trailName.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const normTrail = trail.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (normInc.includes(normTrail) || normTrail.includes(normInc)) return true;
+    }
+    return false;
+  });
+};
+
 // Super lightweight SVG Teardrop Pin with white border & center dot (Google Maps style)
 export const createTrailSvgIcon = (trail: Trail, incident?: any) => {
   const diffInfo = getDifficultyInfo(trail.difficultyLevel);
@@ -90,29 +109,21 @@ export const createTrailSvgIcon = (trail: Trail, incident?: any) => {
     </div>
   ` : '';
 
-  const alertTooltipHtml = hasAlert ? `
+  const radarRingHtml = hasAlert ? `
     <div style="
-      margin-top: 4px;
-      padding: 3px 6px;
-      background: rgba(239, 68, 68, 0.25);
-      border: 1px solid ${alertColor};
-      border-radius: 5px;
-      color: #fecaca;
-      font-size: 9.5px;
-      font-weight: 700;
-      line-height: 1.2;
-      text-align: left;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    ">
-      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="${alertColor}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0;">
-        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-        <line x1="12" y1="9" x2="12" y2="13"/>
-        <line x1="12" y1="17" x2="12.01" y2="17"/>
-      </svg>
-      <span>Cảnh báo: ${incident.description || 'Có sự cố an toàn trên cung đường'}</span>
-    </div>
+      position: absolute;
+      top: 15px;
+      left: 15px;
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 2px solid ${alertColor};
+      background: ${alertColor}18;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      z-index: 0;
+      animation: warningRadarPulse 1.8s infinite cubic-bezier(0.25, 1, 0.5, 1);
+    "></div>
   ` : '';
 
   const customSvg = `
@@ -125,6 +136,7 @@ export const createTrailSvgIcon = (trail: Trail, incident?: any) => {
       justify-content: center;
       cursor: pointer;
     ">
+      ${radarRingHtml}
       <!-- Teardrop Map Pin SVG matching user reference photo -->
       <svg class="trail-teardrop-svg" width="30" height="40" viewBox="0 0 30 40" fill="none" xmlns="http://www.w3.org/2000/svg" style="
         filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.75)) drop-shadow(0 0 8px ${hasAlert ? alertColor : diffInfo.glow});
@@ -148,25 +160,6 @@ export const createTrailSvgIcon = (trail: Trail, incident?: any) => {
 
       <!-- Alert Badge directly overlaying the pin in front -->
       ${alertBadgeHtml}
-
-      <!-- Pure CSS Hover Tooltip (Only visible on hover) -->
-      <div class="trail-pin-hover-tooltip">
-        <div style="font-size: 12px; font-weight: 800; color: #ffffff; line-height: 1.2;">
-          ${trail.name}
-        </div>
-        <div style="font-size: 10px; font-weight: 700; color: ${diffInfo.color}; margin-top: 3px; display: flex; align-items: center; justify-content: center; gap: 6px;">
-          <span>● Cấp ${diffInfo.label} (${trail.difficultyLevel}/5)</span>
-          <span style="display: inline-flex; align-items: center; gap: 2px;">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m8 3 4 8 5-5 5 15H2L8 3z"/></svg>
-            ${trail.maxAltitudeM}m
-          </span>
-        </div>
-        <div style="font-size: 9.5px; color: #94a3b8; margin-top: 2px; display: flex; align-items: center; justify-content: center; gap: 3px;">
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
-          <span>${trail.province}${trail.district ? `, ${trail.district}` : ''}</span>
-        </div>
-        ${alertTooltipHtml}
-      </div>
     </div>
   `;
 
@@ -177,6 +170,544 @@ export const createTrailSvgIcon = (trail: Trail, incident?: any) => {
     iconAnchor: [15, 40],
     popupAnchor: [0, -40],
   });
+};
+
+// Tactical Auto-Positioned Hover Tooltip Component (Flips automatically to prevent boundary clipping)
+export const TacticalTrailTooltip: React.FC<{
+  trail: Trail;
+  incident?: any;
+  onSelect?: () => void;
+}> = ({ trail, incident, onSelect }) => {
+  const diffInfo = getDifficultyInfo(trail.difficultyLevel);
+  const hasAlert = !!incident;
+  const severity = incident?.severity || 'high';
+  const alertColor = severity === 'critical' ? '#ef4444' : severity === 'high' ? '#f97316' : '#eab308';
+
+  return (
+    <div
+      onClick={(e) => {
+        if (onSelect) {
+          e.stopPropagation();
+          onSelect();
+        }
+      }}
+      style={{
+        width: 318,
+        maxWidth: 'calc(100vw - 32px)',
+        background: 'linear-gradient(180deg, rgba(13, 22, 42, 0.98) 0%, rgba(6, 11, 24, 0.99) 100%)',
+        border: '1.5px solid rgba(255, 255, 255, 0.12)',
+        borderRadius: 18,
+        padding: '14px 16px',
+        boxShadow: '0 24px 60px -8px rgba(0, 0, 0, 0.95), 0 0 0 1px rgba(255, 255, 255, 0.08), 0 0 32px rgba(16, 185, 129, 0.12)',
+        backdropFilter: 'blur(28px)',
+        WebkitBackdropFilter: 'blur(28px)',
+        color: 'var(--color-text-main)',
+        textAlign: 'left',
+        fontFamily: "var(--font-family), 'Plus Jakarta Sans', 'Inter', 'Be Vietnam Pro', system-ui, -apple-system, sans-serif",
+        WebkitFontSmoothing: 'antialiased',
+        MozOsxFontSmoothing: 'grayscale',
+        textRendering: 'optimizeLegibility',
+        cursor: onSelect ? 'pointer' : 'default',
+        userSelect: 'none',
+      }}
+    >
+      {/* Top Badges Row */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+        {/* Difficulty Pill with Glowing LED */}
+        <div
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '3px 10px',
+            borderRadius: 14,
+            background: `${diffInfo.color}18`,
+            border: `1px solid ${diffInfo.color}45`,
+            fontSize: '10.5px',
+            fontWeight: 800,
+            color: diffInfo.color,
+            letterSpacing: '0.1px',
+          }}
+        >
+          <span
+            style={{
+              width: 6.5,
+              height: 6.5,
+              borderRadius: '50%',
+              background: diffInfo.color,
+              boxShadow: `0 0 8px ${diffInfo.color}`,
+              display: 'inline-block',
+            }}
+          />
+          <span>{diffInfo.label} ({trail.difficultyLevel}/5)</span>
+        </div>
+
+        {/* Location Pill */}
+        <div
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            fontSize: '10px',
+            fontWeight: 700,
+            color: 'var(--color-text-dim)',
+            background: 'rgba(255, 255, 255, 0.05)',
+            padding: '3px 9px',
+            borderRadius: 12,
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            maxWidth: 155,
+            overflow: 'hidden',
+            whiteSpace: 'nowrap',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+            <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" />
+            <circle cx="12" cy="10" r="3" />
+          </svg>
+          <span>{trail.province}{trail.district ? `, ${trail.district}` : ''}</span>
+        </div>
+      </div>
+
+      {/* Trail Name Title - Safe Unicode without negative letter-spacing */}
+      <div
+        style={{
+          fontSize: '13.5px',
+          fontWeight: 800,
+          color: '#ffffff',
+          lineHeight: 1.4,
+          marginBottom: 10,
+          letterSpacing: '0px',
+          wordBreak: 'break-word',
+        }}
+      >
+        {trail.name}
+      </div>
+
+      {/* Telemetry Bento Grid - 3 Sleek Glass Tiles */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, 1fr)',
+          gap: 6,
+          marginBottom: 10,
+        }}
+      >
+        <div
+          style={{
+            background: 'rgba(255, 255, 255, 0.035)',
+            border: '1px solid rgba(255, 255, 255, 0.07)',
+            borderRadius: 10,
+            padding: '7px 4px',
+            textAlign: 'center',
+          }}
+        >
+          <div style={{ fontSize: '8.5px', color: 'rgba(148, 163, 184, 0.85)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+            Quãng đường
+          </div>
+          <div style={{ fontSize: '12.5px', fontWeight: 800, color: '#10b981', marginTop: 2 }}>
+            {trail.distanceKm || '--'} km
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: 'rgba(255, 255, 255, 0.035)',
+            border: '1px solid rgba(255, 255, 255, 0.07)',
+            borderRadius: 10,
+            padding: '7px 4px',
+            textAlign: 'center',
+          }}
+        >
+          <div style={{ fontSize: '8.5px', color: 'rgba(148, 163, 184, 0.85)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+            Cao độ
+          </div>
+          <div style={{ fontSize: '12.5px', fontWeight: 800, color: '#38bdf8', marginTop: 2 }}>
+            {trail.maxAltitudeM || '--'}m
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: 'rgba(255, 255, 255, 0.035)',
+            border: '1px solid rgba(255, 255, 255, 0.07)',
+            borderRadius: 10,
+            padding: '7px 4px',
+            textAlign: 'center',
+          }}
+        >
+          <div style={{ fontSize: '8.5px', color: 'rgba(148, 163, 184, 0.85)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+            Thời gian
+          </div>
+          <div style={{ fontSize: '12.5px', fontWeight: 800, color: '#facc15', marginTop: 2 }}>
+            {trail.durationDays ? trail.durationDays + 'N' : '1-2N'}
+          </div>
+        </div>
+      </div>
+
+      {/* Safety Alert Callout Banner */}
+      {hasAlert && (
+        <div
+          style={{
+            marginBottom: 10,
+            padding: '9px 11px',
+            background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.18) 0%, rgba(185, 28, 28, 0.07) 100%)',
+            border: `1.5px solid ${alertColor}66`,
+            borderRadius: 12,
+            boxShadow: `0 0 16px ${alertColor}22`,
+            textAlign: 'left',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '10px', fontWeight: 800, color: alertColor }}>
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  background: alertColor,
+                  boxShadow: `0 0 8px ${alertColor}`,
+                  display: 'inline-block',
+                }}
+              />
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+              CẢNH BÁO AN TOÀN
+            </span>
+            <span
+              style={{
+                fontSize: '8.5px',
+                fontWeight: 800,
+                background: alertColor,
+                color: '#041108',
+                padding: '1px 6px',
+                borderRadius: 5,
+                textTransform: 'uppercase',
+              }}
+            >
+              {severity === 'critical' ? 'Khẩn cấp' : severity === 'high' ? 'Nguy cấp' : 'Chú ý'}
+            </span>
+          </div>
+          <div style={{ fontSize: '10.5px', color: '#fecaca', fontWeight: 500, lineHeight: 1.45, wordBreak: 'break-word' }}>
+            {incident.description || 'Có sự cố an toàn trên cung đường'}
+          </div>
+        </div>
+      )}
+
+      {/* Interactive Action Bar Button */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '8px 12px',
+          borderRadius: 10,
+          background: 'rgba(16, 185, 129, 0.12)',
+          border: '1px solid rgba(16, 185, 129, 0.35)',
+          color: 'var(--color-primary)',
+          fontSize: '11px',
+          fontWeight: 800,
+          transition: 'all 0.15s ease',
+        }}
+      >
+        <span>Nhấp để xem chi tiết & trắc diện 3D</span>
+        <span style={{ fontSize: '12px' }}>➔</span>
+      </div>
+    </div>
+  );
+};
+
+// Tactical Incidents Quick Inspection Drawer / Floating Command Panel
+export const TacticalIncidentsDrawer: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  alertTrails: Array<{ trail: Trail; incident: any }>;
+  onFlyTo: (trail: Trail) => void;
+  onSelectTrail?: (trail: Trail) => void;
+  onFilterAlerts: () => void;
+  isFilterActive: boolean;
+}> = ({ isOpen, onClose, alertTrails, onFlyTo, onSelectTrail, onFilterAlerts, isFilterActive }) => {
+  if (!isOpen) return null;
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        top: 60,
+        right: 18,
+        width: 370,
+        maxWidth: 'calc(100% - 36px)',
+        maxHeight: 'calc(100% - 80px)',
+        background: 'var(--color-bg-card)',
+        backdropFilter: 'blur(28px)',
+        border: '1.5px solid rgba(239, 68, 68, 0.4)',
+        borderRadius: 20,
+        boxShadow: '0 24px 60px rgba(0, 0, 0, 0.85), 0 0 20px rgba(239, 68, 68, 0.15)',
+        zIndex: 1002,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        animation: 'fadeIn 0.2s ease',
+      }}
+    >
+      {/* Header */}
+      <div
+        style={{
+          padding: '14px 16px',
+          background: 'linear-gradient(180deg, rgba(239, 68, 68, 0.15) 0%, rgba(239, 68, 68, 0.03) 100%)',
+          borderBottom: '1px solid var(--color-border)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: 8,
+              background: 'rgba(239, 68, 68, 0.2)',
+              border: '1px solid rgba(239, 68, 68, 0.5)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <AlertTriangle size={16} color="#ef4444" />
+          </div>
+          <div>
+            <div style={{ fontSize: '0.86rem', fontWeight: 800, color: 'var(--color-text-main)', letterSpacing: '-0.2px' }}>
+              Điểm Cảnh Báo An Toàn
+            </div>
+            <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)' }}>
+              {alertTrails.length} cung đường có thông báo an toàn thực địa
+            </div>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Đóng bảng cảnh báo"
+          style={{
+            background: 'rgba(255, 255, 255, 0.08)',
+            border: 'none',
+            borderRadius: 8,
+            width: 28,
+            height: 28,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--color-text-muted)',
+            cursor: 'pointer',
+            transition: 'all 0.15s ease',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = 'rgba(255, 255, 255, 0.16)';
+            e.currentTarget.style.color = 'var(--color-text-main)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
+            e.currentTarget.style.color = 'var(--color-text-muted)';
+          }}
+        >
+          <X size={14} />
+        </button>
+      </div>
+
+      {/* Filter Toggle Subheader */}
+      <div
+        style={{
+          padding: '8px 16px',
+          background: 'rgba(0, 0, 0, 0.25)',
+          borderBottom: '1px solid var(--color-border)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
+        <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)' }}>
+          {isFilterActive ? 'Đang lọc riêng các điểm cảnh báo' : 'Hiển thị tất cả trên bản đồ'}
+        </span>
+        <button
+          type="button"
+          onClick={onFilterAlerts}
+          style={{
+            background: isFilterActive ? 'rgba(239, 68, 68, 0.25)' : 'rgba(255, 255, 255, 0.08)',
+            border: isFilterActive ? '1px solid #ef4444' : '1px solid var(--color-border)',
+            color: isFilterActive ? '#ef4444' : 'var(--color-text-main)',
+            borderRadius: 8,
+            padding: '3px 8px',
+            fontSize: '0.7rem',
+            fontWeight: 700,
+            cursor: 'pointer',
+            transition: 'all 0.15s ease',
+          }}
+        >
+          {isFilterActive ? 'Bỏ lọc cảnh báo' : 'Lọc riêng cảnh báo'}
+        </button>
+      </div>
+
+      {/* Alert Items List */}
+      <div
+        style={{
+          padding: 12,
+          overflowY: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+          maxHeight: 380,
+        }}
+      >
+        {alertTrails.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '32px 16px', color: 'var(--color-text-dim)' }}>
+            <div style={{ display: 'inline-flex', marginBottom: 8, color: '#10b981' }}>
+              <ShieldCheck size={28} />
+            </div>
+            <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--color-text-muted)' }}>
+              Không có cảnh báo an toàn nào
+            </div>
+            <div style={{ fontSize: '0.72rem', marginTop: 4, color: 'var(--color-text-dim)' }}>
+              Mọi cung đường hiện đang ở trạng thái ổn định và thông tuyến bình thường.
+            </div>
+          </div>
+        ) : (
+          alertTrails.map(({ trail, incident }) => {
+            const severity = incident?.severity || 'high';
+            const alertColor = severity === 'critical' ? '#ef4444' : severity === 'high' ? '#f97316' : '#eab308';
+
+            return (
+              <div
+                key={trail.id || trail.name}
+                style={{
+                  background: 'rgba(15, 23, 42, 0.65)',
+                  border: `1px solid ${alertColor}55`,
+                  borderRadius: 14,
+                  padding: 12,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                  transition: 'all 0.2s ease',
+                }}
+              >
+                {/* Title & Badge */}
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+                  <div>
+                    <div style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--color-text-main)', lineHeight: 1.3 }}>
+                      {trail.name}
+                    </div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', marginTop: 2 }}>
+                      {trail.province}{trail.district ? `, ${trail.district}` : ''} • {trail.region}
+                    </div>
+                  </div>
+                  <span
+                    style={{
+                      fontSize: '0.64rem',
+                      fontWeight: 800,
+                      background: alertColor,
+                      color: '#041108',
+                      padding: '2px 7px',
+                      borderRadius: 6,
+                      textTransform: 'uppercase',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {severity === 'critical' ? 'Khẩn cấp' : severity === 'high' ? 'Nguy cấp' : 'Chú ý'}
+                  </span>
+                </div>
+
+                {/* Incident Description */}
+                <div
+                  style={{
+                    fontSize: '0.74rem',
+                    color: '#fecaca',
+                    background: 'rgba(239, 68, 68, 0.1)',
+                    borderLeft: `3px solid ${alertColor}`,
+                    padding: '6px 8px',
+                    borderRadius: 4,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {incident.description || 'Có thông báo cảnh báo an toàn thực địa trên cung đường này.'}
+                </div>
+
+                {/* Action Buttons */}
+                <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
+                  <button
+                    type="button"
+                    onClick={() => onFlyTo(trail)}
+                    style={{
+                      flex: 1,
+                      background: 'rgba(56, 189, 248, 0.15)',
+                      border: '1px solid rgba(56, 189, 248, 0.4)',
+                      color: 'var(--color-sky)',
+                      borderRadius: 10,
+                      padding: '6px 10px',
+                      fontSize: '0.74rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 5,
+                      transition: 'all 0.15s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'rgba(56, 189, 248, 0.28)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'rgba(56, 189, 248, 0.15)';
+                    }}
+                  >
+                    <span>Bay đến vị trí</span>
+                    <span style={{ fontSize: '11px' }}>➔</span>
+                  </button>
+
+                  {onSelectTrail && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSelectTrail(trail);
+                        onClose();
+                      }}
+                      style={{
+                        flex: 1,
+                        background: 'rgba(74, 222, 128, 0.15)',
+                        border: '1px solid rgba(74, 222, 128, 0.4)',
+                        color: 'var(--color-primary)',
+                        borderRadius: 10,
+                        padding: '6px 10px',
+                        fontSize: '0.74rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 5,
+                        transition: 'all 0.15s ease',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(74, 222, 128, 0.28)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'rgba(74, 222, 128, 0.15)';
+                      }}
+                    >
+                      <span>Chi tiết cung</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
 };
 
 // User GPS Pulse Location Marker Icon Helper
@@ -342,12 +873,12 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: any; onSelec
   const alertColor = severity === 'critical' ? '#ef4444' : severity === 'high' ? '#f97316' : '#eab308';
 
   return (
-    <div style={{ width: 250, padding: '4px 2px' }}>
+    <div style={{ width: 270, padding: '4px 2px' }}>
       <div
         style={{
           position: 'relative',
-          height: 120,
-          borderRadius: 12,
+          height: 130,
+          borderRadius: 14,
           overflow: 'hidden',
           marginBottom: 10,
         }}
@@ -363,11 +894,12 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: any; onSelec
             top: 8,
             left: 8,
             background: getDifficultyColor(trail.difficultyLevel),
-            color: '#030a0e',
+            color: '#041108',
             fontWeight: 800,
             fontSize: '0.72rem',
-            padding: '2px 8px',
-            borderRadius: 10,
+            padding: '3px 9px',
+            borderRadius: 12,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
           }}
         >
           Mức khó: {trail.difficultyLevel}/5
@@ -377,13 +909,14 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: any; onSelec
             position: 'absolute',
             bottom: 8,
             right: 8,
-            background: 'rgba(3, 10, 14, 0.85)',
-            color: '#00ffd5',
-            fontWeight: 700,
+            background: 'var(--color-bg-glass)',
+            color: 'var(--color-primary)',
+            fontWeight: 800,
             fontSize: '0.72rem',
-            padding: '2px 8px',
-            borderRadius: 10,
-            backdropFilter: 'blur(8px)',
+            padding: '3px 9px',
+            borderRadius: 12,
+            backdropFilter: 'blur(12px)',
+            border: '1px solid var(--color-border)',
           }}
         >
           {trail.region}
@@ -392,11 +925,12 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: any; onSelec
 
       <h4
         style={{
-          margin: '0 0 6px 0',
-          fontSize: '0.98rem',
+          margin: '0 0 8px 0',
+          fontSize: '0.96rem',
           fontWeight: 800,
-          color: '#f8fafc',
-          lineHeight: 1.3,
+          color: 'var(--color-text-main)',
+          lineHeight: 1.35,
+          letterSpacing: '-0.015em',
         }}
       >
         {trail.name}
@@ -406,17 +940,17 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: any; onSelec
       {incident && (
         <div
           style={{
-            background: 'rgba(239, 68, 68, 0.2)',
-            border: `1.5px solid ${alertColor}`,
-            borderRadius: 8,
-            padding: '7px 9px',
+            background: 'rgba(239, 68, 68, 0.16)',
+            border: `1px solid ${alertColor}`,
+            borderRadius: 10,
+            padding: '8px 10px',
             marginBottom: 8,
             lineHeight: 1.35,
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3 }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontWeight: 800, color: alertColor, fontSize: '0.78rem' }}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontWeight: 800, color: alertColor, fontSize: '0.76rem' }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
                 <line x1="12" y1="9" x2="12" y2="13" />
                 <line x1="12" y1="17" x2="12.01" y2="17" />
@@ -426,16 +960,16 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: any; onSelec
             <span style={{
               fontSize: '0.62rem',
               background: alertColor,
-              color: '#ffffff',
-              padding: '1px 5px',
+              color: '#041108',
+              padding: '1px 6px',
               borderRadius: 4,
               fontWeight: 800,
               textTransform: 'uppercase'
             }}>
-              {severity === 'critical' ? 'Khẩn cấp SOS' : severity === 'high' ? 'Nguy cấp' : 'Chú ý'}
+              {severity === 'critical' ? 'Khẩn cấp' : severity === 'high' ? 'Nguy cấp' : 'Chú ý'}
             </span>
           </div>
-          <div style={{ fontSize: '0.72rem', color: 'var(--color-error)' }}>
+          <div style={{ fontSize: '0.72rem', color: '#fecaca', lineHeight: 1.35 }}>
             {incident.description}
           </div>
         </div>
@@ -446,25 +980,25 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: any; onSelec
           display: 'grid',
           gridTemplateColumns: 'repeat(3, 1fr)',
           gap: 4,
-          background: 'var(--color-bg-card)',
-          padding: '6px 8px',
-          borderRadius: 8,
+          background: 'rgba(0, 0, 0, 0.35)',
+          padding: '7px 8px',
+          borderRadius: 10,
           textAlign: 'center',
           marginBottom: 8,
           border: '1px solid var(--color-border)',
         }}
       >
         <div>
-          <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)' }}>Độ dài</div>
-          <strong style={{ fontSize: '0.78rem', color: 'var(--color-primary)' }}>{trail.distanceKm}km</strong>
+          <div style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)', textTransform: 'uppercase', fontWeight: 700 }}>Độ dài</div>
+          <strong style={{ fontSize: '0.8rem', color: 'var(--color-primary)' }}>{trail.distanceKm} km</strong>
+        </div>
+        <div style={{ borderLeft: '1px solid var(--color-border)', borderRight: '1px solid var(--color-border)' }}>
+          <div style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)', textTransform: 'uppercase', fontWeight: 700 }}>Tích lũy</div>
+          <strong style={{ fontSize: '0.8rem', color: 'var(--color-sky)' }}>+{trail.elevationGainM}m</strong>
         </div>
         <div>
-          <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)' }}>Tích lũy</div>
-          <strong style={{ fontSize: '0.78rem', color: 'var(--color-earth)' }}>+{trail.elevationGainM}m</strong>
-        </div>
-        <div>
-          <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)' }}>Thời gian</div>
-          <strong style={{ fontSize: '0.78rem', color: 'var(--color-sun)' }}>{trail.durationDays}N</strong>
+          <div style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)', textTransform: 'uppercase', fontWeight: 700 }}>Thời gian</div>
+          <strong style={{ fontSize: '0.8rem', color: 'var(--color-sun)' }}>{trail.durationDays}N</strong>
         </div>
       </div>
 
@@ -474,17 +1008,20 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: any; onSelec
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            background: 'rgba(56, 189, 248, 0.12)',
-            border: '1px solid rgba(56, 189, 248, 0.3)',
-            borderRadius: 8,
-            padding: '4px 10px',
+            background: 'rgba(56, 189, 248, 0.1)',
+            border: '1px solid rgba(56, 189, 248, 0.25)',
+            borderRadius: 10,
+            padding: '5px 10px',
             fontSize: '0.74rem',
-            color: '#38bdf8',
+            color: 'var(--color-sky)',
             fontWeight: 700,
             marginBottom: 10,
           }}
         >
-          <span>{weather.condition}</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+            <span>{weather.condition}</span>
+          </span>
           <span>{weather.temp}°C</span>
         </div>
       )}
@@ -494,11 +1031,11 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: any; onSelec
         onClick={onSelect}
         style={{
           width: '100%',
-          background: 'linear-gradient(135deg, #00ffd5 0%, #10b981 100%)',
-          color: '#030a0e',
+          background: 'var(--color-primary)',
+          color: 'var(--color-bg-main)',
           border: 'none',
-          borderRadius: 8,
-          padding: '8px 10px',
+          borderRadius: 12,
+          padding: '9px 12px',
           fontWeight: 800,
           fontSize: '0.78rem',
           cursor: 'pointer',
@@ -506,10 +1043,11 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: any; onSelec
           alignItems: 'center',
           justifyContent: 'center',
           gap: 6,
-          boxShadow: '0 4px 14px rgba(0, 255, 213, 0.3)',
+          boxShadow: 'var(--shadow-sprout)',
+          transition: 'transform 0.15s ease',
         }}
       >
-        <span>Xem Chi Tiết Cung Đường →</span>
+        <span>Xem Chi Tiết Cung Đường ➔</span>
       </button>
     </div>
   );
@@ -522,6 +1060,8 @@ export interface MapViewProps {
   incidents?: any[];
   height?: string;
   onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
+  allTrails?: Trail[];
+  onSelectRegion?: (region: string) => void;
 }
 
 // Map Tile Providers (ToS-compliant open-source tile layers)
@@ -547,9 +1087,10 @@ const TILE_PROVIDERS = {
 const MapController: React.FC<{
   selectedTrail?: Trail | null;
   flyToPos?: [number, number] | null;
+  flyToZoom?: number;
   currentTileKey?: string;
   isLiveTracking?: boolean;
-}> = ({ selectedTrail, flyToPos, currentTileKey, isLiveTracking }) => {
+}> = ({ selectedTrail, flyToPos, flyToZoom, currentTileKey, isLiveTracking }) => {
   const map = useMap();
   const prevTileRef = useRef(currentTileKey);
 
@@ -575,14 +1116,14 @@ const MapController: React.FC<{
       if (isLiveTracking) {
         map.panTo(flyToPos, { animate: true, duration: 0.8 });
       } else {
-        map.flyTo(flyToPos, 13, { duration: 1.5 });
+        map.flyTo(flyToPos, flyToZoom ?? 13, { duration: 1.5 });
       }
     } else if (selectedTrail) {
       map.flyTo([selectedTrail.startLat, selectedTrail.startLng], 12, { duration: 1.5 });
     } else {
       map.flyTo([16.0470, 108.2062], 6, { duration: 1.2 });
     }
-  }, [selectedTrail, flyToPos, isLiveTracking, map]);
+  }, [selectedTrail, flyToPos, flyToZoom, isLiveTracking, map]);
 
   // Keep center and zoom persistent when changing map tile layers
   useEffect(() => {
@@ -600,6 +1141,140 @@ const MapController: React.FC<{
   return null;
 };
 
+// Tactical Custom Leaflet Controls (Zoom In/Out + Compass Overview)
+const CustomMapControls: React.FC<{ onResetView: () => void }> = ({ onResetView }) => {
+  const map = useMap();
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        top: 26,
+        left: 24,
+        zIndex: 1000,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          background: 'var(--color-bg-glass)',
+          backdropFilter: 'blur(20px)',
+          borderRadius: 14,
+          border: '1px solid var(--color-border)',
+          boxShadow: '0 12px 32px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
+          overflow: 'hidden',
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => map.zoomIn()}
+          aria-label="Phóng to"
+          title="Phóng to (+)"
+          style={{
+            width: 36,
+            height: 36,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'transparent',
+            border: 'none',
+            color: 'var(--color-text-main)',
+            cursor: 'pointer',
+            transition: 'all 0.15s ease',
+            borderBottom: '1px solid var(--color-border)',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = 'rgba(74, 222, 128, 0.15)';
+            e.currentTarget.style.color = 'var(--color-primary)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'transparent';
+            e.currentTarget.style.color = 'var(--color-text-main)';
+          }}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => map.zoomOut()}
+          aria-label="Thu nhỏ"
+          title="Thu nhỏ (-)"
+          style={{
+            width: 36,
+            height: 36,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'transparent',
+            border: 'none',
+            color: 'var(--color-text-main)',
+            cursor: 'pointer',
+            transition: 'all 0.15s ease',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = 'rgba(74, 222, 128, 0.15)';
+            e.currentTarget.style.color = 'var(--color-primary)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'transparent';
+            e.currentTarget.style.color = 'var(--color-text-main)';
+          }}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Reset to Vietnam View Button */}
+      <button
+        type="button"
+        onClick={onResetView}
+        aria-label="Toàn cảnh Việt Nam"
+        title="Đặt lại góc nhìn toàn cảnh bản đồ Việt Nam"
+        style={{
+          width: 36,
+          height: 36,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'var(--color-bg-glass)',
+          backdropFilter: 'blur(20px)',
+          borderRadius: 14,
+          border: '1px solid var(--color-border)',
+          boxShadow: '0 12px 32px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
+          color: 'var(--color-text-dim)',
+          cursor: 'pointer',
+          transition: 'all 0.2s ease',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.borderColor = 'var(--color-border-glow)';
+          e.currentTarget.style.color = 'var(--color-primary)';
+          e.currentTarget.style.background = 'rgba(74, 222, 128, 0.12)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.borderColor = 'var(--color-border)';
+          e.currentTarget.style.color = 'var(--color-text-dim)';
+          e.currentTarget.style.background = 'var(--color-bg-glass)';
+        }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="10" />
+          <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" fill="currentColor" fillOpacity="0.4" />
+        </svg>
+      </button>
+    </div>
+  );
+};
+
 export const MapView: React.FC<MapViewProps> = ({
   trails,
   selectedTrail,
@@ -607,10 +1282,13 @@ export const MapView: React.FC<MapViewProps> = ({
   incidents = [],
   height = '100%',
   onShowToast,
+  allTrails,
+  onSelectRegion,
 }) => {
   const [currentTileKey, setCurrentTileKey] = useState<keyof typeof TILE_PROVIDERS>('satellite');
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [flyToPos, setFlyToPos] = useState<[number, number] | null>(null);
+  const [flyToZoom, setFlyToZoom] = useState<number>(13);
   const [isLocating, setIsLocating] = useState(false);
   const [isLiveTracking, setIsLiveTracking] = useState(false);
   const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
@@ -618,7 +1296,8 @@ export const MapView: React.FC<MapViewProps> = ({
   const [gpsSpeed, setGpsSpeed] = useState<number | null>(null);
   const watchIdRef = useRef<number | null>(null);
   const [isTileDropdownOpen, setIsTileDropdownOpen] = useState(false);
-  const [difficultyFilter, setDifficultyFilter] = useState<'all' | 'easy' | 'medium' | 'hard'>('all');
+  const [isAlertsDrawerOpen, setIsAlertsDrawerOpen] = useState(false);
+  const [difficultyFilter, setDifficultyFilter] = useState<'all' | 'easy' | 'medium' | 'hard' | 'alert'>('all');
   const [showGpxTracks, setShowGpxTracks] = useState(true);
   const [gpsToast, setGpsToast] = useState<{
     lat: number;
@@ -631,17 +1310,84 @@ export const MapView: React.FC<MapViewProps> = ({
   const centerLng = selectedTrail ? selectedTrail.startLng : 108.2062;
   const zoomLevel = selectedTrail ? 12 : 6;
 
+  // Extract all trails that have active safety alerts across the region or country
+  const alertSourceTrails = allTrails && allTrails.length > 0 ? allTrails : trails;
+  const alertTrails = useMemo(() => {
+    return alertSourceTrails
+      .map((trail) => ({ trail, incident: matchTrailIncident(trail, incidents) }))
+      .filter((item): item is { trail: Trail; incident: any } => !!item.incident);
+  }, [alertSourceTrails, incidents]);
+
   // Memoize filtered trails calculation for 60 FPS performance
   const filteredTrails = useMemo(() => {
+    if (difficultyFilter === 'alert') {
+      return alertTrails.map((a) => a.trail);
+    }
     return trails.filter((trail) => {
       if (difficultyFilter === 'easy') return trail.difficultyLevel <= 2;
       if (difficultyFilter === 'medium') return trail.difficultyLevel === 3;
       if (difficultyFilter === 'hard') return trail.difficultyLevel >= 4;
       return true;
     });
-  }, [trails, difficultyFilter]);
+  }, [trails, difficultyFilter, alertTrails]);
+
+  // Compute difficulty distribution counts for telemetry filter bar
+  const difficultyCounts = useMemo(() => {
+    let easy = 0;
+    let medium = 0;
+    let hard = 0;
+    for (const t of trails) {
+      if (t.difficultyLevel <= 2) easy++;
+      else if (t.difficultyLevel === 3) medium++;
+      else hard++;
+    }
+    return { all: trails.length, easy, medium, hard };
+  }, [trails]);
+
+  const handleToggleAlertFilter = () => {
+    if (difficultyFilter === 'alert') {
+      setDifficultyFilter('all');
+    } else {
+      setDifficultyFilter('alert');
+      if (alertTrails.length > 0) {
+        const first = alertTrails[0].trail;
+        if (onSelectRegion && first.region) {
+          onSelectRegion('All');
+        }
+        setFlyToPos([first.startLat, first.startLng]);
+        setFlyToZoom(11);
+        if (onShowToast) {
+          onShowToast(`Đang lọc ${alertTrails.length} vị trí có cảnh báo an toàn thực địa`, 'info');
+        }
+      } else {
+        if (onShowToast) {
+          onShowToast('Hiện không có cảnh báo an toàn nào trên các cung đường này.', 'info');
+        }
+      }
+    }
+  };
+
+  const handleFlyToAlertTrail = (trail: Trail) => {
+    if (onSelectRegion && trail.region) {
+      onSelectRegion('All');
+    }
+    setFlyToPos([trail.startLat, trail.startLng]);
+    setFlyToZoom(13);
+    setIsAlertsDrawerOpen(false);
+    if (onShowToast) {
+      onShowToast(`Đang định vị đến cung cảnh báo: ${trail.name}`, 'info');
+    }
+  };
 
   const currentTile = TILE_PROVIDERS[currentTileKey];
+
+  const handleResetView = () => {
+    setFlyToPos([16.0470, 108.2062]);
+    setFlyToZoom(6);
+    if (onShowToast) {
+      onShowToast('Đã đặt lại góc nhìn toàn cảnh bản đồ Việt Nam', 'info');
+    }
+  };
 
   const handleLocateMe = async () => {
     setIsLocating(true);
@@ -650,6 +1396,7 @@ export const MapView: React.FC<MapViewProps> = ({
       const coords: [number, number] = [lat, lng];
       setUserLocation(coords);
       setFlyToPos(coords);
+      setFlyToZoom(13);
       setIsLocating(false);
 
       try {
@@ -750,163 +1497,243 @@ export const MapView: React.FC<MapViewProps> = ({
 
   return (
     <div style={{ position: 'relative', width: '100%', height, borderRadius: 24, overflow: 'hidden' }}>
-      {/* Floating Control Bar */}
-      <div style={{
-        position: 'absolute',
-        top: 18,
-        right: 18,
-        zIndex: 1000,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        background: 'var(--color-bg-glass)',
-        backdropFilter: 'blur(16px)',
-        padding: '6px 10px',
-        borderRadius: 30,
-        border: '1px solid var(--color-border)',
-        boxShadow: '0 12px 32px rgba(0, 0, 0, 0.5)',
-      }}>
+      {/* Tactical Floating Command Dock (Top Right) */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 12,
+          right: 12,
+          zIndex: 1000,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 4,
+          background: 'var(--color-bg-glass)',
+          backdropFilter: 'blur(24px)',
+          padding: '3px 5px',
+          borderRadius: 18,
+          border: '1px solid var(--color-border)',
+          boxShadow: '0 16px 36px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
+          maxWidth: 'calc(100% - 24px)',
+          overflowX: 'auto',
+          scrollbarWidth: 'none',
+        }}
+      >
         {/* GPX Track Toggle Button */}
         <button
+          type="button"
           onClick={() => setShowGpxTracks(!showGpxTracks)}
+          aria-label="Bật tắt đường GPX"
+          title="Bật/tắt hiển thị tracklog GPX thực tế"
           style={{
-            background: showGpxTracks
-              ? 'rgba(74, 222, 128, 0.18)'
-              : 'rgba(255, 255, 255, 0.05)',
+            height: 30,
+            background: showGpxTracks ? 'rgba(74, 222, 128, 0.16)' : 'transparent',
             color: showGpxTracks ? 'var(--color-primary)' : 'var(--color-text-dim)',
-            border: '1px solid rgba(74, 222, 128, 0.4)',
-            borderRadius: 24,
-            padding: '8px 14px',
-            fontSize: 'var(--font-size-sm)',
-            fontWeight: 'var(--font-weight-bold)',
+            border: showGpxTracks ? '1px solid var(--color-border-glow)' : '1px solid transparent',
+            borderRadius: 12,
+            padding: '0 8px',
+            fontSize: '0.72rem',
+            fontWeight: 700,
             cursor: 'pointer',
             display: 'flex',
             alignItems: 'center',
-            gap: 6,
+            gap: 4,
             transition: 'all 0.2s ease',
             whiteSpace: 'nowrap',
+            flexShrink: 0,
           }}
         >
-          <Activity size={15} color={showGpxTracks ? 'var(--color-primary)' : 'var(--color-text-dim)'} />
-          <span>{showGpxTracks ? 'Đường GPX' : 'Tắt GPX'}</span>
+          <Activity size={13} color={showGpxTracks ? 'var(--color-primary)' : 'var(--color-text-dim)'} />
+          <span>GPX</span>
         </button>
 
         {/* Live GPS Tracking Toggle Button */}
         <button
+          type="button"
           onClick={handleToggleLiveTracking}
+          aria-label="Theo dõi GPS thực địa"
+          title="Theo dõi vị trí GPS di chuyển liên tục theo thời gian thực"
           style={{
-            background: isLiveTracking
-              ? 'linear-gradient(135deg, rgba(74, 222, 128, 0.28) 0%, rgba(34, 197, 94, 0.18) 100%)'
-              : 'var(--color-bg-main)',
-            color: isLiveTracking ? 'var(--color-primary)' : 'var(--color-text-main)',
-            border: `1.5px solid ${isLiveTracking ? 'var(--color-primary)' : 'var(--color-border)'}`,
-            borderRadius: 24,
-            padding: '8px 14px',
-            fontSize: 'var(--font-size-sm)',
-            fontWeight: 'var(--font-weight-bold)',
+            height: 30,
+            background: isLiveTracking ? 'rgba(56, 189, 248, 0.18)' : 'transparent',
+            color: isLiveTracking ? 'var(--color-sky)' : 'var(--color-text-dim)',
+            border: isLiveTracking ? '1px solid rgba(56, 189, 248, 0.5)' : '1px solid transparent',
+            borderRadius: 12,
+            padding: '0 8px',
+            fontSize: '0.72rem',
+            fontWeight: 700,
             cursor: 'pointer',
             display: 'flex',
             alignItems: 'center',
-            gap: 6,
+            gap: 4,
             transition: 'all 0.2s ease',
             whiteSpace: 'nowrap',
-            boxShadow: isLiveTracking ? '0 0 12px rgba(74, 222, 128, 0.4)' : 'none',
+            flexShrink: 0,
+            boxShadow: isLiveTracking ? '0 0 14px rgba(56, 189, 248, 0.35)' : 'none',
           }}
         >
           <span
             style={{
-              width: 8,
-              height: 8,
+              width: 6,
+              height: 6,
               borderRadius: '50%',
-              background: isLiveTracking ? 'var(--color-primary)' : 'var(--color-text-dim)',
-              boxShadow: isLiveTracking ? '0 0 8px var(--color-primary)' : 'none',
+              background: isLiveTracking ? 'var(--color-sky)' : 'var(--color-text-dim)',
+              boxShadow: isLiveTracking ? '0 0 8px var(--color-sky)' : 'none',
               display: 'inline-block',
             }}
           />
-          <span>{isLiveTracking ? 'Theo dõi GPS: Bật' : 'Theo dõi GPS'}</span>
+          <span>{isLiveTracking ? 'Live: Bật' : 'Live GPS'}</span>
         </button>
 
         {/* Locate Me GPS Button */}
         <button
+          type="button"
           onClick={handleLocateMe}
           disabled={isLocating}
+          aria-label="Định vị GPS của tôi"
+          title="Xác định tọa độ GPS và tìm các cung trekking gần nhất"
           style={{
-            background: 'linear-gradient(135deg, var(--color-sky) 0%, #0284c7 100%)',
-            color: '#041108',
-            border: 'none',
-            borderRadius: 24,
-            padding: '8px 16px',
-            fontSize: 'var(--font-size-sm)',
-            fontWeight: 'var(--font-weight-extrabold)',
+            height: 30,
+            background: isLocating ? 'rgba(56, 189, 248, 0.2)' : 'rgba(255, 255, 255, 0.05)',
+            color: 'var(--color-text-main)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 12,
+            padding: '0 8px',
+            fontSize: '0.72rem',
+            fontWeight: 700,
+            cursor: isLocating ? 'wait' : 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            transition: 'all 0.2s ease',
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
+          }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="12" y1="2" x2="12" y2="6" />
+            <line x1="12" y1="18" x2="12" y2="22" />
+            <line x1="2" y1="12" x2="6" y2="12" />
+            <line x1="18" y1="12" x2="22" y2="12" />
+            <circle cx="12" cy="12" r="7" />
+            <circle cx="12" cy="12" r="2" fill="currentColor" />
+          </svg>
+          <span>{isLocating ? 'Định vị...' : 'Vị Trí'}</span>
+        </button>
+
+        {/* Active Alerts Tactical Drawer Toggle Button */}
+        <button
+          type="button"
+          onClick={() => setIsAlertsDrawerOpen(!isAlertsDrawerOpen)}
+          aria-label="Danh sách điểm cảnh báo an toàn"
+          title="Xem danh sách tất cả các điểm phát cảnh báo an toàn trên bản đồ"
+          style={{
+            height: 30,
+            background: isAlertsDrawerOpen
+              ? 'rgba(239, 68, 68, 0.25)'
+              : alertTrails.length > 0
+              ? 'rgba(239, 68, 68, 0.14)'
+              : 'rgba(255, 255, 255, 0.05)',
+            color: alertTrails.length > 0 ? '#ef4444' : 'var(--color-text-dim)',
+            border: isAlertsDrawerOpen
+              ? '1px solid #ef4444'
+              : alertTrails.length > 0
+              ? '1px solid rgba(239, 68, 68, 0.5)'
+              : '1px solid var(--color-border)',
+            borderRadius: 12,
+            padding: '0 8px',
+            fontSize: '0.72rem',
+            fontWeight: 700,
             cursor: 'pointer',
             display: 'flex',
             alignItems: 'center',
-            gap: 6,
-            boxShadow: 'var(--shadow-sky)',
+            gap: 4,
             transition: 'all 0.2s ease',
             whiteSpace: 'nowrap',
+            flexShrink: 0,
           }}
         >
-          <span>{isLocating ? 'Đang định vị...' : 'Định vị của tôi'}</span>
+          <AlertTriangle size={12} color={alertTrails.length > 0 ? '#ef4444' : 'currentColor'} />
+          <span>Cảnh Báo</span>
+          {alertTrails.length > 0 && (
+            <span
+              style={{
+                fontSize: '0.64rem',
+                fontWeight: 800,
+                background: '#ef4444',
+                color: '#ffffff',
+                padding: '1px 5px',
+                borderRadius: 8,
+              }}
+            >
+              {alertTrails.length}
+            </span>
+          )}
         </button>
 
         {/* Tile Layer Selector Dropdown */}
-        <div style={{ position: 'relative' }}>
+        <div style={{ position: 'relative', flexShrink: 0 }}>
           <button
+            type="button"
             onClick={() => setIsTileDropdownOpen(!isTileDropdownOpen)}
+            aria-label="Chọn lớp bản đồ"
             style={{
-              background: 'var(--color-bg-main)',
+              height: 30,
+              background: isTileDropdownOpen ? 'rgba(74, 222, 128, 0.12)' : 'rgba(255, 255, 255, 0.05)',
               color: 'var(--color-text-main)',
-              border: '1px solid var(--color-border)',
-              borderRadius: 24,
-              padding: '8px 14px',
-              fontSize: '0.84rem',
+              border: isTileDropdownOpen ? '1px solid var(--color-border-glow)' : '1px solid var(--color-border)',
+              borderRadius: 12,
+              padding: '0 8px',
+              fontSize: '0.72rem',
               fontWeight: 700,
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: 6,
+              gap: 4,
               transition: 'all 0.2s ease',
+              whiteSpace: 'nowrap',
             }}
           >
-            <Layers size={16} color="var(--color-primary)" />
-            <span>{currentTile.name}</span>
-            <ChevronDown size={14} />
+            <Layers size={13} color="var(--color-primary)" />
+            <span>Vệ Tinh</span>
+            <ChevronDown size={11} />
           </button>
 
           {isTileDropdownOpen && (
-            <div style={{
-              position: 'absolute',
-              top: 'calc(100% + 10px)',
-              right: 0,
-              background: 'var(--color-bg-card)',
-              backdropFilter: 'blur(20px)',
-              border: '1px solid var(--color-border-glow)',
-              borderRadius: 18,
-              padding: 8,
-              boxShadow: 'var(--shadow-card)',
-              minWidth: 220,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 4,
-              zIndex: 1001,
-            }}>
+            <div
+              style={{
+                position: 'absolute',
+                top: 'calc(100% + 6px)',
+                right: 0,
+                background: 'var(--color-bg-card)',
+                backdropFilter: 'blur(24px)',
+                border: '1px solid var(--color-border-glow)',
+                borderRadius: 14,
+                padding: 5,
+                boxShadow: '0 20px 48px rgba(0, 0, 0, 0.75)',
+                minWidth: 190,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 3,
+                zIndex: 1001,
+              }}
+            >
               {(Object.keys(TILE_PROVIDERS) as Array<keyof typeof TILE_PROVIDERS>).map((key) => {
                 const isSelected = key === currentTileKey;
                 return (
                   <button
                     key={key}
+                    type="button"
                     onClick={() => {
                       setCurrentTileKey(key);
                       setIsTileDropdownOpen(false);
                     }}
                     style={{
-                      background: isSelected ? 'rgba(74, 222, 128, 0.18)' : 'transparent',
+                      background: isSelected ? 'rgba(74, 222, 128, 0.16)' : 'transparent',
                       color: isSelected ? 'var(--color-primary)' : 'var(--color-text-muted)',
                       border: 'none',
-                      borderRadius: 12,
-                      padding: '10px 14px',
-                      fontSize: '0.82rem',
+                      borderRadius: 8,
+                      padding: '7px 10px',
+                      fontSize: '0.76rem',
                       fontWeight: isSelected ? 800 : 500,
                       cursor: 'pointer',
                       display: 'flex',
@@ -914,10 +1741,11 @@ export const MapView: React.FC<MapViewProps> = ({
                       justifyContent: 'space-between',
                       textAlign: 'left',
                       transition: 'all 0.15s ease',
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     <span>{TILE_PROVIDERS[key].name}</span>
-                    {isSelected && <Check size={14} color="var(--color-primary)" />}
+                    {isSelected && <Check size={13} color="var(--color-primary)" />}
                   </button>
                 );
               })}
@@ -926,89 +1754,251 @@ export const MapView: React.FC<MapViewProps> = ({
         </div>
       </div>
 
+      {/* Tactical Incidents Floating Panel / Drawer */}
+      <TacticalIncidentsDrawer
+        isOpen={isAlertsDrawerOpen}
+        onClose={() => setIsAlertsDrawerOpen(false)}
+        alertTrails={alertTrails}
+        onFlyTo={handleFlyToAlertTrail}
+        onSelectTrail={onSelectTrail}
+        onFilterAlerts={handleToggleAlertFilter}
+        isFilterActive={difficultyFilter === 'alert'}
+      />
+
       {/* Floating Difficulty Filter Toolbar (Bottom Left) */}
-      <div style={{
-        position: 'absolute',
-        bottom: 24,
-        left: 18,
-        zIndex: 1000,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6,
-        background: 'var(--color-bg-glass)',
-        backdropFilter: 'blur(20px)',
-        padding: '6px 10px',
-        borderRadius: 30,
-        border: '1px solid var(--color-border)',
-        boxShadow: 'var(--shadow-header)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingRight: 6, borderRight: '1px solid var(--color-border)' }}>
-          <Filter size={14} color="var(--color-primary)" />
-          <span style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-text-dim)' }}>Lọc:</span>
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 12,
+          left: 12,
+          zIndex: 1000,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 3,
+          background: 'var(--color-bg-glass)',
+          backdropFilter: 'blur(20px)',
+          padding: '3px 5px',
+          borderRadius: 20,
+          border: '1px solid var(--color-border)',
+          boxShadow: '0 12px 32px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
+          maxWidth: 'calc(100% - 24px)',
+          overflowX: 'auto',
+          scrollbarWidth: 'none',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            padding: '3px 7px',
+            borderRight: '1px solid var(--color-border)',
+            color: 'var(--color-text-dim)',
+            fontSize: '0.68rem',
+            fontWeight: 800,
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
+          }}
+        >
+          <Filter size={11} color="var(--color-primary)" />
+          <span>Cấp độ</span>
         </div>
+
         <button
+          type="button"
           onClick={() => setDifficultyFilter('all')}
           style={{
-            background: difficultyFilter === 'all' ? 'rgba(74, 222, 128, 0.25)' : 'transparent',
-            color: difficultyFilter === 'all' ? 'var(--color-primary)' : 'var(--color-text-muted)',
-            border: 'none',
-            borderRadius: 16,
-            padding: '5px 12px',
-            fontSize: '0.78rem',
-            fontWeight: difficultyFilter === 'all' ? 800 : 600,
+            background: difficultyFilter === 'all' ? 'rgba(74, 222, 128, 0.16)' : 'transparent',
+            color: difficultyFilter === 'all' ? 'var(--color-primary)' : 'var(--color-text-dim)',
+            border: difficultyFilter === 'all' ? '1px solid var(--color-border-glow)' : '1px solid transparent',
+            borderRadius: 12,
+            padding: '4px 7px',
+            fontSize: '0.72rem',
+            fontWeight: 700,
             cursor: 'pointer',
             transition: 'all 0.2s ease',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
           }}
         >
-          Tất cả
+          <span>Tất cả</span>
+          <span
+            style={{
+              fontSize: '0.66rem',
+              opacity: 0.85,
+              background: difficultyFilter === 'all' ? 'rgba(74, 222, 128, 0.2)' : 'rgba(255, 255, 255, 0.08)',
+              padding: '1px 5px',
+              borderRadius: 8,
+            }}
+          >
+            {difficultyCounts.all}
+          </span>
         </button>
+
         <button
+          type="button"
           onClick={() => setDifficultyFilter('easy')}
           style={{
-            background: difficultyFilter === 'easy' ? 'rgba(16, 185, 129, 0.22)' : 'transparent',
-            color: difficultyFilter === 'easy' ? '#10b981' : 'var(--color-text-muted)',
-            border: difficultyFilter === 'easy' ? '1px solid #10b981' : '1px solid transparent',
-            borderRadius: 16,
-            padding: '5px 12px',
-            fontSize: '0.78rem',
-            fontWeight: difficultyFilter === 'easy' ? 800 : 600,
+            background: difficultyFilter === 'easy' ? 'rgba(16, 185, 129, 0.18)' : 'transparent',
+            color: difficultyFilter === 'easy' ? '#10b981' : 'var(--color-text-dim)',
+            border: difficultyFilter === 'easy' ? '1px solid rgba(16, 185, 129, 0.5)' : '1px solid transparent',
+            borderRadius: 12,
+            padding: '4px 7px',
+            fontSize: '0.72rem',
+            fontWeight: 700,
             cursor: 'pointer',
             transition: 'all 0.2s ease',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
           }}
         >
-          <span style={{ color: 'var(--color-primary)', marginRight: 4, fontWeight: 900 }}>●</span> Dễ (1-2)
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 6px #10b981', flexShrink: 0 }} />
+          <span>Dễ (1-2)</span>
+          <span
+            style={{
+              fontSize: '0.66rem',
+              opacity: 0.85,
+              background: difficultyFilter === 'easy' ? 'rgba(16, 185, 129, 0.25)' : 'rgba(255, 255, 255, 0.08)',
+              padding: '1px 5px',
+              borderRadius: 8,
+            }}
+          >
+            {difficultyCounts.easy}
+          </span>
         </button>
+
         <button
+          type="button"
           onClick={() => setDifficultyFilter('medium')}
           style={{
-            background: difficultyFilter === 'medium' ? 'rgba(250, 204, 21, 0.22)' : 'transparent',
-            color: difficultyFilter === 'medium' ? 'var(--color-sun)' : 'var(--color-text-muted)',
-            border: difficultyFilter === 'medium' ? '1px solid var(--color-sun)' : '1px solid transparent',
-            borderRadius: 16,
-            padding: '5px 12px',
-            fontSize: '0.78rem',
-            fontWeight: difficultyFilter === 'medium' ? 800 : 600,
+            background: difficultyFilter === 'medium' ? 'rgba(250, 204, 21, 0.18)' : 'transparent',
+            color: difficultyFilter === 'medium' ? 'var(--color-sun)' : 'var(--color-text-dim)',
+            border: difficultyFilter === 'medium' ? '1px solid rgba(250, 204, 21, 0.5)' : '1px solid transparent',
+            borderRadius: 12,
+            padding: '4px 7px',
+            fontSize: '0.72rem',
+            fontWeight: 700,
             cursor: 'pointer',
             transition: 'all 0.2s ease',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
           }}
         >
-          <span style={{ color: 'var(--color-sun)', marginRight: 4, fontWeight: 900 }}>●</span> Trung Bình (3)
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--color-sun)', boxShadow: '0 0 6px var(--color-sun)', flexShrink: 0 }} />
+          <span>Vừa (3)</span>
+          <span
+            style={{
+              fontSize: '0.66rem',
+              opacity: 0.85,
+              background: difficultyFilter === 'medium' ? 'rgba(250, 204, 21, 0.25)' : 'rgba(255, 255, 255, 0.08)',
+              padding: '1px 5px',
+              borderRadius: 8,
+            }}
+          >
+            {difficultyCounts.medium}
+          </span>
         </button>
+
         <button
+          type="button"
           onClick={() => setDifficultyFilter('hard')}
           style={{
-            background: difficultyFilter === 'hard' ? 'rgba(239, 68, 68, 0.22)' : 'transparent',
-            color: difficultyFilter === 'hard' ? 'var(--color-error)' : 'var(--color-text-muted)',
-            border: difficultyFilter === 'hard' ? '1px solid var(--color-error)' : '1px solid transparent',
-            borderRadius: 16,
-            padding: '5px 12px',
-            fontSize: '0.78rem',
-            fontWeight: difficultyFilter === 'hard' ? 800 : 600,
+            background: difficultyFilter === 'hard' ? 'rgba(239, 68, 68, 0.18)' : 'transparent',
+            color: difficultyFilter === 'hard' ? 'var(--color-error)' : 'var(--color-text-dim)',
+            border: difficultyFilter === 'hard' ? '1px solid rgba(239, 68, 68, 0.5)' : '1px solid transparent',
+            borderRadius: 12,
+            padding: '4px 7px',
+            fontSize: '0.72rem',
+            fontWeight: 700,
             cursor: 'pointer',
             transition: 'all 0.2s ease',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
           }}
         >
-          <span style={{ color: 'var(--color-error)', marginRight: 4, fontWeight: 900 }}>●</span> Khó (4-5)
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--color-error)', boxShadow: '0 0 6px var(--color-error)', flexShrink: 0 }} />
+          <span>Khó (4-5)</span>
+          <span
+            style={{
+              fontSize: '0.66rem',
+              opacity: 0.85,
+              background: difficultyFilter === 'hard' ? 'rgba(239, 68, 68, 0.25)' : 'rgba(255, 255, 255, 0.08)',
+              padding: '1px 5px',
+              borderRadius: 8,
+            }}
+          >
+            {difficultyCounts.hard}
+          </span>
+        </button>
+
+        {/* Active Safety Warnings Filter Button */}
+        <button
+          type="button"
+          onClick={handleToggleAlertFilter}
+          aria-label="Lọc các địa điểm phát cảnh báo"
+          title="Chỉ hiển thị các cung đường đang có cảnh báo sự cố an toàn"
+          style={{
+            background: difficultyFilter === 'alert'
+              ? 'rgba(239, 68, 68, 0.28)'
+              : alertTrails.length > 0
+              ? 'rgba(239, 68, 68, 0.12)'
+              : 'transparent',
+            color: difficultyFilter === 'alert' || alertTrails.length > 0 ? '#ef4444' : 'var(--color-text-dim)',
+            border: difficultyFilter === 'alert'
+              ? '1px solid #ef4444'
+              : alertTrails.length > 0
+              ? '1px solid rgba(239, 68, 68, 0.45)'
+              : '1px solid transparent',
+            borderRadius: 12,
+            padding: '4px 7px',
+            fontSize: '0.72rem',
+            fontWeight: 700,
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            whiteSpace: 'nowrap',
+            flexShrink: 0,
+          }}
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: '#ef4444',
+              boxShadow: '0 0 6px #ef4444',
+              flexShrink: 0,
+            }}
+          />
+          <span>Cảnh Báo</span>
+          <span
+            style={{
+              fontSize: '0.66rem',
+              fontWeight: 800,
+              background: difficultyFilter === 'alert' ? '#ef4444' : 'rgba(239, 68, 68, 0.22)',
+              color: difficultyFilter === 'alert' ? '#ffffff' : '#ef4444',
+              padding: '1px 5px',
+              borderRadius: 8,
+            }}
+          >
+            {alertTrails.length}
+          </span>
         </button>
       </div>
 
@@ -1023,11 +2013,20 @@ export const MapView: React.FC<MapViewProps> = ({
         <MapContainer
           center={[centerLat, centerLng]}
           zoom={zoomLevel}
+          minZoom={5.5}
+          maxZoom={18}
+          maxBounds={[
+            [6.8, 100.8],
+            [24.5, 115.2],
+          ]}
+          maxBoundsViscosity={0.9}
+          zoomControl={false}
           scrollWheelZoom={true}
           preferCanvas={true}
           style={{ width: '100%', height: '100%', borderRadius: 24 }}
         >
-          <MapController selectedTrail={selectedTrail} flyToPos={flyToPos} currentTileKey={currentTileKey} isLiveTracking={isLiveTracking} />
+          <CustomMapControls onResetView={handleResetView} />
+          <MapController selectedTrail={selectedTrail} flyToPos={flyToPos} flyToZoom={flyToZoom} currentTileKey={currentTileKey} isLiveTracking={isLiveTracking} />
 
           <TileLayer
             key={currentTileKey}
@@ -1155,19 +2154,10 @@ export const MapView: React.FC<MapViewProps> = ({
                 );
               })}
 
-          {/* SVG Mountain Teardrop Markers with Integrated Warning Badges */}
+          {/* SVG Mountain Teardrop Markers with Integrated Warning Badges & Dynamic Flip Tooltips */}
           {filteredTrails.map((trail) => {
             const tid = trail.id || (trail as any)._id;
-            const matchingIncident = incidents?.find((inc) => {
-              if (!inc) return false;
-              if (inc.trailId && (inc.trailId === tid || inc.trailId === trail.id)) return true;
-              if (inc.trailName && trail.name) {
-                const normInc = inc.trailName.toLowerCase().replace(/[^a-z0-9]/g, '');
-                const normTrail = trail.name.toLowerCase().replace(/[^a-z0-9]/g, '');
-                if (normInc.includes(normTrail) || normTrail.includes(normInc)) return true;
-              }
-              return false;
-            });
+            const matchingIncident = matchTrailIncident(trail, incidents);
 
             return (
               <Marker
@@ -1178,6 +2168,19 @@ export const MapView: React.FC<MapViewProps> = ({
                   click: () => onSelectTrail?.(trail),
                 }}
               >
+                <Tooltip
+                  direction="auto"
+                  offset={[0, -25]}
+                  opacity={1}
+                  interactive={true}
+                  className="tactical-leaflet-tooltip"
+                >
+                  <TacticalTrailTooltip
+                    trail={trail}
+                    incident={matchingIncident}
+                    onSelect={() => onSelectTrail?.(trail)}
+                  />
+                </Tooltip>
                 <Popup className="custom-leaflet-popup">
                   <TrailPopupContent
                     trail={trail}

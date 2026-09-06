@@ -1,4 +1,5 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
+import { createPortal } from 'react-dom';
 import { Navbar } from './components/layout/Navbar.js';
 import { Footer } from './components/layout/Footer.js';
 import { TrailCard } from './components/trail/TrailCard.js';
@@ -837,8 +838,30 @@ export function App() {
                   window.scrollTo({ top: offsetPosition, behavior: 'smooth' });
                 }
               }}
+              onScrollToAllTrails={() => {
+                setSelectedRegion('All');
+                setSearchQuery('');
+                const trailsEl = document.getElementById('all-trails-section') || document.getElementById('gis-map-section');
+                if (trailsEl) {
+                  const offset = 80;
+                  const bodyRect = document.body.getBoundingClientRect().top;
+                  const elementRect = trailsEl.getBoundingClientRect().top;
+                  const elementPosition = elementRect - bodyRect;
+                  const offsetPosition = elementPosition - offset;
+                  window.scrollTo({ top: offsetPosition, behavior: 'smooth' });
+                }
+              }}
               onExploreClick={() => handleNavigate('explore')}
               onSelectTrail={handleSelectTrail}
+              onOpenEmergencyContacts={() => setIsEmergencyContactsOpen(true)}
+              activeFilterCount={
+                (selectedRegion !== 'All' ? 1 : 0) +
+                (selectedDifficulty ? 1 : 0) +
+                (selectedDuration ? 1 : 0) +
+                (campsiteOnly ? 1 : 0) +
+                (kidFriendlyOnly ? 1 : 0) +
+                (sortBy !== 'rating_desc' ? 1 : 0)
+              }
             />
 
             {/* Main Content Container */}
@@ -895,7 +918,7 @@ export function App() {
               />
 
               {/* All Trails Catalog (Grid vs Compact Mode) */}
-              <section style={{ marginBottom: 56 }}>
+              <section id="all-trails-section" style={{ marginBottom: 56 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
                   <div>
                     <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--color-primary)', fontSize: '0.8rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
@@ -1425,32 +1448,82 @@ export function App() {
       </ErrorBoundary>
 
       {/* Modal New Thread on Homepage */}
-      {isHomeNewThreadOpen && (
-        <div className="modal-overlay" onClick={() => setIsHomeNewThreadOpen(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ fontSize: '1.3rem', color: '#fff', fontWeight: 800, marginBottom: 20 }}>
-              Viết bài đóng góp nhật ký băng rừng
-            </h3>
+      {isHomeNewThreadOpen && createPortal(
+        <div
+          className="modal-overlay"
+          onClick={() => setIsHomeNewThreadOpen(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            width: '100vw',
+            height: '100vh',
+            background: 'rgba(3, 8, 14, 0.88)',
+            backdropFilter: 'blur(16px)',
+            WebkitBackdropFilter: 'blur(16px)',
+            zIndex: 99999999,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px 16px',
+            boxSizing: 'border-box',
+          }}
+        >
+          <div
+            className="modal-content"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: 'var(--color-bg-card)',
+              border: '1.5px solid var(--color-border)',
+              borderRadius: 22,
+              padding: '26px 28px',
+              maxWidth: 580,
+              width: '100%',
+              maxHeight: 'min(88vh, 720px)',
+              overflowY: 'auto',
+              boxShadow: '0 25px 60px rgba(0, 0, 0, 0.9), 0 0 30px rgba(5, 150, 105, 0.18)',
+              position: 'relative',
+              zIndex: 100000000,
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+              <h3 style={{ fontSize: '1.25rem', color: 'var(--color-text-main)', fontWeight: 800, margin: 0 }}>
+                Viết bài đóng góp nhật ký băng rừng
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsHomeNewThreadOpen(false)}
+                style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '1.1rem', padding: 4 }}
+                title="Đóng cửa sổ"
+              >
+                ✕
+              </button>
+            </div>
 
             <form onSubmit={handleCreateHomeThread}>
-              <div className="form-group">
-                <label className="form-label">Tiêu đề nhật ký</label>
+              <div className="form-group" style={{ marginBottom: 14 }}>
+                <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 6, display: 'block', color: 'var(--color-text-main)' }}>
+                  Tiêu đề nhật ký
+                </label>
                 <input
                   type="text"
                   className="form-input"
                   placeholder="Ví dụ: Cẩm nang leo Lảo Thẩn 2N1Đ tự túc mới nhất"
                   value={newTitle}
                   onChange={(e) => setNewTitle(e.target.value)}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 10, fontSize: '0.84rem' }}
                   required
                 />
               </div>
 
-              <div className="form-group">
-                <label className="form-label">Chuyên mục</label>
+              <div className="form-group" style={{ marginBottom: 14 }}>
+                <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 6, display: 'block', color: 'var(--color-text-main)' }}>
+                  Chuyên mục
+                </label>
                 <select
                   className="form-select"
                   value={newCategory}
                   onChange={(e) => setNewCategory(e.target.value as any)}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 10, fontSize: '0.84rem', background: 'var(--color-bg-main)', color: 'var(--color-text-main)', border: '1px solid var(--color-border)' }}
                 >
                   <option value="Hỏi Đáp">Hỏi Đáp</option>
                   <option value="Kinh Nghiệm">Kinh Nghiệm</option>
@@ -1459,29 +1532,33 @@ export function App() {
                 </select>
               </div>
 
-              <div className="form-group">
-                <label className="form-label">Nội dung chi tiết</label>
+              <div className="form-group" style={{ marginBottom: 20 }}>
+                <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 6, display: 'block', color: 'var(--color-text-main)' }}>
+                  Nội dung chi tiết
+                </label>
                 <textarea
                   className="form-textarea"
                   rows={5}
                   placeholder="Nhập nội dung chia sẻ trải nghiệm thực tế của bạn..."
                   value={newContent}
                   onChange={(e) => setNewContent(e.target.value)}
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: 10, fontSize: '0.84rem' }}
                   required
                 />
               </div>
 
-              <div style={{ display: 'flex', gap: 12, marginTop: 24 }}>
-                <button type="button" className="btn btn-secondary" onClick={() => setIsHomeNewThreadOpen(false)} style={{ flex: 1 }}>
+              <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
+                <button type="button" className="btn btn-secondary" onClick={() => setIsHomeNewThreadOpen(false)} style={{ flex: 1, padding: '8px 16px', borderRadius: 10 }}>
                   Hủy bỏ
                 </button>
-                <button type="submit" className="btn btn-primary" style={{ flex: 2 }}>
+                <button type="submit" className="btn btn-primary" style={{ flex: 2, padding: '8px 20px', borderRadius: 10, fontWeight: 800, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
                   <Send size={16} /> Đăng nhật ký
                 </button>
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Authentication Register / Login / Reset Password Modal */}
@@ -1561,12 +1638,42 @@ export function App() {
       )}
 
       {/* Emergency Incident Detail Modal */}
-      {selectedIncidentDetail && (
-        <div className="modal-overlay" onClick={() => setSelectedIncidentDetail(null)}>
+      {selectedIncidentDetail && createPortal(
+        <div
+          className="modal-overlay"
+          onClick={() => setSelectedIncidentDetail(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            width: '100vw',
+            height: '100vh',
+            background: 'rgba(3, 8, 14, 0.88)',
+            backdropFilter: 'blur(16px)',
+            WebkitBackdropFilter: 'blur(16px)',
+            zIndex: 99999999,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px 16px',
+            boxSizing: 'border-box',
+          }}
+        >
           <div
             className="modal-content"
             onClick={(e) => e.stopPropagation()}
-            style={{ maxWidth: 600, border: '1.5px solid #ef4444', boxShadow: '0 0 50px rgba(239, 68, 68, 0.4)' }}
+            style={{
+              maxWidth: 600,
+              width: '100%',
+              maxHeight: 'min(90vh, 760px)',
+              overflowY: 'auto',
+              border: '1.5px solid #ef4444',
+              boxShadow: '0 0 50px rgba(239, 68, 68, 0.4)',
+              background: 'var(--color-bg-card)',
+              borderRadius: 20,
+              padding: 24,
+              position: 'relative',
+              zIndex: 100000000,
+            }}
           >
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, borderBottom: '1px solid var(--color-border)', paddingBottom: 12 }}>
@@ -1688,7 +1795,8 @@ export function App() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Floating Bottom Trail Comparison Quick Bar */}

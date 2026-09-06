@@ -151,6 +151,7 @@ export interface UserProfile {
   name?: string;
   avatarUrl: string;
   avatar?: string;
+  coverUrl?: string;
   role: 'user' | 'guide' | 'admin' | 'moderator' | 'trusted';
   reputationScore: number;
   badges: string[];
@@ -171,11 +172,13 @@ export type User = UserProfile;
 
 export interface ForumThread {
   id: string;
+  userId?: string;
   title: string;
   authorName: string;
   authorAvatar?: string;
   category: 'Hỏi Đáp' | 'Kinh Nghiệm' | 'Tìm Đồng Đội' | 'Cảnh Báo';
   content: string;
+  images?: string[];
   upvotes: number;
   reactions?: Record<string, number>;
   userReaction?: string | null;

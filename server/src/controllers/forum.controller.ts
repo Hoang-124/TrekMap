@@ -6,7 +6,6 @@ import { TrailModel } from '../models/Trail.js';
 import { CommunityMessageModel } from '../models/CommunityMessage.js';
 import { verifyToken } from '../utils/auth.js';
 import { getUserKey, getUserKeys } from '../middleware/auth.middleware.js';
-import { mockThreads } from '../data/seedData.js';
 import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
 import { awardReputationPoints, deductReputationPoints, REPUTATION_POINTS, PENALTY_POINTS } from '../utils/reputation.js';
 import { NotificationModel } from '../models/Notification.js';
@@ -32,19 +31,19 @@ export const getThreads = async (req: Request, res: Response) => {
 
     let mongoThreads: any[] = [];
     try {
-      const threadQuery = ThreadModel.find().maxTimeMS(2000).lean().sort({ isPinned: -1, createdAt: -1 });
-      const timeoutRace = new Promise<any[]>((_, reject) =>
-        setTimeout(() => reject(new Error('Forum DB query timeout')), 1500)
-      );
-      mongoThreads = await Promise.race([threadQuery, timeoutRace]);
+      mongoThreads = await ThreadModel.find()
+        .populate('userId', 'fullName username avatarUrl')
+        .lean()
+        .sort({ isPinned: -1, createdAt: -1 });
     } catch (dbErr) {
+      console.error('[Forum DB Query Error]:', dbErr);
       mongoThreads = [];
     }
     if (mongoThreads && mongoThreads.length > 0) {
       return res.json({
         success: true,
         data: mongoThreads.map((t) => {
-          const userObj = t.userId as any;
+          const userObj = (t.userId && typeof t.userId === 'object') ? (t.userId as any) : null;
           const liveAvatar = (userObj && userObj.avatarUrl)
             ? userObj.avatarUrl
             : (t.authorAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(t.authorName)}&background=0ed7b5&color=041217&bold=true`);
@@ -53,6 +52,7 @@ export const getThreads = async (req: Request, res: Response) => {
           if (t.userReactionsMap) {
             const isMap = typeof (t.userReactionsMap as any).get === 'function';
             for (const key of userKeys) {
+              if (!key) continue;
               const r = isMap ? (t.userReactionsMap as any).get(key) : (t.userReactionsMap as any)[key];
               if (r) {
                 currentUserReaction = r;
@@ -61,14 +61,17 @@ export const getThreads = async (req: Request, res: Response) => {
             }
           }
 
+          const authorUserId = userObj ? (userObj._id ? userObj._id.toString() : String(userObj)) : (t.userId ? String(t.userId) : '');
+
           return {
             id: t.id,
             title: t.title,
-            authorName: t.authorName,
+            authorName: userObj?.fullName || t.authorName,
             authorAvatar: liveAvatar,
-            userId: userObj ? (userObj._id ? userObj._id.toString() : t.userId) : t.userId,
+            userId: authorUserId,
             category: t.category,
             content: t.content,
+            images: t.images || [],
             upvotes: t.upvotes,
             reactions: t.reactions,
             userReaction: currentUserReaction || null,
@@ -83,17 +86,15 @@ export const getThreads = async (req: Request, res: Response) => {
     }
     return res.json({
       success: true,
-      data: mockThreads
-        .map((t) => ({ ...t, isPinned: Boolean(t.isPinned), isLocked: Boolean(t.isLocked) }))
-        .sort((a, b) => (b.isPinned ? 1 : 0) - (a.isPinned ? 1 : 0)),
+      data: [],
     });
   } catch (err) {
-    return res.json({ success: true, data: mockThreads });
+    return res.json({ success: true, data: [] });
   }
 };
 
 export const createThread = async (req: Request, res: Response) => {
-  const { title, category, content } = req.body;
+  const { title, category, content, images } = req.body;
 
   if (!title || !content) {
     return res.status(400).json({ success: false, message: 'Vui lòng nhập tiêu đề và nội dung bài viết.' });
@@ -169,6 +170,7 @@ export const createThread = async (req: Request, res: Response) => {
     userId: userIdObj,
     category: category || 'Kinh Nghiệm',
     content,
+    images: Array.isArray(images) ? images.slice(0, 8) : [],
     upvotes: 0,
     reactions: { like: 0, love: 0, haha: 0, wow: 0, buon: 0, huhu: 0, sad: 0, angry: 0, dislike: 0 },
     repliesCount: 0,
@@ -178,7 +180,7 @@ export const createThread = async (req: Request, res: Response) => {
 
   try {
     if (mongoose.connection.readyState === 1) {
-      await ThreadModel.create({
+      const createdDoc = await ThreadModel.create({
         id: threadId,
         title,
         authorName,
@@ -186,23 +188,41 @@ export const createThread = async (req: Request, res: Response) => {
         userId: userIdObj,
         category: category || 'Kinh Nghiệm',
         content,
+        images: Array.isArray(images) ? images.slice(0, 8) : [],
         upvotes: 0,
         reactions: { like: 0, love: 0, haha: 0, wow: 0, buon: 0, huhu: 0, sad: 0, angry: 0, dislike: 0 },
         userReactionsMap: {},
         repliesCount: 0,
         viewsCount: 1,
       });
+
+      return res.status(201).json({
+        success: true,
+        message: 'Đăng bài thảo luận thành công! Bạn nhận +15 điểm uy tín.',
+        data: {
+          id: createdDoc.id,
+          title: createdDoc.title,
+          authorName: createdDoc.authorName,
+          authorAvatar: createdDoc.authorAvatar,
+          userId: createdDoc.userId ? createdDoc.userId.toString() : undefined,
+          category: createdDoc.category,
+          content: createdDoc.content,
+          images: createdDoc.images || [],
+          upvotes: createdDoc.upvotes || 0,
+          reactions: createdDoc.reactions,
+          repliesCount: 0,
+          viewsCount: 1,
+          createdAt: 'Vừa xong',
+        },
+        reputationReward,
+      });
+    } else {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu đang không khả dụng.' });
     }
   } catch (err) {
     console.error('[MongoDB Thread Save Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi lưu bài viết vào cơ sở dữ liệu.' });
   }
-
-  res.status(201).json({
-    success: true,
-    message: 'Đăng bài thảo luận thành công! Bạn nhận +15 điểm uy tín.',
-    data: newThreadObj,
-    reputationReward,
-  });
 };
 
 export const reactToThread = async (req: Request, res: Response) => {
@@ -241,16 +261,30 @@ export const reactToThread = async (req: Request, res: Response) => {
 
     if (currentReaction === reactionType) {
       newReaction = null;
-      if (isMapInstance) mapObj.delete(targetKey);
-      else delete mapObj[targetKey];
+      if (isMapInstance) {
+        mapObj.delete(targetKey);
+        mapObj.delete(primaryKey);
+      } else {
+        delete mapObj[targetKey];
+        delete mapObj[primaryKey];
+      }
     } else if (reactionType) {
       newReaction = reactionType;
+      if (targetKey !== primaryKey) {
+        if (isMapInstance) mapObj.delete(targetKey);
+        else delete mapObj[targetKey];
+      }
       if (isMapInstance) mapObj.set(primaryKey, reactionType);
       else mapObj[primaryKey] = reactionType;
     } else {
       newReaction = null;
-      if (isMapInstance) mapObj.delete(targetKey);
-      else delete mapObj[targetKey];
+      if (isMapInstance) {
+        mapObj.delete(targetKey);
+        mapObj.delete(primaryKey);
+      } else {
+        delete mapObj[targetKey];
+        delete mapObj[primaryKey];
+      }
     }
 
     const counts: Record<string, number> = {
@@ -403,21 +437,25 @@ ${gpxPoints}
 export const getCommunityChatMessages = async (req: Request, res: Response) => {
   try {
     const rawMessages = await CommunityMessageModel.find()
+      .populate('senderId', 'fullName username avatarUrl')
       .sort({ createdAt: -1 })
       .limit(60)
       .lean();
 
-    const formatted = rawMessages.reverse().map((m: any) => ({
-      id: m._id.toString(),
-      senderId: m.senderId ? m.senderId.toString() : undefined,
-      senderName: m.senderName,
-      senderAvatar: m.senderAvatar,
-      senderBadge: m.senderBadge,
-      nameColor: m.nameColor,
-      text: m.text,
-      quote: m.quote && m.quote.author && m.quote.text ? { author: m.quote.author, text: m.quote.text } : undefined,
-      createdAt: m.createdAt ? new Date(m.createdAt).toISOString() : new Date().toISOString(),
-    }));
+    const formatted = rawMessages.reverse().map((m: any) => {
+      const liveSender = m.senderId && typeof m.senderId === 'object' ? m.senderId : null;
+      return {
+        id: m._id.toString(),
+        senderId: liveSender?._id?.toString() || (m.senderId ? m.senderId.toString() : undefined),
+        senderName: liveSender?.fullName || m.senderName,
+        senderAvatar: (liveSender && liveSender.avatarUrl) ? liveSender.avatarUrl : m.senderAvatar,
+        senderBadge: m.senderBadge,
+        nameColor: m.nameColor,
+        text: m.text,
+        quote: m.quote && m.quote.author && m.quote.text ? { author: m.quote.author, text: m.quote.text } : undefined,
+        createdAt: m.createdAt ? new Date(m.createdAt).toISOString() : new Date().toISOString(),
+      };
+    });
 
     return res.json({ success: true, data: formatted });
   } catch (err) {
@@ -435,20 +473,6 @@ export const pinThreadAdmin = async (req: Request, res: Response) => {
 
     let thread = await ThreadModel.findOne(query);
     if (!thread) {
-      const mockFound = mockThreads.find((m) => m.id === id || (m as any)._id === id);
-      if (mockFound) {
-        mockFound.isPinned = !mockFound.isPinned;
-        broadcastEvent('threadPinned', { threadId: mockFound.id, isPinned: mockFound.isPinned });
-        return res.json({
-          success: true,
-          message: mockFound.isPinned ? 'Đã ghim bài viết lên đầu diễn đàn!' : 'Đã gỡ ghim bài viết.',
-          data: {
-            id: mockFound.id,
-            isPinned: mockFound.isPinned,
-            isLocked: Boolean(mockFound.isLocked),
-          },
-        });
-      }
       return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết.' });
     }
 
@@ -482,20 +506,6 @@ export const lockThreadAdmin = async (req: Request, res: Response) => {
 
     let thread = await ThreadModel.findOne(query);
     if (!thread) {
-      const mockFound = mockThreads.find((m) => m.id === id || (m as any)._id === id);
-      if (mockFound) {
-        mockFound.isLocked = !mockFound.isLocked;
-        broadcastEvent('threadLocked', { threadId: mockFound.id, isLocked: mockFound.isLocked });
-        return res.json({
-          success: true,
-          message: mockFound.isLocked ? 'Đã khóa bình luận bài viết!' : 'Đã mở khóa bình luận bài viết.',
-          data: {
-            id: mockFound.id,
-            isPinned: Boolean(mockFound.isPinned),
-            isLocked: mockFound.isLocked,
-          },
-        });
-      }
       return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết.' });
     }
 
@@ -529,15 +539,6 @@ export const deleteThreadAdmin = async (req: Request, res: Response) => {
 
     const thread = await ThreadModel.findOneAndDelete(query);
     if (!thread) {
-      const mockIndex = mockThreads.findIndex((m) => m.id === id || (m as any)._id === id);
-      if (mockIndex !== -1) {
-        const deleted = mockThreads.splice(mockIndex, 1)[0];
-        broadcastEvent('threadDeleted', { threadId: deleted.id });
-        return res.json({
-          success: true,
-          message: `Đã xóa bài viết "${deleted.title}" thành công!`,
-        });
-      }
       return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết để xóa.' });
     }
 

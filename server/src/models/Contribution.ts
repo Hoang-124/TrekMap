@@ -119,3 +119,4 @@ ContributionSchema.index({ userId: 1 });
 ContributionSchema.index({ authorEmail: 1 });
 
 export const Contribution = mongoose.model<IContribution>('Contribution', ContributionSchema);
+export const ContributionModel = Contribution;

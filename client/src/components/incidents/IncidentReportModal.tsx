@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import type { Trail, Incident } from '../../types.js';
 import { submitIncident, confirmIncidentApi } from '../../services/api.js';
 import { searchMatchVietnamese } from '../../utils/textUtils.js';
@@ -182,8 +183,28 @@ export const IncidentReportModal: React.FC<ModalProps> = ({
     }
   };
 
-  return (
-    <div className="modal-overlay" onClick={onClose} style={{ zIndex: 99999, padding: 12 }}>
+  if (!isOpen) return null;
+
+  return createPortal(
+    <div
+      className="modal-overlay"
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        width: '100vw',
+        height: '100vh',
+        background: 'rgba(3, 8, 14, 0.88)',
+        backdropFilter: 'blur(16px)',
+        WebkitBackdropFilter: 'blur(16px)',
+        zIndex: 99999999,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '24px 16px',
+        boxSizing: 'border-box',
+      }}
+    >
       <div
         className="modal-content"
         onClick={(e) => e.stopPropagation()}
@@ -661,6 +682,7 @@ export const IncidentReportModal: React.FC<ModalProps> = ({
           </div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

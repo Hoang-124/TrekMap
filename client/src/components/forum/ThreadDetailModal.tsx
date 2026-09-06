@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import type { ForumThread } from '../../types.js';
+import { createPortal } from 'react-dom';
+import type { ForumThread, UserProfile } from '../../types.js';
 
 const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
   return ({ size = defaultSize, color = 'currentColor', style, className }: { size?: number; color?: string; style?: React.CSSProperties; className?: string }) => (
@@ -19,6 +20,7 @@ import { FacebookReactionPicker } from './FacebookReactionPicker.js';
 import type { ReactionType } from './FacebookReactionPicker.js';
 import { getApiHeaders, notifyForumUpdated } from '../../utils/sessionHeaders.js';
 import { useSocket } from '../../hooks/useSocket.js';
+import { IconChevronLeft, IconChevronRight, IconImage } from '../common/SvgIcons.js';
 
 export interface CommentReactions {
   like: number;
@@ -45,8 +47,9 @@ export interface CommentItem {
 
 interface ThreadDetailModalProps {
   thread: ForumThread | null;
+  currentUser?: UserProfile | null;
   onClose: () => void;
-  onOpenAuthorProfile: (author: { name: string; avatar: string }) => void;
+  onOpenAuthorProfile: (author: { name: string; avatar: string; userId?: string }) => void;
   onUpdateCommentCount?: (threadId: string, count: number) => void;
   onUpdateThreadUpvotes?: (threadId: string, upvotes: number) => void;
   onUpdateThreadReaction?: (threadId: string, newReaction: ReactionType, newReactionsSummary: Record<string, number>, newUpvotes: number) => void;
@@ -55,6 +58,7 @@ interface ThreadDetailModalProps {
 
 export const ThreadDetailModal: React.FC<ThreadDetailModalProps> = ({
   thread,
+  currentUser,
   onClose,
   onOpenAuthorProfile,
   onUpdateCommentCount,
@@ -77,6 +81,29 @@ export const ThreadDetailModal: React.FC<ThreadDetailModalProps> = ({
 
   // Per comment reaction state map
   const [commentReactionsState, setCommentReactionsState] = useState<{ [commentId: string]: ReactionType }>({});
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+
+  const activeImages = thread?.images || [];
+
+  // Keyboard navigation for lightbox (ArrowLeft, ArrowRight, Escape)
+  useEffect(() => {
+    if (lightboxIndex === null || activeImages.length === 0) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setLightboxIndex(null);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setLightboxIndex((prev) => (prev !== null && prev > 0 ? prev - 1 : activeImages.length - 1));
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        setLightboxIndex((prev) => (prev !== null && prev < activeImages.length - 1 ? prev + 1 : 0));
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [lightboxIndex, activeImages.length]);
 
   const { socket } = useSocket();
   const threadId = thread?.id;
@@ -169,6 +196,15 @@ export const ThreadDetailModal: React.FC<ThreadDetailModalProps> = ({
 
   if (!thread) return null;
 
+  // Toast helper fallback
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    if (onShowToast) {
+      onShowToast(message, type);
+    } else {
+      window.dispatchEvent(new CustomEvent('trekmap:show-toast', { detail: { message, type } }));
+    }
+  };
+
   // Add Top-level Comment
   const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -178,29 +214,22 @@ export const ThreadDetailModal: React.FC<ThreadDetailModalProps> = ({
     const textToSend = commentText.trim();
     setCommentText(''); // Clear input immediately
 
-    const token = localStorage.getItem('trekmap_token');
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-
     try {
       const res = await fetch(`/api/forum/threads/${thread.id}/comments`, {
         method: 'POST',
-        headers,
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ content: textToSend }),
       });
       const json = await res.json();
       if (json.success && json.data) {
         await fetchRealComments();
+        showToast('Gửi bình luận thành công! Dữ liệu đã lưu vào database.', 'success');
       } else {
-        if (onShowToast) {
-          onShowToast(json.message || 'Không thể gửi bình luận.', 'error');
-        }
+        showToast(json.message || 'Không thể gửi bình luận.', 'error');
         setCommentText(textToSend);
       }
     } catch (err) {
-      if (onShowToast) {
-        onShowToast('Không thể kết nối máy chủ để lưu bình luận.', 'error');
-      }
+      showToast('Không thể kết nối máy chủ để lưu bình luận.', 'error');
       setCommentText(textToSend);
     } finally {
       setIsSubmitting(false);
@@ -215,30 +244,23 @@ export const ThreadDetailModal: React.FC<ThreadDetailModalProps> = ({
     const textToSend = replyInputText.trim();
     setReplyInputText('');
 
-    const token = localStorage.getItem('trekmap_token');
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-
     try {
       const res = await fetch(`/api/forum/threads/${thread.id}/comments`, {
         method: 'POST',
-        headers,
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ content: textToSend, parentId }),
       });
       const json = await res.json();
       if (json.success && json.data) {
         setActiveReplyId(null);
         await fetchRealComments();
+        showToast('Gửi phản hồi thành công!', 'success');
       } else {
-        if (onShowToast) {
-          onShowToast(json.message || 'Không thể gửi phản hồi.', 'error');
-        }
+        showToast(json.message || 'Không thể gửi phản hồi.', 'error');
         setReplyInputText(textToSend);
       }
     } catch (err) {
-      if (onShowToast) {
-        onShowToast('Không thể kết nối máy chủ để lưu phản hồi.', 'error');
-      }
+      showToast('Không thể kết nối máy chủ để lưu phản hồi.', 'error');
       setReplyInputText(textToSend);
     } finally {
       setIsSubmittingReply(false);
@@ -402,26 +424,42 @@ const updateCommentReactionsOptimistically = (
 
         {/* Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-          <div
-            onClick={() => onOpenAuthorProfile({ name: cleanCommentAuthor, avatar: comment.authorAvatar })}
-            style={{ display: 'flex', alignItems: 'center', gap: 9, cursor: 'pointer' }}
-            title="Bấm để xem hồ sơ người bình luận"
-          >
-            <img
-              src={comment.authorAvatar}
-              alt={cleanCommentAuthor}
-              referrerPolicy="no-referrer"
-              style={{
-                width: 28,
-                height: 28,
-                borderRadius: '50%',
-                border: isPostAuthor ? '2px solid var(--color-primary)' : '1.5px solid var(--color-sky)',
-                objectFit: 'cover',
-              }}
-            />
-            <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-              {cleanCommentAuthor}
-            </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+            {(() => {
+              const isCommentAuthorCurrent = Boolean(
+                currentUser && (
+                  (currentUser.fullName && cleanCommentAuthor.toLowerCase().includes(currentUser.fullName.toLowerCase())) ||
+                  (currentUser.username && cleanCommentAuthor.toLowerCase().includes(currentUser.username.toLowerCase()))
+                )
+              );
+              const commentEffectiveAvatar = (isCommentAuthorCurrent && (currentUser?.avatarUrl || currentUser?.avatar))
+                ? (currentUser.avatarUrl || currentUser.avatar)
+                : (comment.authorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80');
+
+              return (
+                <div
+                  onClick={() => onOpenAuthorProfile({ name: cleanCommentAuthor, avatar: commentEffectiveAvatar || '' })}
+                  style={{ display: 'flex', alignItems: 'center', gap: 9, cursor: 'pointer' }}
+                  title="Bấm để xem hồ sơ người bình luận"
+                >
+                  <img
+                    src={commentEffectiveAvatar}
+                    alt={cleanCommentAuthor}
+                    referrerPolicy="no-referrer"
+                    style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: '50%',
+                      border: isPostAuthor ? '2px solid var(--color-primary)' : '1.5px solid var(--color-sky)',
+                      objectFit: 'cover',
+                    }}
+                  />
+                  <span style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                    {cleanCommentAuthor}
+                  </span>
+                </div>
+              );
+            })()}
             {isPostAuthor && (
               <span style={{
                 background: 'rgba(22, 163, 74, 0.15)',
@@ -516,15 +554,50 @@ const updateCommentReactionsOptimistically = (
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <>
+      {createPortal(
+        <div
+          className="modal-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && lightboxIndex === null) {
+              onClose();
+            }
+          }}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        width: '100vw',
+        height: '100vh',
+        background: 'rgba(3, 8, 14, 0.86)',
+        backdropFilter: 'blur(16px)',
+        WebkitBackdropFilter: 'blur(16px)',
+        zIndex: 99999999,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '32px 16px',
+        boxSizing: 'border-box',
+      }}
+    >
       <div
         className="modal-content"
         onClick={(e) => e.stopPropagation()}
         style={{
           maxWidth: 680,
+          width: '100%',
+          height: 'min(86vh, 760px)',
+          maxHeight: 'min(86vh, 760px)',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
+          background: 'var(--color-bg-card)',
+          border: '1.5px solid var(--color-border)',
+          borderRadius: 22,
+          padding: '22px 24px',
+          boxShadow: '0 25px 60px rgba(0, 0, 0, 0.9), 0 0 30px rgba(5, 150, 105, 0.2)',
+          position: 'relative',
+          zIndex: 100000000,
+          margin: 0,
         }}
       >
         {/* Header */}
@@ -535,21 +608,40 @@ const updateCommentReactionsOptimistically = (
             </span>
 
             {/* Post Author Clickable Header */}
-            <div
-              onClick={() => onOpenAuthorProfile({ name: thread.authorName.replace(/\(.*\)/, '').trim(), avatar: thread.authorAvatar || '' })}
-              style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
-              title="Bấm để xem hồ sơ tác giả bài viết"
-            >
-              <img
-                src={thread.authorAvatar}
-                alt={thread.authorName}
-                referrerPolicy="no-referrer"
-                style={{ width: 22, height: 22, borderRadius: '50%', border: '1px solid var(--color-primary)', objectFit: 'cover' }}
-              />
-              <span style={{ fontSize: 'var(--font-size-xs)', fontWeight: 'var(--font-weight-bold)', color: 'var(--color-primary)', textDecoration: 'underline' }}>
-                {thread.authorName.replace(/\(.*\)/, '').trim()}
-              </span>
-            </div>
+            {(() => {
+              const isCurrentUserAuthor = Boolean(
+                currentUser && (
+                  (thread.userId && currentUser.id && String(thread.userId) === String(currentUser.id)) ||
+                  (currentUser.fullName && thread.authorName.toLowerCase().includes(currentUser.fullName.toLowerCase())) ||
+                  (currentUser.username && thread.authorName.toLowerCase().includes(currentUser.username.toLowerCase()))
+                )
+              );
+              const effectiveAvatar = (isCurrentUserAuthor && (currentUser?.avatarUrl || currentUser?.avatar))
+                ? (currentUser.avatarUrl || currentUser.avatar)
+                : (thread.authorAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=250&q=80');
+
+              return (
+                <div
+                  onClick={() => onOpenAuthorProfile({
+                    name: thread.authorName.replace(/\(.*\)/, '').trim(),
+                    avatar: effectiveAvatar || '',
+                    userId: thread.userId,
+                  })}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                  title="Bấm để xem hồ sơ tác giả bài viết"
+                >
+                  <img
+                    src={effectiveAvatar}
+                    alt={thread.authorName}
+                    referrerPolicy="no-referrer"
+                    style={{ width: 22, height: 22, borderRadius: '50%', border: '1px solid var(--color-primary)', objectFit: 'cover' }}
+                  />
+                  <span style={{ fontSize: 'var(--font-size-xs)', fontWeight: 'var(--font-weight-bold)', color: 'var(--color-primary)', textDecoration: 'underline' }}>
+                    {thread.authorName.replace(/\(.*\)/, '').trim()}
+                  </span>
+                </div>
+              );
+            })()}
 
             <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-dim)' }}>• {thread.createdAt}</span>
           </div>
@@ -570,6 +662,72 @@ const updateCommentReactionsOptimistically = (
           <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', lineHeight: 'var(--line-height-normal)', margin: 0, background: 'var(--color-bg-main)', padding: 16, borderRadius: 14, border: '1px solid var(--color-border)' }}>
             {thread.content}
           </p>
+
+          {/* Attached Real Photos Gallery */}
+          {thread.images && thread.images.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-primary)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                Hình Ảnh Thực Tế Từ Chuyến Đi ({thread.images.length})
+              </span>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: thread.images.length === 1 ? '1fr' : 'repeat(auto-fill, minmax(180px, 1fr))',
+                  gap: 10,
+                }}
+              >
+                {thread.images.map((imgSrc, idx) => (
+                  <div
+                    key={idx}
+                    onClick={() => setLightboxIndex(idx)}
+                    style={{
+                      position: 'relative',
+                      height: thread.images && thread.images.length === 1 ? 280 : 160,
+                      borderRadius: 14,
+                      overflow: 'hidden',
+                      border: '1px solid var(--color-border)',
+                      cursor: 'zoom-in',
+                      background: '#040b12',
+                      boxShadow: '0 8px 24px rgba(0, 0, 0, 0.4)',
+                      transition: 'transform 0.2s ease, border-color 0.2s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor = 'var(--color-primary)';
+                      e.currentTarget.style.transform = 'scale(1.02)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = 'var(--color-border)';
+                      e.currentTarget.style.transform = 'scale(1)';
+                    }}
+                    title="Bấm để xem ảnh phóng to"
+                  >
+                    <img
+                      src={imgSrc}
+                      alt={`Ảnh hành trình ${idx + 1}`}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                    <div
+                      style={{
+                        position: 'absolute',
+                        bottom: 8,
+                        right: 8,
+                        background: 'rgba(3, 8, 14, 0.75)',
+                        backdropFilter: 'blur(6px)',
+                        color: 'var(--color-primary)',
+                        fontSize: '0.7rem',
+                        fontWeight: 700,
+                        padding: '3px 8px',
+                        borderRadius: 6,
+                        border: '1px solid rgba(74, 222, 128, 0.3)',
+                      }}
+                    >
+                      Ảnh #{idx + 1}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Action Row: Thread Reaction Picker */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--color-border)', borderBottom: '1px solid var(--color-border)', padding: '12px 0' }}>
@@ -623,6 +781,278 @@ const updateCommentReactionsOptimistically = (
           </button>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body
+  )}
+
+  {/* Interactive Fullscreen Gallery Lightbox with Prev/Next, Thumbnails & Keyboard Navigation */}
+  {lightboxIndex !== null && activeImages[lightboxIndex] && createPortal(
+    <div
+      onClick={(e) => {
+        e.stopPropagation();
+        setLightboxIndex(null);
+      }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 100000001,
+            background: 'rgba(2, 6, 12, 0.94)',
+            backdropFilter: 'blur(24px)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '20px 24px 28px',
+            userSelect: 'none',
+          }}
+        >
+          {/* Top Bar: Counter Badge & Close Button */}
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: 'absolute',
+              top: 20,
+              left: 24,
+              right: 24,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              zIndex: 10,
+            }}
+          >
+            {/* Image Counter Badge */}
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '6px 14px',
+                borderRadius: 20,
+                background: 'rgba(255, 255, 255, 0.08)',
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                backdropFilter: 'blur(10px)',
+                color: 'var(--color-text-main)',
+                fontSize: '0.84rem',
+                fontWeight: 700,
+                letterSpacing: '0.02em',
+              }}
+            >
+              <IconImage size={15} color="var(--color-primary)" />
+              <span>Ảnh {lightboxIndex + 1} / {activeImages.length}</span>
+            </div>
+
+            {/* Close Button */}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setLightboxIndex(null);
+              }}
+              style={{
+                background: 'rgba(255, 255, 255, 0.1)',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                borderRadius: '50%',
+                width: 42,
+                height: 42,
+                color: '#fff',
+                fontSize: '1.2rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(239, 68, 68, 0.8)';
+                e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 1)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
+                e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+              }}
+              title="Đóng xem ảnh (Esc)"
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* Main Image Container with Prev/Next Navigation */}
+          <div
+            style={{
+              position: 'relative',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '100%',
+              flex: 1,
+              maxHeight: 'calc(85vh - 90px)',
+            }}
+          >
+            {/* Previous Button */}
+            {activeImages.length > 1 && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setLightboxIndex((prev) => (prev !== null && prev > 0 ? prev - 1 : activeImages.length - 1));
+                }}
+                style={{
+                  position: 'absolute',
+                  left: 20,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  zIndex: 20,
+                  width: 50,
+                  height: 50,
+                  borderRadius: '50%',
+                  background: 'rgba(15, 23, 42, 0.75)',
+                  border: '1.5px solid rgba(255, 255, 255, 0.25)',
+                  backdropFilter: 'blur(12px)',
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--color-primary)';
+                  e.currentTarget.style.borderColor = 'var(--color-primary)';
+                  e.currentTarget.style.transform = 'translateY(-50%) scale(1.1)';
+                  e.currentTarget.style.color = '#041108';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'rgba(15, 23, 42, 0.75)';
+                  e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.25)';
+                  e.currentTarget.style.transform = 'translateY(-50%) scale(1)';
+                  e.currentTarget.style.color = '#fff';
+                }}
+                title="Ảnh trước (← hoặc phím mũi tên trái)"
+              >
+                <IconChevronLeft size={24} />
+              </button>
+            )}
+
+            {/* Currently Active Image */}
+            <img
+              src={activeImages[lightboxIndex]}
+              alt={`Ảnh ${lightboxIndex + 1}`}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                maxWidth: '88vw',
+                maxHeight: '70vh',
+                borderRadius: 16,
+                boxShadow: '0 25px 60px rgba(0, 0, 0, 0.95), 0 0 40px rgba(74, 222, 128, 0.25)',
+                objectFit: 'contain',
+                border: '1px solid var(--color-border)',
+                transition: 'opacity 0.2s ease',
+              }}
+            />
+
+            {/* Next Button */}
+            {activeImages.length > 1 && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setLightboxIndex((prev) => (prev !== null && prev < activeImages.length - 1 ? prev + 1 : 0));
+                }}
+                style={{
+                  position: 'absolute',
+                  right: 20,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  zIndex: 20,
+                  width: 50,
+                  height: 50,
+                  borderRadius: '50%',
+                  background: 'rgba(15, 23, 42, 0.75)',
+                  border: '1.5px solid rgba(255, 255, 255, 0.25)',
+                  backdropFilter: 'blur(12px)',
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--color-primary)';
+                  e.currentTarget.style.borderColor = 'var(--color-primary)';
+                  e.currentTarget.style.transform = 'translateY(-50%) scale(1.1)';
+                  e.currentTarget.style.color = '#041108';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'rgba(15, 23, 42, 0.75)';
+                  e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.25)';
+                  e.currentTarget.style.transform = 'translateY(-50%) scale(1)';
+                  e.currentTarget.style.color = '#fff';
+                }}
+                title="Ảnh tiếp theo (→ hoặc phím mũi tên phải)"
+              >
+                <IconChevronRight size={24} />
+              </button>
+            )}
+          </div>
+
+          {/* Bottom Thumbnail Strip for Instant Jumping */}
+          {activeImages.length > 1 && (
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                display: 'flex',
+                gap: 10,
+                alignItems: 'center',
+                justifyContent: 'center',
+                marginTop: 16,
+                padding: '8px 14px',
+                borderRadius: 16,
+                background: 'rgba(10, 18, 30, 0.75)',
+                border: '1px solid rgba(255, 255, 255, 0.12)',
+                backdropFilter: 'blur(16px)',
+                maxWidth: '90vw',
+                overflowX: 'auto',
+              }}
+            >
+              {activeImages.map((imgSrc, idx) => {
+                const isActive = idx === lightboxIndex;
+                return (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setLightboxIndex(idx)}
+                    style={{
+                      width: 60,
+                      height: 48,
+                      borderRadius: 10,
+                      overflow: 'hidden',
+                      padding: 0,
+                      border: isActive ? '2px solid var(--color-primary)' : '1px solid rgba(255, 255, 255, 0.15)',
+                      opacity: isActive ? 1 : 0.55,
+                      transform: isActive ? 'scale(1.08)' : 'scale(1)',
+                      transition: 'all 0.2s ease',
+                      cursor: 'pointer',
+                      background: '#040b12',
+                      flexShrink: 0,
+                      boxShadow: isActive ? '0 0 12px rgba(74, 222, 128, 0.5)' : 'none',
+                    }}
+                    title={`Chuyển sang ảnh ${idx + 1}`}
+                  >
+                    <img
+                      src={imgSrc}
+                      alt={`Thumbnail ${idx + 1}`}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>,
+        document.body
+      )}
+    </>
   );
 };

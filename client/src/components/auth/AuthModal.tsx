@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import type { UserProfile } from '../../types.js';
 import {
   IconUser,
@@ -433,21 +434,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  return (
+  return createPortal(
     <div
       className="modal-overlay"
       onClick={handleClose}
       style={{
         position: 'fixed',
         inset: 0,
-        zIndex: 1100,
+        width: '100vw',
+        height: '100vh',
+        zIndex: 99999999,
         backdropFilter: 'blur(20px)',
         WebkitBackdropFilter: 'blur(20px)',
-        background: 'var(--overlay-bg, rgba(4, 8, 20, 0.82))',
+        background: 'rgba(3, 8, 14, 0.88)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: '16px',
+        padding: '24px 16px',
+        boxSizing: 'border-box',
         overflowY: 'auto',
       }}
     >
@@ -1396,6 +1400,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

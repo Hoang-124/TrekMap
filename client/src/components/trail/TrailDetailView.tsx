@@ -8,7 +8,22 @@ import { WeatherTab } from './WeatherTab.js';
 import { GearChecklistTab } from './GearChecklistTab.js';
 import { ItineraryTab } from './ItineraryTab.js';
 import { TrailConditionSection } from './TrailConditionSection.js';
-import { IconPhone, IconAlertTriangle, IconStar } from '../common/SvgIcons.js';
+import {
+  IconPhone,
+  IconAlertTriangle,
+  IconStar,
+  IconShieldAlert,
+  IconCheckCircle,
+  IconMapPin,
+  IconUsers,
+  IconClock,
+  IconMountain,
+  IconDroplet,
+  IconCloudFog,
+  IconTrees,
+  IconCompass,
+  IconX,
+} from '../common/SvgIcons.js';
 
 interface TrailDetailViewProps {
   trail: Trail;
@@ -34,6 +49,109 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
   const [newDiffRating, setNewDiffRating] = useState(trail.difficultyLevel || 3);
   const [newContent, setNewContent] = useState('');
   const [newSafetyNote, setNewSafetyNote] = useState('');
+  const [selectedEvidencePhoto, setSelectedEvidencePhoto] = useState<string | null>(null);
+
+  const getIncidentTypeMeta = (type?: string) => {
+    switch (type) {
+      case 'landslide':
+        return {
+          label: 'Sạt lở đất đá & Đứt gãy đường mòn',
+          tag: 'Sạt lở địa hình',
+          Icon: IconMountain,
+          color: '#ef4444',
+        };
+      case 'flood':
+      case 'flash_flood':
+        return {
+          label: 'Mưa to ngập lũ & Nước suối dâng xiết',
+          tag: 'Lũ quét suối dâng',
+          Icon: IconDroplet,
+          color: '#0ea5e9',
+        };
+      case 'weather':
+      case 'bad_weather':
+        return {
+          label: 'Thời tiết cực đoan, giông lốc & sương mù dày',
+          tag: 'Thiên tai thời tiết',
+          Icon: IconCloudFog,
+          color: '#f59e0b',
+        };
+      case 'wildlife':
+        return {
+          label: 'Động vật rừng hoang dã & Rắn/Ong độc',
+          tag: 'Sinh vật hoang dã',
+          Icon: IconTrees,
+          color: '#10b981',
+        };
+      case 'lost':
+        return {
+          label: 'Mất dấu mòn định hướng & Nguy cơ lạc đường',
+          tag: 'Cảnh báo lạc đường',
+          Icon: IconCompass,
+          color: '#8b5cf6',
+        };
+      default:
+        return {
+          label: 'Sự cố an toàn địa hình thực địa',
+          tag: 'Cảnh báo thực địa',
+          Icon: IconAlertTriangle,
+          color: '#ef4444',
+        };
+    }
+  };
+
+  const getIncidentSeverityMeta = (sev?: string) => {
+    switch (sev) {
+      case 'critical':
+        return {
+          levelCode: 'CẤP 1 - KHẨN CẤP',
+          directive: 'Nguy hiểm tính mạng - Tạm dừng & Đình chỉ hành trình',
+          bg: '#dc2626',
+          border: '#ef4444',
+          textColor: '#ffffff',
+        };
+      case 'high':
+        return {
+          levelCode: 'CẤP 2 - NGUY CẤP',
+          directive: 'Rủi ro cao - Cân nhắc quay lại hoặc dừng chân tại trạm',
+          bg: '#ea580c',
+          border: '#f97316',
+          textColor: '#ffffff',
+        };
+      case 'medium':
+        return {
+          levelCode: 'CẤP 3 - TRUNG BÌNH',
+          directive: 'Cần quan sát địa hình kỹ & Chuẩn bị phương án dự phòng',
+          bg: '#d97706',
+          border: '#f59e0b',
+          textColor: '#ffffff',
+        };
+      default:
+        return {
+          levelCode: 'CẤP 4 - LƯU Ý',
+          directive: 'Địa hình trơn trượt - Chú ý an toàn khi di chuyển',
+          bg: '#0284c7',
+          border: '#38bdf8',
+          textColor: '#ffffff',
+        };
+    }
+  };
+
+  // Find active safety incident matching this trail
+  const matchingIncident = React.useMemo(() => {
+    if (!incidents || incidents.length === 0) return null;
+    const tid = trail.id || (trail as any)._id;
+    return incidents.find((inc) => {
+      if (!inc) return false;
+      if (inc.trailId && (inc.trailId === tid || inc.trailId === trail.id)) return true;
+      if (inc.trailName && trail.name) {
+        const normInc = inc.trailName.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const normTrail = trail.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (normInc.includes(normTrail) || normTrail.includes(normInc)) return true;
+      }
+      return false;
+    }) || null;
+  }, [trail, incidents]);
 
   React.useEffect(() => {
     const fetchReviews = async () => {
@@ -128,9 +246,9 @@ ${trackPointsXml}
       const mockRev: Review = {
         id: `rev-${Date.now()}`,
         trailId: trail.id,
-        userId: 'user-temp',
-        userName: 'Trekker Ẩn Danh',
-        userAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80',
+        userId: currentUser?.id || 'user-temp',
+        userName: currentUser?.fullName || 'Trekker Ẩn Danh',
+        userAvatar: currentUser?.avatarUrl || currentUser?.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80',
         rating: newRating,
         difficultyRating: newDiffRating,
         content: newContent,
@@ -197,6 +315,440 @@ ${trackPointsXml}
           </button>
         </div>
       </div>
+
+      {/* ⚠️ Tactical Emergency Safety Incident Banner (Prominently displayed when an incident exists) */}
+      {matchingIncident && (() => {
+        const typeMeta = getIncidentTypeMeta(matchingIncident.type);
+        const sevMeta = getIncidentSeverityMeta(matchingIncident.severity);
+        const IncidentIcon = typeMeta.Icon;
+        const confirmationsCount = matchingIncident.confirmations || 1;
+        const reporterDisplayName = matchingIncident.reporterName || matchingIncident.userName || matchingIncident.reportedBy || 'Trekker thực địa';
+        const reporterDisplayRole = matchingIncident.reporterRole || 'Thành viên cộng đồng TrekMap';
+        const locationDisplayName = matchingIncident.locationNote || `${trail.name} (${trail.province})`;
+        const elevationDisplay = matchingIncident.elevationM || trail.maxAltitudeM;
+        const hotlinePhone = trail.rescueContact?.phone || '02343.871.330';
+        const rangerUnit = trail.rescueContact?.rangerContact || `Trạm Kiểm Lâm ${trail.province}`;
+
+        return (
+          <div
+            style={{
+              background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.16) 0%, var(--color-bg-card) 65%, rgba(15, 23, 42, 0.98) 100%)',
+              border: '1.5px solid rgba(239, 68, 68, 0.65)',
+              borderRadius: 20,
+              padding: '22px 24px',
+              marginBottom: 26,
+              boxShadow: '0 0 35px rgba(239, 68, 68, 0.2), 0 16px 40px rgba(0, 0, 0, 0.55)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 18,
+              animation: 'fadeIn 0.3s ease',
+            }}
+          >
+            {/* 1. Header Bar: Title, Badges & Quick Action Controls */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div
+                  style={{
+                    width: 44,
+                    height: 44,
+                    borderRadius: 12,
+                    background: 'rgba(239, 68, 68, 0.22)',
+                    border: '1.5px solid #ef4444',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#ef4444',
+                    boxShadow: '0 0 16px rgba(239, 68, 68, 0.45)',
+                    flexShrink: 0,
+                  }}
+                >
+                  <IconShieldAlert size={24} color="#ef4444" />
+                </div>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '1.05rem', fontWeight: 900, color: '#ef4444', letterSpacing: '0.01em' }}>
+                      CẢNH BÁO AN TOÀN THỰC ĐỊA TRÊN CUNG ĐƯỜNG
+                    </span>
+                    <span
+                      style={{
+                        fontSize: '0.72rem',
+                        fontWeight: 800,
+                        background: sevMeta.bg,
+                        color: sevMeta.textColor,
+                        padding: '3px 10px',
+                        borderRadius: 6,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.02em',
+                        boxShadow: `0 0 10px ${sevMeta.bg}80`,
+                      }}
+                    >
+                      {sevMeta.levelCode}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: '0.72rem',
+                        fontWeight: 700,
+                        background: 'rgba(16, 185, 129, 0.2)',
+                        border: '1px solid rgba(16, 185, 129, 0.5)',
+                        color: '#34d399',
+                        padding: '2px 8px',
+                        borderRadius: 6,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                      }}
+                    >
+                      <IconCheckCircle size={12} color="#34d399" />
+                      <span>{confirmationsCount} Xác thực hiện trường</span>
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)', marginTop: 3 }}>
+                    Hồ sơ cảnh báo khẩn cấp dành cho người leo núi & đơn vị cứu hộ thực địa • {sevMeta.directive}
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <a
+                  href={`tel:${hotlinePhone}`}
+                  style={{
+                    background: 'rgba(239, 68, 68, 0.2)',
+                    border: '1px solid rgba(239, 68, 68, 0.5)',
+                    color: '#fca5a5',
+                    borderRadius: 10,
+                    padding: '7px 14px',
+                    fontSize: '0.78rem',
+                    fontWeight: 800,
+                    textDecoration: 'none',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  <IconPhone size={14} color="#fca5a5" />
+                  <span>Gọi cứu nạn: {hotlinePhone}</span>
+                </a>
+
+                <button
+                  type="button"
+                  onClick={onOpenIncidentModal}
+                  style={{
+                    background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
+                    border: 'none',
+                    color: '#ffffff',
+                    borderRadius: 10,
+                    padding: '7px 16px',
+                    fontSize: '0.78rem',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    boxShadow: '0 4px 14px rgba(239, 68, 68, 0.4)',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  <IconAlertTriangle size={14} color="#ffffff" />
+                  <span>Cập nhật tình hình mới</span>
+                </button>
+              </div>
+            </div>
+
+            {/* 2. 4 Telemetry Bento Metric Tiles */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
+                gap: 12,
+              }}
+            >
+              {/* Tile 1: Incident Category */}
+              <div
+                style={{
+                  background: 'rgba(0, 0, 0, 0.35)',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  borderRadius: 12,
+                  padding: '12px 14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                }}
+              >
+                <div
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 8,
+                    background: `${typeMeta.color}22`,
+                    border: `1px solid ${typeMeta.color}66`,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: typeMeta.color,
+                    flexShrink: 0,
+                  }}
+                >
+                  <IncidentIcon size={18} color={typeMeta.color} />
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700, letterSpacing: '0.04em' }}>
+                    Phân loại hiểm họa
+                  </div>
+                  <div style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 2, lineHeight: 1.35 }}>
+                    {typeMeta.label}
+                  </div>
+                </div>
+              </div>
+
+              {/* Tile 2: Location & Elevation */}
+              <div
+                style={{
+                  background: 'rgba(0, 0, 0, 0.35)',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  borderRadius: 12,
+                  padding: '12px 14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                }}
+              >
+                <div
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 8,
+                    background: 'rgba(56, 189, 248, 0.18)',
+                    border: '1px solid rgba(56, 189, 248, 0.45)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#38bdf8',
+                    flexShrink: 0,
+                  }}
+                >
+                  <IconMapPin size={18} color="#38bdf8" />
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700, letterSpacing: '0.04em' }}>
+                    Khu vực & Cao độ
+                  </div>
+                  <div style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 2, lineHeight: 1.35 }}>
+                    {locationDisplayName}
+                  </div>
+                  {elevationDisplay && (
+                    <div style={{ fontSize: '0.7rem', color: '#94a3b8' }}>
+                      Cao độ: ~{elevationDisplay}m
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Tile 3: Reporter Credentials */}
+              <div
+                style={{
+                  background: 'rgba(0, 0, 0, 0.35)',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  borderRadius: 12,
+                  padding: '12px 14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                }}
+              >
+                <div
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 8,
+                    background: 'rgba(168, 85, 247, 0.18)',
+                    border: '1px solid rgba(168, 85, 247, 0.45)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#a855f7',
+                    flexShrink: 0,
+                  }}
+                >
+                  <IconUsers size={18} color="#a855f7" />
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700, letterSpacing: '0.04em' }}>
+                    Nguồn báo cáo
+                  </div>
+                  <div style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 2, lineHeight: 1.35 }}>
+                    {reporterDisplayName}
+                  </div>
+                  <div style={{ fontSize: '0.7rem', color: '#a855f7' }}>
+                    {reporterDisplayRole}
+                  </div>
+                </div>
+              </div>
+
+              {/* Tile 4: Recorded Time & State */}
+              <div
+                style={{
+                  background: 'rgba(0, 0, 0, 0.35)',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  borderRadius: 12,
+                  padding: '12px 14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                }}
+              >
+                <div
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 8,
+                    background: 'rgba(245, 158, 11, 0.18)',
+                    border: '1px solid rgba(245, 158, 11, 0.45)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#f59e0b',
+                    flexShrink: 0,
+                  }}
+                >
+                  <IconClock size={18} color="#f59e0b" />
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700, letterSpacing: '0.04em' }}>
+                    Thời gian & Hiệu lực
+                  </div>
+                  <div style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 2 }}>
+                    {matchingIncident.reportedAt || 'Gần đây'}
+                  </div>
+                  <div style={{ fontSize: '0.7rem', color: '#ef4444', fontWeight: 600 }}>
+                    Đang có hiệu lực khẩn
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 3. Detailed Incident Description Box */}
+            <div
+              style={{
+                background: 'rgba(0, 0, 0, 0.45)',
+                borderLeft: '4px solid #ef4444',
+                borderRadius: '0 12px 12px 0',
+                padding: '14px 18px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+              }}
+            >
+              <div style={{ fontSize: '0.74rem', textTransform: 'uppercase', color: '#fca5a5', fontWeight: 800, letterSpacing: '0.04em' }}>
+                Diễn biến chi tiết tại hiện trường:
+              </div>
+              <div style={{ fontSize: '0.94rem', color: '#fef2f2', lineHeight: 1.65, fontWeight: 500 }}>
+                {matchingIncident.description}
+              </div>
+            </div>
+
+            {/* 4. Field Evidence Photos (if any) */}
+            {matchingIncident.images && matchingIncident.images.length > 0 && (
+              <div>
+                <div style={{ fontSize: '0.74rem', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 800, letterSpacing: '0.04em', marginBottom: 8 }}>
+                  Ảnh bằng chứng ghi nhận tại hiện trường ({matchingIncident.images.length} ảnh):
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  {matchingIncident.images.map((img: string, idx: number) => (
+                    <div
+                      key={idx}
+                      onClick={() => setSelectedEvidencePhoto(img)}
+                      style={{
+                        position: 'relative',
+                        width: 90,
+                        height: 65,
+                        borderRadius: 8,
+                        overflow: 'hidden',
+                        cursor: 'pointer',
+                        border: '1.5px solid rgba(239, 68, 68, 0.4)',
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+                        transition: 'transform 0.15s ease',
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.transform = 'scale(1.05)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
+                    >
+                      <img src={img} alt={`Hiện trường ${idx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 5. Actionable Field Safety Directives (Chuẩn Kiểm Lâm & Cứu Hộ) */}
+            <div
+              style={{
+                background: 'rgba(239, 68, 68, 0.08)',
+                border: '1px dashed rgba(239, 68, 68, 0.35)',
+                borderRadius: 12,
+                padding: '12px 16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#fca5a5', fontWeight: 800, fontSize: '0.78rem' }}>
+                <IconAlertTriangle size={15} color="#fca5a5" />
+                <span>CHỈ DẪN AN TOÀN BẮT BUỘC DÀNH CHO TREKKER TRÊN TUYẾN</span>
+              </div>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                  gap: 10,
+                  fontSize: '0.78rem',
+                  color: 'var(--color-text-muted)',
+                  lineHeight: 1.5,
+                }}
+              >
+                <div>
+                  <strong style={{ color: 'var(--color-text-main)' }}>1. Vượt suối & sạt lở:</strong> Tuyệt đối không mạo hiểm vượt suối khi nước cao ngang đùi hoặc chảy đục xiết. Tránh xa các vách taluy đất yếu.
+                </div>
+                <div>
+                  <strong style={{ color: 'var(--color-text-main)' }}>2. Tracklog & Đội hình:</strong> Bám sát đường mòn GPX đã tải Offline, luôn đi theo đoàn tối thiểu 3 người, không tự ý tách nhóm mở lối tắt.
+                </div>
+                <div>
+                  <strong style={{ color: 'var(--color-text-main)' }}>3. Liên lạc & Cứu hộ:</strong> Tiết kiệm pin thiết bị, giữ ấm cơ thể và chuẩn bị còi cứu sinh SOS khi thời tiết xấu hoặc mất định hướng.
+                </div>
+              </div>
+            </div>
+
+            {/* 6. Emergency Contacts & National Hotline Bar */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: 12,
+                paddingTop: 8,
+                borderTop: '1px solid rgba(239, 68, 68, 0.2)',
+                fontSize: '0.8rem',
+                color: 'var(--color-text-dim)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#fca5a5', fontWeight: 800 }}>
+                  <IconPhone size={14} color="#fca5a5" />
+                  <span>Cứu Nạn Quốc Gia: <strong>114 / 115 (24/7)</strong></span>
+                </span>
+                <span style={{ color: 'var(--color-text-muted)' }}>
+                  {rangerUnit}: <strong style={{ color: 'var(--color-text-main)' }}>{hotlinePhone}</strong>
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: '0.74rem', color: '#94a3b8' }}>
+                <span>Mã sự cố: <code style={{ color: '#fca5a5', background: 'rgba(239,68,68,0.15)', padding: '2px 6px', borderRadius: 4 }}>TM-{matchingIncident.id ? matchingIncident.id.slice(-6).toUpperCase() : 'ALERT'}</code></span>
+                <span>Cập nhật: {matchingIncident.reportedAt || 'Gần đây'}</span>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Hero Header Section */}
       <div style={{ position: 'relative', borderRadius: 24, overflow: 'hidden', height: 380, marginBottom: 24 }}>
@@ -681,11 +1233,25 @@ ${trackPointsXml}
                 <div key={rev.id} className="card">
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <img
-                        src={rev.userAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80'}
-                        alt={rev.userName}
-                        style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover' }}
-                      />
+                      {(() => {
+                        const isSelfReview = Boolean(
+                          currentUser && (
+                            (rev.userId && currentUser.id && String(rev.userId) === String(currentUser.id)) ||
+                            (currentUser.fullName && rev.userName.toLowerCase().includes(currentUser.fullName.toLowerCase()))
+                          )
+                        );
+                        const effectiveRevAvatar = (isSelfReview && (currentUser?.avatarUrl || currentUser?.avatar))
+                          ? (currentUser.avatarUrl || currentUser.avatar)
+                          : (rev.userAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80');
+
+                        return (
+                          <img
+                            src={effectiveRevAvatar}
+                            alt={rev.userName}
+                            style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover' }}
+                          />
+                        );
+                      })()}
                       <div>
                         <strong style={{ color: 'var(--color-text-main)', fontSize: '0.95rem' }}>{rev.userName}</strong>
                         <div style={{ fontSize: '0.75rem', color: 'var(--color-text-dim)' }}>Ngày đi: {rev.tripDate}</div>
@@ -770,6 +1336,69 @@ ${trackPointsXml}
                 Gửi đánh giá cho cộng đồng
               </button>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Evidence Photo Preview Lightbox */}
+      {selectedEvidencePhoto && (
+        <div
+          onClick={() => setSelectedEvidencePhoto(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0, 0, 0, 0.85)',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 99999,
+            padding: 20,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: 'relative',
+              maxWidth: '90vw',
+              maxHeight: '85vh',
+              background: 'var(--color-bg-card)',
+              borderRadius: 16,
+              overflow: 'hidden',
+              border: '1.5px solid rgba(239, 68, 68, 0.4)',
+              boxShadow: '0 20px 50px rgba(0, 0, 0, 0.8)',
+            }}
+          >
+            <button
+              onClick={() => setSelectedEvidencePhoto(null)}
+              style={{
+                position: 'absolute',
+                top: 12,
+                right: 12,
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                background: 'rgba(0, 0, 0, 0.65)',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                color: '#ffffff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                zIndex: 2,
+              }}
+            >
+              <IconX size={16} />
+            </button>
+            <img
+              src={selectedEvidencePhoto}
+              alt="Hiện trường sự cố"
+              style={{
+                width: '100%',
+                maxHeight: '85vh',
+                objectFit: 'contain',
+                display: 'block',
+              }}
+            />
           </div>
         </div>
       )}

@@ -299,21 +299,38 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <line x1="3" y1="18" x2="21" y2="18" />
               </svg>
               {currentUser ? (
-                <img
-                  src={
-                    currentUser.avatarUrl ||
-                    currentUser.avatar ||
-                    'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80'
-                  }
-                  alt={currentUser.fullName}
-                  style={{
-                    width: 28,
-                    height: 28,
-                    borderRadius: '50%',
-                    objectFit: 'cover',
-                    border: '1.5px solid var(--color-primary)',
-                  }}
-                />
+                (currentUser.avatarUrl || currentUser.avatar) ? (
+                  <img
+                    src={currentUser.avatarUrl || currentUser.avatar}
+                    alt={currentUser.fullName}
+                    style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: '50%',
+                      objectFit: 'cover',
+                      border: '1.5px solid var(--color-primary)',
+                    }}
+                  />
+                ) : (
+                  <div
+                    style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: '50%',
+                      background: 'linear-gradient(135deg, var(--color-primary), #059669)',
+                      color: '#fff',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '0.75rem',
+                      fontWeight: 800,
+                      border: '1.5px solid var(--color-primary)',
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    {currentUser.fullName ? currentUser.fullName.charAt(0) : 'T'}
+                  </div>
+                )
               ) : (
                 <span style={{ fontSize: '0.85rem', fontWeight: 700 }}>Menu</span>
               )}
@@ -351,22 +368,39 @@ export const Navbar: React.FC<NavbarProps> = ({
                         gap: 12,
                       }}
                     >
-                      <img
-                        src={
-                          currentUser.avatarUrl ||
-                          currentUser.avatar ||
-                          'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80'
-                        }
-                        alt={currentUser.fullName}
-                        style={{
-                          width: 42,
-                          height: 42,
-                          borderRadius: '50%',
-                          objectFit: 'cover',
-                          border: '2px solid var(--color-primary)',
-                          flexShrink: 0,
-                        }}
-                      />
+                      {(currentUser.avatarUrl || currentUser.avatar) ? (
+                        <img
+                          src={currentUser.avatarUrl || currentUser.avatar}
+                          alt={currentUser.fullName}
+                          style={{
+                            width: 42,
+                            height: 42,
+                            borderRadius: '50%',
+                            objectFit: 'cover',
+                            border: '2px solid var(--color-primary)',
+                          }}
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            width: 42,
+                            height: 42,
+                            borderRadius: '50%',
+                            background: 'linear-gradient(135deg, var(--color-primary), #059669)',
+                            color: '#fff',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '1.1rem',
+                            fontWeight: 800,
+                            border: '2px solid var(--color-primary)',
+                            textTransform: 'uppercase',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {currentUser.fullName ? currentUser.fullName.charAt(0) : 'T'}
+                        </div>
+                      )}
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div
                           style={{

@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import type { Trail } from '../../types.js';
 
 interface TrailComparisonModalProps {
@@ -18,18 +19,22 @@ export const TrailComparisonModal: React.FC<TrailComparisonModalProps> = ({
 }) => {
   if (!isOpen || trails.length === 0) return null;
 
-  return (
+  return createPortal(
     <div
       style={{
         position: 'fixed',
         inset: 0,
-        zIndex: 9999,
-        background: 'rgba(4, 8, 20, 0.85)',
+        width: '100vw',
+        height: '100vh',
+        zIndex: 99999999,
+        background: 'rgba(4, 8, 20, 0.88)',
         backdropFilter: 'blur(16px)',
+        WebkitBackdropFilter: 'blur(16px)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: '20px 16px',
+        padding: '24px 16px',
+        boxSizing: 'border-box',
         overflowY: 'auto',
       }}
       onClick={onClose}
@@ -305,6 +310,7 @@ export const TrailComparisonModal: React.FC<TrailComparisonModalProps> = ({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

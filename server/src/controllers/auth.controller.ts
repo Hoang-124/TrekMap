@@ -1,6 +1,14 @@
 import { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import { UserModel } from '../models/User.js';
+import { ThreadModel } from '../models/Thread.js';
+import { CommentModel } from '../models/Comment.js';
+import { ReviewModel } from '../models/Review.js';
+import { IncidentModel } from '../models/Incident.js';
+import { CommunityMessageModel } from '../models/CommunityMessage.js';
+import { ContributionModel } from '../models/Contribution.js';
+import { GuideModel } from '../models/Guide.js';
+import { NotificationModel } from '../models/Notification.js';
 import { hashPassword, verifyPassword, generateToken, verifyToken } from '../utils/auth.js';
 import { sendResetPasswordEmail, sendAccountActivationEmail } from '../utils/mailer.js';
 import { cloudinary } from '../config/cloudinarySDK.js';
@@ -99,7 +107,7 @@ export const googleAuth = async (req: Request, res: Response) => {
           email: cleanEmail,
           passwordHash: hashPassword(`google-oauth-pwd-${Date.now()}`),
           fullName: name || 'Google Trekker',
-          avatarUrl: picture || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=250&q=80',
+          avatarUrl: picture || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg',
           role: 'user',
           authProvider: 'google',
           isEmailVerified: true,
@@ -112,7 +120,7 @@ export const googleAuth = async (req: Request, res: Response) => {
           username: uniqueUsername,
           email: cleanEmail,
           fullName: name || 'Google Trekker',
-          avatarUrl: picture || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=250&q=80',
+          avatarUrl: picture || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg',
           role: 'user',
           reputationScore: 100,
           badges: ['Google Verified', 'Verified Trekker'],
@@ -154,6 +162,7 @@ export const googleAuth = async (req: Request, res: Response) => {
         email: user.email,
         fullName: user.fullName || name || 'Google Trekker',
         avatarUrl: user.avatarUrl || picture,
+        coverUrl: user.coverUrl || '',
         role: user.role || 'user',
         reputationScore: user.reputationScore || 100,
         badges: user.badges || ['Google Verified'],
@@ -173,7 +182,8 @@ export const googleAuth = async (req: Request, res: Response) => {
         username: baseUser,
         email: cleanEmail,
         fullName: name || 'Google Trekker',
-        avatarUrl: picture || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=250&q=80',
+        avatarUrl: picture || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg',
+        coverUrl: '',
         role: 'user',
         reputationScore: 100,
         badges: ['Google Verified', 'Verified Trekker'],
@@ -286,7 +296,7 @@ export const register = async (req: Request, res: Response) => {
         email: cleanEmail,
         passwordHash,
         fullName: cleanUsername,
-        avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=250&q=80',
+        avatarUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg',
         role: 'user',
         authProvider: 'local',
         isEmailVerified: cleanEmail.endsWith('@example.com') ? true : false,
@@ -305,7 +315,7 @@ export const register = async (req: Request, res: Response) => {
         email: cleanEmail,
         passwordHash,
         fullName: cleanUsername,
-        avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=250&q=80',
+        avatarUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg',
         role: 'user',
         isEmailVerified: cleanEmail.endsWith('@example.com') ? true : false,
         reputationScore: 50,
@@ -572,6 +582,7 @@ export const login = async (req: Request, res: Response) => {
         email: user.email,
         fullName: user.fullName,
         avatarUrl: user.avatarUrl,
+        coverUrl: user.coverUrl || '',
         role: user.role || 'admin',
         reputationScore: user.reputationScore || 1250,
         badges: user.badges || ['Top Contributor', 'Verified Guide', 'Fansipan Summitter'],
@@ -643,6 +654,7 @@ export const getMe = async (req: Request, res: Response) => {
         email: user.email,
         fullName: user.fullName,
         avatarUrl: user.avatarUrl,
+        coverUrl: user.coverUrl || '',
         role: user.role || 'user',
         authProvider: user.authProvider || 'local',
         isEmailVerified: user.isEmailVerified,
@@ -662,7 +674,7 @@ export const getMe = async (req: Request, res: Response) => {
 };
 
 export const updateProfile = async (req: AuthRequest, res: Response) => {
-  const { fullName, phone, bio, emergencyContact, preferredStyle, avatarUrl, gearLocker } = req.body;
+  const { fullName, phone, bio, emergencyContact, preferredStyle, avatarUrl, coverUrl, gearLocker } = req.body;
   const userId = req.user?.userId || (req.user as any)?.id;
 
   if (!userId) {
@@ -686,7 +698,12 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
   try {
     let user: any = null;
     if (mongoose.connection.readyState === 1) {
-      user = await UserModel.findById(userId);
+      try {
+        user = await UserModel.findById(userId);
+      } catch (e) {}
+    }
+    if (!user && req.user?.email) {
+      user = inMemoryUsersMap.get(req.user.email.toLowerCase());
     }
 
     if (!user) {
@@ -704,6 +721,7 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
           preferredStyle: preferredStyle || 'Trekking & Camping',
           gearLocker: gearLocker || ['tent', 'backpack', 'boots', 'flashlight', 'firstaid'],
           avatarUrl: avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=250&q=80',
+          coverUrl: coverUrl || '',
           role: 'user',
           reputationScore: 100,
           badges: ['Verified Trekker'],
@@ -734,6 +752,24 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
       }
       user.avatarUrl = finalAvatarUrl;
     }
+    if (coverUrl !== undefined) {
+      let finalCoverUrl = coverUrl.trim();
+      if (finalCoverUrl && finalCoverUrl.startsWith('data:image/') && !finalCoverUrl.includes('res.cloudinary.com')) {
+        try {
+          const cloudRes = await cloudinary.uploader.upload(finalCoverUrl, {
+            folder: 'trekmap/covers',
+            public_id: `cover_${user.username || userId}_${Date.now()}`,
+            transformation: [{ width: 1400, quality: 'auto', fetch_format: 'auto' }],
+          });
+          if (cloudRes.secure_url) {
+            finalCoverUrl = cloudRes.secure_url;
+          }
+        } catch (e) {
+          console.warn('[Cloudinary Cover Auto-Upload Warning]:', (e as Error).message);
+        }
+      }
+      user.coverUrl = finalCoverUrl;
+    }
     if (gearLocker && Array.isArray(gearLocker)) user.gearLocker = gearLocker;
 
     if (!user.badges) user.badges = [];
@@ -744,6 +780,111 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
 
     await user.save();
 
+    // Synchronize newly updated profile (avatar and full name) across all collections
+    try {
+      const escaped = (user.fullName || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const hasNewAvatar = Boolean(avatarUrl && user.avatarUrl);
+      const hasNewName = Boolean(fullName && user.fullName);
+
+      if (hasNewAvatar) {
+        await Promise.allSettled([
+          // 1. Forum Threads
+          ThreadModel.updateMany(
+            {
+              $or: [
+                { userId: user._id },
+                { authorName: user.fullName },
+                ...(escaped ? [{ authorName: { $regex: new RegExp('^' + escaped, 'i') } }] : []),
+              ],
+            },
+            { $set: { authorAvatar: user.avatarUrl, ...(hasNewName ? { authorName: user.fullName } : {}) } }
+          ),
+          // 2. Forum Comments
+          CommentModel.updateMany(
+            {
+              $or: [
+                { userId: user._id },
+                { authorName: user.fullName },
+                ...(escaped ? [{ authorName: { $regex: new RegExp('^' + escaped, 'i') } }] : []),
+              ],
+            },
+            { $set: { authorAvatar: user.avatarUrl, ...(hasNewName ? { authorName: user.fullName } : {}) } }
+          ),
+          // 3. Trail Reviews
+          ReviewModel.updateMany(
+            {
+              $or: [
+                { userId: user._id },
+                { userName: user.fullName },
+                ...(escaped ? [{ userName: { $regex: new RegExp('^' + escaped, 'i') } }] : []),
+              ],
+            },
+            { $set: { userAvatar: user.avatarUrl, ...(hasNewName ? { userName: user.fullName } : {}) } }
+          ),
+          // 4. Incident Reports
+          IncidentModel.updateMany(
+            {
+              $or: [
+                { reportedBy: user._id },
+                { reporterEmail: user.email },
+                ...(escaped ? [{ reporterName: { $regex: new RegExp('^' + escaped, 'i') } }] : []),
+              ],
+            },
+            { $set: { reporterAvatar: user.avatarUrl, ...(hasNewName ? { reporterName: user.fullName } : {}) } }
+          ),
+          // 5. Community Chat / Radio Basecamp Messages
+          CommunityMessageModel.updateMany(
+            {
+              $or: [
+                { senderId: user._id },
+                { senderName: user.fullName },
+                ...(escaped ? [{ senderName: { $regex: new RegExp('^' + escaped, 'i') } }] : []),
+              ],
+            },
+            { $set: { senderAvatar: user.avatarUrl, ...(hasNewName ? { senderName: user.fullName } : {}) } }
+          ),
+          // 6. Community Trail Contributions
+          ContributionModel.updateMany(
+            {
+              $or: [
+                { userId: user._id.toString() },
+                { authorEmail: user.email },
+                ...(escaped ? [{ authorName: { $regex: new RegExp('^' + escaped, 'i') } }] : []),
+              ],
+            },
+            { $set: { authorAvatar: user.avatarUrl, ...(hasNewName ? { authorName: user.fullName } : {}) } }
+          ),
+          // 7. Local Guide Profile if registered
+          GuideModel.updateMany(
+            {
+              $or: [
+                { name: user.fullName },
+                ...(user.phone ? [{ phone: user.phone }] : []),
+              ],
+            },
+            { $set: { avatarUrl: user.avatarUrl, ...(hasNewName ? { name: user.fullName } : {}) } }
+          ),
+          // 8. User Sent Notifications
+          NotificationModel.updateMany(
+            { 'sender.id': user._id.toString() },
+            { $set: { 'sender.avatarUrl': user.avatarUrl, ...(hasNewName ? { 'sender.name': user.fullName } : {}) } }
+          ),
+        ]);
+      } else if (hasNewName) {
+        await Promise.allSettled([
+          ThreadModel.updateMany({ userId: user._id }, { $set: { authorName: user.fullName } }),
+          CommentModel.updateMany({ userId: user._id }, { $set: { authorName: user.fullName } }),
+          ReviewModel.updateMany({ userId: user._id }, { $set: { userName: user.fullName } }),
+          IncidentModel.updateMany({ $or: [{ reportedBy: user._id }, { reporterEmail: user.email }] }, { $set: { reporterName: user.fullName } }),
+          CommunityMessageModel.updateMany({ senderId: user._id }, { $set: { senderName: user.fullName } }),
+          ContributionModel.updateMany({ $or: [{ userId: user._id.toString() }, { authorEmail: user.email }] }, { $set: { authorName: user.fullName } }),
+          GuideModel.updateMany({ name: user.fullName }, { $set: { name: user.fullName } }),
+        ]);
+      }
+    } catch (syncErr) {
+      console.warn('[Profile Cross-Collection Sync Warning]:', syncErr);
+    }
+
     return res.json({
       success: true,
       message: 'Cập nhật hồ sơ cá nhân thành công!',
@@ -753,6 +894,7 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
         email: user.email,
         fullName: user.fullName,
         avatarUrl: user.avatarUrl,
+        coverUrl: user.coverUrl || '',
         role: user.role,
         authProvider: user.authProvider || 'local',
         isEmailVerified: user.isEmailVerified,

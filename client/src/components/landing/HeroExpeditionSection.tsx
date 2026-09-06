@@ -30,8 +30,11 @@ interface HeroExpeditionSectionProps {
   onToggleCampsite?: () => void;
   onOpenAdvancedFilter: () => void;
   onScrollToMap: () => void;
+  onScrollToAllTrails?: () => void;
   onExploreClick: () => void;
   onSelectTrail?: (trail: Trail) => void;
+  onOpenEmergencyContacts?: () => void;
+  activeFilterCount?: number;
 }
 
 export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
@@ -44,9 +47,75 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
   onToggleCampsite,
   onOpenAdvancedFilter,
   onScrollToMap,
+  onScrollToAllTrails,
   onSelectTrail,
+  onOpenEmergencyContacts,
+  activeFilterCount = 0,
 }) => {
   const [isSearchFocused, setIsSearchFocused] = useState(false);
+
+  // Click handler for mountain peaks in weather radar
+  const handleMountainClick = (mountainName: string) => {
+    const list = Array.isArray(trails) ? trails : [];
+    const cleanName = mountainName.split('(')[0].trim().toLowerCase();
+    const matched = list.find((t) =>
+      t.name.toLowerCase().includes(cleanName) ||
+      (t.altNames && t.altNames.some((a) => a.toLowerCase().includes(cleanName)))
+    );
+    if (matched && onSelectTrail) {
+      onSelectTrail(matched);
+    } else {
+      onSearchChange(cleanName);
+      onScrollToMap();
+    }
+  };
+
+  // Click handler for Fansipan peak card
+  const handleFansipanClick = () => {
+    const list = Array.isArray(trails) ? trails : [];
+    const fansipan = list.find((t) =>
+      t.name.toLowerCase().includes('fansipan') ||
+      t.id === 'trail-fansipan' ||
+      t.maxAltitudeM === 3143
+    );
+    if (fansipan && onSelectTrail) {
+      onSelectTrail(fansipan);
+    } else {
+      onSearchChange('Fansipan');
+      onScrollToMap();
+    }
+  };
+
+  // Click handler for 24/7 rescue card
+  const handleRescueClick = () => {
+    if (onOpenEmergencyContacts) {
+      onOpenEmergencyContacts();
+    } else {
+      onScrollToMap();
+    }
+  };
+
+  // Handle enter key in search bar
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const list = Array.isArray(trails) ? trails : [];
+      const q = searchQuery.trim().toLowerCase();
+      if (q) {
+        const directMatch = list.find((t) =>
+          t.name.toLowerCase().includes(q) ||
+          (t.altNames && t.altNames.some((a) => a.toLowerCase().includes(q)))
+        );
+        if (directMatch && onSelectTrail) {
+          onSelectTrail(directMatch);
+        } else {
+          onScrollToMap();
+        }
+      } else {
+        onScrollToMap();
+      }
+    }
+  };
 
   // Live statistics dynamically calculated from database trails
   const stats = useMemo(() => {
@@ -163,12 +232,37 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
             {liveMountainPills.map((item, idx) => {
               const ItemIcon = item.IconComponent;
               return (
-                <span key={idx} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => handleMountainClick(item.name)}
+                  title={`Bấm để xem chi tiết cung đường & thời tiết thực tế đỉnh ${item.name}`}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    background: 'transparent',
+                    border: 'none',
+                    padding: '3px 8px',
+                    borderRadius: 12,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    color: 'inherit',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
+                    e.currentTarget.style.transform = 'translateY(-1px)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = 'transparent';
+                    e.currentTarget.style.transform = 'translateY(0)';
+                  }}
+                >
                   <ItemIcon size={13} color={item.color} />
-                  <strong style={{ color: 'var(--color-text-main)' }}>{item.name}</strong>
-                  <span style={{ color: item.color, fontWeight: 800 }}>{item.temp}</span>
+                  <strong style={{ color: 'var(--color-text-main)', fontSize: '0.76rem' }}>{item.name}</strong>
+                  <span style={{ color: item.color, fontWeight: 800, fontSize: '0.74rem' }}>{item.temp}</span>
                   <span style={{ color: 'var(--color-text-dim)', fontSize: '0.7rem' }}>• {item.condition}</span>
-                </span>
+                </button>
               );
             })}
           </div>
@@ -229,7 +323,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
               margin: '0 auto',
             }}
           >
-            Dữ liệu số hóa <strong>18+ cung đường thực địa</strong>: Tọa độ 3D GIS, tải tracklog GPX chuẩn xác, 
+            Dữ liệu số hóa <strong>{stats.totalTrails}+ cung đường thực địa</strong>: Tọa độ 3D GIS, tải tracklog GPX chuẩn xác, 
             dự báo thời tiết thời gian thực và mạng lưới cứu hộ 24/7.
           </p>
         </div>
@@ -267,8 +361,9 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
               type="text"
               value={searchQuery}
               onFocus={() => setIsSearchFocused(true)}
-              onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
+              onBlur={() => setTimeout(() => setIsSearchFocused(false), 250)}
               onChange={(e) => onSearchChange(e.target.value)}
+              onKeyDown={handleSearchKeyDown}
               placeholder="Tìm kiếm cung đường (VD: Fansipan, Tà Xùa, Lảo Thẩn, Săn mây, Cắm trại...)"
               style={{
                 flex: 1,
@@ -309,7 +404,8 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
             <button
               type="button"
               onClick={onOpenAdvancedFilter}
-              className="btn btn-outline"
+              className="btn btn-outline interactive-click"
+              title="Mở bộ lọc nâng cao (Độ khó, Thời gian, Vùng miền, Tiêu chí)"
               style={{
                 borderRadius: 22,
                 padding: '6px 14px',
@@ -317,17 +413,37 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
                 fontWeight: 700,
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: 5,
+                gap: 6,
                 cursor: 'pointer',
                 whiteSpace: 'nowrap',
-                background: 'var(--color-bg-main)',
-                border: '1px solid var(--color-border)',
+                background: activeFilterCount > 0 ? 'rgba(16, 185, 129, 0.15)' : 'var(--color-bg-main)',
+                border: activeFilterCount > 0 ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)',
+                color: activeFilterCount > 0 ? 'var(--color-primary)' : 'var(--color-text-main)',
+                transition: 'all 0.2s ease',
               }}
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                 <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
               </svg>
-              Bộ Lọc
+              <span>Bộ Lọc</span>
+              {activeFilterCount > 0 && (
+                <span
+                  style={{
+                    background: 'var(--color-primary)',
+                    color: '#041108',
+                    borderRadius: '50%',
+                    width: 17,
+                    height: 17,
+                    fontSize: '0.65rem',
+                    fontWeight: 900,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  {activeFilterCount}
+                </span>
+              )}
             </button>
           </div>
 
@@ -569,12 +685,13 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
           </button>
         </div>
 
-        {/* 5. Streamlined 4 Metric Stat Cards (Clickable & Scrolls to Map) */}
+        {/* 5. Streamlined 4 Metric Stat Cards (Clickable & Scrolls to Map / Actions) */}
         <div className="hero-stats-grid">
           {/* Metric 1 */}
           <div
-            onClick={() => onScrollToMap()}
+            onClick={() => (onScrollToAllTrails ? onScrollToAllTrails() : onScrollToMap())}
             className="card-hover-lift"
+            title="Bấm để khám phá toàn bộ cung đường thực địa Việt Nam"
             style={{
               background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, var(--color-bg-card) 100%)',
               border: '1px solid rgba(16, 185, 129, 0.3)',
@@ -587,6 +704,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
               gap: 10,
               boxShadow: 'var(--shadow-card)',
               cursor: 'pointer',
+              transition: 'all 0.2s ease',
             }}
           >
             <div
@@ -621,6 +739,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
           <div
             onClick={() => onScrollToMap()}
             className="card-hover-lift"
+            title="Bấm để xem trắc diện cao độ và đường GPS trên bản đồ 3D"
             style={{
               background: 'linear-gradient(135deg, rgba(56, 189, 248, 0.12) 0%, var(--color-bg-card) 100%)',
               border: '1px solid rgba(56, 189, 248, 0.3)',
@@ -633,6 +752,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
               gap: 10,
               boxShadow: 'var(--shadow-card)',
               cursor: 'pointer',
+              transition: 'all 0.2s ease',
             }}
           >
             <div
@@ -665,8 +785,9 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
 
           {/* Metric 3 */}
           <div
-            onClick={() => onScrollToMap()}
+            onClick={handleFansipanClick}
             className="card-hover-lift"
+            title="Bấm để xem chi tiết đỉnh Fansipan 3.143m (nóc nhà Đông Dương)"
             style={{
               background: 'linear-gradient(135deg, rgba(250, 204, 21, 0.12) 0%, var(--color-bg-card) 100%)',
               border: '1px solid rgba(250, 204, 21, 0.3)',
@@ -679,6 +800,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
               gap: 10,
               boxShadow: 'var(--shadow-card)',
               cursor: 'pointer',
+              transition: 'all 0.2s ease',
             }}
           >
             <div
@@ -711,8 +833,9 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
 
           {/* Metric 4 */}
           <div
-            onClick={() => onScrollToMap()}
+            onClick={handleRescueClick}
             className="card-hover-lift"
+            title="Bấm để mở danh bạ hotline cứu hộ khẩn cấp & kiểm lâm 24/7 (114, 115, 112...)"
             style={{
               background: 'linear-gradient(135deg, rgba(34, 211, 238, 0.12) 0%, var(--color-bg-card) 100%)',
               border: '1px solid rgba(34, 211, 238, 0.3)',
@@ -725,6 +848,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
               gap: 10,
               boxShadow: 'var(--shadow-card)',
               cursor: 'pointer',
+              transition: 'all 0.2s ease',
             }}
           >
             <div

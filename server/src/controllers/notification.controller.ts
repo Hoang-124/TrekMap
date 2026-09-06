@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { Types } from 'mongoose';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { NotificationModel, NotificationCategory } from '../models/Notification.js';
+import { UserModel } from '../models/User.js';
 
 // Helper to build recipient matching query
 const getRecipientQuery = (userId: string) => {
@@ -55,6 +56,30 @@ export const getNotifications = async (req: AuthRequest, res: Response) => {
         NotificationModel.countDocuments({ ...recipientFilter, category: 'social', isRead: false } as any),
         NotificationModel.countDocuments({ ...recipientFilter, category: 'system', isRead: false } as any),
       ]);
+
+    const userSenderIds = (notifications || [])
+      .map((n: any) => n.sender?.id)
+      .filter((id: any) => id && id !== 'system' && Types.ObjectId.isValid(id));
+
+    if (userSenderIds.length > 0) {
+      try {
+        const senders = await UserModel.find({ _id: { $in: userSenderIds } })
+          .select('fullName username avatarUrl')
+          .lean();
+        const senderMap = new Map();
+        senders.forEach((s: any) => senderMap.set(s._id.toString(), s));
+        notifications.forEach((n: any) => {
+          if (n.sender?.id && senderMap.has(n.sender.id)) {
+            const live = senderMap.get(n.sender.id);
+            if (!n.sender) n.sender = {};
+            n.sender.name = live.fullName || n.sender.name;
+            if (live.avatarUrl) {
+              n.sender.avatarUrl = live.avatarUrl;
+            }
+          }
+        });
+      } catch (e) {}
+    }
 
     return res.json({
       success: true,

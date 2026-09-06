@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { IconUsers, IconX } from '../common/SvgIcons.js';
 
 interface CreateTripModalProps {
@@ -90,8 +91,26 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
     letterSpacing: '0.04em',
   };
 
-  return (
-    <div className="modal-overlay" onClick={onClose} style={{ zIndex: 99999 }}>
+  return createPortal(
+    <div
+      className="modal-overlay"
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        width: '100vw',
+        height: '100vh',
+        background: 'rgba(3, 8, 14, 0.86)',
+        backdropFilter: 'blur(16px)',
+        WebkitBackdropFilter: 'blur(16px)',
+        zIndex: 99999999,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '32px 16px',
+        boxSizing: 'border-box',
+      }}
+    >
       <div
         className="modal-content"
         onClick={(e) => e.stopPropagation()}
@@ -295,6 +314,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
           </div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

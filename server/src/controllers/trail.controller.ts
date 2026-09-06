@@ -470,8 +470,22 @@ export const createReview = async (req: Request, res: Response) => {
 export const getTrailReviews = async (req: Request, res: Response) => {
   const { id } = req.params;
   try {
-    const reviews = await ReviewModel.find({ trailId: id as any }).sort({ createdAt: -1 }).lean().exec();
-    return res.json({ success: true, count: reviews.length, data: reviews });
+    const reviews = await ReviewModel.find({ trailId: id as any })
+      .populate('userId', 'fullName avatarUrl reputationScore')
+      .sort({ createdAt: -1 })
+      .lean()
+      .exec();
+
+    const formatted = reviews.map((r: any) => {
+      const liveUser = r.userId && typeof r.userId === 'object' ? r.userId : null;
+      return {
+        ...r,
+        userName: liveUser?.fullName || r.userName,
+        userAvatar: (liveUser && liveUser.avatarUrl) ? liveUser.avatarUrl : (r.userAvatar || ''),
+      };
+    });
+
+    return res.json({ success: true, count: formatted.length, data: formatted });
   } catch (err) {
     return res.json({ success: true, count: 0, data: [] });
   }

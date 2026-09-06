@@ -16,6 +16,7 @@ export interface IUser extends Document {
   bio?: string;
   emergencyContact?: string;
   preferredStyle?: string;
+  coverUrl?: string;
   gearLocker?: string[];
   activationCode?: string;
   activationToken?: string;
@@ -42,6 +43,7 @@ const userSchema = new Schema<IUser>(
     passwordHash: { type: String, required: true },
     fullName: { type: String, required: true },
     avatarUrl: { type: String, default: '' },
+    coverUrl: { type: String, default: '' },
     role: { type: String, enum: ['user', 'guide', 'admin'], default: 'user' },
     authProvider: { type: String, enum: ['local', 'google'], default: 'local', index: true },
     isEmailVerified: { type: Boolean, default: false },
