@@ -3,12 +3,19 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Configure official Cloudinary v2 SDK
+const cloudName = (process.env.CLOUDINARY_CLOUD_NAME || '').trim();
+const apiKey = (process.env.CLOUDINARY_API_KEY || '').trim();
+const apiSecret = (process.env.CLOUDINARY_API_SECRET || '').trim();
+
 cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'dsxbuk4pe',
-  api_key: process.env.CLOUDINARY_API_KEY || '434322971269149',
-  api_secret: process.env.CLOUDINARY_API_SECRET || 'HyemSH59e0Qjk1bthG4WL2_o_mU',
+  cloud_name: cloudName,
+  api_key: apiKey,
+  api_secret: apiSecret,
   secure: true,
 });
+
+export function isCloudinaryConfigured(): boolean {
+  return Boolean(cloudName && apiKey && apiSecret);
+}
 
 export { cloudinary };

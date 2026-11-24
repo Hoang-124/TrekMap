@@ -1,11 +1,14 @@
+import crypto from 'crypto';
 import { Server as HttpServer } from 'http';
 import { Server, Socket } from 'socket.io';
-import { Types } from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import { CommunityMessageModel } from '../models/CommunityMessage.js';
+import { ConversationModel } from '../models/Conversation.js';
 import { UserModel } from '../models/User.js';
 import { verifyToken } from '../utils/auth.js';
 import { sanitizeInput } from '../utils/validation.js';
 import { containsProfanity } from '../utils/profanityFilter.js';
+import { getAllowedOrigins } from './cors.js';
 
 let io: Server | null = null;
 
@@ -13,111 +16,215 @@ let io: Server | null = null;
 const userSockets = new Map<string, Set<string>>(); // userId -> Set of socketIds
 const socketToUser = new Map<string, string>(); // socketId -> userId
 
+// Per-user (not only per-socket) rate limiting so reconnects/tabs cannot bypass limits
+const userSocketRateLimits = new Map<string, number[]>();
+const MAX_RATE_KEYS = 5000;
+const MAX_RADIO_CHANNELS_PER_SOCKET = 5;
+const SOCKET_AUTH_RECHECK_MS = 5000;
+
+/**
+ * Re-verifies authenticated socket against MongoDB so mid-session bans or tokenVersion revocations
+ * take effect immediately across joinConversation / typing / radio / community chat events.
+ */
+async function ensureSocketUserActive(socket: Socket, forceFresh = false): Promise<boolean> {
+  const authUid: string | undefined = socket.data?.userId;
+  if (!authUid || !Types.ObjectId.isValid(authUid)) return false;
+  if (mongoose.connection.readyState !== 1) return false;
+
+  const now = Date.now();
+  const lastCheck = typeof socket.data?._lastAuthCheckAt === 'number' ? socket.data._lastAuthCheckAt : 0;
+  if (!forceFresh && now - lastCheck < SOCKET_AUTH_RECHECK_MS) {
+    return true;
+  }
+
+  try {
+    const dbUser = await UserModel.findById(authUid)
+      .select('isBanned tokenVersion role fullName avatarUrl')
+      .lean();
+    const currentVersion = typeof dbUser?.tokenVersion === 'number' ? dbUser.tokenVersion : 0;
+    const tokenVersion = typeof socket.data?.tokenVersion === 'number' ? socket.data.tokenVersion : 0;
+    if (!dbUser || dbUser.isBanned || tokenVersion < currentVersion) {
+      socket.emit('chatError', { message: 'Phiên đăng nhập đã hết hiệu lực hoặc tài khoản bị khóa.' });
+      socket.disconnect(true);
+      return false;
+    }
+    socket.data._lastAuthCheckAt = now;
+    socket.data.role = dbUser.role;
+    socket.data.fullName = dbUser.fullName;
+    socket.data.avatarUrl = dbUser.avatarUrl;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function checkSocketRateLimit(
+  socket: Socket,
+  bucket: string,
+  maxCount: number,
+  windowMs: number
+): boolean {
+  const now = Date.now();
+  const identity = socket.data?.userId ? `u:${socket.data.userId}` : `s:${socket.id}`;
+  const key = `${bucket}:${identity}`;
+  const existing = userSocketRateLimits.get(key) || [];
+  const hits = existing.filter((ts) => now - ts < windowMs);
+  if (hits.length >= maxCount) {
+    userSocketRateLimits.set(key, hits);
+    return false;
+  }
+  hits.push(now);
+  if (userSocketRateLimits.size >= MAX_RATE_KEYS) {
+    const oldest = userSocketRateLimits.keys().next().value;
+    if (oldest) userSocketRateLimits.delete(oldest);
+  }
+  userSocketRateLimits.set(key, hits);
+  return true;
+}
+
+const rateCleanup = setInterval(() => {
+  const cutoff = Date.now() - 60_000;
+  for (const [k, hits] of userSocketRateLimits.entries()) {
+    const recent = hits.filter((ts) => ts > cutoff);
+    if (recent.length === 0) userSocketRateLimits.delete(k);
+    else userSocketRateLimits.set(k, recent);
+  }
+}, 60_000);
+rateCleanup.unref();
+
 export const initSocketServer = (httpServer: HttpServer): Server => {
   io = new Server(httpServer, {
     cors: {
-      origin: [
-        'http://localhost:5173',
-        'http://localhost:4173',
-        'http://127.0.0.1:5173',
-        'http://127.0.0.1:4173',
-        'https://trekmap.vn',
-        'https://www.trekmap.vn',
-      ],
+      origin: getAllowedOrigins(),
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
       credentials: true,
     },
   });
 
-  // Socket.io Authentication Middleware for secure Handshake
-  io.use((socket: Socket, next) => {
-    const rawToken = socket.handshake.auth?.token || socket.handshake.headers?.authorization;
-    const token = rawToken && typeof rawToken === 'string' && rawToken.startsWith('Bearer ')
-      ? rawToken.substring(7)
-      : (typeof rawToken === 'string' ? rawToken : null);
+  // Strict Socket.io Authentication Handshake Middleware (fails closed when DB unavailable or user banned/revoked)
+  io.use(async (socket: Socket, next) => {
+    try {
+      const rawToken = socket.handshake.auth?.token || socket.handshake.headers?.authorization;
+      const token =
+        rawToken && typeof rawToken === 'string' && rawToken.startsWith('Bearer ')
+          ? rawToken.substring(7)
+          : typeof rawToken === 'string'
+            ? rawToken
+            : null;
 
-    if (token) {
-      const decoded = verifyToken(token);
-      if (decoded) {
-        (socket as any).data = {
-          user: decoded,
-          userId: String(decoded.userId),
-          email: decoded.email,
-          role: decoded.role,
-        };
+      if (token && mongoose.connection.readyState === 1) {
+        const decoded = verifyToken(token);
+        if (decoded?.userId && Types.ObjectId.isValid(decoded.userId)) {
+          const dbUser = await UserModel.findById(decoded.userId)
+            .select('role isBanned email tokenVersion fullName avatarUrl')
+            .lean();
+          const currentVersion = typeof dbUser?.tokenVersion === 'number' ? dbUser.tokenVersion : 0;
+          const tokenVersion = typeof decoded.tokenVersion === 'number' ? decoded.tokenVersion : 0;
+          if (dbUser && !dbUser.isBanned && tokenVersion >= currentVersion) {
+            socket.data = {
+              user: { ...decoded, role: dbUser.role },
+              userId: dbUser._id.toString(),
+              email: dbUser.email,
+              role: dbUser.role,
+              fullName: dbUser.fullName,
+              avatarUrl: dbUser.avatarUrl,
+              tokenVersion,
+              _lastAuthCheckAt: Date.now(),
+            };
+          }
+        }
       }
+    } catch {
+      // Fall back to anonymous read-only socket with no auth context
     }
     next();
   });
 
   io.on('connection', (socket: Socket) => {
-    console.log(`⚡ [Socket.io] Client connected: ${socket.id}`);
-
-    // Auto-join authenticated user room upon verified handshake
-    const authenticatedUid = (socket as any).data?.userId;
+    const authenticatedUid: string | undefined = socket.data?.userId;
     if (authenticatedUid) {
       const uid = String(authenticatedUid);
-      const roomName = `user:${uid}`;
-      socket.join(roomName);
+      socket.join(`user:${uid}`);
+      socket.join('room:authenticated');
       socketToUser.set(socket.id, uid);
       if (!userSockets.has(uid)) {
         userSockets.set(uid, new Set());
       }
       userSockets.get(uid)?.add(socket.id);
 
-      io?.emit('userStatus', { userId: uid, isOnline: true });
+      io?.to('room:authenticated').emit('userStatus', { userId: uid, isOnline: true });
       socket.emit('onlineUsersList', Array.from(userSockets.keys()));
     }
 
-    // Join user room with strict identity authorization check (Anti-spoofing)
+    // Strict identity check + rate limit for explicit user room join
     socket.on('join', (userId: string) => {
-      const authUid = (socket as any).data?.userId;
+      if (!checkSocketRateLimit(socket, 'join', 5, 10_000)) return;
+      const authUid: string | undefined = socket.data?.userId;
       const requestedUid = String(userId || '');
-
-      // Allow joining if client is verified as that user OR if running in local session
       if (authUid && requestedUid === authUid) {
-        const roomName = `user:${authUid}`;
-        socket.join(roomName);
+        socket.join(`user:${authUid}`);
+        socket.join('room:authenticated');
         socketToUser.set(socket.id, authUid);
         if (!userSockets.has(authUid)) {
           userSockets.set(authUid, new Set());
         }
         userSockets.get(authUid)?.add(socket.id);
-
-        io?.emit('userStatus', { userId: authUid, isOnline: true });
         socket.emit('onlineUsersList', Array.from(userSockets.keys()));
-      } else if (!authUid) {
-        console.warn(`⚠️ [Socket Security]: Unauthenticated client ${socket.id} attempted to join user room "${requestedUid}".`);
-      } else {
-        console.warn(`⚠️ [Socket Security Alert]: User ${authUid} attempted to spoof room "${requestedUid}". Blocked.`);
       }
     });
 
-    // Join direct conversation room for instant chat delivery & typing status
-    socket.on('joinConversation', (conversationId: string) => {
-      if (conversationId) {
+    // Authorized join for private DM / squad group conversation rooms (fail closed if DB offline or revoked)
+    socket.on('joinConversation', async (conversationId: string) => {
+      const authUid: string | undefined = socket.data?.userId;
+      if (
+        !authUid ||
+        typeof conversationId !== 'string' ||
+        !Types.ObjectId.isValid(conversationId) ||
+        mongoose.connection.readyState !== 1
+      ) {
+        return;
+      }
+      if (!(await ensureSocketUserActive(socket, true))) return;
+      try {
+        const isMember = await ConversationModel.exists({
+          _id: conversationId,
+          participants: authUid,
+        });
+        if (!isMember) return;
         socket.join(`conv:${conversationId}`);
-        console.log(`💬 [Chat Socket] Socket ${socket.id} joined conv:${conversationId}`);
+      } catch {
+        // Deny join on verification failure
       }
     });
 
     socket.on('leaveConversation', (conversationId: string) => {
-      if (conversationId) {
+      if (typeof conversationId === 'string' && conversationId) {
         socket.leave(`conv:${conversationId}`);
       }
     });
 
-    // Typing indicators
-    socket.on('typing', ({ conversationId, userId, userName }: { conversationId: string; userId: string; userName?: string }) => {
-      if (conversationId) {
-        socket.to(`conv:${conversationId}`).emit('userTyping', { conversationId, userId, userName });
-      }
+    // Authenticated & rate-limited typing indicators
+    socket.on('typing', async (payload?: { conversationId?: string }) => {
+      const authUid: string | undefined = socket.data?.userId;
+      const conversationId = payload?.conversationId;
+      if (!authUid || !conversationId || !socket.rooms.has(`conv:${conversationId}`)) return;
+      if (!checkSocketRateLimit(socket, 'typing', 15, 10_000)) return;
+      if (!(await ensureSocketUserActive(socket, false))) return;
+      socket.to(`conv:${conversationId}`).emit('userTyping', {
+        conversationId,
+        userId: authUid,
+        userName: socket.data?.fullName || 'Trekker',
+      });
     });
 
-    socket.on('stopTyping', ({ conversationId, userId }: { conversationId: string; userId: string }) => {
-      if (conversationId) {
-        socket.to(`conv:${conversationId}`).emit('userStoppedTyping', { conversationId, userId });
-      }
+    socket.on('stopTyping', (payload?: { conversationId?: string }) => {
+      const authUid: string | undefined = socket.data?.userId;
+      const conversationId = payload?.conversationId;
+      if (!authUid || !conversationId || !socket.rooms.has(`conv:${conversationId}`)) return;
+      socket.to(`conv:${conversationId}`).emit('userStoppedTyping', {
+        conversationId,
+        userId: authUid,
+      });
     });
 
     // Heartbeat ping
@@ -125,80 +232,146 @@ export const initSocketServer = (httpServer: HttpServer): Server => {
       socket.emit('pong', { timestamp: Date.now() });
     });
 
-    // Join Radio Basecamp Channel Room
-    socket.on('joinRadioChannel', (channel: string) => {
-      if (channel) {
-        socket.join(`radio:${channel}`);
-        console.log(`📻 [Radio Socket] Socket ${socket.id} joined channel radio:${channel}`);
+    // Authenticated & bounded Radio Basecamp Channel Rooms
+    socket.on('joinRadioChannel', async (channel: string) => {
+      const authUid: string | undefined = socket.data?.userId;
+      if (!authUid || typeof channel !== 'string' || !channel.trim()) return;
+      if (!(await ensureSocketUserActive(socket, true))) return;
+      const cleanChannel = channel.trim().slice(0, 40);
+      const currentRadioRooms = Array.from(socket.rooms).filter((r) => r.startsWith('radio:'));
+      if (currentRadioRooms.length >= MAX_RADIO_CHANNELS_PER_SOCKET && !socket.rooms.has(`radio:${cleanChannel}`)) {
+        return;
+      }
+      socket.join(`radio:${cleanChannel}`);
+    });
+
+    socket.on('leaveRadioChannel', (channel: string) => {
+      if (typeof channel === 'string' && channel.trim()) {
+        socket.leave(`radio:${channel.trim().slice(0, 40)}`);
       }
     });
 
-    // Broadcast Radio Transmit Message to all listeners (single emit to avoid duplicates)
-    socket.on('radioMessage', (msgData: any) => {
-      const ch = msgData.channel || 'Channel 1';
-      io?.emit('radioMessage', msgData);
+    // Authenticated & channel-scoped Radio Transmit Message (must have joined the channel)
+    socket.on('radioMessage', async (msgData?: Record<string, unknown>) => {
+      const authUid: string | undefined = socket.data?.userId;
+      if (!authUid || !msgData || typeof msgData !== 'object') return;
+      if (!checkSocketRateLimit(socket, 'radio', 10, 15_000)) return;
+
+      const ch =
+        typeof msgData.channel === 'string' && msgData.channel.trim()
+          ? msgData.channel.trim().slice(0, 40)
+          : 'Channel 1';
+      if (!socket.rooms.has(`radio:${ch}`)) return;
+      if (!(await ensureSocketUserActive(socket, false))) return;
+
+      const rawText =
+        typeof msgData.text === 'string'
+          ? msgData.text
+          : typeof msgData.message === 'string'
+            ? msgData.message
+            : '';
+      const cleanText = sanitizeInput(rawText).slice(0, 500);
+      if (!cleanText || containsProfanity(cleanText)) return;
+
+      io?.to(`radio:${ch}`).emit('radioMessage', {
+        id: `rad-${crypto.randomUUID()}`,
+        channel: ch,
+        senderId: authUid,
+        senderName: socket.data?.fullName || 'Trekker',
+        text: cleanText,
+        timestamp: new Date().toISOString(),
+      });
     });
 
-    // Join Public Community Chatroom
+    // Join / Leave Public Community Chatroom
     socket.on('joinCommunityChat', () => {
       socket.join('room:community_chat');
       const count = io?.sockets.adapter.rooms.get('room:community_chat')?.size || 1;
       io?.to('room:community_chat').emit('communityOnlineCount', count);
-      console.log(`💬 [Community Chat] Socket ${socket.id} joined room:community_chat (Online: ${count})`);
     });
 
-    // Leave Public Community Chatroom
     socket.on('leaveCommunityChat', () => {
+      const wasInRoom = socket.rooms.has('room:community_chat');
       socket.leave('room:community_chat');
-      const count = io?.sockets.adapter.rooms.get('room:community_chat')?.size || 0;
-      io?.to('room:community_chat').emit('communityOnlineCount', count);
+      if (wasInRoom) {
+        const count = io?.sockets.adapter.rooms.get('room:community_chat')?.size || 0;
+        io?.to('room:community_chat').emit('communityOnlineCount', count);
+      }
     });
 
-    // Send Public Community Chat Message (H3: sanitized, H4: identity from socket.data)
-    socket.on('sendCommunityChatMessage', async (msgData: any) => {
+    // Authenticated Public Community Chat Message with per-user rate limit & DB guard
+    socket.on('sendCommunityChatMessage', async (msgData?: Record<string, any>) => {
       try {
-        if (!msgData || !msgData.text) return;
+        const authUid: string | undefined = socket.data?.userId;
+        if (!authUid) {
+          socket.emit('chatError', { message: 'Vui lòng đăng nhập để tham gia trò chuyện cộng đồng.' });
+          return;
+        }
+        if (!msgData || typeof msgData.text !== 'string') return;
+        if (!socket.rooms.has('room:community_chat')) {
+          socket.join('room:community_chat');
+          const count = io?.sockets.adapter.rooms.get('room:community_chat')?.size || 1;
+          io?.to('room:community_chat').emit('communityOnlineCount', count);
+        }
+        if (!checkSocketRateLimit(socket, 'community_chat', 8, 10_000)) {
+          socket.emit('chatError', { message: 'Bạn gửi tin nhắn quá nhanh. Vui lòng đợi vài giây.' });
+          return;
+        }
 
-        // Sanitize message text and enforce max length
-        const cleanText = sanitizeInput(String(msgData.text)).slice(0, 1000);
+        const cleanText = sanitizeInput(msgData.text).slice(0, 1000);
         if (!cleanText.trim()) return;
 
-        // Reject profanity
         if (containsProfanity(cleanText)) {
           socket.emit('chatError', { message: 'Tin nhắn chứa từ ngữ vi phạm quy chuẩn cộng đồng.' });
           return;
         }
 
-        // H4: Extract verified sender identity from socket handshake auth, NOT from client body
-        const authUser = (socket as any).data?.user || (socket as any).data;
-        let trustedSenderId: Types.ObjectId | undefined;
-        let trustedSenderName = 'Trekker Ẩn Danh';
-        let trustedSenderAvatar = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=100&q=80';
-        let trustedSenderBadge = 'Trekker';
-        let trustedNameColor = 'var(--color-primary)';
-
-        if (authUser?.userId) {
-          trustedSenderId = Types.ObjectId.isValid(String(authUser.userId))
-            ? new Types.ObjectId(String(authUser.userId))
-            : undefined;
-          // Fetch live user data from DB for authoritative name/avatar
-          try {
-            const dbUser = await UserModel.findById(authUser.userId).select('fullName avatarUrl role').lean();
-            if (dbUser) {
-              trustedSenderName = dbUser.fullName || trustedSenderName;
-              trustedSenderAvatar = dbUser.avatarUrl || trustedSenderAvatar;
-              trustedSenderBadge = dbUser.role === 'admin' ? 'BQT TrekMap' : 'Trekker';
-              trustedNameColor = dbUser.role === 'admin' ? 'var(--color-sky)' : 'var(--color-primary)';
-            }
-          } catch (dbErr) {
-            // Fallback to token data
-            trustedSenderName = authUser.email?.split('@')[0] || trustedSenderName;
-          }
+        if (mongoose.connection.readyState !== 1) {
+          socket.emit('chatError', { message: 'Hệ thống trò chuyện tạm thời gián đoạn. Vui lòng thử lại.' });
+          return;
         }
 
-        const validQuote = msgData.quote && typeof msgData.quote === 'object' && msgData.quote.author && msgData.quote.text
-          ? { author: sanitizeInput(String(msgData.quote.author)), text: sanitizeInput(String(msgData.quote.text)) }
-          : undefined;
+        const trustedSenderId = Types.ObjectId.isValid(authUid) ? new Types.ObjectId(authUid) : undefined;
+        if (!trustedSenderId) {
+          socket.emit('chatError', { message: 'Phiên đăng nhập không hợp lệ.' });
+          return;
+        }
+
+        const dbUser = await UserModel.findById(trustedSenderId)
+          .select('fullName avatarUrl role isBanned tokenVersion')
+          .lean();
+        const currentVersion = typeof dbUser?.tokenVersion === 'number' ? dbUser.tokenVersion : 0;
+        const tokenVersion = typeof socket.data?.tokenVersion === 'number' ? socket.data.tokenVersion : 0;
+        if (!dbUser || dbUser.isBanned || tokenVersion < currentVersion) {
+          socket.emit('chatError', { message: 'Tài khoản không được phép gửi tin nhắn hoặc phiên đã hết hạn.' });
+          socket.disconnect(true);
+          return;
+        }
+
+        const trustedSenderName = dbUser.fullName || socket.data?.fullName || 'Trekker';
+        const trustedSenderAvatar =
+          dbUser.avatarUrl ||
+          socket.data?.avatarUrl ||
+          'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
+        const trustedSenderBadge =
+          dbUser.role === 'admin' ? 'BQT LOST' : dbUser.role === 'moderator' ? 'Điều phối LOST' : 'Trekker';
+        const trustedNameColor =
+          dbUser.role === 'admin' || dbUser.role === 'moderator' ? 'var(--color-sky)' : 'var(--color-primary)';
+
+        // Refresh cached name/avatar on socket
+        socket.data.fullName = trustedSenderName;
+        socket.data.avatarUrl = trustedSenderAvatar;
+
+        const validQuote =
+          msgData.quote &&
+          typeof msgData.quote === 'object' &&
+          typeof msgData.quote.author === 'string' &&
+          typeof msgData.quote.text === 'string'
+            ? {
+                author: sanitizeInput(msgData.quote.author).slice(0, 100),
+                text: sanitizeInput(msgData.quote.text).slice(0, 300),
+              }
+            : undefined;
 
         const savedDoc = await CommunityMessageModel.create({
           senderId: trustedSenderId,
@@ -211,8 +384,9 @@ export const initSocketServer = (httpServer: HttpServer): Server => {
         });
 
         const newMsg = {
-          id: (savedDoc as any)._id?.toString() || `msg-${Date.now()}`,
-          senderId: trustedSenderId?.toString() || msgData.senderId,
+          id: savedDoc._id.toString(),
+          clientTempId: typeof msgData.id === 'string' ? msgData.id.slice(0, 64) : undefined,
+          senderId: trustedSenderId.toString(),
           senderName: savedDoc.senderName,
           senderAvatar: savedDoc.senderAvatar,
           senderBadge: savedDoc.senderBadge,
@@ -222,30 +396,22 @@ export const initSocketServer = (httpServer: HttpServer): Server => {
           createdAt: savedDoc.createdAt ? new Date(savedDoc.createdAt).toISOString() : new Date().toISOString(),
         };
 
-        // Single broadcast to community chat room (no duplicate io.emit)
         io?.to('room:community_chat').emit('newCommunityMessage', newMsg);
       } catch (err) {
         console.error('[Community Chat Socket Error]:', err);
+        socket.emit('chatError', { message: 'Không thể gửi tin nhắn lúc này. Vui lòng thử lại.' });
       }
     });
 
+    // Check community room membership BEFORE rooms are cleared on disconnect
     socket.on('disconnecting', () => {
       if (socket.rooms.has('room:community_chat')) {
         const currentSize = io?.sockets.adapter.rooms.get('room:community_chat')?.size || 1;
-        const remainingCount = Math.max(0, currentSize - 1);
-        socket.to('room:community_chat').emit('communityOnlineCount', remainingCount);
-        io?.emit('communityOnlineCount', remainingCount);
+        io?.to('room:community_chat').emit('communityOnlineCount', Math.max(0, currentSize - 1));
       }
     });
 
     socket.on('disconnect', () => {
-      console.log(`🔌 [Socket.io] Client disconnected: ${socket.id}`);
-
-      // Recalculate and broadcast online count for community chat
-      const remainingCommunity = io?.sockets.adapter.rooms.get('room:community_chat')?.size || 0;
-      io?.to('room:community_chat').emit('communityOnlineCount', remainingCommunity);
-      io?.emit('communityOnlineCount', remainingCommunity);
-
       const uid = socketToUser.get(socket.id);
       if (uid) {
         socketToUser.delete(socket.id);
@@ -254,7 +420,7 @@ export const initSocketServer = (httpServer: HttpServer): Server => {
           set.delete(socket.id);
           if (set.size === 0) {
             userSockets.delete(uid);
-            io?.emit('userStatus', { userId: uid, isOnline: false });
+            io?.to('room:authenticated').emit('userStatus', { userId: uid, isOnline: false });
           }
         }
       }
@@ -264,25 +430,17 @@ export const initSocketServer = (httpServer: HttpServer): Server => {
   return io;
 };
 
-export const getIO = (): Server => {
-  if (!io) {
-    throw new Error('Socket.io has not been initialized!');
-  }
-  return io;
-};
+export const getIO = (): Server | null => io;
 
 export const emitToUser = (userId: string, event: string, payload: any) => {
-  if (io) {
-    const uid = String(userId);
-    io.to(`user:${uid}`).emit(event, payload);
+  if (io && userId) {
+    io.to(`user:${String(userId)}`).emit(event, payload);
+  }
+};
 
-    // Backup: emit directly to socket IDs of the target user
-    const set = userSockets.get(uid);
-    if (set) {
-      for (const socketId of set) {
-        io.sockets.sockets.get(socketId)?.emit(event, payload);
-      }
-    }
+export const emitToConversation = (conversationId: string, event: string, payload: any) => {
+  if (io && conversationId) {
+    io.to(`conv:${String(conversationId)}`).emit(event, payload);
   }
 };
 

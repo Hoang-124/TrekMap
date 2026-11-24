@@ -1,0 +1,45 @@
+{
+  "name": "LOST — Bản Đồ 3D & Cứu Hộ Trekking Việt Nam",
+  "short_name": "LOST",
+  "description": "Bản đồ địa hình 3D DEM, 36 cung trekking thực địa, 28 trạm Kiểm lâm & VQG xác thực, gói bản đồ Offline và cứu hộ SOS 24/7 tại Việt Nam.",
+  "lang": "vi",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0c0f0d",
+  "theme_color": "#0c0f0d",
+  "categories": ["navigation", "travel", "sports", "utilities"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "SOS & Bộ Sinh Tồn",
+      "short_name": "SOS 2G",
+      "description": "Khóa GPS, SMS SOS 2G, Còi 3.1 kHz & Thẻ khóa màn hình ICE ngoại tuyến",
+      "url": "/toolkit?tab=sos",
+      "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Vẽ Tuyến GPX & DEM",
+      "short_name": "GPX Planner",
+      "description": "Thiết kế tuyến đường trekking, phân tích độ dốc và xuất GPX 1.1",
+      "url": "/planner",
+      "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Lịch Mùa & Săn Mây",
+      "short_name": "Almanac",
+      "description": "Ma trận khí hậu 12 tháng ERA5 & radar săn mây 36 đỉnh Việt Nam",
+      "url": "/almanac",
+      "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    }
+  ]
+}

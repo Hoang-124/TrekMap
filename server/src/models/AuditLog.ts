@@ -1,11 +1,13 @@
-import { Schema, model, Document } from 'mongoose';
+import { Schema, model, Document, Types } from 'mongoose';
 
 export interface IAuditLog extends Document {
-  userId: Schema.Types.ObjectId;
+  userId?: Types.ObjectId;
   action: string;
   targetCollection: string;
   details: string;
   ipAddress: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 const auditLogSchema = new Schema<IAuditLog>(
@@ -18,5 +20,10 @@ const auditLogSchema = new Schema<IAuditLog>(
   },
   { timestamps: true }
 );
+
+auditLogSchema.index({ userId: 1, createdAt: -1 });
+auditLogSchema.index({ targetCollection: 1, createdAt: -1 });
+// Retain audit logs for 180 days automatically
+auditLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 86400 * 180 });
 
 export const AuditLogModel = model<IAuditLog>('AuditLog', auditLogSchema);

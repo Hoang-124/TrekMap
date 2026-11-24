@@ -1,25 +1,60 @@
 /**
- * High Security Validation & Sanitization Utility (Mức Khá ➔ Tốt)
- * TrekMap Security Protocol
+ * High Security Validation & Sanitization Utility
+ * LOST Security Protocol
  */
 
 /**
- * Sanitize string inputs to prevent XSS Injection and HTML tampering
+ * Strips dangerous HTML/script tags and control characters WITHOUT corrupting legitimate
+ * Vietnamese punctuation (slashes "/", apostrophes "'", quotes) with HTML entities.
  */
 export const sanitizeInput = (str: string): string => {
-  if (!str) return '';
+  if (!str || typeof str !== 'string') return '';
   return str
-    .trim()
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;')
-    .replace(/\//g, '&#x2F;');
+    .replace(/<\s*(script|style|iframe|object|embed|svg)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/javascript\s*:/gi, '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .trim();
 };
 
-/**
- * Validate Unique Username (3-30 chars, alphanumeric + underscores/hyphens)
- */
+const PRIVATE_IPV4_REGEX =
+  /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.|100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\.)/;
+
+function isPrivateOrLocalHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (!host) return true;
+  if (
+    host === 'localhost' ||
+    host === '::1' ||
+    host === '0:0:0:0:0:0:0:1' ||
+    host.endsWith('.local') ||
+    host.endsWith('.internal') ||
+    host.endsWith('.localhost')
+  ) {
+    return true;
+  }
+  if (PRIVATE_IPV4_REGEX.test(host)) return true;
+  if (host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) return true;
+  // Reject integer/octal IP bypass formats (e.g., 2130706433 or 0x7f000001)
+  if (/^(0x[0-9a-f]+|\d+)$/i.test(host)) return true;
+  return false;
+}
+
+export const isSafeHttpUrl = (value: unknown): value is string => {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 2048) return false;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+    if (parsed.username || parsed.password) return false;
+    if (isPrivateOrLocalHostname(parsed.hostname)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const validateUsername = (username: string): { isValid: boolean; cleanUsername: string; message?: string } => {
   if (!username || typeof username !== 'string') {
     return { isValid: false, cleanUsername: '', message: 'Tên tài khoản (Username) không được để trống.' };
@@ -35,21 +70,46 @@ export const validateUsername = (username: string): { isValid: boolean; cleanUse
 
   const usernameRegex = /^[a-zA-Z0-9_-]+$/;
   if (!usernameRegex.test(cleanUsername)) {
-    return { isValid: false, cleanUsername, message: 'Tên tài khoản chỉ được chứa chữ cái, chữ số, dấu gạch dưới (_) hoặc gạch ngang (-).' };
+    return {
+      isValid: false,
+      cleanUsername,
+      message: 'Tên tài khoản chỉ được chứa chữ cái không dấu, chữ số, dấu gạch dưới (_) hoặc gạch ngang (-).',
+    };
   }
 
   return { isValid: true, cleanUsername };
 };
 
 /**
- * Generate 4 Unique Outdoor & Trekking Themed Username Suggestions
+ * Converts a Vietnamese full name (e.g. "Nguyễn Văn Hoàng") into a valid ASCII username base ("nguyen_van_hoang").
  */
+export const deriveUsernameFromFullName = (fullName: string, fallbackEmail?: string): string => {
+  const normalized = String(fullName || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[đĐ]/g, 'd')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 22);
+
+  if (normalized.length >= 3) return normalized;
+
+  const emailBase = String(fallbackEmail || '')
+    .split('@')[0]
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '')
+    .slice(0, 18);
+
+  return emailBase.length >= 3 ? emailBase : 'trekker_vn';
+};
+
 export const generateUsernameSuggestions = async (
   baseName: string,
   checkExistsFn: (candidate: string) => Promise<boolean>
 ): Promise<string[]> => {
   const cleanBase = baseName.trim().replace(/[^a-zA-Z0-9_-]/g, '');
-  const prefix = cleanBase.length >= 2 ? cleanBase : 'Trekker';
+  const prefix = cleanBase.length >= 2 ? cleanBase.slice(0, 18) : 'Trekker';
   const currentYear = new Date().getFullYear();
 
   const candidates = [
@@ -73,9 +133,6 @@ export const generateUsernameSuggestions = async (
   return suggestions;
 };
 
-/**
- * Validate Email against RFC 5322 standard format
- */
 export const validateEmail = (email: string): { isValid: boolean; cleanEmail: string; message?: string } => {
   if (!email || typeof email !== 'string') {
     return { isValid: false, cleanEmail: '', message: 'Địa chỉ Email không được để trống.' };
@@ -94,10 +151,6 @@ export const validateEmail = (email: string): { isValid: boolean; cleanEmail: st
   return { isValid: true, cleanEmail };
 };
 
-/**
- * Password Strength Evaluator (4 Levels: 0=Yếu, 1=Trung Bình, 2=Khá, 3=Tốt)
- * Standard Required: Score >= 2 (Mức Khá trở lên)
- */
 export interface PasswordStrengthResult {
   isValid: boolean;
   score: number; // 0, 1, 2, 3
@@ -108,6 +161,15 @@ export interface PasswordStrengthResult {
 export const validatePasswordStrength = (password: string): PasswordStrengthResult => {
   if (!password || typeof password !== 'string') {
     return { isValid: false, score: 0, label: 'Yếu', message: 'Mật khẩu không được để trống.' };
+  }
+
+  if (password.length > 128) {
+    return {
+      isValid: false,
+      score: 0,
+      label: 'Yếu',
+      message: 'Mật khẩu không được vượt quá 128 ký tự.',
+    };
   }
 
   if (password.length < 8) {
@@ -123,14 +185,14 @@ export const validatePasswordStrength = (password: string): PasswordStrengthResu
   const hasLower = /[a-z]/.test(password);
   const hasUpper = /[A-Z]/.test(password);
   const hasDigit = /[0-9]/.test(password);
-  const hasSpecial = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password);
+  const hasSpecial = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password);
 
-  if (hasLower && (hasUpper || hasDigit)) score = 1; // Trung Bình
-  if (hasLower && hasUpper && hasDigit) score = 2; // Khá
-  if (hasLower && hasUpper && hasDigit && hasSpecial && password.length >= 10) score = 3; // Tốt
+  const classCount = [hasLower, hasUpper, hasDigit, hasSpecial].filter(Boolean).length;
+  if (classCount >= 2) score = 1;
+  if (hasLower && hasUpper && hasDigit) score = 2;
+  if (hasLower && hasUpper && hasDigit && hasSpecial && password.length >= 10) score = 3;
 
-  // Blacklisted weak passwords
-  const weakPasswords = ['12345678', 'password', 'qwertyui', '123456789', 'trekmap123'];
+  const weakPasswords = ['12345678', 'password', 'qwertyui', '123456789', 'lost123'];
   if (weakPasswords.includes(password.toLowerCase())) {
     return {
       isValid: false,
@@ -156,9 +218,6 @@ export const validatePasswordStrength = (password: string): PasswordStrengthResu
   };
 };
 
-/**
- * Validate Full Name (Min 2 chars, Max 60 chars, XSS Sanitized)
- */
 export const validateFullName = (name: string): { isValid: boolean; cleanName: string; message?: string } => {
   if (!name || typeof name !== 'string') {
     return { isValid: false, cleanName: '', message: 'Họ và tên không được để trống.' };
@@ -175,9 +234,6 @@ export const validateFullName = (name: string): { isValid: boolean; cleanName: s
   return { isValid: true, cleanName };
 };
 
-/**
- * Validate OTP Code (Exactly 6 numeric digits)
- */
 export const validateOtpCode = (code: string): { isValid: boolean; cleanCode: string; message?: string } => {
   if (!code || typeof code !== 'string') {
     return { isValid: false, cleanCode: '', message: 'Mã xác thực OTP không được để trống.' };
@@ -192,15 +248,12 @@ export const validateOtpCode = (code: string): { isValid: boolean; cleanCode: st
   return { isValid: true, cleanCode };
 };
 
-/**
- * Validate Vietnamese Phone Number Format (10-11 digits starting with 03, 05, 07, 08, 09 or +84)
- */
 export const validatePhoneNumber = (phone: string): { isValid: boolean; cleanPhone: string; message?: string } => {
   if (!phone || typeof phone !== 'string') {
-    return { isValid: true, cleanPhone: '' }; // Optional
+    return { isValid: true, cleanPhone: '' };
   }
 
-  const cleanPhone = phone.trim().replace(/[\s\-\.]/g, '');
+  const cleanPhone = phone.trim().replace(/[\s\-.]/g, '');
   if (!cleanPhone) {
     return { isValid: true, cleanPhone: '' };
   }
@@ -215,4 +268,14 @@ export const validatePhoneNumber = (phone: string): { isValid: boolean; cleanPho
   }
 
   return { isValid: true, cleanPhone };
+};
+
+export const hasDangerousMongoKeys = (obj: unknown): boolean => {
+  if (!obj || typeof obj !== 'object') return false;
+  if (Array.isArray(obj)) return obj.some(hasDangerousMongoKeys);
+  for (const [key, val] of Object.entries(obj)) {
+    if (key.startsWith('$') || key.includes('.')) return true;
+    if (val && typeof val === 'object' && hasDangerousMongoKeys(val)) return true;
+  }
+  return false;
 };

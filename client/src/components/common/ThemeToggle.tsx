@@ -1,50 +1,107 @@
 import React, { useEffect, useState } from 'react';
+import { triggerSmoothThemeTransition } from '../../utils/themeTransition.js';
 
-export const ThemeToggle: React.FC = () => {
-  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+const resolveInitialTheme = (): 'dark' | 'light' => {
+  if (typeof window === 'undefined') return 'dark';
+  try {
     const saved = localStorage.getItem('theme');
     if (saved === 'light' || saved === 'dark') return saved;
-    return 'dark';
-  });
+  } catch {
+    // ignore storage access errors
+  }
+  const attr = document.documentElement.getAttribute('data-theme');
+  if (attr === 'light' || attr === 'dark') return attr;
+  if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+    return 'light';
+  }
+  return 'dark';
+};
+
+export const ThemeToggle: React.FC = () => {
+  const [theme, setTheme] = useState<'dark' | 'light'>(resolveInitialTheme);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('theme', theme);
+    try {
+      localStorage.setItem('theme', theme);
+    } catch {
+      // ignore storage errors
+    }
   }, [theme]);
 
+  useEffect(() => {
+    const handleExternalToggle = (event: Event) => {
+      const detail = (event as CustomEvent<{ theme?: 'dark' | 'light' }>)?.detail;
+      triggerSmoothThemeTransition();
+      if (detail?.theme === 'light' || detail?.theme === 'dark') {
+        setTheme(detail.theme);
+      } else {
+        setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+      }
+    };
+    window.addEventListener('lost:toggle-theme', handleExternalToggle);
+    return () => window.removeEventListener('lost:toggle-theme', handleExternalToggle);
+  }, []);
+
   const toggleTheme = () => {
-    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+    const next: 'dark' | 'light' = theme === 'dark' ? 'light' : 'dark';
+    triggerSmoothThemeTransition();
+    setTheme(next);
+    window.dispatchEvent(new CustomEvent('lost:toggle-theme', { detail: { theme: next } }));
   };
 
   return (
     <button
       type="button"
       onClick={toggleTheme}
+      className="theme-spin interactive-click"
       style={{
-        width: 38,
-        height: 38,
-        borderRadius: '50%',
-        background: theme === 'dark' ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.06)',
-        border: '1px solid var(--color-border)',
+        width: 36,
+        height: 36,
+        borderRadius: 4,
+        background: 'var(--color-surface-elevated)',
+        border: '1px solid var(--color-border-strong)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         cursor: 'pointer',
-        transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
         padding: 0,
         color: 'var(--color-primary)',
-        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
+        boxShadow: 'var(--shadow-card)',
         flexShrink: 0,
       }}
       title={theme === 'dark' ? 'Chuyển sang Giao diện Sáng' : 'Chuyển sang Giao diện Tối'}
-      aria-label="Toggle Theme"
+      aria-label={theme === 'dark' ? 'Chuyển sang Giao diện Sáng' : 'Chuyển sang Giao diện Tối'}
+      aria-pressed={theme === 'light'}
     >
       {theme === 'dark' ? (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg
+          key="moon"
+          className="theme-icon-enter"
+          width="17"
+          height="17"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
         </svg>
       ) : (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg
+          key="sun"
+          className="theme-icon-enter"
+          width="17"
+          height="17"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
           <circle cx="12" cy="12" r="5" />
           <line x1="12" y1="1" x2="12" y2="3" />
           <line x1="12" y1="21" x2="12" y2="23" />

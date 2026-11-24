@@ -1,11 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
   IconBot,
   IconTrash,
   IconMaximize,
   IconMinimize,
-  IconPhoneCall,
   IconCopy,
   IconCheck,
   IconMountain,
@@ -16,12 +15,46 @@ import {
   IconHiking,
   IconMapPin,
   IconX,
-  IconEye,
-  IconEyeOff,
+  IconSend,
+  IconRotateCw,
+  IconFileText,
+  IconMessageSquare,
+  IconBackpack,
 } from '../common/SvgIcons.js';
 
-import { sendAiMessage, fetchQuickPrompts, removeEmojis } from '../../services/aiAssistant.service.js';
-import type { Trail, AiChatMessage, UserProfile, AiAssistantAction } from '../../types.js';
+import {
+  sendAiMessageStream,
+  fetchQuickPrompts,
+  removeEmojis,
+  fetchAiThreadsApi,
+  fetchAiThreadDetailApi,
+  updateAiThreadApi,
+  deleteAiThreadApi,
+  analyzeGpxApi,
+  compressImageForAiTriage,
+  analyzeAiImageApi,
+  loadLocalAiThreads,
+  saveLocalAiThreads,
+  consumeQueuedAiAssistantPrompt,
+  type CompressedAiPhoto,
+} from '../../services/aiAssistant.service.js';
+import { parseGpxFileClient } from '../../utils/gpxParser.js';
+import { isTopmostFocusTrap, useFocusTrap } from '../../hooks/useFocusTrap.js';
+import { AiMarkdownRenderer } from './AiMarkdownRenderer.js';
+import { AiRichCards } from './AiRichCards.js';
+import { AiThreadSidebar } from './AiThreadSidebar.js';
+import { AiTrailMatchWizard } from './AiTrailMatchWizard.js';
+import { AiPackAuditor } from './AiPackAuditor.js';
+import { AiExpeditionBriefTab } from './AiExpeditionBriefTab.js';
+import type { Incident, Trail, UserProfile } from '../../types.js';
+import type {
+  AiChatThreadSummary,
+  AiEngineMode,
+  AiModelUsed,
+  AiPreferredRegion,
+  LocalAiThreadRecord,
+  RichAiChatMessage,
+} from './ai.types.js';
 
 interface TrekAssistantModalProps {
   isOpen: boolean;
@@ -29,6 +62,293 @@ interface TrekAssistantModalProps {
   currentTrail?: Trail | null;
   currentUser?: UserProfile | null;
   onSelectTrail?: (trailId: string) => void;
+  pageView?: string;
+  currentView?: string;
+  trails?: Trail[];
+  incidents?: Incident[];
+}
+
+const MAX_INPUT_CHARS = 1500;
+
+interface SpeechRecognitionAlternativeLike {
+  transcript: string;
+  confidence: number;
+}
+
+interface SpeechRecognitionResultLike {
+  isFinal: boolean;
+  length: number;
+  [index: number]: SpeechRecognitionAlternativeLike;
+}
+
+interface SpeechRecognitionEventLike extends Event {
+  resultIndex: number;
+  results: {
+    length: number;
+    [index: number]: SpeechRecognitionResultLike;
+  };
+}
+
+interface SpeechRecognitionErrorEventLike extends Event {
+  error: string;
+}
+
+interface BrowserSpeechRecognition extends EventTarget {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onstart: (() => void) | null;
+  onend: (() => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+}
+
+type SpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
+
+function getSpeechRecognitionCtor(): SpeechRecognitionConstructor | null {
+  if (typeof window === 'undefined') return null;
+  const win = window as unknown as {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  };
+  return win.SpeechRecognition || win.webkitSpeechRecognition || null;
+}
+
+function stripMarkdownForSpeech(raw: string): string {
+  return removeEmojis(raw)
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\|/g, ', ')
+    .replace(/^[#>*\-+•]+\s*/gm, '')
+    .replace(/\*\*|__|~~|\*/g, '')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/\n{2,}/g, '. ')
+    .replace(/\n/g, ', ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 1800);
+}
+
+function getVietnamDateFileStamp(): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const y = parts.find((p) => p.type === 'year')?.value || '2026';
+  const m = parts.find((p) => p.type === 'month')?.value || '01';
+  const d = parts.find((p) => p.type === 'day')?.value || '01';
+  return `${y}-${m}-${d}`;
+}
+
+function buildThreadBriefingMarkdown(
+  msgs: RichAiChatMessage[],
+  activeTrail?: Trail | null,
+  threadTitle?: string
+): string {
+  const dateStamp = getVietnamDateFileStamp();
+  const timeNow = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+  const lines: string[] = [
+    `# LOST AI — BẢN TIN THÁM HIỂM NGOẠI TUYẾN (${dateStamp})`,
+    '',
+    `- **Tiêu đề phiên**: ${threadTitle || 'Tư vấn Thám hiểm & An toàn Núi cao'}`,
+    `- **Thời điểm xuất**: ${timeNow} (Giờ Việt Nam)`,
+    ...(activeTrail
+      ? [
+          `- **Cung đường đang xem**: ${activeTrail.name} (${activeTrail.province} — Đỉnh ${activeTrail.maxAltitudeM.toLocaleString()}m, ${activeTrail.distanceKm} km, +${activeTrail.elevationGainM}m)`,
+        ]
+      : []),
+    `- **Tổng số lượt trao đổi**: ${msgs.length}`,
+    '',
+    '---',
+    '',
+  ];
+
+  for (const msg of msgs) {
+    const speaker = msg.role === 'user' ? 'Người dùng (Trekker)' : 'LOST AI — Alpine Intelligence';
+    lines.push(`### ${speaker}${msg.timestamp ? ` (${msg.timestamp})` : ''}`);
+    lines.push('');
+    lines.push(removeEmojis(msg.content));
+    lines.push('');
+
+    if (Array.isArray(msg.actions) && msg.actions.length > 0) {
+      for (const act of msg.actions) {
+        if (act.type === 'go_no_go_card' && act.goNoGoData) {
+          const g = act.goNoGoData;
+          lines.push(`> **Thẻ Go/No-Go (${g.trailName})**: ${g.verdictLabel} — **${g.score}/100 điểm** (${g.departureDate})`);
+          if (g.weatherSummary) {
+            lines.push(
+              `> Thời tiết đỉnh: ${g.weatherSummary.summitTempMinC ?? g.weatherSummary.tempMinC}°C – ${g.weatherSummary.summitTempMaxC ?? g.weatherSummary.tempMaxC}°C | Mưa ${g.weatherSummary.precipMm} mm | Gió ${g.weatherSummary.windSpeedKmH} km/h`
+            );
+          }
+          if (g.risks.length > 0) lines.push(`> Rủi ro: ${g.risks.join('; ')}`);
+          lines.push('');
+        } else if (act.type === 'trail_compare_card' && act.compareData) {
+          const cmp = act.compareData;
+          lines.push(`**Bảng so sánh đối đầu (Tháng ${cmp.targetMonth}):**`);
+          lines.push('');
+          lines.push(`| Tiêu chí | ${cmp.trails.map((t) => t.name).join(' | ')} |`);
+          lines.push(`| --- | ${cmp.trails.map(() => '---').join(' | ')} |`);
+          lines.push(`| Cao độ đỉnh | ${cmp.trails.map((t) => `${t.maxAltitudeM.toLocaleString()}m`).join(' | ')} |`);
+          lines.push(`| Cự ly / Độ dốc | ${cmp.trails.map((t) => `${t.distanceKm} km (+${t.elevationGainM}m)`).join(' | ')} |`);
+          lines.push(`| Độ khó | ${cmp.trails.map((t) => `Cấp ${t.difficultyLevel}/5`).join(' | ')} |`);
+          lines.push(`| Thời lượng & Naismith | ${cmp.trails.map((t) => `${t.durationLabel} (~${t.naismithHours}h)`).join(' | ')} |`);
+          lines.push(`| Nguồn nước | ${cmp.trails.map((t) => (t.hasWaterSource ? 'Có suối' : 'Khô / Tự mang')).join(' | ')} |`);
+          lines.push(`| Giấy phép VQG | ${cmp.trails.map((t) => (t.permitRequired ? 'Cần đăng ký' : 'Tự do (CCCD)')).join(' | ')} |`);
+          lines.push(`| Sự cố đang mở | ${cmp.trails.map((t) => `${t.activeIncidentsCount}`).join(' | ')} |`);
+          lines.push('');
+          lines.push(`- **Người mới**: ${cmp.beginnerPick.name} — ${cmp.beginnerPick.reason}`);
+          lines.push(`- **Trekker kinh nghiệm**: ${cmp.veteranPick.name} — ${cmp.veteranPick.reason}`);
+          lines.push('');
+        } else if (act.type === 'bio_calculator' && act.bioCalcData) {
+          const b = act.bioCalcData;
+          lines.push(
+            `> **Tính toán Sinh học**: Di chuyển **${b.recommendedMovingHours}h** (Naismith ${b.naismithHours}h / Tobler ${b.toblerHours}h) | Nước **${b.waterLitersTotal}L** + **${b.oresolPackets} gói Oresol** | Calo **${b.caloriesActiveKcal} kcal** | Balo **${b.packRatioPercent}%**`
+          );
+          lines.push('');
+        } else if (act.type === 'pace_schedule_card' && act.pacePlanData) {
+          const pp = act.pacePlanData;
+          lines.push(
+            `> **Kế hoạch tốc độ & Giờ quay đầu (${pp.trailName} — ${pp.departureDate})**: Giờ quay đầu an toàn **${pp.pacing.safeTurnaroundTime}** | Hoàng hôn NOAA **${pp.solar.sunset}** | Xuất phát **${pp.inputs.startTime}** → Đỉnh **${pp.pacing.summitEta}** → Về đích **${pp.pacing.finishEta}**`
+          );
+          for (const cp of pp.checkpoints) {
+            lines.push(`> - Ngày ${cp.day} · ${cp.etaTime} — ${cp.label} (${cp.cumulativeKm} km · ${cp.elevationM}m)`);
+          }
+          lines.push('');
+        } else if (act.type === 'fuel_plan_card' && act.fuelPlanData) {
+          const fp = act.fuelPlanData;
+          lines.push(
+            `> **Dinh dưỡng, Nước & Điện giải (${fp.trailName} — ${fp.inputs.dietLabel})**: Nước **${fp.hydration.waterLitersTotal}L** (mang **${fp.hydration.carryWaterPerLegLiters}L/${fp.hasWaterSource ? 'chặng' : 'ngày'}**) + **${fp.hydration.oresolPacketsTotal} gói Oresol** | **${fp.energy.totalTripKcal.toLocaleString('vi-VN')} kcal** | Tải ăn+nước **${fp.totals.totalConsumableCarryKg} kg** (~**${fp.totals.estimatedFoodCostVndPerPerson.toLocaleString('vi-VN')}đ/người**)`
+          );
+          if (fp.hydration.hydrationAlert) {
+            lines.push(`> **Cảnh báo nước & điện giải**: ${fp.hydration.hydrationAlert}`);
+          }
+          if (fp.hydration.waterResupplySpots.length > 0) {
+            lines.push(
+              `> **Điểm tiếp nước thực địa**: ${fp.hydration.waterResupplySpots
+                .map(
+                  (sp) =>
+                    `${sp.name}${typeof sp.elevationM === 'number' && Number.isFinite(sp.elevationM) ? ` (${sp.elevationM.toLocaleString('vi-VN')}m)` : ''} — ${sp.treatmentNote}`
+                )
+                .join(' | ')}`
+            );
+          }
+          for (const r of fp.rations) {
+            lines.push(
+              `> - [${r.mealSlot}] ${r.name}: ${r.quantityLabel} (${r.weightGramsPerPerson}g/người${fp.inputs.groupSize > 1 ? `, đoàn ${(r.totalGramsGroup / 1000).toFixed(2)}kg` : ''} · ${r.kcalPerPerson} kcal)`
+            );
+          }
+          lines.push('');
+        } else if (act.type === 'readiness_audit_card' && act.readinessAuditData) {
+          const ra = act.readinessAuditData;
+          lines.push(
+            `> **Kiểm tra Sẵn sàng Pre-Flight (${ra.trailName} — ${ra.departureDate})**: **${ra.readinessScore}/100** (${ra.verdictLabel}) | Balo ${ra.inputs.packWeightKg}kg (${ra.inputs.packRatioPercent}%) | Quay đầu ${ra.snapshot.safeTurnaroundTime} | Nước ${ra.snapshot.carryWaterPerLegLiters}L`
+          );
+          for (const pl of ra.pillars) {
+            lines.push(`> - **${pl.label} (${pl.score}/100)**: ${pl.summary}`);
+          }
+          for (const fx of ra.topFixes) {
+            lines.push(`> - [Ưu tiên ${fx.priority.toUpperCase()}] **${fx.title}**: ${fx.action}`);
+          }
+          lines.push('');
+        } else if (act.type === 'gpx_analysis_card' && act.gpxData) {
+          const gx = act.gpxData;
+          lines.push(
+            `> **Phân tích GPX (${gx.fileName})**: ${gx.distanceKm} km | +${gx.elevationGainM}m / -${gx.elevationLossM}m | Đỉnh ${gx.maxAltitudeM}m | Độ khó cấp ${gx.estimatedDifficulty}/5 | Naismith ${gx.bioMetrics.recommendedMovingHours}h`
+          );
+          lines.push('');
+        } else if (act.type === 'ranked_trails' && Array.isArray(act.rankedTrails) && act.rankedTrails.length > 0) {
+          lines.push('**Cung đường đề xuất:**');
+          for (const rt of act.rankedTrails) {
+            lines.push(`- **${rt.name}** (${rt.province}) — ${rt.maxAltitudeM.toLocaleString()}m | ${rt.distanceKm} km | Phù hợp ${rt.matchScore}%`);
+          }
+          lines.push('');
+        } else if (act.type === 'first_aid_triage' && act.triageData) {
+          const tr = act.triageData;
+          lines.push(`> **Sơ cứu khẩn cấp WFA — ${tr.conditionTitle} (${tr.severity.toUpperCase()})**`);
+          tr.immediateSteps.forEach((step, idx) => lines.push(`> ${idx + 1}. ${step}`));
+          lines.push(`> Hotline: ${tr.emergencyContacts.map((c) => `${c.name}: ${c.phone}`).join(' | ')}`);
+          lines.push('');
+        } else if (act.type === 'gear_checklist' && Array.isArray(act.checklistItems)) {
+          lines.push('**Checklist trang bị:**');
+          for (const cat of act.checklistItems) {
+            lines.push(`- *${cat.category}*:`);
+            for (const item of cat.items) {
+              const label = typeof item === 'string' ? item : item.name;
+              lines.push(`  - [ ] ${label}`);
+            }
+          }
+          lines.push('');
+        } else if (act.type === 'itinerary_card' && act.itineraryData) {
+          lines.push(`**Lịch trình ${act.itineraryData.trailName} (${act.itineraryData.durationLabel}):**`);
+          for (const step of act.itineraryData.steps) {
+            lines.push(`- **Ngày ${step.day} · ${step.time}** — ${step.title}: ${step.description}`);
+          }
+          lines.push('');
+        }
+      }
+    }
+
+    lines.push('---');
+    lines.push('');
+  }
+
+  lines.push('*Xuất từ nền tảng LOST — Bản đồ Thám hiểm & An toàn Leo núi Việt Nam. Luôn lưu sẵn số cứu hộ 112 / 114 / 115 trước khi vào rừng.*');
+  return lines.join('\n');
+}
+
+function formatNowTime(): string {
+  return new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+}
+
+function buildWelcomeMessage(currentUser?: UserProfile | null, currentTrail?: Trail | null): RichAiChatMessage {
+  const rawName = currentUser?.fullName || '';
+  const cleanName = rawName.replace(/\s*\(.*?\)/, '').trim();
+  const nameGreeting = cleanName ? ` **${cleanName}**` : '';
+  const trailHint = currentTrail
+    ? `\n\nEm đang đọc trực tiếp ngữ cảnh cung **${currentTrail.name} (${currentTrail.maxAltitudeM}m — ${currentTrail.province})**. Bạn có thể kiểm tra Go/No-Go, lịch trình hoặc tải file **.gpx** để phân tích ngay!`
+    : '';
+
+  return {
+    id: `welcome-${currentUser?.id || 'guest'}-${currentTrail?.id || 'home'}`,
+    role: 'assistant',
+    content: removeEmojis(`**Xin chào${nameGreeting}!** Em là **LOST AI** — Trợ lý Thám hiểm & Sinh tồn Núi cao Việt Nam.
+
+Em có thể hỗ trợ bạn ngay:
+- **Đánh giá Go / No-Go trực tuyến** theo thời tiết đỉnh, gió rét & cảnh báo sạt lở thực địa.
+- **Xếp hạng cung đường thực địa** theo thể lực, mùa săn mây, suối thác & vị trí GPS.
+- **Máy tính sinh học Naismith / Tobler**: ước tính giờ leo, lượng nước, Oresol, calo & tải trọng balo.
+- **Phân tích file GPX trực tiếp**: kéo thả hoặc đính kèm file **.gpx** để xem biểu đồ độ dốc & cảnh báo an toàn.
+- **Sơ cứu dã ngoại WFA & Hotline 100% xác thực**: 112 / 114 / 115 & các VQG Việt Nam.${trailHint}`),
+    timestamp: formatNowTime(),
+    modelUsed: 'lost-knowledge-engine',
+    actions: [
+      {
+        type: 'quick_reply',
+        suggestions: currentTrail
+          ? [
+              `Đánh giá Go/No-Go hôm nay cho ${currentTrail.name}`,
+              `Tính giờ quay đầu & kế hoạch tốc độ leo ${currentTrail.name}`,
+              `Lịch trình chi tiết leo ${currentTrail.name}`,
+              `Checklist trang bị cho ${currentTrail.name}`,
+            ]
+          : [
+              'Gợi ý cung săn mây cho người mới',
+              'Tính giờ quay đầu & kịp xuống trước tối leo Fansipan',
+              'Tính thời gian Naismith & lượng nước leo núi 15km',
+              'Checklist Balo & Trang bị 2N1Đ',
+              'Cấp cứu khẩn cấp: Sốc độ cao & Lạc đường',
+            ],
+      },
+    ],
+  };
 }
 
 export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
@@ -37,1211 +357,1577 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
   currentTrail,
   currentUser,
   onSelectTrail,
+  pageView,
+  currentView,
+  trails,
+  incidents,
 }) => {
+  const effectivePageView = pageView ?? currentView;
+  const activeTrailIncidentCount = currentTrail && Array.isArray(incidents)
+    ? incidents.filter((inc) => !inc.resolved && inc.trailId === currentTrail.id).length
+    : 0;
+  const [activeSuiteTab, setActiveSuiteTab] = useState<'chat' | 'matchmaker' | 'pack_audit' | 'brief'>('chat');
   const [isExpanded, setIsExpanded] = useState(false);
-  const [geminiApiKey, setGeminiApiKey] = useState<string>(() => {
-    return localStorage.getItem('trekmap_gemini_api_key') || '';
-  });
+  const [showSidebar, setShowSidebar] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [keySaveSuccess, setKeySaveSuccess] = useState(false);
-  const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [isDragOverGpx, setIsDragOverGpx] = useState(false);
+  const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [showApiKeyText, setShowApiKeyText] = useState(false);
-  const [preferredRegion, setPreferredRegion] = useState<string>(() => {
-    return localStorage.getItem('trekmap_preferred_region') || 'danang';
-  });
-  const [engineMode, setEngineMode] = useState<'knowledge' | 'gemini'>(() => {
-    return (localStorage.getItem('trekmap_engine_mode') as any) || 'knowledge';
-  });
 
-  const triggerToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 2500);
-  };
-
-  // Keyboard shortcut: ESC to dismiss dialogs, minimize, or close
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (showClearConfirm) {
-          setShowClearConfirm(false);
-        } else if (showSettings) {
-          setShowSettings(false);
-        } else if (isExpanded) {
-          setIsExpanded(false);
-        } else {
-          onClose();
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, showClearConfirm, showSettings, isExpanded, onClose]);
-
-  // Capture user GPS coordinates gracefully if allowed
-  useEffect(() => {
-    if (isOpen && 'geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          setUserCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-        },
-        () => {
-          // Ignore if denied or unavailable
-        },
-        { timeout: 5000, maximumAge: 600000 }
-      );
+  const [preferredRegion, setPreferredRegion] = useState<AiPreferredRegion>(() => {
+    const saved = localStorage.getItem('lost_preferred_region');
+    if (saved === 'north' || saved === 'central' || saved === 'taynguyen' || saved === 'south' || saved === 'auto') {
+      return saved;
     }
-  }, [isOpen]);
+    if (saved === 'danang') return 'central';
+    return 'auto'; // Default GPS-first instead of hardcoded Da Nang
+  });
 
-  const getWelcomeMessage = (): AiChatMessage => {
-    const rawName = currentUser?.fullName || '';
-    const cleanName = rawName.replace(/\s*\(.*?\)/, '').trim();
-    const nameGreeting = cleanName ? ` **${cleanName}**` : '';
-
-    return {
-      id: 'welcome-msg',
-      role: 'assistant',
-      content: removeEmojis(`**Xin chào${nameGreeting}!** Em là **TrekCopilot AI** — trợ lý thám hiểm & sinh tồn chuyên biệt cho núi rừng Việt Nam.
-
-Em có thể giúp bạn:
-- **Tư vấn chọn cung theo thể lực**: Săn mây Lảo Thẩn, Tà Xùa; chạm đỉnh Fansipan 3.143m; ngắm hoa Chi Pâu Tà Chì Nhù; hay thử thách Tà Năng - Phan Dũng...
-- **Cứu hộ khẩn cấp 24/7**: Xử lý sốc độ cao (AMS), lạc rừng (giao thức S.T.O.P), hạ thân nhiệt & hotline kiểm lâm thật.
-- **Chuẩn bị hành trang**: Checklist đồ đạc dã ngoại, quy tắc 3 lớp áo và giáo án rèn thể lực 4 tuần.
-- **Đi suối thác & Săn mây chill**: Gợi ý các địa điểm mát mẻ, an toàn lũ quét quanh khu vực bạn ở.
-
-*Bạn đang chuẩn bị cho chuyến đi nào hoặc cần em hỗ trợ điều gì không ạ?*`),
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      actions: [
-        {
-          type: 'quick_reply',
-          suggestions: [
-            'Gợi ý cung săn mây cho người mới',
-            'Tìm địa điểm mát mẻ mây nhiều đi chill',
-            'Đi suối thác gần tôi cuối tuần',
-            'Checklist Balo & Trang bị 2N1Đ',
-            'Cấp cứu khẩn cấp: Sốc độ cao & Lạc đường',
-          ],
-        },
-      ],
-    };
-  };
-
-  const [messages, setMessages] = useState<AiChatMessage[]>(() => {
+  const [engineMode, setEngineMode] = useState<AiEngineMode>(() => {
     try {
-      const saved = sessionStorage.getItem('trekmap_ai_chat_history');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((m: AiChatMessage) => ({
-            ...m,
-            content: removeEmojis(m.content),
-          }));
-        }
-      }
+      localStorage.removeItem('lost_gemini_api_key');
     } catch {
-      // Ignore
+      // ignore
     }
-    return [getWelcomeMessage()];
+    const saved = localStorage.getItem('lost_engine_mode');
+    if (saved === 'knowledge' || saved === 'gemini' || saved === 'auto') return saved;
+    return 'auto';
+  });
+
+  const storageUserId =
+    currentUser?.id
+      ? String(currentUser.id)
+      : (currentUser as { _id?: string } | null | undefined)?._id
+      ? String((currentUser as { _id?: string })._id)
+      : null;
+  const [prevStorageUserId, setPrevStorageUserId] = useState<string | null>(storageUserId);
+
+  const [lastModelUsed, setLastModelUsed] = useState<AiModelUsed>('lost-knowledge-engine');
+  const [isCloudSynced, setIsCloudSynced] = useState(false);
+  const [threads, setThreads] = useState<AiChatThreadSummary[]>(() =>
+    loadLocalAiThreads(storageUserId).map(({ messages: _m, ...summary }) => summary)
+  );
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<RichAiChatMessage[]>(() => {
+    const localThreads = loadLocalAiThreads(storageUserId);
+    if (localThreads.length > 0 && localThreads[0].messages.length > 0) {
+      return localThreads[0].messages;
+    }
+    return [buildWelcomeMessage(currentUser, currentTrail)];
   });
 
   const [inputQuery, setInputQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isAnalyzingGpx, setIsAnalyzingGpx] = useState(false);
+  const [pendingImage, setPendingImage] = useState<CompressedAiPhoto | null>(null);
+  const [isCompressingImage, setIsCompressingImage] = useState(false);
   const [quickPrompts, setQuickPrompts] = useState<string[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [checkedGearItems, setCheckedGearItems] = useState<Record<string, boolean>>({});
+  const [isListeningVoice, setIsListeningVoice] = useState(false);
+  const [voiceInterimText, setVoiceInterimText] = useState('');
+  const [exportedBriefing, setExportedBriefing] = useState(false);
+  const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
 
+  // Immediately isolate chat state & sidebar when active user changes (logout / login / account switch)
+  if (storageUserId !== prevStorageUserId) {
+    setPrevStorageUserId(storageUserId);
+    const scopedLocal = loadLocalAiThreads(storageUserId);
+    setThreads(scopedLocal.map(({ messages: _m, ...summary }) => summary));
+    setActiveThreadId(null);
+    setIsCloudSynced(false);
+    setMessages(
+      scopedLocal.length > 0 && scopedLocal[0].messages.length > 0
+        ? scopedLocal[0].messages
+        : [buildWelcomeMessage(currentUser, currentTrail)]
+    );
+    setInputQuery('');
+    setCheckedGearItems({});
+    setShowClearConfirm(false);
+    setIsLoading(false);
+  }
+
+  const isVoiceSupported = typeof window !== 'undefined' && getSpeechRecognitionCtor() !== null;
+  const isTtsSupported = typeof window !== 'undefined' && 'speechSynthesis' in window && typeof SpeechSynthesisUtterance !== 'undefined';
+
+  const dialogRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const gpxInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const objectUrlsRef = useRef<Set<string>>(new Set());
+  const isMountedRef = useRef<boolean>(true);
+  const abortRef = useRef<AbortController | null>(null);
+  const speechRecRef = useRef<BrowserSpeechRecognition | null>(null);
+  const voiceBaseDraftRef = useRef<string>('');
+  const threadLoadReqIdRef = useRef<number>(0);
 
-  // Save history to sessionStorage
+  useFocusTrap(isOpen, dialogRef, { initialFocusRef: textareaRef });
+
+  // Cancel in-flight requests & invalidate stale thread fetches whenever user scope changes
   useEffect(() => {
-    try {
-      sessionStorage.setItem('trekmap_ai_chat_history', JSON.stringify(messages));
-    } catch {
-      // Ignore
+    return () => {
+      abortRef.current?.abort();
+      threadLoadReqIdRef.current += 1;
+    };
+  }, [storageUserId]);
+  const handleSendMessageRef = useRef<(textToSend?: string, overrideTrailId?: string) => Promise<void>>(async () => {});
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const exportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const liveOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const triggerToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToastMessage(null), 2600);
+  }, []);
+
+  const detachAndAbortSpeechRec = useCallback(() => {
+    const rec = speechRecRef.current;
+    if (rec) {
+      rec.onstart = null;
+      rec.onresult = null;
+      rec.onerror = null;
+      rec.onend = null;
+      try {
+        rec.abort();
+      } catch {
+        // ignore
+      }
+      speechRecRef.current = null;
     }
-  }, [messages]);
+  }, []);
 
-  // Load contextual quick prompts
-  useEffect(() => {
-    if (isOpen) {
-      fetchQuickPrompts(
-        currentTrail ? { name: currentTrail.name, province: currentTrail.province } : undefined
-      ).then((prompts) => {
-        if (prompts && prompts.length > 0) {
-          setQuickPrompts(prompts.map(removeEmojis));
+  const stopVoiceRecognition = useCallback(() => {
+    detachAndAbortSpeechRec();
+    setIsListeningVoice(false);
+    setVoiceInterimText('');
+  }, [detachAndAbortSpeechRec]);
+
+  const stopTts = useCallback(() => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // ignore
+      }
+    }
+    setSpeakingMsgId(null);
+  }, []);
+
+  const handleToggleSpeakMessage = useCallback(
+    (msgId: string, content: string) => {
+      if (!isTtsSupported) return;
+      if (speakingMsgId === msgId) {
+        stopTts();
+        return;
+      }
+      try {
+        window.speechSynthesis.cancel();
+        const plain = stripMarkdownForSpeech(content);
+        if (!plain) return;
+        const utterance = new SpeechSynthesisUtterance(plain);
+        utterance.lang = 'vi-VN';
+        utterance.rate = 1.02;
+        const voices = window.speechSynthesis.getVoices();
+        const viVoice = voices.find((v) => v.lang.toLowerCase().startsWith('vi'));
+        if (viVoice) utterance.voice = viVoice;
+        utterance.onend = () => {
+          setSpeakingMsgId((prev) => (prev === msgId ? null : prev));
+        };
+        utterance.onerror = () => {
+          setSpeakingMsgId((prev) => (prev === msgId ? null : prev));
+        };
+        setSpeakingMsgId(msgId);
+        window.speechSynthesis.speak(utterance);
+      } catch {
+        setSpeakingMsgId(null);
+        triggerToast('Không thể phát giọng nói đọc phản hồi trên trình duyệt này.');
+      }
+    },
+    [isTtsSupported, speakingMsgId, stopTts, triggerToast]
+  );
+
+  const toggleVoiceRecognition = useCallback(() => {
+    if (isListeningVoice) {
+      if (speechRecRef.current) {
+        try {
+          speechRecRef.current.stop();
+        } catch {
+          stopVoiceRecognition();
         }
-      });
-      setTimeout(() => inputRef.current?.focus(), 200);
+      } else {
+        stopVoiceRecognition();
+      }
+      return;
     }
-  }, [isOpen, currentTrail]);
 
-  // Auto scroll to bottom
+    const Ctor = getSpeechRecognitionCtor();
+    if (!Ctor) {
+      triggerToast('Trình duyệt hiện tại không hỗ trợ nhập giọng nói tiếng Việt.');
+      return;
+    }
+
+    try {
+      const recognition = new Ctor();
+      recognition.lang = 'vi-VN';
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
+      voiceBaseDraftRef.current = inputQuery.trim();
+
+      recognition.onstart = () => {
+        setIsListeningVoice(true);
+        setVoiceInterimText('');
+      };
+
+      recognition.onresult = (event: SpeechRecognitionEventLike) => {
+        let finalPart = '';
+        let interimPart = '';
+        for (let i = 0; i < event.results.length; i++) {
+          const res = event.results[i];
+          const text = res[0]?.transcript || '';
+          if (res.isFinal) {
+            finalPart += `${text} `;
+          } else {
+            interimPart += text;
+          }
+        }
+        const spoken = `${finalPart}${interimPart}`.trim();
+        const combined = voiceBaseDraftRef.current
+          ? `${voiceBaseDraftRef.current} ${spoken}`.trim()
+          : spoken;
+        setVoiceInterimText(interimPart.trim());
+        setInputQuery(combined.slice(0, MAX_INPUT_CHARS));
+      };
+
+      recognition.onerror = (event: SpeechRecognitionErrorEventLike) => {
+        const errCode = event.error;
+        if (errCode === 'not-allowed' || errCode === 'service-not-allowed') {
+          triggerToast('Vui lòng cấp quyền Micro trên trình duyệt để nói tiếng Việt.');
+        } else if (errCode === 'no-speech') {
+          triggerToast('Chưa nghe rõ giọng nói. Hãy nhấn Micro và thử lại.');
+        } else if (errCode !== 'aborted') {
+          triggerToast('Không thể nhận diện giọng nói lúc này.');
+        }
+        speechRecRef.current = null;
+        setIsListeningVoice(false);
+        setVoiceInterimText('');
+      };
+
+      recognition.onend = () => {
+        speechRecRef.current = null;
+        setIsListeningVoice(false);
+        setVoiceInterimText('');
+      };
+
+      speechRecRef.current = recognition;
+      recognition.start();
+    } catch {
+      stopVoiceRecognition();
+      triggerToast('Không thể khởi chạy Micro trên thiết bị này.');
+    }
+  }, [inputQuery, isListeningVoice, stopVoiceRecognition, triggerToast]);
+
+  // Cleanup timers, speech recognition, TTS, blob preview URLs & in-flight requests on unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+    const trackedUrls = objectUrlsRef.current;
+    return () => {
+      isMountedRef.current = false;
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
+      if (exportTimerRef.current) clearTimeout(exportTimerRef.current);
+      if (liveOpenTimerRef.current) clearTimeout(liveOpenTimerRef.current);
+      abortRef.current?.abort();
+      detachAndAbortSpeechRec();
+      for (const url of trackedUrls) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+      }
+      trackedUrls.clear();
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, [detachAndAbortSpeechRec]);
+
+  // Cleanly abort in-flight requests, detach voice recognition & stop TTS whenever modal closes
+  useEffect(() => {
+    if (isOpen) return;
+    abortRef.current?.abort();
+    detachAndAbortSpeechRec();
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // ignore
+      }
+    }
+    const resetTimer = setTimeout(() => {
+      setIsLoading(false);
+      setIsListeningVoice(false);
+      setVoiceInterimText('');
+      setSpeakingMsgId(null);
+    }, 0);
+    return () => clearTimeout(resetTimer);
+  }, [isOpen, detachAndAbortSpeechRec]);
+
+  // Always render a fresh welcome message when no user turns exist yet (zero cascading effect setState)
+  const displayedMessages =
+    messages.length === 0 || (messages.length === 1 && messages[0].id.startsWith('welcome-'))
+      ? [buildWelcomeMessage(currentUser, currentTrail)]
+      : messages;
+
+  // Load cloud threads on open + merge strictly with current user's scoped local fallback
+  useEffect(() => {
+    if (!isOpen) return;
+    let active = true;
+    const scopeId = storageUserId;
+    fetchAiThreadsApi().then((cloudThreads) => {
+      if (!active) return;
+      if (cloudThreads !== null) {
+        setIsCloudSynced(true);
+        const localOnly = loadLocalAiThreads(scopeId)
+          .filter((lt) => lt.id.startsWith('local-'))
+          .map(({ messages: _m, ...s }) => s);
+        const merged = [...cloudThreads, ...localOnly];
+        setThreads(merged);
+      } else {
+        setIsCloudSynced(false);
+        setThreads(loadLocalAiThreads(scopeId).map(({ messages: _m, ...s }) => s));
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [isOpen, storageUserId]);
+
+  // Persist current thread to per-user localStorage offline cache whenever messages change
+  const persistLocalThreadSnapshot = useCallback(
+    (tid: string, msgs: RichAiChatMessage[], titleHint?: string) => {
+      const userMessages = msgs.filter((m) => m.role === 'user');
+      if (userMessages.length === 0) return;
+
+      const allLocal = loadLocalAiThreads(storageUserId);
+      const idx = allLocal.findIndex((t) => t.id === tid);
+      const firstUser = userMessages[0].content;
+      const computedTitle =
+        titleHint || (firstUser.length > 60 ? `${firstUser.slice(0, 57)}...` : firstUser);
+
+      const record: LocalAiThreadRecord = {
+        id: tid,
+        title: idx >= 0 ? allLocal[idx].title : computedTitle,
+        pinned: idx >= 0 ? allLocal[idx].pinned : false,
+        trailContextId: currentTrail?.id || (idx >= 0 ? allLocal[idx].trailContextId : undefined),
+        trailContextName: currentTrail?.name || (idx >= 0 ? allLocal[idx].trailContextName : undefined),
+        messageCount: msgs.filter((m) => !m.id.startsWith('welcome-')).length,
+        lastMessageAt: new Date().toISOString(),
+        isLocalOnly: tid.startsWith('local-'),
+        messages: msgs.slice(-40).map((m) =>
+          m.imagePreviewUrl && m.imagePreviewUrl.startsWith('blob:')
+            ? { ...m, imagePreviewUrl: undefined }
+            : m
+        ),
+      };
+
+      const nextLocal = idx >= 0 ? allLocal.map((item, i) => (i === idx ? record : item)) : [record, ...allLocal];
+      saveLocalAiThreads(nextLocal, storageUserId);
+
+      setThreads((prev) => {
+        const exists = prev.some((t) => t.id === tid);
+        const { messages: _m, ...summary } = record;
+        if (exists) return prev.map((t) => (t.id === tid ? { ...t, ...summary } : t));
+        return [summary, ...prev];
+      });
+    },
+    [currentTrail?.id, currentTrail?.name, storageUserId]
+  );
+
+  // ESC keyboard shortcut (strict LIFO via topmost focus trap + IME guard)
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (e.isComposing) return;
+        if (!isTopmostFocusTrap(dialogRef.current)) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (showClearConfirm) setShowClearConfirm(false);
+        else if (showSettings) setShowSettings(false);
+        else if (showSidebar && !isExpanded) setShowSidebar(false);
+        else if (isExpanded) setIsExpanded(false);
+        else onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, showClearConfirm, showSettings, showSidebar, isExpanded, onClose]);
+
+  // Capture GPS gracefully when preferredRegion === 'auto' (with unmount guard)
+  useEffect(() => {
+    if (!isOpen || preferredRegion !== 'auto' || !('geolocation' in navigator)) return;
+    let active = true;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (active) setUserCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+      },
+      () => {},
+      { timeout: 5000, maximumAge: 600_000 }
+    );
+    return () => {
+      active = false;
+    };
+  }, [isOpen, preferredRegion]);
+
+  // Load contextual quick prompts (guarded against stale trail switches & cleared focus timer)
+  useEffect(() => {
+    if (!isOpen) return;
+    let active = true;
+    fetchQuickPrompts({
+      name: currentTrail?.name,
+      province: currentTrail?.province,
+      pageView: effectivePageView,
+    }).then((prompts) => {
+      if (active && prompts.length > 0) setQuickPrompts(prompts.map(removeEmojis));
+    });
+    if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
+    focusTimerRef.current = setTimeout(() => {
+      if (isTopmostFocusTrap(dialogRef.current)) {
+        textareaRef.current?.focus();
+      }
+    }, 180);
+    return () => {
+      active = false;
+      if (focusTimerRef.current) {
+        clearTimeout(focusTimerRef.current);
+        focusTimerRef.current = null;
+      }
+    };
+  }, [isOpen, currentTrail?.id, currentTrail?.name, currentTrail?.province, effectivePageView]);
+
+  // Auto-scroll chat feed
   useEffect(() => {
     if (isOpen && !showSettings) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages, isLoading, isOpen, showSettings]);
+  }, [messages, isLoading, isAnalyzingGpx, isOpen, showSettings]);
 
-  const handleSaveApiKey = (key: string) => {
-    const cleanKey = key.trim();
-    setGeminiApiKey(cleanKey);
-    if (cleanKey) {
-      localStorage.setItem('trekmap_gemini_api_key', cleanKey);
-      setEngineMode('gemini');
-      localStorage.setItem('trekmap_engine_mode', 'gemini');
-      triggerToast('Đã lưu khóa Google Gemini API!');
-    } else {
-      localStorage.removeItem('trekmap_gemini_api_key');
-      setEngineMode('knowledge');
-      localStorage.setItem('trekmap_engine_mode', 'knowledge');
-      triggerToast('Đã chuyển sang Tri thức Thực địa TrekMap');
-    }
-    setKeySaveSuccess(true);
-    setTimeout(() => {
-      setKeySaveSuccess(false);
-      setShowSettings(false);
-    }, 800);
-  };
+  // Auto-grow textarea height
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(120, Math.max(38, el.scrollHeight))}px`;
+  }, [inputQuery]);
 
-  const getEffectiveCoords = () => {
-    if (preferredRegion === 'danang') return { lat: 16.0544, lng: 108.2022 };
+  const getEffectiveCoords = useCallback(() => {
+    if (preferredRegion === 'central') return { lat: 16.0544, lng: 108.2022 };
     if (preferredRegion === 'north') return { lat: 21.0285, lng: 105.8542 };
     if (preferredRegion === 'south') return { lat: 10.8231, lng: 106.6297 };
-    if (preferredRegion === 'taynguyen') return { lat: 13.9833, lng: 108.0000 };
-    return userCoords; // auto
-  };
+    if (preferredRegion === 'taynguyen') return { lat: 11.9404, lng: 108.4583 };
+    return userCoords;
+  }, [preferredRegion, userCoords]);
 
-  const handleSendMessage = async (textToSend?: string) => {
-    const text = removeEmojis(textToSend || inputQuery).trim();
-    if (!text || isLoading) return;
+  const handleRemovePendingImage = useCallback(() => {
+    setPendingImage((prev) => {
+      if (prev?.previewUrl && prev.previewUrl.startsWith('blob:')) {
+        try {
+          URL.revokeObjectURL(prev.previewUrl);
+        } catch {
+          // ignore
+        }
+        objectUrlsRef.current.delete(prev.previewUrl);
+      }
+      return null;
+    });
+  }, []);
 
-    const userMsg: AiChatMessage = {
-      id: `user-${Date.now()}`,
-      role: 'user',
-      content: text,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
-
-    setMessages((prev) => [...prev, userMsg]);
-    setInputQuery('');
-    setIsLoading(true);
-
-    try {
-      const history = messages
-        .filter((m) => m.role === 'user' || m.role === 'assistant')
-        .slice(-6)
-        .map((m) => ({ role: m.role as 'user' | 'assistant', content: removeEmojis(m.content) }));
-
-      const res = await sendAiMessage({
-        message: text,
-        conversationHistory: history,
-        userName: currentUser?.fullName,
-        userRole: currentUser?.role,
-        customApiKey: engineMode === 'gemini' ? (geminiApiKey || undefined) : undefined,
-        userCoordinates: getEffectiveCoords() || undefined,
-        currentTrailContext: currentTrail
-          ? {
-              trailId: currentTrail.id,
-              trailName: currentTrail.name,
-              province: currentTrail.province,
-              maxAltitudeM: currentTrail.maxAltitudeM,
-              difficultyLevel: currentTrail.difficultyLevel,
+  const handleSelectPhotoFile = useCallback(
+    async (file: File) => {
+      if (!file || isCompressingImage || isLoading) return;
+      setActiveSuiteTab('chat');
+      setShowSettings(false);
+      setIsCompressingImage(true);
+      try {
+        const compressed = await compressImageForAiTriage(file);
+        if (!isMountedRef.current) {
+          if (compressed.previewUrl.startsWith('blob:')) {
+            try {
+              URL.revokeObjectURL(compressed.previewUrl);
+            } catch {
+              // ignore
             }
-          : undefined,
+          }
+          return;
+        }
+        if (compressed.previewUrl.startsWith('blob:')) {
+          objectUrlsRef.current.add(compressed.previewUrl);
+        }
+        setPendingImage((prev) => {
+          if (prev?.previewUrl && prev.previewUrl.startsWith('blob:')) {
+            try {
+              URL.revokeObjectURL(prev.previewUrl);
+            } catch {
+              // ignore
+            }
+            objectUrlsRef.current.delete(prev.previewUrl);
+          }
+          return compressed;
+        });
+        const kb = Math.max(1, Math.round(compressed.byteSize / 1024));
+        triggerToast(`Đã nén ảnh ${compressed.width}×${compressed.height} (${kb} KB). Nhập câu hỏi hoặc bấm Gửi!`);
+        textareaRef.current?.focus();
+      } catch (err: unknown) {
+        if (!isMountedRef.current) return;
+        const msg = err instanceof Error ? err.message : 'Không thể xử lý tệp ảnh này.';
+        triggerToast(msg);
+      } finally {
+        if (isMountedRef.current) setIsCompressingImage(false);
+      }
+    },
+    [isCompressingImage, isLoading, triggerToast]
+  );
+
+  const handleSendMessage = useCallback(
+    async (textToSend?: string, overrideTrailId?: string) => {
+      const text = removeEmojis(textToSend ?? inputQuery).trim();
+      const attachedPhoto = textToSend === undefined ? pendingImage : null;
+      if ((!text && !attachedPhoto) || isLoading) return;
+      if (text.length > MAX_INPUT_CHARS) {
+        triggerToast(`Tin nhắn vượt quá ${MAX_INPUT_CHARS} ký tự.`);
+        return;
+      }
+
+      const resolvedOverrideTrailId =
+        typeof overrideTrailId === 'string' && overrideTrailId.trim() ? overrideTrailId.trim() : undefined;
+      const effectiveTrail =
+        resolvedOverrideTrailId && currentTrail?.id !== resolvedOverrideTrailId ? undefined : currentTrail;
+      const effectiveTrailId = resolvedOverrideTrailId || currentTrail?.id;
+
+      // Multimodal Photo Triage Branch (Wave 10A)
+      if (attachedPhoto) {
+        const effectiveQuestion = text || 'Phân tích ảnh thực địa này và tư vấn an toàn trekking.';
+        const userMsg: RichAiChatMessage = {
+          id: `user-img-${Date.now()}`,
+          role: 'user',
+          content: effectiveQuestion,
+          imagePreviewUrl: attachedPhoto.previewUrl,
+          imageCaption: attachedPhoto.fileName,
+          timestamp: formatNowTime(),
+        };
+        const baseMessages = messages.filter((m) => !m.id.startsWith('welcome-') || messages.length > 1);
+        const nextWithUser = [...baseMessages, userMsg];
+        setMessages(nextWithUser);
+        setInputQuery('');
+        setPendingImage(null);
+        setIsLoading(true);
+
+        abortRef.current?.abort();
+        const ctrl = new AbortController();
+        abortRef.current = ctrl;
+
+        try {
+          const res = await analyzeAiImageApi(
+            {
+              imageBase64: attachedPhoto.base64,
+              mimeType: attachedPhoto.mimeType,
+              question: effectiveQuestion,
+              trailId: currentTrail?.id,
+              threadId: activeThreadId && !activeThreadId.startsWith('local-') ? activeThreadId : undefined,
+            },
+            ctrl.signal
+          );
+          setLastModelUsed(res.modelUsed);
+          const assistantMsg: RichAiChatMessage = {
+            id: `assistant-img-${Date.now()}`,
+            role: 'assistant',
+            content: removeEmojis(res.reply),
+            timestamp: formatNowTime(),
+            modelUsed: res.modelUsed,
+            actions: res.actions,
+          };
+          const finalMsgs = [...nextWithUser, assistantMsg];
+          setMessages(finalMsgs);
+          const resolvedTid = res.threadId || activeThreadId || `local-${Date.now()}`;
+          setActiveThreadId(resolvedTid);
+          persistLocalThreadSnapshot(resolvedTid, finalMsgs, `Ảnh: ${effectiveQuestion.slice(0, 48)}`);
+        } catch (err: unknown) {
+          if (err instanceof Error && err.name === 'AbortError') {
+            triggerToast('Đã dừng phân tích ảnh.');
+            return;
+          }
+          const errText = err instanceof Error ? err.message : 'Không thể phân tích ảnh lúc này.';
+          const errorMsg: RichAiChatMessage = {
+            id: `err-img-${Date.now()}`,
+            role: 'assistant',
+            content: errText,
+            timestamp: formatNowTime(),
+            isError: true,
+          };
+          setMessages((prev) => [...prev, errorMsg]);
+        } finally {
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      const userMsg: RichAiChatMessage = {
+        id: `user-${Date.now()}`,
+        role: 'user',
+        content: text,
+        timestamp: formatNowTime(),
+      };
+
+      const baseMessages = messages.filter((m) => !m.id.startsWith('welcome-') || messages.length > 1);
+      const nextWithUser = [...baseMessages, userMsg];
+      setMessages(nextWithUser);
+      setInputQuery('');
+      setIsLoading(true);
+
+      abortRef.current?.abort();
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+
+      try {
+        // Strictly omit welcome message & error bubbles from Gemini/server history
+        const cleanHistory = nextWithUser
+          .filter((m) => !m.id.startsWith('welcome-') && !m.isError && (m.role === 'user' || m.role === 'assistant'))
+          .slice(-9, -1) // Prior turns before current userMsg
+          .map((m) => ({ role: m.role as 'user' | 'assistant', content: removeEmojis(m.content) }));
+
+        const coords = getEffectiveCoords();
+        const streamMsgId = `assistant-${Date.now()}`;
+        const streamTimestamp = formatNowTime();
+        const res = await sendAiMessageStream(
+          {
+            message: text,
+            threadId: activeThreadId && !activeThreadId.startsWith('local-') ? activeThreadId : undefined,
+            conversationHistory: cleanHistory,
+            engineMode,
+            userName: currentUser?.fullName,
+            userCoordinates: coords || undefined,
+            context: {
+              pageView: effectivePageView || (effectiveTrail || effectiveTrailId ? 'detail' : 'home'),
+              trailId: effectiveTrailId,
+              trailName: effectiveTrail?.name,
+              province: effectiveTrail?.province,
+              maxAltitudeM: effectiveTrail?.maxAltitudeM,
+              difficultyLevel: effectiveTrail?.difficultyLevel,
+              userCoordinates: coords || undefined,
+              preferredRegion,
+            },
+            currentTrailContext: effectiveTrail
+              ? {
+                  trailId: effectiveTrail.id,
+                  trailName: effectiveTrail.name,
+                  province: effectiveTrail.province,
+                  maxAltitudeM: effectiveTrail.maxAltitudeM,
+                  difficultyLevel: effectiveTrail.difficultyLevel,
+                }
+              : undefined,
+          },
+          {
+            signal: ctrl.signal,
+            onDelta: (_chunk, accumulatedText) => {
+              const liveMsg: RichAiChatMessage = {
+                id: streamMsgId,
+                role: 'assistant',
+                content: accumulatedText,
+                timestamp: streamTimestamp,
+                modelUsed: 'lost-knowledge-engine',
+              };
+              setMessages([...nextWithUser, liveMsg]);
+            },
+          }
+        );
+
+        setLastModelUsed(res.modelUsed);
+
+        const isErrorTurn = Boolean(res.rateLimited || res.errorStatus);
+        const assistantMsg: RichAiChatMessage = {
+          id: streamMsgId,
+          role: 'assistant',
+          content: removeEmojis(res.reply),
+          timestamp: streamTimestamp,
+          modelUsed: res.modelUsed,
+          actions: res.actions,
+          isError: isErrorTurn,
+          retryPrompt: isErrorTurn ? text : undefined,
+        };
+
+        const finalMsgs = [...nextWithUser, assistantMsg];
+        setMessages(finalMsgs);
+
+        const resolvedTid = res.threadId || activeThreadId || `local-${Date.now()}`;
+        setActiveThreadId(resolvedTid);
+        persistLocalThreadSnapshot(resolvedTid, finalMsgs);
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === 'AbortError') {
+          triggerToast('Đã dừng tạo phản hồi.');
+          return;
+        }
+        const errorMsg: RichAiChatMessage = {
+          id: `err-${Date.now()}`,
+          role: 'assistant',
+          content: 'Không thể kết nối máy chủ LOST AI lúc này. Bạn có thể bấm Thử lại hoặc kiểm tra mạng.',
+          timestamp: formatNowTime(),
+          isError: true,
+          retryPrompt: text,
+        };
+        setMessages((prev) => [...prev, errorMsg]);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [
+      inputQuery,
+      pendingImage,
+      isLoading,
+      messages,
+      activeThreadId,
+      engineMode,
+      currentUser,
+      currentTrail,
+      effectivePageView,
+      preferredRegion,
+      getEffectiveCoords,
+      persistLocalThreadSnapshot,
+      triggerToast,
+    ]
+  );
+
+  // Keep latest handleSendMessage in ref so [isOpen] effect NEVER re-binds on keystrokes or drops queued prompts
+  useEffect(() => {
+    handleSendMessageRef.current = handleSendMessage;
+  }, [handleSendMessage]);
+
+  // Consume any queued prompt from TrailIntelligenceBar or global event (runs strictly on [isOpen])
+  useEffect(() => {
+    if (!isOpen) return;
+    const queued = consumeQueuedAiAssistantPrompt();
+    const timer = queued?.prompt
+      ? setTimeout(() => {
+          setActiveSuiteTab('chat');
+          setShowSettings(false);
+          void handleSendMessageRef.current(queued.prompt, queued.trailId);
+        }, 0)
+      : null;
+    const handleLiveOpen = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      if (detail?.prompt) {
+        consumeQueuedAiAssistantPrompt();
+        setActiveSuiteTab('chat');
+        setShowSettings(false);
+        const promptText = String(detail.prompt);
+        const detailTrailId =
+          typeof detail.trailId === 'string' && detail.trailId.trim() ? detail.trailId.trim() : undefined;
+        // Defer by a tick so App.tsx's setAiContextTrail(matched) commits fresh currentTrail before sending
+        if (liveOpenTimerRef.current) clearTimeout(liveOpenTimerRef.current);
+        liveOpenTimerRef.current = setTimeout(() => {
+          liveOpenTimerRef.current = null;
+          if (isMountedRef.current) {
+            void handleSendMessageRef.current(promptText, detailTrailId);
+          }
+        }, 30);
+      }
+    };
+    window.addEventListener('lost:open-ai-assistant', handleLiveOpen);
+    window.addEventListener('lost:open-ai-with-prompt', handleLiveOpen);
+    return () => {
+      if (timer) clearTimeout(timer);
+      if (liveOpenTimerRef.current) {
+        clearTimeout(liveOpenTimerRef.current);
+        liveOpenTimerRef.current = null;
+      }
+      window.removeEventListener('lost:open-ai-assistant', handleLiveOpen);
+      window.removeEventListener('lost:open-ai-with-prompt', handleLiveOpen);
+    };
+  }, [isOpen]);
+
+  // 1-Click Analyze GPX track of the currently viewed trail right inside Chat
+  const handleAnalyzeCurrentTrailGpx = async () => {
+    if (!currentTrail || !Array.isArray(currentTrail.gpxTrack) || currentTrail.gpxTrack.length < 2 || isAnalyzingGpx) {
+      triggerToast('Cung đường này chưa có dữ liệu GPX để phân tích.');
+      return;
+    }
+    setActiveSuiteTab('chat');
+    setShowSettings(false);
+    setIsAnalyzingGpx(true);
+    try {
+      const points: Array<[number, number, number | null]> = currentTrail.gpxTrack.map(([lat, lng]) => [lat, lng, null]);
+      const userMsg: RichAiChatMessage = {
+        id: `user-gpx-${Date.now()}`,
+        role: 'user',
+        content: `Phân tích GPX của cung đang xem: **${currentTrail.name}** (${points.length} điểm tọa độ)`,
+        timestamp: formatNowTime(),
+      };
+      const baseMessages = messages.filter((m) => !m.id.startsWith('welcome-') || messages.length > 1);
+      const withUser = [...baseMessages, userMsg];
+      setMessages(withUser);
+
+      const serverRes = await analyzeGpxApi({
+        fileName: `${currentTrail.id}.gpx`,
+        points,
       });
 
-      const assistantMsg: AiChatMessage = {
-        id: `assistant-${Date.now()}`,
-        role: 'assistant',
-        content: removeEmojis(res.reply),
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        actions: res.actions,
-      };
-
-      setMessages((prev) => [...prev, assistantMsg]);
+      if (serverRes) {
+        const assistantMsg: RichAiChatMessage = {
+          id: `assistant-gpx-${Date.now()}`,
+          role: 'assistant',
+          content: removeEmojis(serverRes.reply),
+          timestamp: formatNowTime(),
+          modelUsed: 'lost-knowledge-engine',
+          actions: serverRes.actions,
+        };
+        const finalMsgs = [...withUser, assistantMsg];
+        setMessages(finalMsgs);
+        const tid = activeThreadId || `local-${Date.now()}`;
+        setActiveThreadId(tid);
+        persistLocalThreadSnapshot(tid, finalMsgs, `GPX: ${currentTrail.name}`);
+        triggerToast(`Đã hoàn tất phân tích GPX ${currentTrail.name}!`);
+      } else {
+        triggerToast('Không thể kết nối máy chủ phân tích DEM lúc này.');
+      }
     } catch {
-      const errorMsg: AiChatMessage = {
-        id: `err-${Date.now()}`,
-        role: 'assistant',
-        content: 'Đã xảy ra lỗi khi kết nối. Bạn có thể tra cứu thông tin thực địa bằng các câu hỏi gợi ý bên dưới.',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        isError: true,
-      };
-      setMessages((prev) => [...prev, errorMsg]);
+      triggerToast('Lỗi khi phân tích tracklog GPX cung đường.');
     } finally {
-      setIsLoading(false);
+      setIsAnalyzingGpx(false);
     }
   };
 
-  const handleConfirmClear = () => {
-    setMessages([getWelcomeMessage()]);
-    sessionStorage.removeItem('trekmap_ai_chat_history');
+  // Handle GPX file upload or drop
+  const handleProcessGpxFile = async (file: File) => {
+    if (!file || isAnalyzingGpx) return;
+    setActiveSuiteTab('chat');
+    setShowSettings(false);
+    setIsAnalyzingGpx(true);
+    try {
+      const parsed = await parseGpxFileClient(file);
+      const userMsg: RichAiChatMessage = {
+        id: `user-gpx-${Date.now()}`,
+        role: 'user',
+        content: `Phân tích file GPX: **${parsed.fileName}** (${parsed.points.length} điểm GPS)`,
+        timestamp: formatNowTime(),
+      };
+      const baseMessages = messages.filter((m) => !m.id.startsWith('welcome-') || messages.length > 1);
+      const withUser = [...baseMessages, userMsg];
+      setMessages(withUser);
+
+      // Enrich on server (Open-Meteo DEM + live weather + nearest LOST trail), fallback to instant client offlineAnalysis
+      const serverRes = await analyzeGpxApi({
+        fileName: parsed.fileName,
+        points: parsed.points,
+      });
+
+      const analysis = serverRes?.analysis || parsed.offlineAnalysis;
+      const replyText =
+        serverRes?.reply ||
+        `**PHÂN TÍCH GPX NGOẠI TUYẾN — ${analysis.fileName}**\n\n- **Cự ly**: **${analysis.distanceKm} km** | Leo tích lũy **+${analysis.elevationGainM}m** | Cao độ **${analysis.minAltitudeM}m – ${analysis.maxAltitudeM}m**.\n- **Độ khó ước tính**: **Cấp ${analysis.estimatedDifficulty}/5** (${analysis.difficultyLabel}).\n- **Thời gian Naismith/Tobler**: **${analysis.bioMetrics.recommendedMovingHours} giờ** di chuyển (~${analysis.bioMetrics.estimatedTotalTripHours}h gồm nghỉ).\n- **Nước uống**: ${analysis.waterAdvice}`;
+
+      const assistantMsg: RichAiChatMessage = {
+        id: `assistant-gpx-${Date.now()}`,
+        role: 'assistant',
+        content: removeEmojis(replyText),
+        timestamp: formatNowTime(),
+        modelUsed: 'lost-knowledge-engine',
+        actions: serverRes?.actions || [
+          {
+            type: 'gpx_analysis_card',
+            trailName: analysis.fileName,
+            gpxData: analysis,
+          },
+        ],
+      };
+
+      const finalMsgs = [...withUser, assistantMsg];
+      setMessages(finalMsgs);
+      const tid = activeThreadId || `local-${Date.now()}`;
+      setActiveThreadId(tid);
+      persistLocalThreadSnapshot(tid, finalMsgs, `GPX: ${parsed.fileName}`);
+      triggerToast(`Đã phân tích xong ${parsed.fileName}!`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Không thể đọc tệp GPX này.';
+      triggerToast(msg);
+    } finally {
+      setIsAnalyzingGpx(false);
+    }
+  };
+
+  // Thread Sidebar Actions (monotonic request-ID prevents stale cloud fetch overwrites on rapid clicks)
+  const handleSelectThread = async (threadId: string) => {
+    const reqId = ++threadLoadReqIdRef.current;
+    stopTts();
+    setActiveThreadId(threadId);
+    setShowSettings(false);
+    // Check per-user local cache first for 0ms render
+    const localHit = loadLocalAiThreads(storageUserId).find((t) => t.id === threadId);
+    if (localHit && localHit.messages.length > 0) {
+      setMessages(localHit.messages);
+    }
+    if (!threadId.startsWith('local-')) {
+      const detail = await fetchAiThreadDetailApi(threadId);
+      if (reqId !== threadLoadReqIdRef.current) return;
+      if (detail && Array.isArray(detail.messages) && detail.messages.length > 0) {
+        const mapped: RichAiChatMessage[] = detail.messages.map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: removeEmojis(m.content),
+          timestamp: m.createdAt
+            ? new Date(m.createdAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+            : '',
+          modelUsed: m.modelUsed,
+          actions: m.actions,
+        }));
+        setMessages(mapped);
+        persistLocalThreadSnapshot(threadId, mapped, detail.title);
+      }
+    }
+  };
+
+  const handleCreateNewThread = () => {
+    abortRef.current?.abort();
+    handleRemovePendingImage();
+    setActiveThreadId(null);
+    setMessages([buildWelcomeMessage(currentUser, currentTrail)]);
     setCheckedGearItems({});
+    setShowSettings(false);
+    triggerToast('Đã tạo cuộc trò chuyện mới!');
+  };
+
+  const handleRenameThread = async (threadId: string, newTitle: string) => {
+    setThreads((prev) => prev.map((t) => (t.id === threadId ? { ...t, title: newTitle } : t)));
+    const allLocal = loadLocalAiThreads(storageUserId).map((t) => (t.id === threadId ? { ...t, title: newTitle } : t));
+    saveLocalAiThreads(allLocal, storageUserId);
+    if (!threadId.startsWith('local-')) {
+      await updateAiThreadApi(threadId, { title: newTitle });
+    }
+  };
+
+  const handleTogglePinThread = async (threadId: string, nextPinned: boolean) => {
+    setThreads((prev) => prev.map((t) => (t.id === threadId ? { ...t, pinned: nextPinned } : t)));
+    const allLocal = loadLocalAiThreads(storageUserId).map((t) => (t.id === threadId ? { ...t, pinned: nextPinned } : t));
+    saveLocalAiThreads(allLocal, storageUserId);
+    if (!threadId.startsWith('local-')) {
+      await updateAiThreadApi(threadId, { pinned: nextPinned });
+    }
+  };
+
+  const handleDeleteThread = async (threadId: string) => {
+    setThreads((prev) => prev.filter((t) => t.id !== threadId));
+    const allLocal = loadLocalAiThreads(storageUserId).filter((t) => t.id !== threadId);
+    saveLocalAiThreads(allLocal, storageUserId);
+    if (!threadId.startsWith('local-')) {
+      await deleteAiThreadApi(threadId);
+    }
+    if (activeThreadId === threadId) {
+      handleCreateNewThread();
+    } else {
+      triggerToast('Đã xóa hội thoại.');
+    }
+  };
+
+  const handleConfirmClear = async () => {
+    handleRemovePendingImage();
+    if (activeThreadId) {
+      await handleDeleteThread(activeThreadId);
+    } else {
+      setMessages([buildWelcomeMessage(currentUser, currentTrail)]);
+      setCheckedGearItems({});
+      triggerToast('Đã làm mới cuộc trò chuyện!');
+    }
     setShowClearConfirm(false);
-    triggerToast('Đã làm mới cuộc trò chuyện!');
   };
 
-  const handleCopyText = (id: string, text: string) => {
-    navigator.clipboard.writeText(removeEmojis(text));
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
+  const copyViaExecCommand = (cleanText: string): boolean => {
+    if (typeof document === 'undefined') return false;
+    const textarea = document.createElement('textarea');
+    textarea.value = cleanText;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.top = '-9999px';
+    textarea.style.left = '-9999px';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    try {
+      textarea.focus();
+      textarea.select();
+      return document.execCommand('copy');
+    } catch {
+      return false;
+    } finally {
+      if (textarea.parentNode) textarea.parentNode.removeChild(textarea);
+    }
   };
 
-  const toggleGearCheck = (itemKey: string) => {
-    setCheckedGearItems((prev) => ({ ...prev, [itemKey]: !prev[itemKey] }));
+  const handleCopyText = async (id: string, text: string): Promise<boolean> => {
+    const cleanText = removeEmojis(text);
+    let copied: boolean;
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(cleanText);
+        copied = true;
+      } catch {
+        copied = copyViaExecCommand(cleanText);
+      }
+    } else {
+      copied = copyViaExecCommand(cleanText);
+    }
+    if (copied) {
+      if (isMountedRef.current) {
+        setCopiedId(id);
+        if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+        copyTimerRef.current = setTimeout(() => {
+          if (isMountedRef.current) setCopiedId(null);
+        }, 2000);
+      }
+      return true;
+    }
+    if (isMountedRef.current) {
+      triggerToast('Trình duyệt không cho phép sao chép tự động.');
+    }
+    return false;
   };
 
-  // Pure SVG icon selector for quick prompt chips
   const getPromptSvgIcon = (promptText: string) => {
     const p = promptText.toLowerCase();
     if (p.includes('cứu hộ') || p.includes('khẩn cấp') || p.includes('sốc độ cao') || p.includes('lạc đường')) {
-      return <IconShieldAlert size={14} color="#ef4444" />;
+      return <IconShieldAlert size={13} color="var(--color-error)" />;
     }
-    if (p.includes('săn mây') || p.includes('fansipan') || p.includes('lảo thẩn') || p.includes('tà xùa') || p.includes('chill')) {
-      return <IconMountain size={14} color="var(--color-sky)" />;
+    if (p.includes('săn mây') || p.includes('fansipan') || p.includes('lảo thẩn') || p.includes('tà xùa') || p.includes('go/no-go') || p.includes('sẵn sàng') || p.includes('trước khi đi')) {
+      return <IconMountain size={13} color="var(--color-sky)" />;
     }
-    if (p.includes('thể lực') || p.includes('tập luyện') || p.includes('balo') || p.includes('suối') || p.includes('thác')) {
-      return <IconHiking size={14} color="var(--color-primary)" />;
+    if (
+      p.includes('thể lực') ||
+      p.includes('balo') ||
+      p.includes('suối') ||
+      p.includes('thác') ||
+      p.includes('nước') ||
+      p.includes('oresol') ||
+      p.includes('khẩu phần') ||
+      p.includes('dinh dưỡng') ||
+      p.includes('điện giải') ||
+      p.includes('calo')
+    ) {
+      return <IconHiking size={13} color="var(--color-primary)" />;
     }
-    return <IconCompass size={14} color="var(--color-sky)" />;
-  };
-
-  /**
-   * Refined inline markdown parser without aggressive neon styling.
-   * Bold text is cleanly bolded in main text color, code is subtly badge-highlighted.
-   */
-  const renderInlineContent = (text: string, isUser: boolean): React.ReactNode => {
-    // Regex matches **bold**, `code`, and "quoted" phrases
-    const tokenRegex = /(\*\*.*?\*\*|`.*?`)/g;
-    const parts = text.split(tokenRegex);
-
-    return parts.map((part, index) => {
-      if (!part) return null;
-
-      // 1. Bold text: **content**
-      if (part.startsWith('**') && part.endsWith('**') && part.length >= 4) {
-        const inner = part.slice(2, -2);
-        return (
-          <strong
-            key={index}
-            style={{
-              color: isUser ? '#070d1e' : 'var(--color-text-main)',
-              fontWeight: 700,
-            }}
-          >
-            {inner}
-          </strong>
-        );
-      }
-
-      // 2. Inline code: `code`
-      if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
-        const code = part.slice(1, -1);
-        return (
-          <code
-            key={index}
-            style={{
-              background: isUser ? 'rgba(0,0,0,0.15)' : 'rgba(255, 255, 255, 0.08)',
-              padding: '2px 6px',
-              borderRadius: 4,
-              fontSize: '0.84em',
-              fontFamily: 'monospace',
-              color: isUser ? '#070d1e' : 'var(--color-sky)',
-              border: isUser ? 'none' : '1px solid rgba(255, 255, 255, 0.1)',
-            }}
-          >
-            {code}
-          </code>
-        );
-      }
-
-      return <span key={index}>{part}</span>;
-    });
-  };
-
-  /**
-   * Normalize formatting: ensures lists and headers have clean line breaks,
-   * avoiding "wall of text" and broken formatting.
-   */
-  const normalizeContent = (raw: string): string => {
-    if (!raw) return '';
-    let text = removeEmojis(raw);
-
-    // Normalize unicode dashes (–, —) at line beginnings to regular bullet "-"
-    text = text.replace(/^[–—]\s+/gm, '- ');
-
-    // Break before numbered items if clumped: "sau đây: 1. Mục..." -> "sau đây:\n1. Mục..."
-    text = text.replace(/([^\n])\s+(\d+\.\s+[A-ZĐÀ-Ỹa-zđà-ỹ])/g, '$1\n$2');
-
-    // Break before bullet items only if clumped after sentence endings (: or . or !): "vùng: - Núi..." -> "vùng:\n- Núi..."
-    text = text.replace(/([.:!])\s+([–—-]\s+[*A-ZĐÀ-Ỹ])/g, '$1\n$2');
-
-    // Break before markdown headers if clumped
-    text = text.replace(/([^\n])\s+(#{1,4}\s+)/g, '$1\n\n$2');
-
-    // Remove 3+ consecutive newlines
-    text = text.replace(/\n{3,}/g, '\n\n');
-
-    return text.trim();
-  };
-
-  /**
-   * Structured message renderer that creates clean paragraphs, lists, and headings.
-   */
-  const renderStructuredMessage = (rawText: string, isUser: boolean) => {
-    const text = normalizeContent(rawText);
-    const lines = text.split('\n');
-
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {lines.map((line, lineIdx) => {
-          const trimmed = line.trim();
-          if (!trimmed) {
-            return <div key={lineIdx} style={{ height: 4 }} />;
-          }
-
-          // Header: ### / ## / #
-          if (trimmed.startsWith('#')) {
-            const headerText = trimmed.replace(/^#{1,4}\s*/, '');
-            return (
-              <div
-                key={lineIdx}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  marginTop: 10,
-                  marginBottom: 4,
-                  fontWeight: 800,
-                  fontSize: '0.92rem',
-                  color: isUser ? '#070d1e' : 'var(--color-sky)',
-                  letterSpacing: '-0.01em',
-                }}
-              >
-                <span
-                  style={{
-                    width: 3,
-                    height: 14,
-                    borderRadius: 2,
-                    background: isUser ? '#070d1e' : 'var(--color-sky)',
-                    flexShrink: 0,
-                  }}
-                />
-                <span>{renderInlineContent(headerText, isUser)}</span>
-              </div>
-            );
-          }
-
-          // Bullet List Item: - ... or * ... or • ...
-          const bulletMatch = trimmed.match(/^[-*•]\s+(.*)$/);
-          if (bulletMatch) {
-            return (
-              <div
-                key={lineIdx}
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: 8,
-                  margin: '2px 0',
-                  paddingLeft: 4,
-                }}
-              >
-                <span
-                  style={{
-                    width: 5,
-                    height: 5,
-                    borderRadius: '50%',
-                    background: isUser ? '#070d1e' : 'var(--color-primary)',
-                    marginTop: 8,
-                    flexShrink: 0,
-                  }}
-                />
-                <div
-                  style={{
-                    flex: 1,
-                    fontSize: '0.875rem',
-                    lineHeight: 1.62,
-                    color: isUser ? '#070d1e' : 'var(--color-text-muted)',
-                  }}
-                >
-                  {renderInlineContent(bulletMatch[1], isUser)}
-                </div>
-              </div>
-            );
-          }
-
-          // Numbered List Item: 1. ...
-          const numMatch = trimmed.match(/^(\d+)\.\s+(.*)$/);
-          if (numMatch) {
-            return (
-              <div
-                key={lineIdx}
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: 8,
-                  margin: '4px 0',
-                  paddingLeft: 2,
-                }}
-              >
-                <span
-                  style={{
-                    minWidth: 20,
-                    height: 20,
-                    borderRadius: '50%',
-                    background: isUser ? 'rgba(0,0,0,0.2)' : 'rgba(74, 222, 128, 0.15)',
-                    color: isUser ? '#070d1e' : 'var(--color-primary)',
-                    fontSize: '0.72rem',
-                    fontWeight: 800,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    marginTop: 2,
-                    flexShrink: 0,
-                  }}
-                >
-                  {numMatch[1]}
-                </span>
-                <div
-                  style={{
-                    flex: 1,
-                    fontSize: '0.875rem',
-                    lineHeight: 1.62,
-                    color: isUser ? '#070d1e' : 'var(--color-text-muted)',
-                  }}
-                >
-                  {renderInlineContent(numMatch[2], isUser)}
-                </div>
-              </div>
-            );
-          }
-
-          // Horizontal divider: ---
-          if (trimmed === '---') {
-            return (
-              <div
-                key={lineIdx}
-                style={{
-                  borderBottom: isUser ? '1px solid rgba(0,0,0,0.2)' : '1px solid rgba(255,255,255,0.08)',
-                  margin: '8px 0',
-                }}
-              />
-            );
-          }
-
-          // Standard paragraph
-          return (
-            <p
-              key={lineIdx}
-              style={{
-                margin: '3px 0',
-                fontSize: '0.875rem',
-                lineHeight: 1.65,
-                color: isUser ? '#070d1e' : 'var(--color-text-muted)',
-              }}
-            >
-              {renderInlineContent(trimmed, isUser)}
-            </p>
-          );
-        })}
-      </div>
-    );
-  };
-
-  /**
-   * Action Card Renderer: Renders Trail Card, SOS Alert, and Gear Checklist
-   */
-  const renderActionCard = (act: AiAssistantAction, actIdx: number) => {
-    // 1. Trail Card Action (Alpine Expedition Showcase Card)
-    if (act.type === 'trail_card' && act.trailData) {
-      const t = act.trailData;
-      return (
-        <div
-          key={actIdx}
-          style={{
-            marginTop: 10,
-            background: 'linear-gradient(180deg, rgba(20, 32, 58, 0.95) 0%, rgba(12, 20, 38, 0.98) 100%)',
-            border: '1px solid rgba(74, 222, 128, 0.35)',
-            borderRadius: 14,
-            overflow: 'hidden',
-            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.45), 0 0 20px rgba(74, 222, 128, 0.1)',
-          }}
-        >
-          <div style={{ padding: 12, display: 'flex', gap: 12, alignItems: 'center' }}>
-            {t.coverImage ? (
-              <img
-                src={t.coverImage}
-                alt={t.name || 'Trail'}
-                style={{
-                  width: 76,
-                  height: 76,
-                  borderRadius: 10,
-                  objectFit: 'cover',
-                  flexShrink: 0,
-                  border: '1px solid rgba(255, 255, 255, 0.12)',
-                }}
-              />
-            ) : (
-              <div
-                style={{
-                  width: 76,
-                  height: 76,
-                  borderRadius: 10,
-                  background: 'rgba(255,255,255,0.06)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0,
-                }}
-              >
-                <IconMountain size={28} color="var(--color-primary)" />
-              </div>
-            )}
-
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <h4
-                style={{
-                  margin: '0 0 6px 0',
-                  fontSize: '0.9rem',
-                  fontWeight: 700,
-                  color: 'var(--color-text-main)',
-                  lineHeight: 1.35,
-                  display: '-webkit-box',
-                  WebkitLineClamp: 2,
-                  WebkitBoxOrient: 'vertical',
-                  overflow: 'hidden',
-                }}
-              >
-                {t.name}
-              </h4>
-
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 8 }}>
-                <span
-                  style={{
-                    fontSize: '0.72rem',
-                    background: 'rgba(255, 255, 255, 0.06)',
-                    padding: '2px 7px',
-                    borderRadius: 6,
-                    color: 'var(--color-text-dim)',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 3,
-                  }}
-                >
-                  <IconMapPin size={11} /> {t.province}
-                </span>
-
-                <span
-                  style={{
-                    fontSize: '0.72rem',
-                    background: 'rgba(74, 222, 128, 0.12)',
-                    padding: '2px 7px',
-                    borderRadius: 6,
-                    color: 'var(--color-primary)',
-                    fontWeight: 700,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 3,
-                  }}
-                >
-                  <IconMountain size={11} /> {t.maxAltitudeM}m
-                </span>
-
-                <span
-                  style={{
-                    fontSize: '0.72rem',
-                    background: 'rgba(56, 189, 248, 0.12)',
-                    padding: '2px 7px',
-                    borderRadius: 6,
-                    color: 'var(--color-sky)',
-                    fontWeight: 600,
-                  }}
-                >
-                  {t.distanceKm} km
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {onSelectTrail && act.trailId && (
-            <div
-              style={{
-                padding: '8px 12px',
-                background: 'rgba(0, 0, 0, 0.3)',
-                borderTop: '1px solid rgba(255, 255, 255, 0.06)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-              }}
-            >
-              <span style={{ fontSize: '0.73rem', color: 'var(--color-text-dim)' }}>
-                Độ khó: {t.difficultyLevel}/5
-              </span>
-
-              <button
-                type="button"
-                onClick={() => {
-                  onSelectTrail(act.trailId!);
-                  onClose();
-                }}
-                style={{
-                  background: 'linear-gradient(135deg, var(--color-primary) 0%, #059669 100%)',
-                  color: '#070d1e',
-                  border: 'none',
-                  borderRadius: 8,
-                  padding: '5px 12px',
-                  fontSize: '0.76rem',
-                  fontWeight: 800,
-                  cursor: 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 5,
-                  boxShadow: '0 2px 8px rgba(74, 222, 128, 0.35)',
-                  transition: 'all 0.2s ease',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.transform = 'translateY(-1px)';
-                  e.currentTarget.style.boxShadow = '0 4px 12px rgba(74, 222, 128, 0.5)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.transform = 'translateY(0)';
-                  e.currentTarget.style.boxShadow = '0 2px 8px rgba(74, 222, 128, 0.35)';
-                }}
-              >
-                <IconCompass size={13} color="#070d1e" />
-                Mở trên Bản Đồ 3D
-              </button>
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // 2. Emergency SOS Action Card
-    if (act.type === 'emergency_sos' && act.emergencyContacts) {
-      return (
-        <div
-          key={actIdx}
-          style={{
-            marginTop: 10,
-            background: 'linear-gradient(135deg, rgba(220, 38, 38, 0.15) 0%, rgba(15, 24, 46, 0.95) 100%)',
-            border: '1.5px solid #ef4444',
-            borderRadius: 12,
-            padding: 12,
-            boxShadow: '0 6px 20px rgba(239, 68, 68, 0.25)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, color: '#f87171' }}>
-            <IconShieldAlert size={16} color="#ef4444" />
-            <strong style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
-              Hotline Cứu Hộ Thực Địa (100% Số Thật)
-            </strong>
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {act.emergencyContacts.map((contact, cIdx) => (
-              <div
-                key={cIdx}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 8,
-                  padding: '6px 10px',
-                  background: 'rgba(0, 0, 0, 0.4)',
-                  borderRadius: 8,
-                  border: '1px solid rgba(255, 255, 255, 0.08)',
-                }}
-              >
-                <div>
-                  <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                    {removeEmojis(contact.name)}
-                  </div>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)' }}>
-                    {removeEmojis(contact.address || contact.region || '')}
-                  </div>
-                </div>
-
-                <a
-                  href={`tel:${contact.phone.replace(/[^0-9]/g, '')}`}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 5,
-                    background: '#dc2626',
-                    color: '#ffffff',
-                    padding: '4px 10px',
-                    borderRadius: 6,
-                    fontSize: '0.74rem',
-                    fontWeight: 800,
-                    textDecoration: 'none',
-                    boxShadow: '0 2px 8px rgba(220, 38, 38, 0.4)',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  <IconPhoneCall size={12} color="#ffffff" />
-                  {contact.phone}
-                </a>
-              </div>
-            ))}
-          </div>
-        </div>
-      );
-    }
-
-    // 3. Gear Checklist Card
-    if (act.type === 'gear_checklist' && act.checklistItems) {
-      return (
-        <div
-          key={actIdx}
-          style={{
-            marginTop: 10,
-            background: 'rgba(15, 24, 46, 0.95)',
-            border: '1px solid rgba(56, 189, 248, 0.3)',
-            borderRadius: 12,
-            padding: 12,
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--color-sky)', fontSize: '0.8rem', fontWeight: 700 }}>
-              <IconHiking size={15} color="var(--color-sky)" />
-              <span>Danh Mục Balo (Tích chọn đồ đã chuẩn bị)</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                const fullText = act.checklistItems
-                  ?.map((c) => `${removeEmojis(c.category)}:\n` + c.items.map((i) => `- [ ] ${removeEmojis(i)}`).join('\n'))
-                  .join('\n\n');
-                if (fullText) handleCopyText(`gear-${actIdx}`, fullText);
-              }}
-              style={{
-                background: 'transparent',
-                border: '1px solid rgba(255, 255, 255, 0.2)',
-                borderRadius: 6,
-                padding: '2px 8px',
-                fontSize: '0.7rem',
-                color: 'var(--color-text-muted)',
-                cursor: 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 4,
-              }}
-            >
-              {copiedId === `gear-${actIdx}` ? (
-                <>
-                  <IconCheck size={11} color="var(--color-primary)" /> Đã chép
-                </>
-              ) : (
-                <>
-                  <IconCopy size={11} /> Sao chép
-                </>
-              )}
-            </button>
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {act.checklistItems.map((cat, catIdx) => (
-              <div key={catIdx}>
-                <div style={{ fontSize: '0.73rem', fontWeight: 700, color: 'var(--color-text-muted)', marginBottom: 4 }}>
-                  {removeEmojis(cat.category)}
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {cat.items.map((item, itemIdx) => {
-                    const key = `${catIdx}-${itemIdx}`;
-                    const isChecked = !!checkedGearItems[key];
-                    return (
-                      <label
-                        key={itemIdx}
-                        onClick={() => toggleGearCheck(key)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 8,
-                          fontSize: '0.78rem',
-                          color: isChecked ? 'var(--color-text-dim)' : 'var(--color-text-main)',
-                          textDecoration: isChecked ? 'line-through' : 'none',
-                          cursor: 'pointer',
-                          userSelect: 'none',
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isChecked}
-                          onChange={() => {}}
-                          style={{ accentColor: 'var(--color-primary)', cursor: 'pointer' }}
-                        />
-                        <span>{removeEmojis(item)}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      );
-    }
-
-    return null;
+    return <IconCompass size={13} color="var(--color-sky)" />;
   };
 
   if (!isOpen) return null;
 
+  const isSidebarDocked = isExpanded;
+  const shouldShowSidebar = isSidebarDocked || showSidebar;
+
+  // Export current AI thread briefing as downloadable .md file for offline reading
+  const handleExportBriefingMd = () => {
+    try {
+      const currentThreadSummary = activeThreadId ? threads.find((t) => t.id === activeThreadId) : undefined;
+      const md = buildThreadBriefingMarkdown(displayedMessages, currentTrail, currentThreadSummary?.title);
+      const fileName = `LOST-AI-Briefing-${getVietnamDateFileStamp()}.md`;
+      const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setExportedBriefing(true);
+      if (exportTimerRef.current) clearTimeout(exportTimerRef.current);
+      exportTimerRef.current = setTimeout(() => setExportedBriefing(false), 2000);
+      triggerToast(`Đã xuất ${fileName} đọc Offline!`);
+    } catch {
+      triggerToast('Không thể xuất file bản tin lúc này.');
+    }
+  };
+
+  // Header Controls
   return createPortal(
     <>
-      {/* Backdrop when expanded */}
       {isExpanded && (
         <div
+          className="drawer-backdrop-in"
           onClick={() => setIsExpanded(false)}
           style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0, 0, 0, 0.7)',
+            background: 'var(--overlay-bg)',
             backdropFilter: 'blur(8px)',
-            zIndex: 9998,
-            transition: 'opacity 0.25s ease',
+            WebkitBackdropFilter: 'blur(8px)',
+            zIndex: 'calc(var(--z-modal, 3000) - 1)',
           }}
         />
       )}
 
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
-        aria-label="Cửa sổ Trợ Lý Hỏi Đáp AI TrekCopilot"
+        aria-label="Trợ lý thông minh LOST AI"
+        className="modal-fade-in"
+        onDragOver={(e) => {
+          e.preventDefault();
+          setIsDragOverGpx(true);
+        }}
+        onDragLeave={() => setIsDragOverGpx(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setIsDragOverGpx(false);
+          const dropped = e.dataTransfer.files?.[0];
+          if (!dropped) return;
+          const lowerName = dropped.name.toLowerCase();
+          if (lowerName.endsWith('.gpx')) {
+            void handleProcessGpxFile(dropped);
+          } else if (
+            /^image\/(jpeg|jpg|png|webp)$/i.test(dropped.type) ||
+            /\.(jpe?g|png|webp)$/i.test(lowerName)
+          ) {
+            void handleSelectPhotoFile(dropped);
+          } else {
+            triggerToast('Hỗ trợ tệp .gpx hoặc ảnh JPG, PNG, WebP (không hỗ trợ SVG).');
+          }
+        }}
         style={{
           position: 'fixed',
-          bottom: isExpanded ? 'calc((100vh - min(880px, calc(100vh - 40px))) / 2)' : '24px',
-          right: isExpanded ? 'calc((100vw - min(1120px, calc(100vw - 40px))) / 2)' : '24px',
-          zIndex: 9999,
-          width: isExpanded ? 'min(1120px, calc(100vw - 40px))' : '440px',
-          maxWidth: 'calc(100vw - 32px)',
-          height: isExpanded ? 'min(880px, calc(100vh - 40px))' : '620px',
-          maxHeight: 'calc(100vh - 40px)',
-          background: 'rgba(11, 19, 38, 0.96)',
-          borderRadius: 20,
-          border: isExpanded ? '1px solid rgba(74, 222, 128, 0.35)' : '1px solid rgba(255, 255, 255, 0.12)',
-          boxShadow: isExpanded
-            ? '0 30px 80px rgba(0, 0, 0, 0.85), 0 0 50px rgba(74, 222, 128, 0.2)'
-            : '0 24px 60px rgba(0, 0, 0, 0.7), 0 0 40px rgba(74, 222, 128, 0.15)',
+          bottom: isExpanded ? 'calc((100vh - min(860px, calc(100vh - 32px))) / 2)' : 'clamp(8px, 2.5vh, 20px)',
+          right: isExpanded ? 'calc((100vw - min(1140px, calc(100vw - 32px))) / 2)' : 'clamp(8px, 3vw, 20px)',
+          zIndex: 'var(--z-modal, 3000)',
+          width: isExpanded ? 'min(1140px, calc(100vw - 32px))' : 'min(460px, calc(100vw - 16px))',
+          height: isExpanded ? 'min(860px, calc(100vh - 32px))' : 'min(640px, calc(100vh - 24px))',
+          background: 'var(--color-bg-card)',
+          borderRadius: 6,
+          border: '1px solid var(--color-border-strong)',
+          boxShadow: 'var(--shadow-3d)',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
-          backdropFilter: 'blur(24px)',
-          transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+          outline: 'none',
+          fontFamily: 'var(--font-family)',
+          transition:
+            'width 0.28s var(--ease-out-expo), height 0.28s var(--ease-out-expo), bottom 0.28s var(--ease-out-expo), right 0.28s var(--ease-out-expo)',
         }}
       >
-        {/* Refined Header */}
+        {/* Header Bar */}
         <div
           style={{
-            padding: '14px 18px',
-            background: 'linear-gradient(180deg, rgba(74, 222, 128, 0.08) 0%, rgba(15, 24, 46, 0.9) 100%)',
-            borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+            padding: '12px 14px',
+            background: 'var(--color-bg-main)',
+            borderBottom: '1px solid var(--color-border)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            gap: 12,
-            position: 'relative',
+            gap: 10,
+            flexShrink: 0,
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
+            {!isSidebarDocked && (
+              <button
+                type="button"
+                onClick={() => setShowSidebar((prev) => !prev)}
+                title="Lịch sử hội thoại"
+                aria-label="Mở lịch sử hội thoại"
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: 4,
+                  background: showSidebar
+                    ? 'color-mix(in srgb, var(--color-primary) 16%, transparent)'
+                    : 'var(--color-surface-elevated)',
+                  border: `1px solid ${showSidebar ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                  color: showSidebar ? 'var(--color-primary)' : 'var(--color-text-muted)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                }}
+              >
+                <IconMessageSquare size={15} />
+              </button>
+            )}
+
             <div
               style={{
-                position: 'relative',
-                width: 36,
-                height: 36,
-                borderRadius: '50%',
-                background: 'linear-gradient(135deg, var(--color-primary) 0%, #059669 100%)',
-                color: '#070d1e',
+                width: 32,
+                height: 32,
+                borderRadius: 4,
+                background: 'var(--color-primary)',
+                color: 'var(--color-on-primary)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                boxShadow: '0 0 14px rgba(74, 222, 128, 0.35)',
                 flexShrink: 0,
               }}
             >
-              <IconBot size={20} color="#070d1e" />
-              <span
-                style={{
-                  position: 'absolute',
-                  bottom: 0,
-                  right: 0,
-                  width: 9,
-                  height: 9,
-                  borderRadius: '50%',
-                  background: '#22c55e',
-                  border: '2px solid #0b1326',
-                  boxShadow: '0 0 6px #22c55e',
-                }}
-              />
+              <IconBot size={18} color="var(--color-on-primary)" />
             </div>
 
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span
-                  style={{
-                    fontWeight: 800,
-                    fontSize: '0.96rem',
-                    color: 'var(--color-text-main)',
-                    letterSpacing: '-0.01em',
-                  }}
-                >
-                  Hỏi Đáp AI
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+                <span style={{ fontWeight: 800, fontSize: '0.92rem', color: 'var(--color-text-main)', letterSpacing: '-0.01em' }}>
+                  LOST AI
                 </span>
                 <span
                   style={{
-                    fontSize: '0.68rem',
+                    fontSize: '0.66rem',
                     fontWeight: 700,
-                    padding: '2px 8px',
-                    borderRadius: 9999,
-                    background: engineMode === 'gemini' && geminiApiKey ? 'rgba(56, 189, 248, 0.15)' : 'rgba(74, 222, 128, 0.15)',
-                    color: engineMode === 'gemini' && geminiApiKey ? 'var(--color-sky)' : 'var(--color-primary)',
-                    border: engineMode === 'gemini' && geminiApiKey ? '1px solid rgba(56, 189, 248, 0.3)' : '1px solid rgba(74, 222, 128, 0.3)',
+                    padding: '2px 7px',
+                    borderRadius: 4,
+                    background:
+                      lastModelUsed === 'gemini-live'
+                        ? 'color-mix(in srgb, var(--color-sky) 15%, transparent)'
+                        : 'color-mix(in srgb, var(--color-primary) 15%, transparent)',
+                    color: lastModelUsed === 'gemini-live' ? 'var(--color-sky)' : 'var(--color-primary)',
+                    border:
+                      lastModelUsed === 'gemini-live'
+                        ? '1px solid color-mix(in srgb, var(--color-sky) 35%, transparent)'
+                        : '1px solid color-mix(in srgb, var(--color-primary) 35%, transparent)',
                   }}
                 >
-                  {engineMode === 'gemini' && geminiApiKey ? 'Gemini 3.6' : 'AI Thực Địa'}
+                  {lastModelUsed === 'gemini-live' ? 'Gemini Live' : 'AI Thực Địa'}
                 </span>
               </div>
-              <div
-                style={{
-                  fontSize: '0.72rem',
-                  color: 'var(--color-text-dim)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 5,
-                  marginTop: 1,
-                }}
-              >
-                <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#22c55e', display: 'inline-block' }} />
-                Trực tuyến • Sẵn sàng hỗ trợ
+              <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', display: 'flex', alignItems: 'center', gap: 5, marginTop: 1 }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--color-primary)', display: 'inline-block' }} />
+                <span>Alpine Intelligence · {engineMode === 'knowledge' ? 'Offline 0ms' : engineMode === 'gemini' ? 'Ưu tiên Gemini' : 'Tự động'}</span>
               </div>
             </div>
           </div>
 
-          {/* Clean 4 Header Control SVGs with Full Functionality */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            {/* SVG 1: Settings */}
+          {/* Pure SVG Header Controls */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={handleExportBriefingMd}
+              title="Xuất bản tin Markdown (.md) đọc Offline"
+              aria-label="Xuất bản tin Markdown đọc Offline"
+              style={{
+                width: 30,
+                height: 30,
+                borderRadius: 4,
+                background: exportedBriefing
+                  ? 'color-mix(in srgb, var(--color-primary) 16%, transparent)'
+                  : 'var(--color-surface-elevated)',
+                border: `1px solid ${exportedBriefing ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                color: exportedBriefing ? 'var(--color-primary)' : 'var(--color-text-muted)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              {exportedBriefing ? (
+                <IconCheck size={14} color="var(--color-primary)" />
+              ) : (
+                <svg
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+              )}
+            </button>
+
             <button
               type="button"
               onClick={() => {
                 setShowSettings((prev) => !prev);
                 setShowClearConfirm(false);
               }}
-              title={showSettings ? 'Đóng cài đặt & về cuộc trò chuyện' : 'Cài đặt mô hình AI & khu vực'}
-              aria-label="Cài đặt mô hình AI"
+              title={showSettings ? 'Quay lại hội thoại' : 'Cài đặt mô hình & vị trí'}
+              aria-label="Cài đặt LOST AI"
               style={{
-                width: 32,
-                height: 32,
-                borderRadius: 8,
-                background: showSettings ? 'rgba(74, 222, 128, 0.22)' : 'rgba(255, 255, 255, 0.06)',
-                border: showSettings ? '1px solid rgba(74, 222, 128, 0.5)' : '1px solid rgba(255, 255, 255, 0.1)',
-                color: showSettings ? 'var(--color-primary)' : 'var(--color-text-dim)',
+                width: 30,
+                height: 30,
+                borderRadius: 4,
+                background: showSettings
+                  ? 'color-mix(in srgb, var(--color-primary) 16%, transparent)'
+                  : 'var(--color-surface-elevated)',
+                border: `1px solid ${showSettings ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                color: showSettings ? 'var(--color-primary)' : 'var(--color-text-muted)',
                 cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                transition: 'all 0.2s ease',
               }}
             >
-              <IconSettings size={16} />
+              <IconSettings size={15} />
             </button>
 
-            {/* SVG 2: Trash / Clear Chat */}
             <button
               type="button"
               onClick={() => {
                 setShowClearConfirm(true);
                 setShowSettings(false);
               }}
-              title="Làm mới cuộc trò chuyện"
-              aria-label="Làm mới cuộc trò chuyện"
+              title="Xóa hội thoại hiện tại"
+              aria-label="Xóa hội thoại hiện tại"
               style={{
-                width: 32,
-                height: 32,
-                borderRadius: 8,
-                background: showClearConfirm ? 'rgba(239, 68, 68, 0.22)' : 'rgba(255, 255, 255, 0.06)',
-                border: showClearConfirm ? '1px solid rgba(239, 68, 68, 0.5)' : '1px solid rgba(255, 255, 255, 0.1)',
-                color: showClearConfirm ? '#ef4444' : 'var(--color-text-dim)',
+                width: 30,
+                height: 30,
+                borderRadius: 4,
+                background: showClearConfirm
+                  ? 'color-mix(in srgb, var(--color-error) 16%, transparent)'
+                  : 'var(--color-surface-elevated)',
+                border: `1px solid ${showClearConfirm ? 'var(--color-error)' : 'var(--color-border)'}`,
+                color: showClearConfirm ? 'var(--color-error-text, var(--color-error))' : 'var(--color-text-muted)',
                 cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                transition: 'all 0.2s ease',
-              }}
-              onMouseEnter={(e) => {
-                if (!showClearConfirm) {
-                  e.currentTarget.style.color = '#ef4444';
-                  e.currentTarget.style.background = 'rgba(239, 68, 68, 0.15)';
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (!showClearConfirm) {
-                  e.currentTarget.style.color = 'var(--color-text-dim)';
-                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)';
-                }
               }}
             >
-              <IconTrash size={16} />
+              <IconTrash size={15} />
             </button>
 
-            {/* SVG 3: Maximize / Minimize Fullscreen Toggle */}
             <button
               type="button"
               onClick={() => setIsExpanded((prev) => !prev)}
-              title={isExpanded ? 'Thu nhỏ cửa sổ (Esc)' : 'Phóng to toàn màn hình'}
-              aria-label={isExpanded ? 'Thu nhỏ cửa sổ' : 'Phóng to toàn màn hình'}
+              title={isExpanded ? 'Thu nhỏ (Esc)' : 'Mở rộng toàn màn hình'}
+              aria-label={isExpanded ? 'Thu nhỏ cửa sổ' : 'Phóng to cửa sổ'}
               style={{
-                width: 32,
-                height: 32,
-                borderRadius: 8,
-                background: isExpanded ? 'rgba(56, 189, 248, 0.2)' : 'rgba(255, 255, 255, 0.06)',
-                border: isExpanded ? '1px solid rgba(56, 189, 248, 0.4)' : '1px solid rgba(255, 255, 255, 0.1)',
-                color: isExpanded ? 'var(--color-sky)' : 'var(--color-text-dim)',
+                width: 30,
+                height: 30,
+                borderRadius: 4,
+                background: isExpanded
+                  ? 'color-mix(in srgb, var(--color-sky) 16%, transparent)'
+                  : 'var(--color-surface-elevated)',
+                border: `1px solid ${isExpanded ? 'var(--color-sky)' : 'var(--color-border)'}`,
+                color: isExpanded ? 'var(--color-sky)' : 'var(--color-text-muted)',
                 cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                transition: 'all 0.2s ease',
               }}
             >
-              {isExpanded ? <IconMinimize size={16} /> : <IconMaximize size={16} />}
+              {isExpanded ? <IconMinimize size={15} /> : <IconMaximize size={15} />}
             </button>
 
-            {/* SVG 4: Close Pure SVG */}
             <button
               type="button"
               onClick={onClose}
               title="Đóng cửa sổ (Esc)"
-              aria-label="Đóng cửa sổ Hỏi Đáp AI"
+              aria-label="Đóng LOST AI"
               style={{
-                width: 32,
-                height: 32,
-                borderRadius: 8,
-                background: 'rgba(255, 255, 255, 0.06)',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                color: 'var(--color-text-dim)',
+                width: 30,
+                height: 30,
+                borderRadius: 4,
+                background: 'var(--color-surface-elevated)',
+                border: '1px solid var(--color-border)',
+                color: 'var(--color-text-muted)',
                 cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                transition: 'all 0.2s ease',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.color = '#ef4444';
-                e.currentTarget.style.background = 'rgba(239, 68, 68, 0.15)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = 'var(--color-text-dim)';
-                e.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)';
               }}
             >
-              <IconX size={16} />
+              <IconX size={15} />
             </button>
           </div>
         </div>
 
-        {/* Dynamic Toast Feedback */}
+        {/* 4-Mode Alpine Intelligence Command Suite Tabs */}
+        {!showSettings && (
+          <div
+            role="tablist"
+            aria-label="Chế độ LOST AI Command Suite"
+            style={{
+              display: 'flex',
+              overflowX: 'auto',
+              scrollbarWidth: 'none',
+              background: 'var(--color-bg-main)',
+              borderBottom: '1px solid var(--color-border)',
+              padding: '0 8px',
+              gap: 4,
+              flexShrink: 0,
+            }}
+          >
+            {(
+              [
+                { id: 'chat', label: 'Trợ Lý Hội Thoại', Icon: IconBot },
+                { id: 'matchmaker', label: 'Tìm Cung Thông Minh', Icon: IconCompass },
+                { id: 'pack_audit', label: 'Kiểm Toán Balo', Icon: IconBackpack },
+                { id: 'brief', label: 'Hồ Sơ Chuyến Đi', Icon: IconFileText },
+              ] as const
+            ).map((tab) => {
+              const isActive = activeSuiteTab === tab.id;
+              const TabIcon = tab.Icon;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  onClick={() => setActiveSuiteTab(tab.id)}
+                  style={{
+                    flex: '1 0 auto',
+                    padding: '8px 8px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 5,
+                    fontSize: '0.72rem',
+                    fontWeight: isActive ? 800 : 600,
+                    color: isActive ? 'var(--color-primary)' : 'var(--color-text-muted)',
+                    borderBottom: isActive ? '2px solid var(--color-primary)' : '2px solid transparent',
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  <TabIcon size={13} color={isActive ? 'var(--color-primary)' : 'var(--color-text-dim)'} />
+                  <span>{tab.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Toast Banner (Strict Dual-Theme) */}
         {toastMessage && (
           <div
             style={{
               position: 'absolute',
-              top: 68,
+              top: 64,
               left: '50%',
               transform: 'translateX(-50%)',
-              zIndex: 35,
-              background: 'rgba(15, 24, 46, 0.96)',
+              zIndex: 40,
+              background: 'var(--color-bg-card)',
               border: '1px solid var(--color-primary)',
-              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.5), 0 0 16px rgba(74, 222, 128, 0.3)',
+              boxShadow: 'var(--shadow-card)',
               color: 'var(--color-primary)',
-              padding: '7px 18px',
-              borderRadius: 9999,
-              fontSize: '0.8rem',
+              padding: '6px 14px',
+              borderRadius: 4,
+              fontSize: '0.78rem',
               fontWeight: 700,
               display: 'flex',
               alignItems: 'center',
-              gap: 8,
+              gap: 6,
               pointerEvents: 'none',
-              animation: 'fadeIn 0.2s ease',
+              whiteSpace: 'nowrap',
             }}
           >
-            <IconCheck size={14} color="var(--color-primary)" />
+            <IconCheck size={13} color="var(--color-primary)" />
             <span>{toastMessage}</span>
           </div>
         )}
 
-        {/* Inline Confirmation Dialog for Clear History (Trash SVG Button) */}
+        {/* Drag-and-Drop GPX Overlay */}
+        {isDragOverGpx && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              zIndex: 38,
+              background: 'color-mix(in srgb, var(--color-bg-main) 88%, transparent)',
+              backdropFilter: 'blur(6px)',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 10,
+              border: '2px dashed var(--color-primary)',
+              margin: 8,
+              borderRadius: 6,
+              pointerEvents: 'none',
+            }}
+          >
+            <IconFileText size={32} color="var(--color-primary)" />
+            <div style={{ fontSize: '0.96rem', fontWeight: 800, color: 'var(--color-text-main)', textAlign: 'center', padding: '0 16px' }}>
+              Thả file .GPX hoặc Ảnh thực địa (JPG/PNG/WebP) để LOST AI phân tích
+            </div>
+          </div>
+        )}
+
+        {/* Clear Confirmation Dialog (100% Dual-Theme Compliant) */}
         {showClearConfirm && (
           <div
             style={{
               position: 'absolute',
               inset: 0,
-              zIndex: 30,
-              background: 'rgba(7, 13, 30, 0.85)',
-              backdropFilter: 'blur(10px)',
+              zIndex: 35,
+              background: 'var(--overlay-bg)',
+              backdropFilter: 'blur(8px)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              padding: 24,
-              animation: 'fadeIn 0.2s ease',
+              padding: 20,
             }}
           >
             <div
               style={{
-                background: 'linear-gradient(180deg, rgba(24, 34, 60, 0.98) 0%, rgba(13, 20, 38, 0.98) 100%)',
-                border: '1px solid rgba(239, 68, 68, 0.4)',
-                borderRadius: 16,
-                padding: 24,
-                maxWidth: 360,
+                background: 'var(--color-bg-card)',
+                border: '1px solid var(--color-border-strong)',
+                borderTop: '3px solid var(--color-error)',
+                borderRadius: 6,
+                padding: 20,
+                maxWidth: 340,
                 width: '100%',
-                boxShadow: '0 24px 50px rgba(0, 0, 0, 0.7), 0 0 30px rgba(239, 68, 68, 0.2)',
+                boxShadow: 'var(--shadow-3d)',
                 textAlign: 'center',
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
-                gap: 12,
+                gap: 10,
               }}
             >
               <div
                 style={{
-                  width: 48,
-                  height: 48,
+                  width: 42,
+                  height: 42,
                   borderRadius: '50%',
-                  background: 'rgba(239, 68, 68, 0.15)',
-                  border: '1px solid rgba(239, 68, 68, 0.35)',
+                  background: 'color-mix(in srgb, var(--color-error) 14%, transparent)',
+                  border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  color: '#ef4444',
                 }}
               >
-                <IconTrash size={22} color="#ef4444" />
+                <IconTrash size={19} color="var(--color-error)" />
               </div>
 
-              <h3 style={{ margin: 0, fontSize: '1.02rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                Xóa Lịch Sử Trò Chuyện?
+              <h3 style={{ margin: 0, fontSize: '0.98rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                Xóa Hội Thoại Này?
               </h3>
-
-              <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--color-text-muted)', lineHeight: 1.55 }}>
-                Toàn bộ tin nhắn trao đổi hiện tại sẽ được xóa và đặt lại về màn hình chào đón ban đầu.
+              <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--color-text-muted)', lineHeight: 1.55 }}>
+                Tin nhắn trong cuộc trò chuyện hiện tại sẽ bị xóa khỏi danh sách và đặt lại về màn hình chào.
               </p>
 
-              <div style={{ display: 'flex', gap: 10, width: '100%', marginTop: 8 }}>
+              <div style={{ display: 'flex', gap: 8, width: '100%', marginTop: 6 }}>
                 <button
                   type="button"
                   onClick={() => setShowClearConfirm(false)}
                   style={{
                     flex: 1,
-                    padding: '9px 14px',
-                    borderRadius: 8,
-                    border: '1px solid rgba(255, 255, 255, 0.15)',
-                    background: 'rgba(255, 255, 255, 0.06)',
+                    padding: '8px 12px',
+                    borderRadius: 4,
+                    border: '1px solid var(--color-border-strong)',
+                    background: 'var(--color-surface-elevated)',
                     color: 'var(--color-text-main)',
-                    fontSize: '0.84rem',
+                    fontSize: '0.82rem',
                     fontWeight: 700,
                     cursor: 'pointer',
                   }}
@@ -1250,18 +1936,17 @@ Em có thể giúp bạn:
                 </button>
                 <button
                   type="button"
-                  onClick={handleConfirmClear}
+                  onClick={() => void handleConfirmClear()}
                   style={{
                     flex: 1,
-                    padding: '9px 14px',
-                    borderRadius: 8,
+                    padding: '8px 12px',
+                    borderRadius: 4,
                     border: 'none',
-                    background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
-                    color: '#ffffff',
-                    fontSize: '0.84rem',
-                    fontWeight: 800,
+                    background: 'var(--color-error)',
+                    color: 'var(--color-on-danger)',
+                    fontSize: '0.82rem',
+                    fontWeight: 700,
                     cursor: 'pointer',
-                    boxShadow: '0 4px 14px rgba(239, 68, 68, 0.4)',
                   }}
                 >
                   Xác nhận xóa
@@ -1271,624 +1956,964 @@ Em có thể giúp bạn:
           </div>
         )}
 
-        {/* Settings Panel (Gear SVG Button) */}
-        {showSettings ? (
-          <div
-            style={{
-              flex: 1,
-              padding: isExpanded ? '24px 32px' : 20,
-              maxWidth: isExpanded ? 820 : '100%',
-              margin: isExpanded ? '0 auto' : '0',
-              width: '100%',
-              boxSizing: 'border-box',
-              overflowY: 'auto',
-              background: 'rgba(11, 19, 38, 0.98)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 16,
-            }}
-          >
-            {/* Header of Settings */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(255, 255, 255, 0.08)', paddingBottom: 12 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-primary)' }}>
-                <IconSettings size={18} color="var(--color-primary)" />
-                <h4 style={{ margin: 0, fontSize: '0.96rem', fontWeight: 800 }}>
-                  Cài Đặt TrekCopilot AI
-                </h4>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowSettings(false)}
+        {/* Main Body: Optional Sidebar + Active Pane */}
+        <div style={{ flex: 1, display: 'flex', minHeight: 0, position: 'relative' }}>
+          {shouldShowSidebar && activeSuiteTab === 'chat' && !showSettings && (
+            <AiThreadSidebar
+              threads={threads}
+              activeThreadId={activeThreadId}
+              isCloudSynced={isCloudSynced}
+              isCompactOverlay={!isSidebarDocked}
+              onSelectThread={(id) => void handleSelectThread(id)}
+              onCreateNewThread={handleCreateNewThread}
+              onRenameThread={(id, t) => void handleRenameThread(id, t)}
+              onTogglePinThread={(id, p) => void handleTogglePinThread(id, p)}
+              onDeleteThread={(id) => void handleDeleteThread(id)}
+              onClose={() => setShowSidebar(false)}
+            />
+          )}
+
+          {/* Right Workspace: Settings OR Matchmaker OR Pack Auditor OR Chat */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
+            {!showSettings && activeSuiteTab === 'matchmaker' ? (
+              <AiTrailMatchWizard
+                trails={trails}
+                userCoords={getEffectiveCoords()}
+                onSelectTrail={onSelectTrail}
+                onCloseModal={onClose}
+                onAskAiPrompt={(prompt) => {
+                  setActiveSuiteTab('chat');
+                  void handleSendMessage(prompt);
+                }}
+              />
+            ) : !showSettings && activeSuiteTab === 'pack_audit' ? (
+              <AiPackAuditor
+                trails={trails}
+                currentTrail={currentTrail}
+                onToast={triggerToast}
+              />
+            ) : !showSettings && activeSuiteTab === 'brief' ? (
+              <AiExpeditionBriefTab
+                trails={trails}
+                currentTrail={currentTrail}
+                onToast={triggerToast}
+                onSelectTrail={onSelectTrail}
+                onCloseModal={onClose}
+                onAskAiPrompt={(prompt) => {
+                  setActiveSuiteTab('chat');
+                  void handleSendMessage(prompt);
+                }}
+              />
+            ) : showSettings ? (
+              <div
                 style={{
-                  background: 'rgba(255, 255, 255, 0.06)',
-                  border: '1px solid rgba(255, 255, 255, 0.12)',
-                  color: 'var(--color-text-main)',
-                  borderRadius: 8,
-                  padding: '5px 12px',
-                  fontSize: '0.78rem',
-                  fontWeight: 700,
-                  cursor: 'pointer',
+                  flex: 1,
+                  padding: isExpanded ? '22px 28px' : 16,
+                  overflowY: 'auto',
+                  background: 'var(--color-bg-card)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 14,
                 }}
               >
-                ← Quay lại chat
-              </button>
-            </div>
-
-            {/* Section 1: Preferred Region / Location Context */}
-            <div
-              style={{
-                background: 'rgba(15, 24, 46, 0.8)',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                borderRadius: 12,
-                padding: 14,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 10,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <IconMapPin size={15} color="var(--color-primary)" />
-                <label style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                  Khu Vực Ưu Tiên Mặc Định (Vị Trí Của Bạn)
-                </label>
-              </div>
-              <p style={{ margin: 0, fontSize: '0.76rem', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
-                Khi bạn hỏi các câu như <em>"tìm con suối gần tôi"</em>, AI sẽ ưu tiên gợi ý các địa điểm thuộc đúng khu vực bạn đã chọn:
-              </p>
-              <div style={{ display: 'grid', gridTemplateColumns: isExpanded ? 'repeat(4, 1fr)' : 'repeat(2, 1fr)', gap: 8 }}>
-                {[
-                  { id: 'danang', label: 'Đà Nẵng & Miền Trung', desc: 'Giếng Trời, Khe Ram, Bạch Mã, K50...' },
-                  { id: 'north', label: 'Hà Nội & Miền Bắc', desc: 'Fansipan, Tà Xùa, Lảo Thẩn, Cửa Tử...' },
-                  { id: 'south', label: 'TP.HCM & Nam Bộ', desc: 'Núi Dinh, Bà Đen, Chứa Chan...' },
-                  { id: 'auto', label: 'Tự động (GPS)', desc: 'Theo định vị thời gian thực từ thiết bị' },
-                ].map((r) => {
-                  const isSelected = preferredRegion === r.id;
-                  return (
-                    <button
-                      key={r.id}
-                      type="button"
-                      onClick={() => {
-                        setPreferredRegion(r.id);
-                        localStorage.setItem('trekmap_preferred_region', r.id);
-                        triggerToast(`Đã chọn vị trí: ${r.label}`);
-                      }}
-                      style={{
-                        padding: '10px 12px',
-                        borderRadius: 10,
-                        background: isSelected ? 'rgba(74, 222, 128, 0.15)' : 'rgba(255, 255, 255, 0.04)',
-                        border: isSelected ? '1.5px solid var(--color-primary)' : '1px solid rgba(255, 255, 255, 0.08)',
-                        textAlign: 'left',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 4,
-                        transition: 'all 0.2s ease',
-                      }}
-                    >
-                      <span style={{ fontSize: '0.82rem', fontWeight: 800, color: isSelected ? 'var(--color-primary)' : 'var(--color-text-main)' }}>
-                        {r.label}
-                      </span>
-                      <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', lineHeight: 1.3 }}>
-                        {r.desc}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Section 2: AI Engine Mode */}
-            <div
-              style={{
-                background: 'rgba(15, 24, 46, 0.8)',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                borderRadius: 12,
-                padding: 14,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 10,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <IconCpu size={15} color="var(--color-sky)" />
-                <label style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                  Chế Độ Mô Hình AI
-                </label>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: isExpanded ? '1fr 1fr' : '1fr', gap: 10 }}>
-                <div
-                  onClick={() => {
-                    setEngineMode('knowledge');
-                    localStorage.setItem('trekmap_engine_mode', 'knowledge');
-                    triggerToast('Đã kích hoạt Tri thức Thực địa TrekMap');
-                  }}
-                  style={{
-                    padding: 12,
-                    borderRadius: 10,
-                    background: engineMode === 'knowledge' ? 'rgba(74, 222, 128, 0.12)' : 'rgba(255, 255, 255, 0.03)',
-                    border: engineMode === 'knowledge' ? '1.5px solid var(--color-primary)' : '1px solid rgba(255, 255, 255, 0.08)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <span style={{ fontWeight: 800, fontSize: '0.84rem', color: 'var(--color-primary)' }}>
-                      Tri Thức Thực Địa TrekMap
-                    </span>
-                    <span style={{ fontSize: '0.66rem', fontWeight: 700, padding: '2px 6px', borderRadius: 6, background: 'rgba(74, 222, 128, 0.2)', color: 'var(--color-primary)' }}>
-                      Khuyên Dùng • 0ms
-                    </span>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--color-border)', paddingBottom: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: 'var(--color-primary)' }}>
+                    <IconSettings size={16} color="var(--color-primary)" />
+                    <h4 style={{ margin: 0, fontSize: '0.94rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                      Cài Đặt LOST AI
+                    </h4>
                   </div>
-                  <p style={{ margin: 0, fontSize: '0.74rem', color: 'var(--color-text-dim)', lineHeight: 1.45 }}>
-                    Dữ liệu 100% thực tế về 25 đỉnh núi & suối thác Việt Nam, hoạt động mượt mà offline không cần mạng internet.
-                  </p>
-                </div>
-
-                <div
-                  onClick={() => {
-                    setEngineMode('gemini');
-                    localStorage.setItem('trekmap_engine_mode', 'gemini');
-                    triggerToast('Đã kích hoạt Google Gemini Live');
-                  }}
-                  style={{
-                    padding: 12,
-                    borderRadius: 10,
-                    background: engineMode === 'gemini' ? 'rgba(56, 189, 248, 0.12)' : 'rgba(255, 255, 255, 0.03)',
-                    border: engineMode === 'gemini' ? '1.5px solid var(--color-sky)' : '1px solid rgba(255, 255, 255, 0.08)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <span style={{ fontWeight: 800, fontSize: '0.84rem', color: 'var(--color-sky)' }}>
-                      Google Gemini Live AI
-                    </span>
-                    <span style={{ fontSize: '0.66rem', fontWeight: 700, padding: '2px 6px', borderRadius: 6, background: 'rgba(56, 189, 248, 0.2)', color: 'var(--color-sky)' }}>
-                      Điện Toán Đám Mây
-                    </span>
-                  </div>
-                  <p style={{ margin: 0, fontSize: '0.74rem', color: 'var(--color-text-dim)', lineHeight: 1.45 }}>
-                    Trò chuyện tự nhiên và linh hoạt qua API Gemini từ Google (yêu cầu kết nối mạng và khóa API).
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Section 3: Gemini API Key Config */}
-            <div
-              style={{
-                background: 'rgba(15, 24, 46, 0.8)',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                borderRadius: 12,
-                padding: 14,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 10,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <label style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                  Google Gemini API Key (Tùy chọn)
-                </label>
-                <a
-                  href="https://aistudio.google.com/app/apikey"
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ fontSize: '0.74rem', color: 'var(--color-sky)', textDecoration: 'underline' }}
-                >
-                  Lấy API Key miễn phí tại Google AI Studio
-                </a>
-              </div>
-
-              <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-                <input
-                  type={showApiKeyText ? 'text' : 'password'}
-                  defaultValue={geminiApiKey}
-                  id="gemini-key-input"
-                  placeholder="Nhập khóa API Gemini..."
-                  style={{
-                    width: '100%',
-                    boxSizing: 'border-box',
-                    background: 'rgba(0, 0, 0, 0.4)',
-                    border: '1px solid rgba(255, 255, 255, 0.12)',
-                    borderRadius: 8,
-                    padding: '9px 40px 9px 12px',
-                    color: 'var(--color-text-main)',
-                    fontSize: '0.84rem',
-                    fontFamily: 'monospace',
-                    outline: 'none',
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowApiKeyText(!showApiKeyText)}
-                  title={showApiKeyText ? 'Ẩn khóa' : 'Hiện khóa'}
-                  style={{
-                    position: 'absolute',
-                    right: 8,
-                    background: 'transparent',
-                    border: 'none',
-                    color: 'var(--color-text-dim)',
-                    cursor: 'pointer',
-                    padding: 4,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  {showApiKeyText ? <IconEyeOff size={16} /> : <IconEye size={16} />}
-                </button>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
-                {geminiApiKey && (
                   <button
                     type="button"
-                    onClick={() => {
-                      handleSaveApiKey('');
-                      const input = document.getElementById('gemini-key-input') as HTMLInputElement;
-                      if (input) input.value = '';
-                    }}
+                    onClick={() => setShowSettings(false)}
                     style={{
-                      background: 'rgba(239, 68, 68, 0.15)',
-                      color: '#ef4444',
-                      border: '1px solid rgba(239, 68, 68, 0.3)',
-                      borderRadius: 6,
-                      padding: '6px 14px',
-                      fontSize: '0.78rem',
+                      background: 'var(--color-bg-main)',
+                      border: '1px solid var(--color-border-strong)',
+                      color: 'var(--color-text-main)',
+                      borderRadius: 4,
+                      padding: '5px 11px',
+                      fontSize: '0.76rem',
                       fontWeight: 700,
                       cursor: 'pointer',
                     }}
                   >
-                    Xóa Key
+                    Quay lại chat
                   </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    const input = document.getElementById('gemini-key-input') as HTMLInputElement;
-                    if (input) handleSaveApiKey(input.value);
-                  }}
-                  style={{
-                    background: keySaveSuccess ? 'var(--color-primary)' : 'var(--color-sky)',
-                    color: '#070d1e',
-                    border: 'none',
-                    borderRadius: 6,
-                    padding: '6px 16px',
-                    fontSize: '0.78rem',
-                    fontWeight: 800,
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease',
-                  }}
-                >
-                  {keySaveSuccess ? 'Đã lưu thành công!' : 'Lưu API Key'}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : (
-        <>
-          {/* Context Banner if viewing trail */}
-          {currentTrail && (
-            <div
-              style={{
-                padding: '8px 16px',
-                background: 'rgba(56, 189, 248, 0.1)',
-                borderBottom: '1px solid rgba(56, 189, 248, 0.2)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 8,
-                fontSize: '0.76rem',
-                color: 'var(--color-sky)',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                <IconMountain size={13} color="var(--color-sky)" />
-                <span>
-                  Đang xem: <strong>{currentTrail.name}</strong> ({currentTrail.maxAltitudeM}m - {currentTrail.province})
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => handleSendMessage(`Cho tôi biết kinh nghiệm, thời tiết và chuẩn bị đồ leo cung ${currentTrail.name}`)}
-                style={{
-                  background: 'var(--color-sky)',
-                  color: '#070d1e',
-                  border: 'none',
-                  padding: '3px 8px',
-                  borderRadius: 10,
-                  fontSize: '0.7rem',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                Hỏi về cung này
-              </button>
-            </div>
-          )}
+                </div>
 
-          {/* Unified Chat Log Area */}
-          <div
-            style={{
-              flex: 1,
-              overflowY: 'auto',
-              padding: '16px',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 14,
-              scrollbarWidth: 'thin',
-              scrollbarColor: 'rgba(255, 255, 255, 0.1) transparent',
-            }}
-          >
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start',
-                  gap: 3,
-                }}
-              >
-                {/* Assistant Label */}
-                {msg.role === 'assistant' && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 4, marginBottom: 2 }}>
-                    <div
-                      style={{
-                        width: 18,
-                        height: 18,
-                        borderRadius: '50%',
-                        background: 'rgba(74, 222, 128, 0.2)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      }}
-                    >
-                      <IconBot size={11} color="var(--color-primary)" />
-                    </div>
-                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-dim)' }}>
-                      TrekCopilot
+                {/* Preferred Region Selector (All 5 Regions, Accessible Buttons) */}
+                <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 6, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <IconMapPin size={14} color="var(--color-primary)" />
+                    <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                      Khu Vực Ưu Tiên (Vị Trí Thực Địa)
                     </span>
-                    <span style={{ fontSize: '0.68rem', color: 'rgba(255,255,255,0.3)' }}>•</span>
-                    <span style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)' }}>{msg.timestamp}</span>
+                  </div>
+                  <p style={{ margin: 0, fontSize: '0.74rem', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
+                    Mặc định dùng định vị GPS tự động. Bạn có thể chọn nhanh khu vực để AI xếp hạng cung đường gần bạn nhất:
+                  </p>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))', gap: 7 }}>
+                    {(
+                      [
+                        { id: 'auto', label: 'Tự động (GPS)', desc: 'Theo tọa độ thiết bị' },
+                        { id: 'north', label: 'Hà Nội & Miền Bắc', desc: 'Fansipan, Lảo Thẩn, Tà Xùa...' },
+                        { id: 'central', label: 'Đà Nẵng & Miền Trung', desc: 'Giếng Trời, Bạch Mã, Khe Ram...' },
+                        { id: 'taynguyen', label: 'Tây Nguyên', desc: 'Bidoup, Chư Yang Sin, Thác K50...' },
+                        { id: 'south', label: 'TP.HCM & Nam Bộ', desc: 'Tà Năng, Bà Đen, Chứa Chan...' },
+                      ] as const
+                    ).map((r) => {
+                      const isSelected = preferredRegion === r.id;
+                      return (
+                        <button
+                          key={r.id}
+                          type="button"
+                          onClick={() => {
+                            setPreferredRegion(r.id);
+                            localStorage.setItem('lost_preferred_region', r.id);
+                            triggerToast(`Đã chọn vị trí: ${r.label}`);
+                          }}
+                          style={{
+                            padding: '9px 10px',
+                            borderRadius: 4,
+                            background: isSelected
+                              ? 'color-mix(in srgb, var(--color-primary) 13%, var(--color-bg-card))'
+                              : 'var(--color-bg-card)',
+                            border: isSelected ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)',
+                            textAlign: 'left',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 2,
+                          }}
+                        >
+                          <span style={{ fontSize: '0.78rem', fontWeight: 700, color: isSelected ? 'var(--color-primary)' : 'var(--color-text-main)' }}>
+                            {r.label}
+                          </span>
+                          <span style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)' }}>{r.desc}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Engine Mode Selector (Actually Wired End-to-End!) */}
+                <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 6, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <IconCpu size={14} color="var(--color-sky)" />
+                    <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                      Chế Độ Xử Lý LOST AI
+                    </span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8 }}>
+                    {(
+                      [
+                        {
+                          id: 'auto',
+                          title: 'Tự Động Thông Minh',
+                          badge: 'Khuyên dùng',
+                          desc: 'Kết hợp Gemini Live (nếu có) cùng thẻ công cụ thực địa & fallback 0ms.',
+                          accent: 'var(--color-primary)',
+                        },
+                        {
+                          id: 'knowledge',
+                          title: 'AI Thực Địa 0ms',
+                          badge: 'Siêu nhanh',
+                          desc: 'Chạy 100% trên động cơ tri thức LOST (tiết kiệm dữ liệu khi mạng yếu).',
+                          accent: 'var(--color-earth)',
+                        },
+                        {
+                          id: 'gemini',
+                          title: 'Ưu Tiên Gemini Live',
+                          badge: 'Bảo mật Server',
+                          desc: 'Gọi trực tiếp Gemini trên máy chủ + kèm thẻ Go/No-Go, WFA, Bio-Calc.',
+                          accent: 'var(--color-sky)',
+                        },
+                      ] as const
+                    ).map((m) => {
+                      const active = engineMode === m.id;
+                      return (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => {
+                            setEngineMode(m.id);
+                            localStorage.setItem('lost_engine_mode', m.id);
+                            triggerToast(`Đã chuyển chế độ: ${m.title}`);
+                          }}
+                          style={{
+                            padding: 10,
+                            borderRadius: 4,
+                            textAlign: 'left',
+                            cursor: 'pointer',
+                            background: active
+                              ? `color-mix(in srgb, ${m.accent} 12%, var(--color-bg-card))`
+                              : 'var(--color-bg-card)',
+                            border: active ? `1.5px solid ${m.accent}` : '1px solid var(--color-border)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 4,
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                            <span style={{ fontWeight: 700, fontSize: '0.8rem', color: active ? m.accent : 'var(--color-text-main)' }}>
+                              {m.title}
+                            </span>
+                            <span style={{ fontSize: '0.64rem', fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: `color-mix(in srgb, ${m.accent} 16%, transparent)`, color: m.accent }}>
+                              {m.badge}
+                            </span>
+                          </div>
+                          <span style={{ fontSize: '0.71rem', color: 'var(--color-text-dim)', lineHeight: 1.4 }}>
+                            {m.desc}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Live Trail Context Strip */}
+                {currentTrail && (
+                  <div
+                    style={{
+                      padding: '7px 14px',
+                      background: 'color-mix(in srgb, var(--color-sky) 10%, var(--color-bg-main))',
+                      borderBottom: '1px solid var(--color-border)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                      fontSize: '0.74rem',
+                      color: 'var(--color-sky)',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <IconMountain size={13} color="var(--color-sky)" />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        Ngữ cảnh: <strong style={{ color: 'var(--color-text-main)' }}>{currentTrail.name}</strong> ({currentTrail.maxAltitudeM}m)
+                      </span>
+                      {activeTrailIncidentCount > 0 && (
+                        <span
+                          style={{
+                            fontSize: '0.66rem',
+                            fontWeight: 800,
+                            padding: '1px 6px',
+                            borderRadius: 4,
+                            background: 'color-mix(in srgb, var(--color-error) 16%, transparent)',
+                            color: 'var(--color-error-text, var(--color-error))',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {activeTrailIncidentCount} cảnh báo
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+                      {Array.isArray(currentTrail.gpxTrack) && currentTrail.gpxTrack.length >= 2 && (
+                        <button
+                          type="button"
+                          disabled={isAnalyzingGpx || isLoading}
+                          onClick={() => void handleAnalyzeCurrentTrailGpx()}
+                          style={{
+                            background: 'var(--color-bg-card)',
+                            color: 'var(--color-primary)',
+                            border: '1px solid color-mix(in srgb, var(--color-primary) 45%, transparent)',
+                            borderRadius: 4,
+                            padding: '3px 7px',
+                            fontSize: '0.69rem',
+                            fontWeight: 700,
+                            cursor: isAnalyzingGpx || isLoading ? 'not-allowed' : 'pointer',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          Phân tích GPX
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void handleSendMessage(`Đánh giá Go/No-Go hôm nay cho ${currentTrail.name}`)}
+                        style={{
+                          background: 'var(--color-sky)',
+                          color: 'var(--color-on-primary)',
+                          borderRadius: 4,
+                          padding: '3px 8px',
+                          fontSize: '0.69rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        Go/No-Go ngay
+                      </button>
+                    </div>
                   </div>
                 )}
 
-                {/* Bubble Container */}
+                {/* Chat Message Feed */}
                 <div
                   style={{
-                    maxWidth: msg.role === 'user' ? '86%' : '96%',
-                    padding: msg.role === 'user' ? '10px 14px' : '14px 16px',
-                    borderRadius:
-                      msg.role === 'user' ? '16px 16px 4px 16px' : '14px 14px 14px 4px',
-                    background:
-                      msg.role === 'user'
-                        ? 'linear-gradient(135deg, var(--color-primary) 0%, #059669 100%)'
-                        : 'rgba(15, 24, 46, 0.75)',
-                    color: msg.role === 'user' ? '#070d1e' : 'var(--color-text-muted)',
-                    border:
-                      msg.role === 'user'
-                        ? 'none'
-                        : '1px solid rgba(255, 255, 255, 0.08)',
-                    fontSize: '0.875rem',
-                    lineHeight: 1.62,
-                    boxShadow:
-                      msg.role === 'user'
-                        ? '0 4px 14px rgba(74, 222, 128, 0.25)'
-                        : '0 4px 16px rgba(0, 0, 0, 0.2)',
-                    wordBreak: 'break-word',
+                    flex: 1,
+                    overflowY: 'auto',
+                    padding: '14px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 12,
                   }}
                 >
-                  {/* Message Content */}
-                  {renderStructuredMessage(msg.content, msg.role === 'user')}
+                  {displayedMessages.map((msg) => {
+                    const isUser = msg.role === 'user';
+                    return (
+                      <div
+                        key={msg.id}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: isUser ? 'flex-end' : 'flex-start',
+                          gap: 3,
+                        }}
+                      >
+                        {!isUser && (
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', paddingLeft: 2 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <div
+                                style={{
+                                  width: 18,
+                                  height: 18,
+                                  borderRadius: 4,
+                                  background: 'color-mix(in srgb, var(--color-primary) 16%, transparent)',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                }}
+                              >
+                                <IconBot size={11} color="var(--color-primary)" />
+                              </div>
+                              <span style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--color-text-dim)' }}>
+                                LOST AI
+                              </span>
+                              <span style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)' }}>· {msg.timestamp}</span>
+                            </div>
 
-                  {/* Attached Action Cards (Trail Card, SOS, Checklist) */}
-                  {msg.actions && msg.actions.length > 0 && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
-                      {msg.actions.map((act, actIdx) => renderActionCard(act, actIdx))}
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                              {isTtsSupported && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleSpeakMessage(msg.id, msg.content)}
+                                  title={speakingMsgId === msg.id ? 'Dừng đọc giọng nói' : 'Đọc phản hồi bằng giọng tiếng Việt (vi-VN)'}
+                                  aria-label={speakingMsgId === msg.id ? 'Dừng đọc phản hồi' : 'Nghe phản hồi tiếng Việt'}
+                                  aria-pressed={speakingMsgId === msg.id}
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: 3,
+                                    fontSize: '0.67rem',
+                                    color: speakingMsgId === msg.id ? 'var(--color-primary)' : 'var(--color-text-dim)',
+                                    cursor: 'pointer',
+                                    padding: '2px 5px',
+                                  }}
+                                >
+                                  {speakingMsgId === msg.id ? (
+                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                      <rect x="6" y="6" width="12" height="12" rx="2" />
+                                    </svg>
+                                  ) : (
+                                    <svg
+                                      width="11"
+                                      height="11"
+                                      viewBox="0 0 24 24"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="2"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      aria-hidden="true"
+                                    >
+                                      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                                      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                                      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                                    </svg>
+                                  )}
+                                  <span>{speakingMsgId === msg.id ? 'Dừng' : 'Nghe'}</span>
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => void handleCopyText(msg.id, msg.content)}
+                                title="Sao chép phản hồi"
+                                aria-label="Sao chép phản hồi"
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 3,
+                                  fontSize: '0.67rem',
+                                  color: copiedId === msg.id ? 'var(--color-primary)' : 'var(--color-text-dim)',
+                                  cursor: 'pointer',
+                                  padding: '2px 5px',
+                                }}
+                              >
+                                {copiedId === msg.id ? <IconCheck size={11} /> : <IconCopy size={11} />}
+                                <span>{copiedId === msg.id ? 'Đã chép' : 'Chép'}</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        <div
+                          style={{
+                            maxWidth: isUser ? '86%' : '98%',
+                            width: isUser ? 'auto' : '100%',
+                            padding: isUser ? '9px 13px' : '12px 14px',
+                            borderRadius: isUser ? '6px 6px 2px 6px' : '6px 6px 6px 2px',
+                            background: isUser
+                              ? 'var(--color-primary)'
+                              : msg.isError
+                              ? 'color-mix(in srgb, var(--color-error) 8%, var(--color-bg-main))'
+                              : 'var(--color-bg-main)',
+                            color: isUser ? 'var(--color-on-primary)' : 'var(--color-text-muted)',
+                            border: isUser
+                              ? 'none'
+                              : msg.isError
+                              ? '1px solid color-mix(in srgb, var(--color-error) 40%, transparent)'
+                              : '1px solid var(--color-border)',
+                            boxShadow: 'var(--shadow-card)',
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {isUser && msg.imagePreviewUrl && (
+                            <div style={{ marginBottom: 6 }}>
+                              <img
+                                src={msg.imagePreviewUrl}
+                                alt={msg.imageCaption || 'Ảnh thực địa đính kèm'}
+                                style={{
+                                  maxWidth: '100%',
+                                  maxHeight: 168,
+                                  borderRadius: 4,
+                                  display: 'block',
+                                  objectFit: 'cover',
+                                  border: '1px solid color-mix(in srgb, var(--color-on-primary) 28%, transparent)',
+                                }}
+                              />
+                            </div>
+                          )}
+                          <AiMarkdownRenderer content={msg.content} isUser={isUser} />
+
+                          {msg.isError && msg.retryPrompt && (
+                            <button
+                              type="button"
+                              onClick={() => void handleSendMessage(msg.retryPrompt)}
+                              style={{
+                                marginTop: 8,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 5,
+                                padding: '5px 10px',
+                                borderRadius: 4,
+                                background: 'var(--color-bg-card)',
+                                border: '1px solid var(--color-error)',
+                                color: 'var(--color-error-text, var(--color-error))',
+                                fontSize: '0.74rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              <IconRotateCw size={12} />
+                              <span>Thử gửi lại</span>
+                            </button>
+                          )}
+
+                          {msg.actions && msg.actions.length > 0 && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+                              {msg.actions.map((act, actIdx) => (
+                                <AiRichCards
+                                  key={`${msg.id}-act-${actIdx}`}
+                                  messageId={msg.id}
+                                  action={act}
+                                  actionIndex={actIdx}
+                                  currentTrailId={currentTrail?.id}
+                                  currentTrailName={currentTrail?.name}
+                                  userCoords={getEffectiveCoords()}
+                                  checkedGearItems={checkedGearItems}
+                                  copiedId={copiedId}
+                                  onToggleGearCheck={(key) =>
+                                    setCheckedGearItems((prev) => ({ ...prev, [key]: !prev[key] }))
+                                  }
+                                  onCopyText={(id, t) => void handleCopyText(id, t)}
+                                  onSelectTrail={onSelectTrail}
+                                  onCloseModal={onClose}
+                                  onSendQuickPrompt={(p) => void handleSendMessage(p)}
+                                  onToast={triggerToast}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {isUser && (
+                          <span style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)', paddingRight: 2 }}>
+                            {msg.timestamp}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {/* Typing / GPX Processing Indicator (Strict Dual-Theme) */}
+                  {(isLoading || isAnalyzingGpx) && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px' }}>
+                      <div
+                        style={{
+                          width: 24,
+                          height: 24,
+                          borderRadius: 4,
+                          background: 'color-mix(in srgb, var(--color-primary) 16%, transparent)',
+                          border: '1px solid var(--color-primary)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <IconBot size={13} color="var(--color-primary)" />
+                      </div>
+                      <div
+                        style={{
+                          padding: '7px 12px',
+                          borderRadius: 6,
+                          background: 'var(--color-bg-main)',
+                          border: '1px solid var(--color-border)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          fontSize: '0.76rem',
+                          color: 'var(--color-text-muted)',
+                        }}
+                      >
+                        <span>{isAnalyzingGpx ? 'Đang phân tích cao độ & độ dốc GPX...' : 'LOST AI đang tổng hợp dữ liệu thực địa...'}</span>
+                        {isLoading && (
+                          <button
+                            type="button"
+                            onClick={() => abortRef.current?.abort()}
+                            style={{
+                              padding: '2px 7px',
+                              borderRadius: 4,
+                              border: '1px solid var(--color-border-strong)',
+                              background: 'var(--color-surface-elevated)',
+                              color: 'var(--color-text-main)',
+                              fontSize: '0.68rem',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Dừng
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
+
+                  <div ref={messagesEndRef} />
                 </div>
 
-                {/* User timestamp */}
-                {msg.role === 'user' && (
-                  <span style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', paddingRight: 4 }}>
-                    {msg.timestamp}
-                  </span>
-                )}
-              </div>
-            ))}
-
-            {/* Typing Indicator */}
-            {isLoading && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px' }}>
-                <div
-                  style={{
-                    width: 26,
-                    height: 26,
-                    borderRadius: '50%',
-                    background: 'rgba(74, 222, 128, 0.15)',
-                    border: '1px solid var(--color-primary)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <IconBot size={14} color="var(--color-primary)" />
-                </div>
-                <div
-                  style={{
-                    padding: '8px 14px',
-                    borderRadius: '14px 14px 14px 4px',
-                    background: 'rgba(15, 24, 46, 0.75)',
-                    border: '1px solid rgba(255, 255, 255, 0.08)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 5,
-                  }}
-                >
-                  <span
+                {/* Contextual Quick Prompts Strip */}
+                {quickPrompts.length > 0 && (
+                  <div
                     style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: '50%',
-                      background: 'var(--color-primary)',
-                      animation: 'pulse 1s infinite alternate',
-                    }}
-                  />
-                  <span
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: '50%',
-                      background: 'var(--color-sky)',
-                      animation: 'pulse 1s infinite alternate 0.3s',
-                    }}
-                  />
-                  <span
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: '50%',
-                      background: 'var(--color-primary)',
-                      animation: 'pulse 1s infinite alternate 0.6s',
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-
-            <div ref={messagesEndRef} />
-          </div>
-
-          {/* Quick Prompts Suggestions Carousel (Clean, no ugly scrollbar) */}
-          {quickPrompts.length > 0 && (
-            <div
-              style={{
-                padding: '6px 14px',
-                background: 'rgba(11, 19, 38, 0.85)',
-                borderTop: '1px solid rgba(255, 255, 255, 0.06)',
-                display: 'flex',
-                gap: 6,
-                overflowX: 'auto',
-                whiteSpace: 'nowrap',
-                scrollbarWidth: 'none',
-                msOverflowStyle: 'none',
-              }}
-            >
-              {quickPrompts.slice(0, 5).map((prompt, pIdx) => {
-                const cleanPrompt = removeEmojis(prompt);
-                return (
-                  <button
-                    key={pIdx}
-                    type="button"
-                    onClick={() => handleSendMessage(cleanPrompt)}
-                    style={{
-                      background: 'rgba(255, 255, 255, 0.05)',
-                      border: '1px solid rgba(255, 255, 255, 0.1)',
-                      color: 'var(--color-text-muted)',
-                      borderRadius: 9999,
-                      padding: '5px 12px',
-                      fontSize: '0.74rem',
-                      cursor: 'pointer',
-                      transition: 'all 0.2s ease',
-                      flexShrink: 0,
-                      display: 'inline-flex',
-                      alignItems: 'center',
+                      padding: '6px 12px',
+                      background: 'var(--color-bg-main)',
+                      borderTop: '1px solid var(--color-border)',
+                      display: 'flex',
                       gap: 6,
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'rgba(74, 222, 128, 0.12)';
-                      e.currentTarget.style.color = 'var(--color-primary)';
-                      e.currentTarget.style.borderColor = 'rgba(74, 222, 128, 0.4)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
-                      e.currentTarget.style.color = 'var(--color-text-muted)';
-                      e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+                      overflowX: 'auto',
+                      whiteSpace: 'nowrap',
+                      scrollbarWidth: 'none',
+                      flexShrink: 0,
                     }}
                   >
-                    {getPromptSvgIcon(cleanPrompt)}
-                    <span>{cleanPrompt}</span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
+                    {quickPrompts.slice(0, 5).map((prompt, pIdx) => {
+                      const cleanPrompt = removeEmojis(prompt);
+                      return (
+                        <button
+                          key={pIdx}
+                          type="button"
+                          onClick={() => void handleSendMessage(cleanPrompt)}
+                          style={{
+                            background: 'var(--color-bg-card)',
+                            border: '1px solid var(--color-border)',
+                            color: 'var(--color-text-muted)',
+                            borderRadius: 9999,
+                            padding: '4px 10px',
+                            fontSize: '0.72rem',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            flexShrink: 0,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 5,
+                          }}
+                        >
+                          {getPromptSvgIcon(cleanPrompt)}
+                          <span>{cleanPrompt}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
 
-          {/* Unified Input Prompt Bar */}
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              handleSendMessage();
-            }}
-            style={{
-              padding: '10px 14px',
-              background: 'rgba(9, 15, 30, 0.98)',
-              borderTop: '1px solid rgba(255, 255, 255, 0.08)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-            }}
-          >
-            <input
-              ref={inputRef}
-              type="text"
-              value={inputQuery}
-              onChange={(e) => setInputQuery(e.target.value)}
-              placeholder={currentTrail ? `Hỏi về cung ${currentTrail.name}...` : 'Hỏi về cung đường, thể lực, chi phí, cứu hộ...'}
-              disabled={isLoading}
-              style={{
-                flex: 1,
-                background: 'rgba(255, 255, 255, 0.06)',
-                border: '1px solid rgba(255, 255, 255, 0.12)',
-                borderRadius: 22,
-                padding: '9px 16px',
-                color: 'var(--color-text-main)',
-                fontSize: '0.85rem',
-                outline: 'none',
-                fontFamily: 'var(--font-family)',
-                transition: 'border-color 0.2s ease, box-shadow 0.2s ease',
-              }}
-              onFocus={(e) => {
-                e.currentTarget.style.borderColor = 'var(--color-primary)';
-                e.currentTarget.style.boxShadow = '0 0 12px rgba(74, 222, 128, 0.25)';
-              }}
-              onBlur={(e) => {
-                e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.12)';
-                e.currentTarget.style.boxShadow = 'none';
-              }}
-            />
+                {/* Auto-Growing Composer with GPX Upload, vi-VN Voice Input & Character Counter */}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (isListeningVoice) stopVoiceRecognition();
+                    void handleSendMessage();
+                  }}
+                  style={{
+                    padding: '9px 12px',
+                    background: 'var(--color-bg-card)',
+                    borderTop: '1px solid var(--color-border)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 5,
+                    flexShrink: 0,
+                  }}
+                >
+                  {isListeningVoice && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 8,
+                        padding: '5px 9px',
+                        borderRadius: 4,
+                        background: 'color-mix(in srgb, var(--color-error) 10%, var(--color-bg-main))',
+                        border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)',
+                        fontSize: '0.72rem',
+                        color: 'var(--color-error-text, var(--color-error))',
+                        fontWeight: 700,
+                      }}
+                    >
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span
+                          style={{
+                            width: 7,
+                            height: 7,
+                            borderRadius: '50%',
+                            background: 'var(--color-error)',
+                            display: 'inline-block',
+                            flexShrink: 0,
+                          }}
+                        />
+                        <span>
+                          {voiceInterimText ? `Đang nghe (vi-VN): "${voiceInterimText}"` : 'Đang lắng nghe giọng nói tiếng Việt...'}
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={stopVoiceRecognition}
+                        style={{
+                          padding: '2px 7px',
+                          borderRadius: 4,
+                          background: 'var(--color-error)',
+                          color: 'var(--color-on-danger)',
+                          border: 'none',
+                          fontSize: '0.67rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          flexShrink: 0,
+                        }}
+                      >
+                        Dừng
+                      </button>
+                    </div>
+                  )}
 
-            <button
-              type="submit"
-              disabled={!inputQuery.trim() || isLoading}
-              aria-label="Gửi tin nhắn"
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: '50%',
-                background: inputQuery.trim() && !isLoading ? 'var(--color-primary)' : 'rgba(255, 255, 255, 0.08)',
-                color: inputQuery.trim() && !isLoading ? '#070d1e' : 'var(--color-text-dim)',
-                border: 'none',
-                cursor: inputQuery.trim() && !isLoading ? 'pointer' : 'not-allowed',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                transition: 'all 0.2s ease',
-                flexShrink: 0,
-                boxShadow: inputQuery.trim() && !isLoading ? '0 3px 12px rgba(74, 222, 128, 0.4)' : 'none',
-              }}
-            >
-              <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="22" y1="2" x2="11" y2="13" />
-                <polygon points="22 2 15 22 11 13 2 9 22 2" />
-              </svg>
-            </button>
-          </form>
-        </>
-      )}
-    </div>
+                  {pendingImage && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 8,
+                        padding: '6px 8px',
+                        borderRadius: 4,
+                        background: 'var(--color-bg-main)',
+                        border: '1px solid color-mix(in srgb, var(--color-primary) 45%, var(--color-border))',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                        <img
+                          src={pendingImage.previewUrl}
+                          alt={pendingImage.fileName}
+                          style={{
+                            width: 40,
+                            height: 40,
+                            borderRadius: 4,
+                            objectFit: 'cover',
+                            border: '1px solid var(--color-border)',
+                            flexShrink: 0,
+                          }}
+                        />
+                        <div style={{ minWidth: 0 }}>
+                          <div
+                            style={{
+                              fontSize: '0.74rem',
+                              fontWeight: 700,
+                              color: 'var(--color-text-main)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {pendingImage.fileName}
+                          </div>
+                          <div style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
+                            {pendingImage.width}×{pendingImage.height} · {Math.max(1, Math.round(pendingImage.byteSize / 1024))} KB · Sẵn sàng phân tích ảnh
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleRemovePendingImage}
+                        title="Gỡ ảnh đính kèm"
+                        aria-label="Gỡ ảnh đính kèm"
+                        style={{
+                          width: 24,
+                          height: 24,
+                          borderRadius: 4,
+                          border: '1px solid var(--color-border-strong)',
+                          background: 'var(--color-bg-card)',
+                          color: 'var(--color-text-muted)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0,
+                        }}
+                      >
+                        <IconX size={13} />
+                      </button>
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: 7 }}>
+                    <input
+                      ref={gpxInputRef}
+                      type="file"
+                      accept=".gpx,application/gpx+xml,application/xml,text/xml"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) void handleProcessGpxFile(file);
+                        e.target.value = '';
+                      }}
+                    />
+
+                    <input
+                      ref={imageInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) void handleSelectPhotoFile(file);
+                        e.target.value = '';
+                      }}
+                    />
+
+                    <button
+                      type="button"
+                      onClick={() => imageInputRef.current?.click()}
+                      disabled={isCompressingImage || isAnalyzingGpx || isLoading}
+                      title="Đính kèm ảnh thực địa (JPG/PNG/WebP) để phân tích an toàn (rắn, nấm, mây, trang bị)"
+                      aria-label="Đính kèm ảnh thực địa phân tích"
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 6,
+                        background: pendingImage
+                          ? 'color-mix(in srgb, var(--color-primary) 16%, var(--color-bg-main))'
+                          : 'var(--color-bg-main)',
+                        border: `1px solid ${pendingImage ? 'var(--color-primary)' : 'var(--color-border-strong)'}`,
+                        color: pendingImage ? 'var(--color-primary)' : 'var(--color-earth)',
+                        cursor: isCompressingImage || isAnalyzingGpx || isLoading ? 'not-allowed' : 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <svg
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" />
+                        <circle cx="12" cy="13" r="3" />
+                      </svg>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => gpxInputRef.current?.click()}
+                      disabled={isAnalyzingGpx || isLoading}
+                      title="Đính kèm file .GPX để phân tích cao độ & thời gian Naismith"
+                      aria-label="Tải lên file GPX phân tích"
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 6,
+                        background: 'var(--color-bg-main)',
+                        border: '1px solid var(--color-border-strong)',
+                        color: 'var(--color-sky)',
+                        cursor: isAnalyzingGpx || isLoading ? 'not-allowed' : 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <IconFileText size={16} color="var(--color-sky)" />
+                    </button>
+
+                    {isVoiceSupported && (
+                      <button
+                        type="button"
+                        onClick={toggleVoiceRecognition}
+                        disabled={isLoading || isAnalyzingGpx}
+                        title={isListeningVoice ? 'Dừng ghi âm giọng nói' : 'Nhập câu hỏi bằng giọng nói tiếng Việt (vi-VN)'}
+                        aria-label={isListeningVoice ? 'Dừng nhập giọng nói' : 'Nhập giọng nói tiếng Việt'}
+                        aria-pressed={isListeningVoice}
+                        style={{
+                          width: 36,
+                          height: 36,
+                          borderRadius: 6,
+                          background: isListeningVoice
+                            ? 'color-mix(in srgb, var(--color-error) 16%, var(--color-bg-main))'
+                            : 'var(--color-bg-main)',
+                          border: `1px solid ${isListeningVoice ? 'var(--color-error)' : 'var(--color-border-strong)'}`,
+                          color: isListeningVoice ? 'var(--color-error-text, var(--color-error))' : 'var(--color-primary)',
+                          cursor: isLoading || isAnalyzingGpx ? 'not-allowed' : 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0,
+                        }}
+                      >
+                        {isListeningVoice ? (
+                          <svg
+                            width="15"
+                            height="15"
+                            viewBox="0 0 24 24"
+                            fill="currentColor"
+                            aria-hidden="true"
+                          >
+                            <rect x="6" y="6" width="12" height="12" rx="2" />
+                          </svg>
+                        ) : (
+                          <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                          >
+                            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                            <line x1="12" y1="19" x2="12" y2="22" />
+                          </svg>
+                        )}
+                      </button>
+                    )}
+
+                    <textarea
+                      ref={textareaRef}
+                      rows={1}
+                      aria-label="Nhập câu hỏi cho LOST AI"
+                      value={inputQuery}
+                      onChange={(e) => setInputQuery(e.target.value.slice(0, MAX_INPUT_CHARS))}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          if (isListeningVoice) stopVoiceRecognition();
+                          void handleSendMessage();
+                        }
+                      }}
+                      placeholder={
+                        currentTrail
+                          ? `Hỏi Go/No-Go, so sánh cung, lịch trình về ${currentTrail.name}... (hoặc kéo thả .gpx)`
+                          : 'Hỏi so sánh cung, Go/No-Go, Naismith/nước, WFA... (hoặc đính kèm .gpx)'
+                      }
+                      disabled={isLoading || isAnalyzingGpx}
+                      style={{
+                        flex: 1,
+                        resize: 'none',
+                        minHeight: 38,
+                        maxHeight: 120,
+                        background: 'var(--color-bg-main)',
+                        border: '1px solid var(--color-border-strong)',
+                        borderRadius: 6,
+                        padding: '8px 12px',
+                        color: 'var(--color-text-main)',
+                        fontSize: '0.84rem',
+                        lineHeight: 1.45,
+                        outline: 'none',
+                        fontFamily: 'var(--font-family)',
+                      }}
+                    />
+
+                    <button
+                      type="submit"
+                      disabled={(!inputQuery.trim() && !pendingImage) || isLoading || isAnalyzingGpx || isCompressingImage}
+                      aria-label="Gửi tin nhắn"
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 6,
+                        background:
+                          (inputQuery.trim() || pendingImage) && !isLoading ? 'var(--color-primary)' : 'var(--color-surface-elevated)',
+                        color:
+                          (inputQuery.trim() || pendingImage) && !isLoading ? 'var(--color-on-primary)' : 'var(--color-text-dim)',
+                        border: (inputQuery.trim() || pendingImage) && !isLoading ? 'none' : '1px solid var(--color-border)',
+                        cursor: (inputQuery.trim() || pendingImage) && !isLoading ? 'pointer' : 'not-allowed',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <IconSend size={15} />
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.67rem', color: 'var(--color-text-dim)', padding: '0 2px' }}>
+                    <span>Enter gửi · Shift+Enter xuống dòng · Kéo thả ảnh hoặc .GPX</span>
+                    <span
+                      style={{
+                        fontVariantNumeric: 'tabular-nums',
+                        color: inputQuery.length > MAX_INPUT_CHARS - 150 ? 'var(--color-error-text, var(--color-error))' : 'var(--color-text-dim)',
+                      }}
+                    >
+                      {inputQuery.length}/{MAX_INPUT_CHARS}
+                    </span>
+                  </div>
+                </form>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
     </>,
     document.body
   );

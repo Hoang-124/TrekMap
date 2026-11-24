@@ -1,65 +1,81 @@
 import { Response } from 'express';
-import { Types } from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { NotificationModel, NotificationCategory } from '../models/Notification.js';
 import { UserModel } from '../models/User.js';
+import { isValidObjectId } from '../utils/resolveTrail.js';
 
-// Helper to build recipient matching query
+const VALID_CATEGORIES = new Set<string>(['safety', 'moderation', 'social', 'system']);
+
 const getRecipientQuery = (userId: string) => {
-  const isMongoId = Types.ObjectId.isValid(userId);
-  if (isMongoId) {
+  if (isValidObjectId(userId)) {
     return {
-      $or: [
-        { recipient: userId },
-        { recipient: new Types.ObjectId(userId) },
-        { recipient: String(userId) },
-      ],
+      $or: [{ recipient: userId }, { recipient: new Types.ObjectId(userId) }],
     };
   }
-  return {
-    $or: [{ recipient: userId }, { recipient: String(userId) }],
-  };
+  return { recipient: String(userId) };
 };
 
-// GET /api/notifications - Get user notifications with optional category filtering & breakdown counts
+// GET /api/notifications - Get user notifications with consolidated unread breakdown aggregation
 export const getNotifications = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Bạn cần đăng nhập để xem thông báo.' });
     }
+    if (mongoose.connection.readyState !== 1) {
+      return res.json({
+        success: true,
+        data: [],
+        totalCount: 0,
+        unreadCount: 0,
+        categoryCounts: { all: 0, safety: 0, moderation: 0, social: 0, system: 0 },
+      });
+    }
 
     const { category, limit = '50', page = '1' } = req.query;
     const recipientFilter = getRecipientQuery(userId);
 
     const filter: any = { ...recipientFilter };
-    if (category && category !== 'all') {
+    if (typeof category === 'string' && VALID_CATEGORIES.has(category)) {
       filter.category = category as NotificationCategory;
     }
 
-    const pageSize = Math.min(Math.max(parseInt(limit as string, 10) || 20, 1), 100);
-    const pageNum = Math.max(parseInt(page as string, 10) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(String(limit), 10) || 20, 1), 100);
+    const pageNum = Math.max(parseInt(String(page), 10) || 1, 1);
     const skip = (pageNum - 1) * pageSize;
 
-    const [notifications, totalCount, unreadCount, safetyCount, moderationCount, socialCount, systemCount] =
-      await Promise.all([
-        NotificationModel.find(filter as any)
-          .sort({ createdAt: -1 })
-          .skip(skip)
-          .limit(pageSize)
-          .lean()
-          .exec(),
-        NotificationModel.countDocuments(filter as any),
-        NotificationModel.countDocuments({ ...recipientFilter, isRead: false } as any),
-        NotificationModel.countDocuments({ ...recipientFilter, category: 'safety', isRead: false } as any),
-        NotificationModel.countDocuments({ ...recipientFilter, category: 'moderation', isRead: false } as any),
-        NotificationModel.countDocuments({ ...recipientFilter, category: 'social', isRead: false } as any),
-        NotificationModel.countDocuments({ ...recipientFilter, category: 'system', isRead: false } as any),
-      ]);
+    const [notifications, totalCount, unreadByCategory] = await Promise.all([
+      NotificationModel.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(pageSize)
+        .lean()
+        .exec(),
+      NotificationModel.countDocuments(filter),
+      NotificationModel.aggregate([
+        { $match: { ...recipientFilter, isRead: false } },
+        { $group: { _id: '$category', count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    const categoryMap: Record<string, number> = {
+      safety: 0,
+      moderation: 0,
+      social: 0,
+      system: 0,
+    };
+    let unreadCount = 0;
+    for (const row of unreadByCategory) {
+      if (row._id && row._id in categoryMap) {
+        categoryMap[row._id] = row.count;
+      }
+      unreadCount += row.count;
+    }
 
     const userSenderIds = (notifications || [])
       .map((n: any) => n.sender?.id)
-      .filter((id: any) => id && id !== 'system' && Types.ObjectId.isValid(id));
+      .filter((id: any) => id && id !== 'system' && isValidObjectId(id));
 
     if (userSenderIds.length > 0) {
       try {
@@ -73,12 +89,12 @@ export const getNotifications = async (req: AuthRequest, res: Response) => {
             const live = senderMap.get(n.sender.id);
             if (!n.sender) n.sender = {};
             n.sender.name = live.fullName || n.sender.name;
-            if (live.avatarUrl) {
-              n.sender.avatarUrl = live.avatarUrl;
-            }
+            if (live.avatarUrl) n.sender.avatarUrl = live.avatarUrl;
           }
         });
-      } catch (e) {}
+      } catch {
+        // Ignore enrichment errors
+      }
     }
 
     return res.json({
@@ -88,10 +104,10 @@ export const getNotifications = async (req: AuthRequest, res: Response) => {
       unreadCount,
       categoryCounts: {
         all: unreadCount,
-        safety: safetyCount,
-        moderation: moderationCount,
-        social: socialCount,
-        system: systemCount,
+        safety: categoryMap.safety,
+        moderation: categoryMap.moderation,
+        social: categoryMap.social,
+        system: categoryMap.system,
       },
     });
   } catch (err) {
@@ -107,10 +123,16 @@ export const markNotificationRead = async (req: AuthRequest, res: Response) => {
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Bạn cần đăng nhập.' });
     }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
 
     const { id } = req.params;
-    const recipientFilter = getRecipientQuery(userId);
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: 'Mã thông báo không hợp lệ.' });
+    }
 
+    const recipientFilter = getRecipientQuery(userId);
     const updated = await NotificationModel.findOneAndUpdate(
       { _id: id, ...recipientFilter } as any,
       { $set: { isRead: true } },
@@ -122,7 +144,6 @@ export const markNotificationRead = async (req: AuthRequest, res: Response) => {
     }
 
     const unreadCount = await NotificationModel.countDocuments({ ...recipientFilter, isRead: false } as any);
-
     return res.json({ success: true, message: 'Đã đánh dấu đã đọc.', unreadCount, data: updated });
   } catch (err) {
     console.error('[Mark Notification Read Error]:', err);
@@ -137,17 +158,19 @@ export const markAllNotificationsRead = async (req: AuthRequest, res: Response) 
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Bạn cần đăng nhập.' });
     }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
 
     const { category } = req.body || {};
     const recipientFilter = getRecipientQuery(userId);
 
     const filter: any = { ...recipientFilter, isRead: false };
-    if (category && category !== 'all') {
+    if (typeof category === 'string' && VALID_CATEGORIES.has(category)) {
       filter.category = category;
     }
 
-    await NotificationModel.updateMany(filter as any, { $set: { isRead: true } });
-
+    await NotificationModel.updateMany(filter, { $set: { isRead: true } });
     const unreadCount = await NotificationModel.countDocuments({ ...recipientFilter, isRead: false } as any);
 
     return res.json({ success: true, message: 'Đã đánh dấu tất cả là đã đọc.', unreadCount });
@@ -164,14 +187,22 @@ export const deleteNotification = async (req: AuthRequest, res: Response) => {
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Bạn cần đăng nhập.' });
     }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
 
     const { id } = req.params;
-    const recipientFilter = getRecipientQuery(userId);
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: 'Mã thông báo không hợp lệ.' });
+    }
 
-    await NotificationModel.findOneAndDelete({ _id: id, ...recipientFilter } as any);
+    const recipientFilter = getRecipientQuery(userId);
+    const deleted = await NotificationModel.findOneAndDelete({ _id: id, ...recipientFilter } as any);
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy thông báo.' });
+    }
 
     const unreadCount = await NotificationModel.countDocuments({ ...recipientFilter, isRead: false } as any);
-
     return res.json({ success: true, message: 'Đã xóa thông báo.', unreadCount });
   } catch (err) {
     console.error('[Delete Notification Error]:', err);
@@ -186,6 +217,9 @@ export const clearReadNotifications = async (req: AuthRequest, res: Response) =>
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Bạn cần đăng nhập.' });
     }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
 
     const recipientFilter = getRecipientQuery(userId);
     await NotificationModel.deleteMany({ ...recipientFilter, isRead: true } as any);
@@ -196,4 +230,3 @@ export const clearReadNotifications = async (req: AuthRequest, res: Response) =>
     return res.status(500).json({ success: false, message: 'Lỗi khi xóa thông báo.' });
   }
 };
-

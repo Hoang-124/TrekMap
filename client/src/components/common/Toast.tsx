@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   IconCheckCircle,
   IconAlertTriangle,
@@ -22,21 +23,27 @@ export const Toast: React.FC<ToastProps> = ({
   onClose,
   duration = 3800,
 }) => {
-  const [isMounted, setIsMounted] = useState(false);
-  const [isExiting, setIsExiting] = useState(false);
-  const [isHovered, setIsHovered] = useState(false);
+  const toastKey = isOpen ? `${message}::${type}` : '';
+  const [exitingKey, setExitingKey] = useState<string | null>(null);
+  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
+
+  const isExiting = Boolean(toastKey && exitingKey === toastKey);
+  const isHovered = Boolean(toastKey && hoveredKey === toastKey);
 
   const remainingRef = useRef(duration);
-  const startTimeRef = useRef<number>(Date.now());
+  const startTimeRef = useRef<number>(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   // Trigger smooth exit bounce transition before unmounting
   const triggerClose = useCallback(() => {
     if (exitTimerRef.current) return;
-    setIsExiting(true);
+    setExitingKey(toastKey || null);
 
     if (timerRef.current) {
       clearTimeout(timerRef.current);
@@ -44,19 +51,16 @@ export const Toast: React.FC<ToastProps> = ({
     }
 
     exitTimerRef.current = setTimeout(() => {
-      setIsMounted(false);
-      setIsExiting(false);
+      setExitingKey(null);
+      setHoveredKey(null);
       exitTimerRef.current = null;
       onCloseRef.current();
     }, 260); // 260ms matches @keyframes toastSpringOut 0.28s
-  }, []);
+  }, [toastKey]);
 
   // Handle open / message change
   useEffect(() => {
     if (isOpen) {
-      setIsMounted(true);
-      setIsExiting(false);
-      setIsHovered(false);
       remainingRef.current = duration;
       startTimeRef.current = Date.now();
 
@@ -70,8 +74,6 @@ export const Toast: React.FC<ToastProps> = ({
         triggerClose();
       }, duration);
     } else {
-      setIsMounted(false);
-      setIsExiting(false);
       if (timerRef.current) {
         clearTimeout(timerRef.current);
         timerRef.current = null;
@@ -90,7 +92,7 @@ export const Toast: React.FC<ToastProps> = ({
 
   // Pause on hover
   const handleMouseEnter = () => {
-    setIsHovered(true);
+    setHoveredKey(toastKey || null);
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
@@ -101,7 +103,7 @@ export const Toast: React.FC<ToastProps> = ({
 
   // Resume on leave
   const handleMouseLeave = () => {
-    setIsHovered(false);
+    setHoveredKey(null);
     startTimeRef.current = Date.now();
     if (timerRef.current) clearTimeout(timerRef.current);
     if (!exitTimerRef.current) {
@@ -111,52 +113,47 @@ export const Toast: React.FC<ToastProps> = ({
     }
   };
 
-  if (!isMounted && !isOpen) return null;
+  if (!isOpen) return null;
 
   // Type configuration with design tokens & pure SVG icons
   const typeConfig = {
     success: {
       accentColor: 'var(--color-primary)',
-      bgGlow: 'rgba(74, 222, 128, 0.15)',
-      borderColor: 'rgba(74, 222, 128, 0.4)',
-      shadowGlow: 'rgba(74, 222, 128, 0.25)',
+      bgTint: 'color-mix(in srgb, var(--color-primary) 13%, transparent)',
+      borderColor: 'color-mix(in srgb, var(--color-primary) 36%, transparent)',
       title: 'Thành Công',
-      icon: <IconCheckCircle size={20} color="var(--color-primary)" />,
+      icon: <IconCheckCircle size={19} color="var(--color-primary)" />,
     },
     error: {
       accentColor: 'var(--color-error)',
-      bgGlow: 'rgba(239, 68, 68, 0.15)',
-      borderColor: 'rgba(239, 68, 68, 0.4)',
-      shadowGlow: 'rgba(239, 68, 68, 0.28)',
+      bgTint: 'color-mix(in srgb, var(--color-error) 13%, transparent)',
+      borderColor: 'color-mix(in srgb, var(--color-error) 36%, transparent)',
       title: 'Thông Báo Lỗi',
-      icon: <IconAlertTriangle size={20} color="var(--color-error)" />,
+      icon: <IconAlertTriangle size={19} color="var(--color-error)" />,
     },
     info: {
       accentColor: 'var(--color-sky)',
-      bgGlow: 'rgba(56, 189, 248, 0.15)',
-      borderColor: 'rgba(56, 189, 248, 0.4)',
-      shadowGlow: 'rgba(56, 189, 248, 0.25)',
+      bgTint: 'color-mix(in srgb, var(--color-sky) 13%, transparent)',
+      borderColor: 'color-mix(in srgb, var(--color-sky) 36%, transparent)',
       title: 'Thông Tin',
-      icon: <IconCompass size={20} color="var(--color-sky)" />,
+      icon: <IconCompass size={19} color="var(--color-sky)" />,
     },
     warning: {
       accentColor: 'var(--color-earth)',
-      bgGlow: 'rgba(249, 115, 22, 0.15)',
-      borderColor: 'rgba(249, 115, 22, 0.4)',
-      shadowGlow: 'rgba(249, 115, 22, 0.25)',
+      bgTint: 'color-mix(in srgb, var(--color-earth) 13%, transparent)',
+      borderColor: 'color-mix(in srgb, var(--color-earth) 36%, transparent)',
       title: 'Cảnh Báo',
-      icon: <IconShieldAlert size={20} color="var(--color-earth)" />,
+      icon: <IconShieldAlert size={19} color="var(--color-earth)" />,
     },
   }[type] || {
     accentColor: 'var(--color-primary)',
-    bgGlow: 'rgba(74, 222, 128, 0.15)',
-    borderColor: 'rgba(74, 222, 128, 0.4)',
-    shadowGlow: 'rgba(74, 222, 128, 0.25)',
+    bgTint: 'color-mix(in srgb, var(--color-primary) 13%, transparent)',
+    borderColor: 'color-mix(in srgb, var(--color-primary) 36%, transparent)',
     title: 'Thông Báo',
-    icon: <IconCheckCircle size={20} color="var(--color-primary)" />,
+    icon: <IconCheckCircle size={19} color="var(--color-primary)" />,
   };
 
-  return (
+  const toastNode = (
     <aside
       aria-live="polite"
       aria-atomic="true"
@@ -165,21 +162,21 @@ export const Toast: React.FC<ToastProps> = ({
       className={`toast-card-responsive ${isExiting ? 'toast-spring-out' : 'toast-spring-in'}`}
       style={{
         position: 'fixed',
-        top: 74, // Sát ngay dưới sticky header (chiều cao header ~64px + 10px buffer tinh tế)
+        top: 74,
         right: 24,
-        zIndex: 99999,
+        zIndex: 'var(--z-toast, 5000)',
         display: 'flex',
         alignItems: 'center',
         gap: 14,
-        background: 'var(--color-bg-glass)',
-        border: '1px solid var(--color-border)',
+        background: 'var(--color-bg-card)',
+        border: '1px solid var(--color-border-strong)',
         borderLeft: `4px solid ${typeConfig.accentColor}`,
-        borderRadius: 'var(--radius-lg, 14px)',
+        borderRadius: 6,
         padding: '12px 16px 14px 14px',
         color: 'var(--color-text-main)',
-        boxShadow: `var(--shadow-card), 0 12px 32px rgba(0, 0, 0, 0.35), 0 0 24px ${typeConfig.shadowGlow}`,
-        backdropFilter: 'blur(24px)',
-        WebkitBackdropFilter: 'blur(24px)',
+        boxShadow: 'var(--shadow-3d)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
         maxWidth: 440,
         minWidth: 300,
         overflow: 'hidden',
@@ -191,10 +188,10 @@ export const Toast: React.FC<ToastProps> = ({
       <div
         className="toast-icon-pop"
         style={{
-          width: 36,
-          height: 36,
-          borderRadius: 10,
-          background: typeConfig.bgGlow,
+          width: 34,
+          height: 34,
+          borderRadius: 4,
+          background: typeConfig.bgTint,
           border: `1px solid ${typeConfig.borderColor}`,
           display: 'flex',
           alignItems: 'center',
@@ -247,42 +244,47 @@ export const Toast: React.FC<ToastProps> = ({
           cursor: 'pointer',
           color: 'var(--color-text-dim)',
           padding: 6,
-          borderRadius: 8,
+          borderRadius: 4,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           flexShrink: 0,
           position: 'relative',
           zIndex: 10,
-          transition: 'all 0.18s ease',
+          transition: 'color 0.18s ease, background-color 0.18s ease, transform 0.18s var(--ease-out-expo)',
         }}
         onMouseEnter={(e) => {
           e.currentTarget.style.color = 'var(--color-text-main)';
-          e.currentTarget.style.background = 'var(--color-border)';
-          e.currentTarget.style.transform = 'scale(1.1)';
+          e.currentTarget.style.background = 'var(--color-surface-elevated)';
         }}
         onMouseLeave={(e) => {
           e.currentTarget.style.color = 'var(--color-text-dim)';
           e.currentTarget.style.background = 'transparent';
-          e.currentTarget.style.transform = 'scale(1)';
         }}
       >
         <IconX size={16} color="currentColor" />
       </button>
 
-      {/* Live Animated Countdown Progress Bar at bottom */}
+      {/* Live Animated Countdown Progress Bar at bottom (100% GPU scaleX) */}
       <div
+        key={`${message}-${type}`}
         style={{
           position: 'absolute',
           bottom: 0,
           left: 0,
+          width: '100%',
           height: 3,
           background: typeConfig.accentColor,
+          transformOrigin: 'left center',
           animation: `toastProgressCountdown ${duration}ms linear forwards`,
           animationPlayState: isHovered ? 'paused' : 'running',
-          borderRadius: '0 0 var(--radius-lg, 14px) var(--radius-lg, 14px)',
         }}
       />
     </aside>
   );
+
+  if (typeof document !== 'undefined') {
+    return createPortal(toastNode, document.body);
+  }
+  return toastNode;
 };

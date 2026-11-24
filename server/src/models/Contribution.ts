@@ -4,7 +4,7 @@ export interface IContribution extends Document {
   id: string;
   name: string;
   altNames?: string[];
-  region: string;
+  region: 'Miền Bắc' | 'Miền Trung' | 'Miền Nam';
   province: string;
   district: string;
   hamlet?: string;
@@ -36,7 +36,7 @@ export interface IContribution extends Document {
   waypoints?: Array<{
     id: string;
     name: string;
-    type: string;
+    type: 'campsite' | 'water' | 'viewpoint' | 'danger' | 'charging' | 'rest';
     description: string;
     elevationM?: number;
     lat: number;
@@ -50,8 +50,8 @@ export interface IContribution extends Document {
   bestMonths?: number[];
   avoidMonths?: number[];
   status: 'pending' | 'approved' | 'rejected';
-  createdAt: string;
-  updatedAt?: string | Date;
+  createdAt: Date;
+  updatedAt: Date;
   rating?: number;
   reviewCount?: number;
 }
@@ -59,23 +59,23 @@ export interface IContribution extends Document {
 const ContributionSchema = new Schema<IContribution>(
   {
     id: { type: String, required: true, unique: true },
-    name: { type: String, required: true },
+    name: { type: String, required: true, trim: true },
     altNames: [{ type: String }],
-    region: { type: String, required: true },
-    province: { type: String, required: true },
-    district: { type: String, required: true },
+    region: { type: String, enum: ['Miền Bắc', 'Miền Trung', 'Miền Nam'], required: true },
+    province: { type: String, required: true, trim: true },
+    district: { type: String, required: true, trim: true },
     hamlet: { type: String, default: '' },
-    distanceKm: { type: Number, required: true },
-    elevationGainM: { type: Number, required: true },
-    maxAltitudeM: { type: Number, required: true },
-    difficultyLevel: { type: Number, required: true },
+    distanceKm: { type: Number, required: true, min: 0.1 },
+    elevationGainM: { type: Number, required: true, min: 0 },
+    maxAltitudeM: { type: Number, required: true, min: 0 },
+    difficultyLevel: { type: Number, required: true, min: 1, max: 5 },
     difficultyNote: { type: String, default: '' },
-    durationDays: { type: Number, default: 1 },
+    durationDays: { type: Number, default: 1, min: 1 },
     durationHoursNote: { type: String, required: true },
-    startLat: { type: Number, required: true },
-    startLng: { type: Number, required: true },
-    endLat: { type: Number, required: true },
-    endLng: { type: Number, required: true },
+    startLat: { type: Number, required: true, min: -90, max: 90 },
+    startLng: { type: Number, required: true, min: -180, max: 180 },
+    endLat: { type: Number, required: true, min: -90, max: 90 },
+    endLng: { type: Number, required: true, min: -180, max: 180 },
     description: { type: String, required: true },
     transportationInfo: { type: String, default: '' },
     coverImage: { type: String, default: '' },
@@ -94,11 +94,15 @@ const ContributionSchema = new Schema<IContribution>(
       {
         id: String,
         name: String,
-        type: { type: String, default: 'viewpoint' },
+        type: {
+          type: String,
+          enum: ['campsite', 'water', 'viewpoint', 'danger', 'charging', 'rest'],
+          default: 'viewpoint',
+        },
         description: String,
         elevationM: Number,
-        lat: Number,
-        lng: Number,
+        lat: { type: Number, min: -90, max: 90 },
+        lng: { type: Number, min: -180, max: 180 },
       },
     ],
     authorEmail: { type: String, default: '' },
@@ -108,8 +112,9 @@ const ContributionSchema = new Schema<IContribution>(
     gpxTrack: { type: [[Number]], default: [] },
     bestMonths: { type: [Number], default: [] },
     avoidMonths: { type: [Number], default: [] },
-    status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending', index: true },
-    createdAt: { type: String, default: () => new Date().toLocaleDateString('vi-VN') },
+    status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+    rating: { type: Number, default: 0, min: 0, max: 5 },
+    reviewCount: { type: Number, default: 0, min: 0 },
   },
   { timestamps: true }
 );

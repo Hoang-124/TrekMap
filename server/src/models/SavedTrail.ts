@@ -1,17 +1,24 @@
-import { Schema, model, Document } from 'mongoose';
+import { Schema, model, Document, Types } from 'mongoose';
 
 export interface ISavedTrail extends Document {
-  userId: Schema.Types.ObjectId;
-  trailId: Schema.Types.ObjectId;
+  userId: Types.ObjectId;
+  trailId: Types.ObjectId;
   savedOffline: boolean;
+  collectionName?: string;
+  personalNote?: string;
+  plannedMonth?: number | null;
   createdAt: Date;
+  updatedAt: Date;
 }
 
 const savedTrailSchema = new Schema<ISavedTrail>(
   {
-    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     trailId: { type: Schema.Types.ObjectId, ref: 'Trail', required: true, index: true },
     savedOffline: { type: Boolean, default: false },
+    collectionName: { type: String, trim: true, maxlength: 40, default: 'Muốn đi' },
+    personalNote: { type: String, trim: true, maxlength: 500, default: '' },
+    plannedMonth: { type: Number, min: 1, max: 12, default: null },
   },
   { timestamps: true }
 );

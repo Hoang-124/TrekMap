@@ -2,9 +2,9 @@ import express, { Request, Response } from 'express';
 import { createServer } from 'http';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { connectDB } from './config/db.js';
-import { seedAll13Collections } from './utils/seedDatabase.js';
+import mongoose from 'mongoose';
 import { initSocketServer } from './config/socket.js';
+import { getAllowedOrigins } from './config/cors.js';
 
 import authRoutes from './routes/auth.routes.js';
 import forumRoutes from './routes/forum.routes.js';
@@ -21,10 +21,20 @@ import trailConditionRoutes from './routes/trailCondition.routes.js';
 import tripReportRoutes from './routes/tripReport.routes.js';
 import tripRoutes from './routes/trip.routes.js';
 import aiRoutes from './routes/ai.routes.js';
+import checkinRoutes from './routes/checkin.routes.js';
+import safetyTimerRoutes from './routes/safetyTimer.routes.js';
+import challengeRoutes from './routes/challenge.routes.js';
+import trainingRoutes from './routes/training.routes.js';
+import directoryRoutes from './routes/directory.routes.js';
+import logbookRoutes from './routes/logbook.routes.js';
+import customRouteRoutes from './routes/customRoute.routes.js';
+import gearPackRoutes from './routes/gearPack.routes.js';
+import liveBeaconRoutes from './routes/liveBeacon.routes.js';
+import weatherAlertRoutes from './routes/weatherAlert.routes.js';
+import trailPoiRoutes, { analyticsRoutes } from './routes/trailPoi.routes.js';
 
-
-import mongoose from 'mongoose';
-import { globalRateLimiter, authRateLimiter, uploadRateLimiter } from './middleware/rateLimiter.middleware.js';
+import { globalRateLimiter } from './middleware/rateLimiter.middleware.js';
+import { gzipCompression } from './middleware/compression.middleware.js';
 import { errorHandler } from './middleware/errorHandler.middleware.js';
 
 dotenv.config();
@@ -32,54 +42,73 @@ dotenv.config();
 export const app = express();
 export const httpServer = createServer(app);
 
-// Trust reverse proxy headers (e.g. X-Forwarded-For) for rate limiting & security
-app.set('trust proxy', true);
+// Hide framework fingerprint
+app.disable('x-powered-by');
 
-// Initialize single real-time Socket.io server instance
+// Configure reverse proxy trust explicitly via env (never blind `true`)
+const trustProxyEnv = process.env.TRUST_PROXY;
+if (trustProxyEnv) {
+  const parsed = Number(trustProxyEnv);
+  app.set('trust proxy', Number.isFinite(parsed) ? parsed : trustProxyEnv === 'loopback' ? 'loopback' : 1);
+} else {
+  app.set('trust proxy', false);
+}
+
+// Initialize real-time Socket.io server instance
 initSocketServer(httpServer);
-
-// Connect to MongoDB Database & Seed ALL 13 Collections
-connectDB().then(async () => {
-  await seedAll13Collections();
-});
 
 // Security Headers Middleware
 app.use((_req: Request, res: Response, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(self)');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'");
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   next();
 });
 
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:4173',
-  'http://127.0.0.1:5173',
-  'http://127.0.0.1:4173',
-  'https://trekmap.vn',
-  'https://www.trekmap.vn',
-];
+const allowedOrigins = getAllowedOrigins();
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
       if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
-      return callback(new Error('Không được phép truy cập từ origin: ' + origin), false);
+      return callback(null, false);
     },
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     credentials: true,
   })
 );
-app.use(express.json({ limit: '10mb' }));
+
+// Scoped JSON body limits: 10mb ONLY for base64 image upload / profile avatar / GPX / AI vision & GPX routes; 512kb default for all other APIs
+const largeJsonParser = express.json({ limit: '10mb' });
+const defaultJsonParser = express.json({ limit: '512kb' });
+app.use((req, res, next) => {
+  const p = req.path || '';
+  if (
+    p === '/api/upload' ||
+    p === '/api/auth/profile' ||
+    p.startsWith('/api/custom-routes') ||
+    p === '/api/ai/analyze-image' ||
+    p === '/api/ai/analyze-gpx'
+  ) {
+    return largeJsonParser(req, res, next);
+  }
+  return defaultJsonParser(req, res, next);
+});
+
+app.use(gzipCompression);
 
 // Global Rate Limiter
 app.use(globalRateLimiter);
 
-// Comprehensive Health Check Endpoints
+// Comprehensive Health Check Endpoints (returns 503 when DB degraded, zero internal memory leak)
 const healthHandler = (_req: Request, res: Response) => {
   const dbState = mongoose.connection.readyState;
   const dbStatusMap: Record<number, string> = {
@@ -88,14 +117,13 @@ const healthHandler = (_req: Request, res: Response) => {
     2: 'Connecting',
     3: 'Disconnecting',
   };
+  const isHealthy = dbState === 1;
 
-  res.json({
-    app: 'TrekMap API Server',
-    status: dbState === 1 ? 'Online' : 'Degraded',
-    version: '2.5.0 (Socket.io Real-time Enabled)',
+  res.status(isHealthy ? 200 : 503).json({
+    app: 'LOST API Server',
+    status: isHealthy ? 'Online' : 'Degraded',
+    version: '3.0.0 (Hardened Security, Real-time Socket.IO & Expedition Hubs)',
     database: dbStatusMap[dbState] || 'Unknown',
-    uptimeSeconds: Math.floor(process.uptime()),
-    memoryUsageMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
     timestamp: new Date().toISOString(),
   });
 };
@@ -103,10 +131,11 @@ const healthHandler = (_req: Request, res: Response) => {
 app.get('/', healthHandler);
 app.get('/api/health', healthHandler);
 
-// Modular Express Routers with Specific Protections
-app.use('/api/auth', authRateLimiter, authRoutes);
+// Modular Express Routers
+app.use('/api/auth', authRoutes);
 app.use('/api/forum', forumRoutes);
 app.use('/api/forum', commentRoutes);
+app.use('/api', commentRoutes);
 app.use('/api', uploadRoutes);
 app.use('/api', contributionRoutes);
 app.use('/api', messageRoutes);
@@ -118,10 +147,28 @@ app.use('/api', followRoutes);
 app.use('/api', trailConditionRoutes);
 app.use('/api', tripReportRoutes);
 app.use('/api', tripRoutes);
+app.use('/api', checkinRoutes);
+app.use('/api', safetyTimerRoutes);
+
+// New Flagship LOST Expansion Routers
+app.use('/api/challenges', challengeRoutes);
+app.use('/api/training-plans', trainingRoutes);
+app.use('/api/directory', directoryRoutes);
+app.use('/api/logbook', logbookRoutes);
+app.use('/api/custom-routes', customRouteRoutes);
+app.use('/api/gear-packs', gearPackRoutes);
+app.use('/api/live-beacons', liveBeaconRoutes);
+app.use('/api/weather-alerts', weatherAlertRoutes);
+app.use('/api/trail-pois', trailPoiRoutes);
+app.use('/api/analytics', analyticsRoutes);
+
+// AI Assistant Router (untouched mount)
 app.use('/api/ai', aiRoutes);
 
+// 404 JSON Catch-All for unknown API routes
+app.use('/api', (_req: Request, res: Response) => {
+  res.status(404).json({ success: false, message: 'Không tìm thấy endpoint API yêu cầu.' });
+});
+
 // Global Error Handler Middleware (Must be last)
-
 app.use(errorHandler);
-
-

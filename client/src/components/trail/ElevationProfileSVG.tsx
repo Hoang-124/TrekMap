@@ -1,35 +1,229 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useId } from 'react';
 import type { Waypoint } from '../../types.js';
+import { haversineMeters } from '../../utils/geoMath.js';
 import { IconMountain } from '../common/SvgIcons.js';
 
+interface ElevationSamplePoint {
+  lat: number;
+  lng: number;
+  elevationM: number;
+  distanceKm: number;
+  slopePercent: number;
+}
+
 interface ElevationProfileSVGProps {
+  trailId?: string;
   gpxTrack: [number, number][];
   elevationGainM: number;
   maxAltitudeM: number;
   distanceKm?: number;
   waypoints?: Waypoint[];
   height?: number;
+  onHoverCoordinate?: (coord: [number, number] | null) => void;
+}
+
+function formatSlopeLabel(slopePercent: number): string {
+  const abs = Math.abs(slopePercent);
+  if (abs < 4) return `Bằng phẳng (${slopePercent > 0 ? '+' : ''}${slopePercent}%)`;
+  if (slopePercent >= 25) return `Dốc rất gắt +${slopePercent}%`;
+  if (slopePercent >= 12) return `Leo dốc +${slopePercent}%`;
+  if (slopePercent > 0) return `Dốc thoai thoải +${slopePercent}%`;
+  if (slopePercent <= -25) return `Đổ dốc gắt ${slopePercent}%`;
+  return `Đổ dốc ${slopePercent}%`;
+}
+
+function haversineDistSqApprox(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const dLat = lat1 - lat2;
+  const cosLat = Math.cos(((lat1 + lat2) * 0.5 * Math.PI) / 180);
+  const dLng = (lng1 - lng2) * cosLat;
+  return dLat * dLat + dLng * dLng;
 }
 
 export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
+  trailId,
   gpxTrack,
   elevationGainM,
   maxAltitudeM,
   distanceKm = 10,
   waypoints = [],
-  height = 160,
+  height = 170,
+  onHoverCoordinate,
 }) => {
+  const uniqueId = useId();
+  const gradientId = `elevation-grad-${uniqueId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
+
+  const [trackedTrailId, setTrackedTrailId] = useState<string | undefined>(trailId);
+  const [demPoints, setDemPoints] = useState<ElevationSamplePoint[] | null>(null);
+  const [demSource, setDemSource] = useState<'open-meteo-dem' | 'interpolated-fallback' | 'local'>('local');
   const [hoveredPoint, setHoveredPoint] = useState<{
     x: number;
     y: number;
     alt: number;
     km: number;
     slope: string;
+    slopePercent: number;
+    lat: number;
+    lng: number;
   } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
 
-  if (!gpxTrack || gpxTrack.length < 2) {
+  // Immediately clear stale DEM curve when trailId changes (prevents Trail A curve lingering on Trail B)
+  if (trackedTrailId !== trailId) {
+    setTrackedTrailId(trailId);
+    setDemPoints(null);
+    setDemSource('local');
+    setHoveredPoint(null);
+  }
+
+  useEffect(() => {
+    if (!trailId) return;
+    const controller = new AbortController();
+    let cancelled = false;
+    fetch(`/api/trails/${encodeURIComponent(trailId)}/elevation`, { signal: controller.signal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (cancelled || controller.signal.aborted) return;
+        if (json?.success && Array.isArray(json.data?.points) && json.data.points.length >= 2) {
+          setDemPoints(json.data.points);
+          setDemSource(json.data.source === 'open-meteo-dem' ? 'open-meteo-dem' : 'interpolated-fallback');
+        }
+      })
+      .catch(() => {
+        // Offline / aborted -> keep local geometric fallback cleanly
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [trailId]);
+
+  const svgWidth = 520;
+  const paddingX = 20;
+  const paddingTop = 28;
+  const paddingBottom = 24;
+  const drawWidth = svgWidth - paddingX * 2;
+  const drawHeight = height - paddingTop - paddingBottom;
+
+  const { points, minAlt, maxAlt, maxSlope } = useMemo(() => {
+    if (demPoints && demPoints.length >= 2) {
+      const alts = demPoints.map((p) => p.elevationM);
+      const minA = Math.min(...alts);
+      const maxA = Math.max(...alts, minA + 10);
+      const totalKm = Math.max(0.1, demPoints[demPoints.length - 1].distanceKm || distanceKm || 1);
+      let topSlope = 0;
+
+      const mapped = demPoints.map((p) => {
+        const progress = p.distanceKm / totalKm;
+        const x = paddingX + progress * drawWidth;
+        const yRatio = (p.elevationM - minA) / Math.max(1, maxA - minA);
+        const y = height - paddingBottom - yRatio * drawHeight;
+        if (Math.abs(p.slopePercent) > topSlope) topSlope = Math.abs(p.slopePercent);
+        return {
+          x,
+          y,
+          alt: p.elevationM,
+          km: Math.round(p.distanceKm * 10) / 10,
+          slope: formatSlopeLabel(p.slopePercent),
+          slopePercent: p.slopePercent,
+          lat: p.lat,
+          lng: p.lng,
+        };
+      });
+      return { points: mapped, minAlt: minA, maxAlt: maxA, maxSlope: Math.round(topSlope) };
+    }
+
+    if (!gpxTrack || gpxTrack.length < 2) {
+      return { points: [], minAlt: 0, maxAlt: maxAltitudeM, maxSlope: 0 };
+    }
+
+    const numPoints = Math.min(Math.max(gpxTrack.length, 12), 36);
+    const minA = Math.max(100, Math.round(maxAltitudeM - elevationGainM * 0.85));
+    const maxA = Math.max(maxAltitudeM, minA + 10);
+
+    // Detect whether track is a loop (start ~ end within 500m) vs point-to-point ascent to summit
+    const firstPt = gpxTrack[0];
+    const lastPt = gpxTrack[gpxTrack.length - 1];
+    const isLoopTrack =
+      Array.isArray(firstPt) &&
+      Array.isArray(lastPt) &&
+      haversineMeters(firstPt[0], firstPt[1], lastPt[0], lastPt[1]) <= 500;
+
+    const generated: Array<{
+      x: number;
+      y: number;
+      alt: number;
+      km: number;
+      slope: string;
+      slopePercent: number;
+      lat: number;
+      lng: number;
+    }> = [];
+
+    for (let i = 0; i < numPoints; i++) {
+      const progress = i / (numPoints - 1);
+      const trackIdx = Math.min(gpxTrack.length - 1, Math.round(progress * (gpxTrack.length - 1)));
+      const [lat, lng] = gpxTrack[trackIdx];
+      // Point-to-point tracks climb smoothly to summit instead of plunging back to valley
+      const curve = isLoopTrack ? Math.sin(progress * Math.PI) : Math.pow(progress, 0.85);
+      const alt = Math.round(minA + (maxA - minA) * curve);
+      const x = paddingX + progress * drawWidth;
+      const yRatio = (alt - minA) / Math.max(1, maxA - minA);
+      const y = height - paddingBottom - yRatio * drawHeight;
+      const km = Number((progress * distanceKm).toFixed(1));
+      const slopePercent =
+        i === 0
+          ? 0
+          : Math.round(((alt - generated[i - 1].alt) / Math.max(50, (distanceKm * 1000) / numPoints)) * 100);
+      generated.push({
+        x,
+        y,
+        alt,
+        km,
+        slope: formatSlopeLabel(slopePercent),
+        slopePercent,
+        lat,
+        lng,
+      });
+    }
+
+    const topSlope = generated.reduce((m, p) => Math.max(m, Math.abs(p.slopePercent)), 0);
+    return { points: generated, minAlt: minA, maxAlt: maxA, maxSlope: topSlope };
+  }, [demPoints, gpxTrack, elevationGainM, maxAltitudeM, distanceKm, drawWidth, drawHeight, height]);
+
+  // Project ALL waypoints onto nearest track coordinates & de-clutter horizontal label collisions
+  const projectedWaypoints = useMemo(() => {
+    if (points.length < 2 || !waypoints || waypoints.length === 0) return [];
+    const mapped = waypoints.map((wp, idx) => {
+      const hasValidCoords = Number.isFinite(wp.lat) && Number.isFinite(wp.lng) && (wp.lat !== 0 || wp.lng !== 0);
+      if (hasValidCoords) {
+        let nearestPt = points[0];
+        let bestDistSq = Infinity;
+        for (const p of points) {
+          const dSq = haversineDistSqApprox(wp.lat, wp.lng, p.lat, p.lng);
+          if (dSq < bestDistSq) {
+            bestDistSq = dSq;
+            nearestPt = p;
+          }
+        }
+        return { wp, pt: nearestPt };
+      }
+      const fallbackProgress = (idx + 1) / (waypoints.length + 1);
+      return { wp, pt: points[Math.floor(fallbackProgress * (points.length - 1))] };
+    });
+
+    // Sort left-to-right to suppress colliding text labels while keeping every waypoint marker visible
+    const sorted = [...mapped].sort((a, b) => a.pt.x - b.pt.x);
+    let lastLabeledX = -Infinity;
+    return sorted.map((entry) => {
+      const clampedX = Math.min(svgWidth - 52, Math.max(52, entry.pt.x));
+      const showLabel = clampedX - lastLabeledX >= 72;
+      if (showLabel) lastLabeledX = clampedX;
+      return { ...entry, clampedX, showLabel };
+    });
+  }, [points, waypoints, svgWidth]);
+
+  if (points.length < 2) {
     return (
       <div
         style={{
@@ -39,8 +233,8 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
           justifyContent: 'center',
           color: 'var(--color-text-dim)',
           fontSize: '0.85rem',
-          background: 'rgba(15, 24, 46, 0.4)',
-          borderRadius: 12,
+          background: 'var(--color-bg-main)',
+          borderRadius: 6,
           border: '1px dashed var(--color-border)',
         }}
       >
@@ -49,50 +243,7 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
     );
   }
 
-  const numPoints = Math.min(Math.max(gpxTrack.length, 12), 40);
-  const minAlt = Math.max(150, Math.round(maxAltitudeM - elevationGainM * 0.85));
-
-  const points: { x: number; y: number; alt: number; km: number; slope: string }[] = [];
-  const svgWidth = 500;
-  const paddingX = 20;
-  const paddingTop = 28;
-  const paddingBottom = 22;
-  const drawWidth = svgWidth - paddingX * 2;
-  const drawHeight = height - paddingTop - paddingBottom;
-
-  for (let i = 0; i < numPoints; i++) {
-    const progress = i / (numPoints - 1);
-    // Smooth natural mountain curve model
-    const primaryWave = Math.sin(progress * Math.PI);
-    const ridgeNoise = Math.sin(progress * Math.PI * 3) * 0.12 + Math.cos(progress * Math.PI * 5) * 0.04;
-    const combinedRatio = Math.max(0, Math.min(1, primaryWave * 0.82 + ridgeNoise + (i === 0 ? 0 : 0.05)));
-
-    const currentAlt =
-      i === 0
-        ? minAlt
-        : i === numPoints - 1
-        ? Math.round(minAlt + (maxAltitudeM - minAlt) * 0.4)
-        : Math.round(minAlt + (maxAltitudeM - minAlt) * combinedRatio);
-
-    const x = paddingX + progress * drawWidth;
-    const yRatio = (currentAlt - minAlt) / Math.max(1, maxAltitudeM - minAlt);
-    const y = height - paddingBottom - yRatio * drawHeight;
-    const km = Number((progress * distanceKm).toFixed(1));
-
-    // Slope calculation
-    let slope = 'Bằng phẳng';
-    if (i > 0 && i < numPoints - 1) {
-      if (progress > 0.3 && progress < 0.65) slope = 'Dốc gắt 24%';
-      else if (progress <= 0.3) slope = 'Dốc thoai thoải 12%';
-      else slope = 'Đổ dốc 18%';
-    }
-
-    points.push({ x, y, alt: currentAlt, km, slope });
-  }
-
-  // Smooth Bezier Curve Path Generator
   const createSmoothPath = (pts: typeof points) => {
-    if (pts.length < 2) return '';
     let d = `M ${pts[0].x} ${pts[0].y}`;
     for (let i = 0; i < pts.length - 1; i++) {
       const p0 = pts[i === 0 ? 0 : i - 1];
@@ -104,7 +255,6 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
       const cp1y = p1.y + (p2.y - p0.y) / 6;
       const cp2x = p2.x - (p3.x - p1.x) / 6;
       const cp2y = p2.y - (p3.y - p1.y) / 6;
-
       d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
     }
     return d;
@@ -112,28 +262,40 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
 
   const pathD = createSmoothPath(points);
   const areaD = `${pathD} L ${points[points.length - 1].x} ${height - paddingBottom} L ${points[0].x} ${height - paddingBottom} Z`;
-
   const peakPoint = points.reduce((prev, curr) => (curr.alt > prev.alt ? curr : prev), points[0]);
+  const clampedPeakLabelX = Math.min(svgWidth - 82, Math.max(82, peakPoint.x));
 
-  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const mouseX = ((e.clientX - rect.left) / rect.width) * svgWidth;
+  const scrubAtClientX = (svgEl: SVGSVGElement, clientX: number) => {
+    const rect = svgEl.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const svgX = ((clientX - rect.left) / rect.width) * svgWidth;
 
-    // Find nearest point
     let nearest = points[0];
     let minDist = Infinity;
     for (const p of points) {
-      const dist = Math.abs(p.x - mouseX);
+      const dist = Math.abs(p.x - svgX);
       if (dist < minDist) {
         minDist = dist;
         nearest = p;
       }
     }
     setHoveredPoint(nearest);
+    onHoverCoordinate?.([nearest.lat, nearest.lng]);
   };
 
-  const handleMouseLeave = () => {
+  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    scrubAtClientX(e.currentTarget, e.clientX);
+  };
+
+  const handleTouchScrub = (e: React.TouchEvent<SVGSVGElement>) => {
+    if (e.touches && e.touches.length > 0) {
+      scrubAtClientX(e.currentTarget, e.touches[0].clientX);
+    }
+  };
+
+  const handleScrubEnd = () => {
     setHoveredPoint(null);
+    onHoverCoordinate?.(null);
   };
 
   return (
@@ -142,43 +304,55 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
       style={{
         width: '100%',
         position: 'relative',
-        background: 'rgba(7, 13, 30, 0.65)',
+        background: 'var(--color-bg-main)',
         border: '1px solid var(--color-border)',
-        borderRadius: 14,
+        borderRadius: 6,
         padding: '14px 16px 10px 16px',
-        boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.05)',
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, flexWrap: 'wrap', gap: 6 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.8rem', fontWeight: 800, color: 'var(--color-primary)' }}>
           <IconMountain size={16} color="var(--color-primary)" />
-          <span>TRẮC DIỆN CAO ĐỘ (ELEVATION PROFILE)</span>
+          <span>TRẮC DIỆN CAO ĐỘ THỰC ĐỊA</span>
+          {demSource === 'open-meteo-dem' && (
+            <span
+              style={{
+                fontSize: '0.66rem',
+                padding: '2px 7px',
+                borderRadius: 4,
+                background: 'color-mix(in srgb, var(--color-primary) 14%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--color-primary) 35%, transparent)',
+                color: 'var(--color-primary)',
+                fontWeight: 700,
+              }}
+            >
+              DEM Thực Tế
+            </span>
+          )}
         </div>
         <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)' }}>
-          Rê chuột để xem chi tiết từng km
+          Chạm hoặc rê chuột để đồng bộ bản đồ · Dốc tối đa {maxSlope}%
         </div>
       </div>
 
       <div style={{ position: 'relative' }}>
         <svg
           viewBox={`0 0 ${svgWidth} ${height}`}
-          style={{ width: '100%', height: 'auto', overflow: 'visible', cursor: 'crosshair' }}
+          style={{ width: '100%', height: 'auto', overflow: 'visible', cursor: 'crosshair', touchAction: 'pan-y' }}
           onMouseMove={handleMouseMove}
-          onMouseLeave={handleMouseLeave}
+          onMouseLeave={handleScrubEnd}
+          onTouchStart={handleTouchScrub}
+          onTouchMove={handleTouchScrub}
+          onTouchEnd={handleScrubEnd}
         >
           <defs>
-            <linearGradient id="elevationGradMulti" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="var(--color-primary)" stopOpacity="0.55" />
-              <stop offset="50%" stopColor="var(--color-sky)" stopOpacity="0.25" />
+            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--color-primary)" stopOpacity="0.48" />
+              <stop offset="55%" stopColor="var(--color-sky)" stopOpacity="0.2" />
               <stop offset="100%" stopColor="var(--color-primary)" stopOpacity="0.0" />
             </linearGradient>
-            <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur stdDeviation="3" result="glow" />
-              <feComposite in="SourceGraphic" in2="glow" operator="over" />
-            </filter>
           </defs>
 
-          {/* Grid Lines */}
           <line
             x1={paddingX}
             y1={height - paddingBottom}
@@ -199,10 +373,7 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
             opacity={0.5}
           />
 
-          {/* Area Fill */}
-          <path d={areaD} fill="url(#elevationGradMulti)" />
-
-          {/* Smooth Contour Line */}
+          <path d={areaD} fill={`url(#${gradientId})`} />
           <path
             d={pathD}
             fill="none"
@@ -210,49 +381,49 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
             strokeWidth="3"
             strokeLinecap="round"
             strokeLinejoin="round"
-            style={{ filter: 'drop-shadow(0 0 6px rgba(74, 222, 128, 0.4))' }}
           />
 
-          {/* Peak Marker Dot & Label */}
+          {/* Peak Marker with Clamped Label Inside ViewBox */}
           <g>
             <circle cx={peakPoint.x} cy={peakPoint.y} r={5} fill="var(--color-sun)" />
             <circle cx={peakPoint.x} cy={peakPoint.y} r={9} fill="none" stroke="var(--color-sun)" strokeWidth="1.5" opacity={0.6} />
             <text
-              x={peakPoint.x}
-              y={peakPoint.y - 12}
+              x={clampedPeakLabelX}
+              y={Math.max(14, peakPoint.y - 12)}
               fill="var(--color-sun)"
               fontSize="11"
               fontWeight="900"
               textAnchor="middle"
-              style={{ filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.8))' }}
             >
-              Đỉnh: {peakPoint.alt}m
+              Đỉnh DEM: {peakPoint.alt.toLocaleString('vi-VN')}m
             </text>
           </g>
 
-          {/* Waypoints if any */}
-          {waypoints.slice(0, 4).map((wp, idx) => {
-            const progress = (idx + 1) / (waypoints.length + 1);
-            const wpPoint = points[Math.floor(progress * (points.length - 1))];
-            if (!wpPoint) return null;
+          {/* GPS-Projected Waypoints (All Waypoints with Collision-Free Labels) */}
+          {projectedWaypoints.map(({ wp, pt, clampedX, showLabel }, idx) => {
+            if (!pt) return null;
+            const shortName = wp.name.length > 16 ? `${wp.name.slice(0, 15)}…` : wp.name;
             return (
               <g key={wp.id || idx}>
-                <circle cx={wpPoint.x} cy={wpPoint.y} r={3.5} fill="var(--color-stream)" />
-                <text
-                  x={wpPoint.x}
-                  y={wpPoint.y + 14}
-                  fill="var(--color-stream)"
-                  fontSize="9"
-                  fontWeight="700"
-                  textAnchor="middle"
-                >
-                  {wp.name}
-                </text>
+                <title>{wp.name}</title>
+                <circle cx={pt.x} cy={pt.y} r={3.5} fill="var(--color-stream)" />
+                {showLabel && (
+                  <text
+                    x={clampedX}
+                    y={Math.min(height - 4, pt.y + 14)}
+                    fill="var(--color-stream)"
+                    fontSize="9"
+                    fontWeight="700"
+                    textAnchor="middle"
+                  >
+                    {shortName}
+                  </text>
+                )}
               </g>
             );
           })}
 
-          {/* Crosshair Cursor & Indicator when hovered */}
+          {/* Interactive Crosshair */}
           {hoveredPoint && (
             <g>
               <line
@@ -269,7 +440,7 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
                 cx={hoveredPoint.x}
                 cy={hoveredPoint.y}
                 r={6}
-                fill="var(--color-text-main)"
+                fill="var(--color-bg-card)"
                 stroke="var(--color-primary)"
                 strokeWidth="3"
               />
@@ -277,30 +448,36 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
           )}
         </svg>
 
-        {/* Dynamic Tooltip Box */}
         {hoveredPoint && (
           <div
             style={{
               position: 'absolute',
-              top: Math.max(0, (hoveredPoint.y / height) * 100 - 32) + '%',
-              left: Math.min(80, Math.max(10, (hoveredPoint.x / svgWidth) * 100)) + '%',
+              top: Math.max(0, (hoveredPoint.y / height) * 100 - 30) + '%',
+              left: Math.min(80, Math.max(16, (hoveredPoint.x / svgWidth) * 100)) + '%',
               transform: 'translate(-50%, -100%)',
               background: 'var(--color-bg-card)',
               border: '1px solid var(--color-primary)',
-              borderRadius: 8,
+              borderRadius: 4,
               padding: '6px 10px',
               fontSize: '0.75rem',
               color: 'var(--color-text-main)',
-              boxShadow: '0 8px 20px rgba(0,0,0,0.7), 0 0 10px rgba(74,222,128,0.3)',
+              boxShadow: 'var(--shadow-card)',
               pointerEvents: 'none',
               zIndex: 10,
               whiteSpace: 'nowrap',
             }}
           >
             <div style={{ fontWeight: 800, color: 'var(--color-primary)' }}>
-              Km {hoveredPoint.km} • Cao độ: {hoveredPoint.alt}m
+              Km {hoveredPoint.km} · Cao độ: {hoveredPoint.alt.toLocaleString('vi-VN')}m
             </div>
-            <div style={{ color: 'var(--color-text-dim)', fontSize: '0.7rem', marginTop: 2 }}>
+            <div
+              style={{
+                color: Math.abs(hoveredPoint.slopePercent) >= 25 ? 'var(--color-error-text, var(--color-error))' : 'var(--color-text-muted)',
+                fontSize: '0.7rem',
+                marginTop: 2,
+                fontWeight: 700,
+              }}
+            >
               {hoveredPoint.slope}
             </div>
           </div>
@@ -315,15 +492,16 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
           color: 'var(--color-text-dim)',
           marginTop: 6,
           padding: '0 4px',
+          flexWrap: 'wrap',
+          gap: 6,
         }}
       >
-        <span>Xuất phát: {minAlt}m (0 km)</span>
+        <span>Thấp nhất: {minAlt.toLocaleString('vi-VN')}m</span>
         <span style={{ color: 'var(--color-earth)', fontWeight: 700 }}>
-          Tích lũy: +{elevationGainM}m
+          Tích lũy: +{elevationGainM.toLocaleString('vi-VN')}m
         </span>
-        <span>Đích: {peakPoint.alt}m ({distanceKm} km)</span>
+        <span>Cao nhất: {maxAlt.toLocaleString('vi-VN')}m ({distanceKm} km)</span>
       </div>
     </div>
   );
 };
-

@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
 import {
   IconCompass,
   IconCalendar,
@@ -29,7 +30,7 @@ interface ItineraryStep {
 
 interface SharedItineraryData {
   _id?: string;
-  trailId?: any;
+  trailId?: string | { id?: string; _id?: string } | null;
   rawTrailId?: string;
   trailName?: string;
   title: string;
@@ -55,44 +56,67 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
   onClose,
   onViewTrail,
 }) => {
-  const [itinerary, setItinerary] = useState<SharedItineraryData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [loadedState, setLoadedState] = useState<{
+    token: string;
+    data: SharedItineraryData | null;
+    error: string | null;
+  }>({ token: '', data: null, error: null });
   const [copied, setCopied] = useState(false);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  useFocusTrap(isOpen, dialogRef);
+
+  // Escape key close (LIFO focus-trap + IME safe)
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.isComposing) return;
+      if (!isTopmostFocusTrap(dialogRef.current)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
 
   useEffect(() => {
-    if (!isOpen || !shareToken) {
-      setItinerary(null);
-      return;
-    }
+    if (!isOpen || !shareToken) return;
 
     let isMounted = true;
-    setLoading(true);
-    setError(null);
 
     fetchItineraryByToken(shareToken)
       .then((data) => {
         if (!isMounted) return;
         if (data) {
-          setItinerary(data);
+          setLoadedState({ token: shareToken, data: data as SharedItineraryData, error: null });
         } else {
-          // Fallback check local storage
           try {
-            const cached = JSON.parse(localStorage.getItem('trekmap_local_itineraries') || '{}');
+            const cached = JSON.parse(localStorage.getItem('lost_local_itineraries') || '{}') as Record<
+              string,
+              SharedItineraryData
+            >;
             if (cached[shareToken]) {
-              setItinerary(cached[shareToken]);
+              setLoadedState({ token: shareToken, data: cached[shareToken], error: null });
               return;
             }
-          } catch (e) {}
-          setError('Không tìm thấy lịch trình thám hiểm này hoặc liên kết đã hết hạn.');
+          } catch {
+            // ignore corrupted storage
+          }
+          setLoadedState({
+            token: shareToken,
+            data: null,
+            error: 'Không tìm thấy lịch trình thám hiểm này hoặc liên kết đã hết hạn.',
+          });
         }
       })
       .catch(() => {
         if (!isMounted) return;
-        setError('Lỗi khi tải thông tin lịch trình.');
-      })
-      .finally(() => {
-        if (isMounted) setLoading(false);
+        setLoadedState({
+          token: shareToken,
+          data: null,
+          error: 'Lỗi khi tải thông tin lịch trình.',
+        });
       });
 
     return () => {
@@ -100,90 +124,118 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
     };
   }, [shareToken, isOpen]);
 
+  const loading = Boolean(isOpen && shareToken && loadedState.token !== shareToken);
+  const itinerary = isOpen && shareToken && loadedState.token === shareToken ? loadedState.data : null;
+  const error = isOpen && shareToken && loadedState.token === shareToken ? loadedState.error : null;
+
   if (!isOpen) return null;
 
   const rawSteps: ItineraryStep[] = itinerary?.timelineSteps || itinerary?.steps || [];
-  // Sort steps chronologically by day and time
   const steps = [...rawSteps].sort((a, b) => a.day - b.day || (a.time || '').localeCompare(b.time || ''));
 
   const handleCopyLink = () => {
-    navigator.clipboard.writeText(window.location.href);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    navigator.clipboard
+      .writeText(window.location.href)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      })
+      .catch(() => {
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: 'Không thể sao chép tự động. Vui lòng copy URL trên thanh địa chỉ.', type: 'info' },
+          })
+        );
+      });
   };
 
   const handleExportCanvasImage = () => {
     if (!itinerary) return;
+    const rowHeight = 84;
+    const computedHeight = Math.max(820, 250 + steps.length * rowHeight + 80);
+
     const canvas = document.createElement('canvas');
     canvas.width = 800;
-    canvas.height = 950;
+    canvas.height = computedHeight;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Background Gradient
-    const grad = ctx.createLinearGradient(0, 0, 0, 950);
-    grad.addColorStop(0, '#0b1726');
-    grad.addColorStop(1, '#050c14');
+    const grad = ctx.createLinearGradient(0, 0, 0, computedHeight);
+    grad.addColorStop(0, '#0c0f0d');
+    grad.addColorStop(1, '#141916');
     ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, 800, 950);
+    ctx.fillRect(0, 0, 800, computedHeight);
 
-    // Header Title
-    ctx.fillStyle = '#10b981';
-    ctx.font = 'bold 28px sans-serif';
-    ctx.fillText('TREKMAP - LỊCH TRÌNH THÁM HIỂM', 50, 60);
+    const canvasFont = "'Plus Jakarta Sans', 'Inter', 'Be Vietnam Pro', sans-serif";
 
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 24px sans-serif';
-    ctx.fillText(itinerary.title || 'Kế Hoạch Leo Núi', 50, 105);
+    ctx.fillStyle = '#52b788';
+    ctx.font = `bold 24px ${canvasFont}`;
+    ctx.fillText('LOST — LỊCH TRÌNH THÁM HIỂM', 50, 58);
 
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '16px sans-serif';
-    ctx.fillText(`Cung đường: ${itinerary.trailName || 'Núi Việt Nam'} | Khởi hành: ${itinerary.startDate ? new Date(itinerary.startDate).toLocaleDateString('vi-VN') : 'Sắp xếp'}`, 50, 140);
-    ctx.fillText(`Thành viên: ${itinerary.memberCount || 1} người | Mã lịch trình: ${itinerary.shareToken}`, 50, 168);
+    ctx.fillStyle = '#f4f3ee';
+    ctx.font = `bold 21px ${canvasFont}`;
+    ctx.fillText((itinerary.title || 'Kế Hoạch Leo Núi').slice(0, 56), 50, 102);
 
-    // Separator line
-    ctx.strokeStyle = '#10b981';
+    ctx.fillStyle = '#a8b0aa';
+    ctx.font = `15px ${canvasFont}`;
+    ctx.fillText(
+      `Cung đường: ${itinerary.trailName || 'Núi Việt Nam'} | Khởi hành: ${
+        itinerary.startDate ? new Date(itinerary.startDate).toLocaleDateString('vi-VN') : 'Chưa ấn định'
+      }`,
+      50,
+      138
+    );
+    ctx.fillText(`Thành viên: ${itinerary.memberCount || 1} người | Mã lịch trình: ${itinerary.shareToken}`, 50, 166);
+
+    ctx.strokeStyle = '#52b788';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(50, 195);
-    ctx.lineTo(750, 195);
+    ctx.moveTo(50, 190);
+    ctx.lineTo(750, 190);
     ctx.stroke();
 
-    // Timeline Steps
-    let y = 240;
-    steps.slice(0, 6).forEach((s) => {
-      ctx.fillStyle = '#10b981';
-      ctx.font = 'bold 18px sans-serif';
-      ctx.fillText(`Ngày ${s.day} • ${s.time || '--:--'}`, 50, y);
+    let y = 236;
+    steps.forEach((s) => {
+      const activityLabel = s.activity || s.title || 'Chặng hành trình';
+      const locationLabel = s.location || s.locationNote || '';
+      const stepNote = s.notes || s.description || '';
 
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 18px sans-serif';
-      ctx.fillText(`${s.activity} - ${s.location}`, 220, y);
+      ctx.fillStyle = '#52b788';
+      ctx.font = `bold 17px ${canvasFont}`;
+      ctx.fillText(`Ngày ${s.day} · ${s.time || '--:--'}`, 50, y);
 
-      if (s.altitudeM || s.notes) {
-        ctx.fillStyle = '#38bdf8';
-        ctx.font = '14px sans-serif';
-        const detail = [s.altitudeM ? `Cao độ: ${s.altitudeM}m` : '', s.notes ? `Ghi chú: ${s.notes}` : ''].filter(Boolean).join(' | ');
-        ctx.fillText(detail, 220, y + 26);
+      ctx.fillStyle = '#f4f3ee';
+      ctx.font = `bold 17px ${canvasFont}`;
+      ctx.fillText((locationLabel ? `${activityLabel} - ${locationLabel}` : activityLabel).slice(0, 48), 220, y);
+
+      if (s.altitudeM || stepNote) {
+        ctx.fillStyle = '#6fa8c7';
+        ctx.font = `14px ${canvasFont}`;
+        const detail = [s.altitudeM ? `Cao độ: ${s.altitudeM}m` : '', stepNote ? `Ghi chú: ${stepNote}` : '']
+          .filter(Boolean)
+          .join(' | ');
+        ctx.fillText(detail.slice(0, 66), 220, y + 25);
       }
 
-      y += 85;
+      y += rowHeight;
     });
 
-    // Footer Watermark
-    ctx.fillStyle = '#64748b';
-    ctx.font = '13px sans-serif';
-    ctx.fillText('Tạo bởi Hệ Thống Bản Đồ Trekking TrekMap Việt Nam • Hotline Cứu Hộ: 114 / 115', 50, 910);
+    ctx.fillStyle = '#757e78';
+    ctx.font = `13px ${canvasFont}`;
+    ctx.fillText('Tạo bởi Hệ Thống Bản Đồ Trekking LOST Việt Nam · Cứu Hộ Quốc Gia: 112 / 114 / 115', 50, computedHeight - 30);
 
     const link = document.createElement('a');
     link.download = `LichTrinh_${itinerary.shareToken}.png`;
     link.href = canvas.toDataURL('image/png');
+    document.body.appendChild(link);
     link.click();
+    document.body.removeChild(link);
   };
 
-  const associatedTrailId = typeof itinerary?.trailId === 'object' && itinerary?.trailId !== null
-    ? (itinerary.trailId as any).id || (itinerary.trailId as any)._id
-    : itinerary?.rawTrailId || itinerary?.trailId;
+  const associatedTrailId =
+    typeof itinerary?.trailId === 'object' && itinerary?.trailId !== null
+      ? itinerary.trailId.id || itinerary.trailId._id
+      : itinerary?.rawTrailId || itinerary?.trailId;
 
   return createPortal(
     <div
@@ -192,69 +244,73 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
       style={{
         position: 'fixed',
         inset: 0,
-        width: '100vw',
-        height: '100vh',
-        background: 'rgba(3, 8, 14, 0.88)',
-        backdropFilter: 'blur(16px)',
-        WebkitBackdropFilter: 'blur(16px)',
-        zIndex: 99999999,
+        background: 'var(--overlay-bg)',
+        backdropFilter: 'blur(12px)',
+        WebkitBackdropFilter: 'blur(12px)',
+        zIndex: 'var(--z-modal, 3000)' as unknown as number,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: '24px 16px',
+        padding: '20px 14px',
         boxSizing: 'border-box',
       }}
     >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Lịch trình thám hiểm chia sẻ"
         className="modal-content"
         onClick={(e) => e.stopPropagation()}
         style={{
           maxWidth: 720,
-          width: '92%',
+          width: '96%',
           maxHeight: '90vh',
           display: 'flex',
           flexDirection: 'column',
           padding: 0,
-          borderRadius: 24,
+          borderRadius: 6,
           background: 'var(--color-bg-card)',
-          border: '1.5px solid var(--color-primary)',
-          boxShadow: '0 25px 60px rgba(0, 0, 0, 0.6), 0 0 30px rgba(16, 185, 129, 0.25)',
+          border: '1px solid var(--color-border-strong)',
+          boxShadow: 'var(--shadow-3d)',
           overflow: 'hidden',
         }}
       >
         {/* Header Bar */}
         <div
           style={{
-            padding: '20px 24px',
+            padding: '18px 22px',
             borderBottom: '1px solid var(--color-border)',
             background: 'var(--color-bg-main)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            gap: 16,
+            gap: 14,
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div
               style={{
-                width: 42,
-                height: 42,
-                borderRadius: 12,
-                background: 'rgba(16, 185, 129, 0.15)',
+                width: 40,
+                height: 40,
+                borderRadius: 4,
+                background: 'color-mix(in srgb, var(--color-primary) 14%, transparent)',
                 border: '1px solid var(--color-border-glow)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
+                flexShrink: 0,
               }}
             >
-              <IconCompass size={22} color="var(--color-primary)" />
+              <IconCompass size={20} color="var(--color-primary)" />
             </div>
             <div>
               <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
                 LỊCH TRÌNH THÁM HIỂM CHIA SẺ
               </div>
-              <h3 style={{ margin: '2px 0 0 0', fontSize: '1.25rem', fontWeight: 900, color: 'var(--color-text-main)' }}>
-                {itinerary ? itinerary.title : (error ? 'Lịch trình không khả dụng' : 'Đang tải lịch trình...')}
+              <h3 style={{ margin: '2px 0 0 0', fontSize: '1.2rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                {itinerary ? itinerary.title : error ? 'Lịch trình không khả dụng' : 'Đang tải lịch trình...'}
               </h3>
             </div>
           </div>
@@ -262,44 +318,47 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            title="Đóng"
+            title="Đóng (Esc)"
             aria-label="Đóng"
             style={{
-              background: 'none',
-              border: 'none',
+              background: 'var(--color-surface-elevated)',
+              border: '1px solid var(--color-border)',
               color: 'var(--color-text-muted)',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              padding: 6,
-              borderRadius: 8,
+              justifyContent: 'center',
+              width: 32,
+              height: 32,
+              borderRadius: 4,
+              flexShrink: 0,
             }}
           >
-            <IconX size={20} />
+            <IconX size={18} />
           </button>
         </div>
 
         {/* Modal Body */}
-        <div style={{ padding: '24px', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <div style={{ padding: '20px 22px', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: 18 }}>
           {loading && (
-            <div style={{ padding: '60px 0', textAlign: 'center', color: 'var(--color-text-muted)' }}>
-              <div style={{ width: 32, height: 32, border: '3px solid var(--color-border)', borderTopColor: 'var(--color-primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 16px auto' }} />
-              <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>Đang truy xuất dữ liệu lịch trình từ vệ tinh TrekMap...</span>
+            <div style={{ padding: '56px 0', textAlign: 'center', color: 'var(--color-text-muted)' }}>
+              <div style={{ width: 32, height: 32, border: '3px solid var(--color-border)', borderTopColor: 'var(--color-primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 14px auto' }} />
+              <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>Đang truy xuất dữ liệu lịch trình LOST...</span>
             </div>
           )}
 
           {error && !loading && (
             <div
               style={{
-                padding: '24px',
-                borderRadius: 16,
-                background: 'rgba(239, 68, 68, 0.08)',
-                border: '1px solid rgba(239, 68, 68, 0.3)',
+                padding: '22px',
+                borderRadius: 6,
+                background: 'color-mix(in srgb, var(--color-error) 10%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)',
                 textAlign: 'center',
               }}
             >
-              <IconShieldAlert size={36} color="var(--color-error)" style={{ margin: '0 auto 12px auto' }} />
-              <h4 style={{ margin: '0 0 8px 0', color: 'var(--color-error)', fontWeight: 800 }}>{error}</h4>
+              <IconShieldAlert size={34} color="var(--color-error-text, var(--color-error))" style={{ margin: '0 auto 10px auto' }} />
+              <h4 style={{ margin: '0 0 8px 0', color: 'var(--color-error-text, var(--color-error))', fontWeight: 800 }}>{error}</h4>
               <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--color-text-muted)' }}>
                 Vui lòng kiểm tra lại liên kết hoặc yêu cầu người tạo lịch trình gửi lại mã chia sẻ mới.
               </p>
@@ -309,33 +368,33 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
           {itinerary && !loading && (
             <>
               {/* Meta Summary Cards Grid */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-                <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 14, padding: '12px 16px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.74rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(170px, 100%), 1fr))', gap: 10 }}>
+                <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: '12px 14px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>
                     <IconMountain size={14} color="var(--color-primary)" />
                     CUNG ĐƯỜNG
                   </div>
-                  <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 4 }}>
+                  <div style={{ fontSize: '0.94rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 4 }}>
                     {itinerary.trailName || 'Núi Việt Nam'}
                   </div>
                 </div>
 
-                <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 14, padding: '12px 16px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.74rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>
+                <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: '12px 14px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>
                     <IconCalendar size={14} color="var(--color-sky)" />
                     NGÀY KHỞI HÀNH
                   </div>
-                  <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 4 }}>
+                  <div style={{ fontSize: '0.94rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 4 }}>
                     {itinerary.startDate ? new Date(itinerary.startDate).toLocaleDateString('vi-VN') : 'Chưa định ngày'}
                   </div>
                 </div>
 
-                <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 14, padding: '12px 16px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.74rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>
+                <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: '12px 14px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>
                     <IconUsers size={14} color="var(--color-sun)" />
                     THÀNH VIÊN ĐOÀN
                   </div>
-                  <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 4 }}>
+                  <div style={{ fontSize: '0.94rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 4 }}>
                     {itinerary.memberCount} thành viên
                   </div>
                 </div>
@@ -343,7 +402,7 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
 
               {/* Timeline Section */}
               <div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
                   <h4 style={{ margin: 0, fontSize: '0.96rem', fontWeight: 800, color: 'var(--color-text-main)', display: 'flex', alignItems: 'center', gap: 8 }}>
                     <IconClock size={16} color="var(--color-primary)" />
                     Tiến Trình Chặng Đường ({steps.length} mốc)
@@ -354,23 +413,22 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
                 </div>
 
                 {steps.length === 0 ? (
-                  <div style={{ padding: '24px', background: 'var(--color-bg-main)', border: '1px dashed var(--color-border)', borderRadius: 14, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '0.86rem' }}>
+                  <div style={{ padding: '22px', background: 'var(--color-bg-main)', border: '1px dashed var(--color-border)', borderRadius: 4, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '0.86rem' }}>
                     Chưa có chặng timeline cụ thể nào được thêm vào lịch trình này.
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                     {steps.map((step, idx) => (
                       <div
                         key={idx}
                         style={{
                           background: 'var(--color-bg-main)',
                           border: '1px solid var(--color-border)',
-                          borderRadius: 16,
-                          padding: '16px',
+                          borderRadius: 4,
+                          padding: 14,
                           display: 'flex',
                           flexDirection: 'column',
                           gap: 8,
-                          position: 'relative',
                         }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
@@ -378,11 +436,11 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
                             <span
                               style={{
                                 background: 'var(--color-primary)',
-                                color: '#041108',
-                                fontSize: '0.74rem',
-                                fontWeight: 900,
-                                padding: '3px 10px',
-                                borderRadius: 12,
+                                color: 'var(--color-on-primary)',
+                                fontSize: '0.72rem',
+                                fontWeight: 800,
+                                padding: '3px 9px',
+                                borderRadius: 3,
                               }}
                             >
                               NGÀY {step.day}
@@ -395,12 +453,12 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
                           {step.altitudeM && (
                             <span
                               style={{
-                                fontSize: '0.75rem',
+                                fontSize: '0.74rem',
                                 color: 'var(--color-sky)',
-                                background: 'rgba(56, 189, 248, 0.1)',
-                                border: '1px solid rgba(56, 189, 248, 0.25)',
+                                background: 'color-mix(in srgb, var(--color-sky) 12%, transparent)',
+                                border: '1px solid color-mix(in srgb, var(--color-sky) 28%, transparent)',
                                 padding: '2px 8px',
-                                borderRadius: 8,
+                                borderRadius: 4,
                                 fontWeight: 700,
                               }}
                             >
@@ -409,7 +467,7 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
                           )}
                         </div>
 
-                        <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                        <div style={{ fontSize: '0.98rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
                           {step.activity || step.title || 'Chặng thám hiểm'}
                         </div>
 
@@ -425,9 +483,9 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
                               color: 'var(--color-text-muted)',
                               background: 'var(--color-bg-card)',
                               padding: '8px 12px',
-                              borderRadius: 8,
+                              borderRadius: 4,
                               borderLeft: '3px solid var(--color-primary)',
-                              marginTop: 4,
+                              marginTop: 2,
                             }}
                           >
                             {step.notes || step.description}
@@ -442,10 +500,10 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
               {/* Safety Advice Box */}
               <div
                 style={{
-                  background: 'rgba(239, 68, 68, 0.06)',
-                  border: '1px solid rgba(239, 68, 68, 0.2)',
-                  borderRadius: 14,
-                  padding: '14px 16px',
+                  background: 'color-mix(in srgb, var(--color-error) 8%, transparent)',
+                  border: '1px solid color-mix(in srgb, var(--color-error) 25%, transparent)',
+                  borderRadius: 4,
+                  padding: '12px 14px',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
@@ -454,9 +512,9 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
                   fontSize: '0.8rem',
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-error)', fontWeight: 700 }}>
-                  <IconShieldAlert size={16} color="var(--color-error)" />
-                  <span>Cứu hộ khẩn cấp: 114 (PCCC/Cứu nạn) - 115 (Cấp cứu)</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--color-error-text, var(--color-error))', fontWeight: 700 }}>
+                  <IconShieldAlert size={16} color="var(--color-error-text, var(--color-error))" />
+                  <span>Cứu hộ khẩn cấp: 112 / 114 (Cứu nạn) · 115 (Cấp cứu)</span>
                 </div>
                 <span style={{ color: 'var(--color-text-muted)' }}>Luôn đi theo nhóm và mang đủ pin dự phòng</span>
               </div>
@@ -467,7 +525,7 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
         {/* Footer Actions */}
         <div
           style={{
-            padding: '16px 24px',
+            padding: '14px 22px',
             borderTop: '1px solid var(--color-border)',
             background: 'var(--color-bg-main)',
             display: 'flex',
@@ -477,20 +535,20 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
             gap: 10,
           }}
         >
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button
               type="button"
               className="btn btn-outline"
               onClick={handleCopyLink}
               disabled={loading || !!error}
               style={{
-                borderRadius: 12,
+                borderRadius: 4,
                 fontSize: '0.82rem',
                 fontWeight: 700,
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: 6,
-                padding: '8px 14px',
+                padding: '8px 12px',
               }}
             >
               {copied ? <IconCheck size={14} color="var(--color-primary)" /> : <IconShare size={14} />}
@@ -503,17 +561,17 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
               onClick={handleExportCanvasImage}
               disabled={loading || !!error}
               style={{
-                borderRadius: 12,
+                borderRadius: 4,
                 fontSize: '0.82rem',
                 fontWeight: 700,
-                padding: '8px 14px',
+                padding: '8px 12px',
               }}
             >
               Tải Ảnh Thẻ Lịch Trình (PNG)
             </button>
           </div>
 
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {associatedTrailId && onViewTrail && (
               <button
                 type="button"
@@ -523,16 +581,16 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
                   onViewTrail(String(associatedTrailId));
                 }}
                 style={{
-                  borderRadius: 12,
+                  borderRadius: 4,
                   fontSize: '0.82rem',
                   fontWeight: 800,
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: 6,
-                  padding: '8px 16px',
+                  padding: '8px 14px',
                 }}
               >
-                <IconHiking size={14} color="#041108" />
+                <IconHiking size={14} color="var(--color-on-primary)" />
                 Xem Chi Tiết Cung Núi
               </button>
             )}
@@ -542,10 +600,10 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
               className="btn btn-outline"
               onClick={onClose}
               style={{
-                borderRadius: 12,
+                borderRadius: 4,
                 fontSize: '0.82rem',
                 fontWeight: 700,
-                padding: '8px 16px',
+                padding: '8px 14px',
               }}
             >
               Đóng

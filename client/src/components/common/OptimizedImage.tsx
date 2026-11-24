@@ -1,6 +1,10 @@
 import React, { useState } from 'react';
-import { getOptimizedImageUrl } from '../../utils/cloudinary.js';
+import {
+  getOptimizedImageUrl,
+  OFFLINE_MOUNTAIN_SVG_FALLBACK,
+} from '../../utils/cloudinary.js';
 import type { ImageOptimizeOptions } from '../../utils/cloudinary.js';
+import { isLitePerfMode } from '../../utils/perfTier.js';
 
 export interface OptimizedImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   src: string;
@@ -10,24 +14,29 @@ export interface OptimizedImageProps extends React.ImgHTMLAttributes<HTMLImageEl
   fallbackSrc?: string;
 }
 
-export const OptimizedImage: React.FC<OptimizedImageProps> = ({
+export const OptimizedImage: React.FC<OptimizedImageProps> = React.memo(({
   src,
   alt,
   targetWidth = 800,
   optimizationOptions,
-  fallbackSrc = 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=800&q=80',
+  fallbackSrc = OFFLINE_MOUNTAIN_SVG_FALLBACK,
   style,
   className,
   onLoad,
   onError,
   ...restProps
 }) => {
-  const [isLoaded, setIsLoaded] = useState(false);
-  const [hasError, setHasError] = useState(false);
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const [errorSrc, setErrorSrc] = useState<string | null>(null);
+
+  const isLoaded = loadedSrc === src;
+  const hasError = errorSrc === src;
+  const lite = isLitePerfMode();
+  const adaptiveWidth = lite ? Math.min(targetWidth, targetWidth > 900 ? 1080 : 600) : targetWidth;
 
   const optimizedSrc = getOptimizedImageUrl(src, {
-    width: targetWidth,
-    quality: 'auto',
+    width: adaptiveWidth,
+    quality: lite ? 'auto:eco' : 'auto',
     format: 'auto',
     ...optimizationOptions,
   });
@@ -42,20 +51,20 @@ export const OptimizedImage: React.FC<OptimizedImageProps> = ({
       decoding="async"
       className={className}
       style={{
-        transition: 'opacity 0.3s ease, filter 0.3s ease',
-        opacity: isLoaded ? 1 : 0.85,
-        filter: isLoaded ? 'none' : 'blur(2px)',
+        transition: 'opacity 0.28s ease',
+        opacity: isLoaded ? 1 : 0.01,
+        backgroundColor: 'var(--color-surface-elevated)',
         ...style,
       }}
       onLoad={(e) => {
-        setIsLoaded(true);
+        setLoadedSrc(src);
         if (onLoad) onLoad(e);
       }}
       onError={(e) => {
-        setHasError(true);
+        setErrorSrc(src);
         if (onError) onError(e);
       }}
       {...restProps}
     />
   );
-};
+});

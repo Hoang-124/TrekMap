@@ -1,177 +1,434 @@
-import { Request, Response } from 'express';
+import crypto from 'crypto';
+import { Response } from 'express';
+import mongoose from 'mongoose';
 import { Contribution } from '../models/Contribution.js';
 import { TrailModel } from '../models/Trail.js';
 import { UserModel } from '../models/User.js';
-import { NotificationModel } from '../models/Notification.js';
-import { emitToUser } from '../config/socket.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { awardReputationPoints, REPUTATION_POINTS } from '../utils/reputation.js';
 import { sendNotification, notifyAdmins } from '../utils/notification.js';
-import { sanitizeInput } from '../utils/validation.js';
+import { sanitizeInput, isSafeHttpUrl, hasDangerousMongoKeys } from '../utils/validation.js';
+import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
+import { invalidateCache } from '../middleware/cache.middleware.js';
+import { invalidateElevationCache } from '../services/elevation.service.js';
+import { isValidObjectId } from '../utils/resolveTrail.js';
+import { recordActivity, recordAuditLog } from '../utils/audit.js';
 
+const MAX_MEM_CONTRIBUTIONS = 200;
 const inMemoryContributions: any[] = [];
 
-// GET /api/contributions - Get all contributions
-export const getContributions = async (req: Request, res: Response) => {
+const VALID_REGIONS = new Set(['Miền Bắc', 'Miền Trung', 'Miền Nam']);
+const VALID_STATUSES = new Set(['pending', 'approved', 'rejected']);
+const VALID_WAYPOINT_TYPES = new Set(['campsite', 'water', 'viewpoint', 'danger', 'charging', 'rest']);
+const DEFAULT_CONTRIB_COVER =
+  'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329097/trekmap/trails/trail_cover_trail-fansipan.jpg';
+
+const ALLOWED_UPDATE_FIELDS = [
+  'name',
+  'altNames',
+  'region',
+  'province',
+  'district',
+  'hamlet',
+  'distanceKm',
+  'elevationGainM',
+  'maxAltitudeM',
+  'difficultyLevel',
+  'difficultyNote',
+  'durationDays',
+  'durationHoursNote',
+  'startLat',
+  'startLng',
+  'endLat',
+  'endLng',
+  'description',
+  'transportationInfo',
+  'coverImage',
+  'galleryImages',
+  'permitRequired',
+  'permitInfo',
+  'hasCampsite',
+  'hasWaterSource',
+  'kidFriendly',
+  'rescueContact',
+  'waypoints',
+  'gpxTrack',
+  'bestMonths',
+  'avoidMonths',
+] as const;
+
+function sanitizeWaypoints(raw: unknown) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((w: any) => w && typeof w === 'object' && Number.isFinite(Number(w.lat)) && Number.isFinite(Number(w.lng)))
+    .slice(0, 50)
+    .map((w: any, idx: number) => ({
+      id: typeof w.id === 'string' && w.id.trim() ? sanitizeInput(w.id).slice(0, 40) : `wp-${idx + 1}`,
+      name: sanitizeInput(String(w.name || `Mốc ${idx + 1}`)).slice(0, 120),
+      type: VALID_WAYPOINT_TYPES.has(w.type) ? w.type : 'viewpoint',
+      description: sanitizeInput(String(w.description || '')).slice(0, 400),
+      ...(Number.isFinite(Number(w.elevationM)) ? { elevationM: Math.round(Number(w.elevationM)) } : {}),
+      lat: Math.max(-90, Math.min(90, Number(w.lat))),
+      lng: Math.max(-180, Math.min(180, Number(w.lng))),
+    }));
+}
+
+function sanitizeGpxTrack(raw: unknown): [number, number][] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (pt: any) =>
+        Array.isArray(pt) &&
+        pt.length >= 2 &&
+        Number.isFinite(Number(pt[0])) &&
+        Number.isFinite(Number(pt[1])) &&
+        Number(pt[0]) >= -90 &&
+        Number(pt[0]) <= 90 &&
+        Number(pt[1]) >= -180 &&
+        Number(pt[1]) <= 180
+    )
+    .slice(0, 5000)
+    .map((pt: any) => [Number(pt[0]), Number(pt[1])]);
+}
+
+function stripPrivateEmailForViewer(contrib: any, viewerId?: string, viewerRole?: string) {
+  const isStaff = viewerRole === 'admin' || viewerRole === 'moderator';
+  const isOwner = Boolean(viewerId && contrib.userId && String(contrib.userId) === String(viewerId));
+  if (isStaff || isOwner) return contrib;
+  const { authorEmail: _hiddenEmail, ...publicContrib } = contrib;
+  return publicContrib;
+}
+
+async function publishContributionToTrail(updatedDoc: any) {
+  const startLat = Number(updatedDoc.startLat);
+  const startLng = Number(updatedDoc.startLng);
+  const endLat = Number(updatedDoc.endLat ?? startLat);
+  const endLng = Number(updatedDoc.endLng ?? startLng);
+
+  const validGpx =
+    Array.isArray(updatedDoc.gpxTrack) && updatedDoc.gpxTrack.length > 0
+      ? updatedDoc.gpxTrack
+      : [
+          [startLat, startLng],
+          [endLat, endLng],
+        ];
+
+  const coverImg =
+    updatedDoc.coverImage && isSafeHttpUrl(updatedDoc.coverImage) ? updatedDoc.coverImage : DEFAULT_CONTRIB_COVER;
+
+  await TrailModel.findOneAndUpdate(
+    { id: updatedDoc.id },
+    {
+      $set: {
+        id: updatedDoc.id,
+        name: updatedDoc.name,
+        altNames: updatedDoc.altNames || [],
+        region: updatedDoc.region || 'Miền Bắc',
+        province: updatedDoc.province,
+        district: updatedDoc.district,
+        difficultyLevel: Number(updatedDoc.difficultyLevel) || 3,
+        difficultyNote: updatedDoc.difficultyNote || '',
+        distanceKm: Number(updatedDoc.distanceKm) || 10,
+        elevationGainM: Number(updatedDoc.elevationGainM) || 500,
+        maxAltitudeM: Number(updatedDoc.maxAltitudeM) || 1000,
+        durationDays: Number(updatedDoc.durationDays) || 1,
+        durationHoursNote: updatedDoc.durationHoursNote || '1 ngày',
+        coverImage: coverImg,
+        galleryImages:
+          Array.isArray(updatedDoc.galleryImages) && updatedDoc.galleryImages.length > 0
+            ? updatedDoc.galleryImages
+            : [coverImg],
+        startLocation: { type: 'Point', coordinates: [startLng, startLat] },
+        startLat,
+        startLng,
+        endLat,
+        endLng,
+        gpxTrack: validGpx,
+        waypoints: updatedDoc.waypoints || [],
+        description: updatedDoc.description,
+        transportationInfo: updatedDoc.transportationInfo || 'Phương tiện tự túc',
+        permitRequired: Boolean(updatedDoc.permitRequired),
+        permitInfo: updatedDoc.permitInfo || '',
+        rescueContact: updatedDoc.rescueContact?.phone
+          ? updatedDoc.rescueContact
+          : {
+              name: `Cứu nạn Khẩn cấp ${updatedDoc.province || 'Địa phương'}`,
+              phone: '112 / 114',
+              rangerContact: '115',
+            },
+        hasCampsite: Boolean(updatedDoc.hasCampsite),
+        hasWaterSource: Boolean(updatedDoc.hasWaterSource),
+        kidFriendly: Boolean(updatedDoc.kidFriendly),
+        bestMonths: Array.isArray(updatedDoc.bestMonths) ? updatedDoc.bestMonths : [],
+        avoidMonths: Array.isArray(updatedDoc.avoidMonths) ? updatedDoc.avoidMonths : [],
+        status: 'approved',
+        ...(isValidObjectId(updatedDoc.userId) ? { createdBy: updatedDoc.userId } : {}),
+      },
+      $setOnInsert: {
+        rating: 0,
+        reviewCount: 0,
+      },
+    },
+    { upsert: true, new: true }
+  );
+  invalidateElevationCache(String(updatedDoc.id));
+}
+
+// GET /api/contributions - Admin/Moderator see all; authenticated users see approved + own; guests see approved only
+export const getContributions = async (req: AuthRequest, res: Response) => {
   try {
+    const viewerId = req.user?.userId;
+    const viewerRole = req.user?.role;
+    const isStaff = viewerRole === 'admin' || viewerRole === 'moderator';
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 200);
+
+    const dbFilter: any = isStaff
+      ? {}
+      : viewerId
+        ? { $or: [{ status: 'approved' }, { userId: String(viewerId) }] }
+        : { status: 'approved' };
+
     let list: any[] = [];
-    try {
-      list = await Contribution.find().lean().sort({ createdAt: -1 });
-    } catch (dbErr) {
-      list = [...inMemoryContributions];
-    }
-    if (!list || list.length === 0) {
-      list = [...inMemoryContributions];
-    }
-
-    // Enrich live author avatar & name from UserModel
-    try {
-      const userIds = list.map((c) => c.userId).filter(Boolean);
-      const userEmails = list.map((c) => c.authorEmail).filter(Boolean);
-      const users = await UserModel.find({
-        $or: [
-          { _id: { $in: userIds } },
-          { email: { $in: userEmails } },
-        ],
-      }).lean();
-
-      const userMap = new Map<string, any>();
-      users.forEach((u) => {
-        userMap.set(u._id.toString(), u);
-        if (u.email) userMap.set(u.email.toLowerCase(), u);
+    if (mongoose.connection.readyState === 1) {
+      list = await Contribution.find(dbFilter).sort({ createdAt: -1 }).limit(limit).lean();
+    } else {
+      list = inMemoryContributions.filter((c) => {
+        if (isStaff) return true;
+        if (c.status === 'approved') return true;
+        return Boolean(viewerId && String(c.userId) === String(viewerId));
       });
+    }
 
-      list = list.map((c) => {
-        const matchedUser = (c.userId && userMap.get(c.userId.toString())) ||
-                            (c.authorEmail && userMap.get(c.authorEmail.toLowerCase()));
-        if (matchedUser) {
-          return {
-            ...c,
-            authorName: matchedUser.fullName || c.authorName,
-            authorAvatar: matchedUser.avatarUrl || c.authorAvatar,
-            authorEmail: matchedUser.email || c.authorEmail,
-          };
+    if (mongoose.connection.readyState === 1 && list.length > 0) {
+      try {
+        const userIds = list.map((c) => c.userId).filter((uid) => isValidObjectId(uid));
+        if (userIds.length > 0) {
+          const users = await UserModel.find({ _id: { $in: userIds } })
+            .select('fullName avatarUrl email')
+            .lean();
+
+          const userMap = new Map<string, any>();
+          users.forEach((u) => {
+            userMap.set(u._id.toString(), u);
+          });
+
+          list = list.map((c) => {
+            const matchedUser = c.userId && userMap.get(String(c.userId));
+            if (matchedUser) {
+              return {
+                ...c,
+                authorName: matchedUser.fullName || c.authorName,
+                authorAvatar: matchedUser.avatarUrl || c.authorAvatar,
+                authorEmail: matchedUser.email || c.authorEmail,
+              };
+            }
+            return c;
+          });
         }
-        return c;
-      });
-    } catch (enrichErr) {}
+      } catch {
+        // Ignore enrichment errors
+      }
+    }
 
-    return res.json({ success: true, count: list.length, data: list });
+    const sanitizedList = list.map((c) => stripPrivateEmailForViewer(c, viewerId, viewerRole));
+    return res.json({ success: true, count: sanitizedList.length, data: sanitizedList });
   } catch (err) {
     console.error('[Get Contributions Error]:', err);
-    return res.json({ success: true, count: inMemoryContributions.length, data: inMemoryContributions });
+    return res.status(500).json({ success: false, message: 'Không thể tải danh sách đóng góp.' });
   }
 };
 
-// POST /api/contributions - Create or upsert a contribution (Authenticated Users)
+// POST /api/contributions - Create a new pending contribution
 export const createContribution = async (req: AuthRequest, res: Response) => {
   try {
-    const contribData = req.body;
-    // Validation
-    if (!contribData.name?.trim()) {
-      return res.status(400).json({ success: false, message: 'Vui lòng nhập tên cung đường chính.' });
-    }
-    if (!contribData.province?.trim() || !contribData.district?.trim()) {
-      return res.status(400).json({ success: false, message: 'Vui lòng chọn Tỉnh/Thành phố và Phường/Xã.' });
-    }
-    if (!contribData.distanceKm || contribData.distanceKm <= 0) {
-      return res.status(400).json({ success: false, message: 'Độ dài cung đường phải lớn hơn 0 km.' });
-    }
-    if (!contribData.maxAltitudeM || contribData.maxAltitudeM <= 0) {
-      return res.status(400).json({ success: false, message: 'Cao độ đỉnh phải lớn hơn 0 m.' });
-    }
-
-    const contribId = contribData.id || `contrib-${Date.now()}`;
+    const body = req.body || {};
     const currentUserId = req.user?.userId;
     const currentUserEmail = req.user?.email;
 
-    // Fetch live user from Database
-    let authorUser: any = null;
-    try {
-      if (currentUserId) {
-        authorUser = await UserModel.findById(currentUserId);
-      }
-      if (!authorUser && currentUserEmail) {
-        authorUser = await UserModel.findOne({ email: currentUserEmail });
-      }
-    } catch (uErr) {}
-
-    const resolvedAuthorName = authorUser?.fullName || contribData.authorName || (req.user as any)?.fullName || 'Trekker Đóng Góp';
-    const resolvedAuthorAvatar = authorUser?.avatarUrl || contribData.authorAvatar || (req.user as any)?.avatarUrl || '';
-    const resolvedAuthorEmail = authorUser?.email || currentUserEmail || contribData.authorEmail || '';
-
-    const savedDoc = await Contribution.findOneAndUpdate(
-      { id: contribId },
-      {
-        ...contribData,
-        id: contribId,
-        name: sanitizeInput(contribData.name),
-        description: sanitizeInput(contribData.description || ''),
-        transportationInfo: sanitizeInput(contribData.transportationInfo || ''),
-        difficultyNote: sanitizeInput(contribData.difficultyNote || ''),
-        permitInfo: sanitizeInput(contribData.permitInfo || ''),
-        status: contribData.status || 'pending',
-        userId: currentUserId || contribData.userId,
-        authorEmail: resolvedAuthorEmail,
-        authorName: sanitizeInput(resolvedAuthorName),
-        authorAvatar: resolvedAuthorAvatar,
-        createdAt: new Date().toLocaleDateString('vi-VN'),
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
-
-    const memIdx = inMemoryContributions.findIndex((c) => c.id === contribId);
-    if (memIdx >= 0) {
-      inMemoryContributions[memIdx] = savedDoc.toObject();
-    } else {
-      inMemoryContributions.unshift(savedDoc.toObject());
+    if (!currentUserId) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để gửi đóng góp.' });
     }
 
-    // Trigger Notification for ALL Admins
-    try {
-      await notifyAdmins({
-        sender: {
-          id: currentUserId,
-          name: resolvedAuthorName,
-          avatarUrl: resolvedAuthorAvatar,
-        },
-        type: 'contribution_pending',
-        title: 'Bài đóng góp mới chờ duyệt',
-        message: `Thành viên ${resolvedAuthorName} vừa gửi bài đóng góp "${contribData.name}".`,
-        link: '/admin',
-        relatedId: contribId,
-      });
-    } catch (notifErr) {}
+    if (typeof body.name !== 'string' || !body.name.trim()) {
+      return res.status(400).json({ success: false, message: 'Vui lòng nhập tên cung đường chính.' });
+    }
+    if (typeof body.province !== 'string' || !body.province.trim() || typeof body.district !== 'string' || !body.district.trim()) {
+      return res.status(400).json({ success: false, message: 'Vui lòng chọn Tỉnh/Thành phố và Quận/Huyện.' });
+    }
 
-    console.log(`✅ [MongoDB Contributions]: Successfully saved contribution "${contribData.name}" (ID: ${contribId}) for author "${resolvedAuthorName}" to MongoDB!`);
+    if (containsProfanity(`${body.name} ${body.description || ''}`)) {
+      const matched = getProfanityMatch(`${body.name} ${body.description || ''}`);
+      return res.status(400).json({
+        success: false,
+        message: `Hồ sơ đóng góp chứa từ ngữ không phù hợp ("${matched}").`,
+      });
+    }
+
+    const distanceKm = Number(body.distanceKm);
+    const maxAltitudeM = Number(body.maxAltitudeM);
+    const elevationGainM = Number(body.elevationGainM) || 0;
+    const difficultyLevel = Math.min(Math.max(Number(body.difficultyLevel) || 3, 1), 5);
+    const startLat = Number(body.startLat);
+    const startLng = Number(body.startLng);
+    const endLat = Number(body.endLat ?? startLat);
+    const endLng = Number(body.endLng ?? startLng);
+
+    if (!Number.isFinite(distanceKm) || distanceKm <= 0) {
+      return res.status(400).json({ success: false, message: 'Độ dài cung đường phải lớn hơn 0 km.' });
+    }
+    if (!Number.isFinite(maxAltitudeM) || maxAltitudeM <= 0) {
+      return res.status(400).json({ success: false, message: 'Cao độ đỉnh phải lớn hơn 0 m.' });
+    }
+    if (
+      !Number.isFinite(startLat) ||
+      !Number.isFinite(startLng) ||
+      startLat < -90 ||
+      startLat > 90 ||
+      startLng < -180 ||
+      startLng > 180
+    ) {
+      return res.status(400).json({ success: false, message: 'Tọa độ GPS xuất phát không hợp lệ.' });
+    }
+
+    const region = VALID_REGIONS.has(body.region) ? body.region : 'Miền Bắc';
+    const contribId = `contrib-${crypto.randomUUID()}`;
+
+    let authorUser: any = null;
+    if (mongoose.connection.readyState === 1 && isValidObjectId(currentUserId)) {
+      authorUser = await UserModel.findById(currentUserId).select('fullName avatarUrl email').lean();
+    }
+
+    const resolvedAuthorName = authorUser?.fullName || 'Trekker Đóng Góp';
+    const resolvedAuthorAvatar = authorUser?.avatarUrl || '';
+    const resolvedAuthorEmail = authorUser?.email || currentUserEmail || '';
+
+    const coverImage = typeof body.coverImage === 'string' && isSafeHttpUrl(body.coverImage) ? body.coverImage.trim() : '';
+    const galleryImages = Array.isArray(body.galleryImages)
+      ? body.galleryImages.filter((u: unknown) => isSafeHttpUrl(u)).slice(0, 10)
+      : coverImage
+        ? [coverImage]
+        : [];
+
+    const payload = {
+      id: contribId,
+      name: sanitizeInput(body.name).slice(0, 160),
+      altNames: Array.isArray(body.altNames)
+        ? body.altNames.filter((s: unknown) => typeof s === 'string').slice(0, 10).map((s: string) => sanitizeInput(s))
+        : [],
+      region,
+      province: sanitizeInput(body.province).slice(0, 80),
+      district: sanitizeInput(body.district).slice(0, 80),
+      hamlet: typeof body.hamlet === 'string' ? sanitizeInput(body.hamlet).slice(0, 100) : '',
+      distanceKm,
+      elevationGainM: Math.max(0, elevationGainM),
+      maxAltitudeM,
+      difficultyLevel,
+      difficultyNote: typeof body.difficultyNote === 'string' ? sanitizeInput(body.difficultyNote).slice(0, 300) : '',
+      durationDays: Math.max(1, Number(body.durationDays) || Math.ceil(distanceKm / 12)),
+      durationHoursNote:
+        typeof body.durationHoursNote === 'string' && body.durationHoursNote.trim()
+          ? sanitizeInput(body.durationHoursNote).slice(0, 120)
+          : '1 ngày',
+      startLat,
+      startLng,
+      endLat: Number.isFinite(endLat) && endLat >= -90 && endLat <= 90 ? endLat : startLat,
+      endLng: Number.isFinite(endLng) && endLng >= -180 && endLng <= 180 ? endLng : startLng,
+      description:
+        typeof body.description === 'string' && body.description.trim()
+          ? sanitizeInput(body.description).slice(0, 4000)
+          : 'Cung đường do cộng đồng đóng góp.',
+      transportationInfo:
+        typeof body.transportationInfo === 'string' ? sanitizeInput(body.transportationInfo).slice(0, 1500) : '',
+      coverImage,
+      galleryImages,
+      permitRequired: Boolean(body.permitRequired),
+      permitInfo: typeof body.permitInfo === 'string' ? sanitizeInput(body.permitInfo).slice(0, 500) : '',
+      hasCampsite: Boolean(body.hasCampsite),
+      hasWaterSource: Boolean(body.hasWaterSource),
+      kidFriendly: Boolean(body.kidFriendly),
+      rescueContact:
+        body.rescueContact && typeof body.rescueContact === 'object'
+          ? {
+              name: sanitizeInput(String(body.rescueContact.name || '')).slice(0, 120),
+              phone: sanitizeInput(String(body.rescueContact.phone || '')).slice(0, 40),
+              rangerContact: sanitizeInput(String(body.rescueContact.rangerContact || '')).slice(0, 120),
+            }
+          : undefined,
+      waypoints: sanitizeWaypoints(body.waypoints),
+      gpxTrack: sanitizeGpxTrack(body.gpxTrack),
+      bestMonths: Array.isArray(body.bestMonths)
+        ? body.bestMonths.map(Number).filter((m: number) => Number.isInteger(m) && m >= 1 && m <= 12)
+        : [],
+      avoidMonths: Array.isArray(body.avoidMonths)
+        ? body.avoidMonths.map(Number).filter((m: number) => Number.isInteger(m) && m >= 1 && m <= 12)
+        : [],
+      status: 'pending' as const,
+      userId: String(currentUserId),
+      authorEmail: resolvedAuthorEmail,
+      authorName: sanitizeInput(resolvedAuthorName),
+      authorAvatar: resolvedAuthorAvatar,
+    };
+
+    let savedDoc: any;
+    if (mongoose.connection.readyState === 1) {
+      savedDoc = await Contribution.create(payload);
+    } else {
+      savedDoc = { ...payload, createdAt: new Date(), updatedAt: new Date() };
+      if (inMemoryContributions.length >= MAX_MEM_CONTRIBUTIONS) inMemoryContributions.pop();
+      inMemoryContributions.unshift(savedDoc);
+    }
+
+    await recordActivity({
+      userId: currentUserId,
+      type: 'new_contribution',
+      title: `Đã gửi hồ sơ đóng góp cung đường "${payload.name}"`,
+      targetType: 'trail',
+      targetId: contribId,
+      thumbnailUrl: coverImage,
+    });
+
+    notifyAdmins({
+      sender: {
+        id: String(currentUserId),
+        name: resolvedAuthorName,
+        avatarUrl: resolvedAuthorAvatar,
+      },
+      type: 'contribution_pending',
+      title: 'Bài đóng góp mới chờ duyệt',
+      message: `Thành viên ${resolvedAuthorName} vừa gửi bài đóng góp "${payload.name}".`,
+      link: '/admin',
+      relatedId: contribId,
+      includeModerators: true,
+    }).catch(() => {});
+
     return res.status(201).json({
       success: true,
-      message: 'Đã lưu bài đóng góp mới vào Database thành công!',
+      message: 'Đã lưu bài đóng góp mới thành công! Chờ Ban Quản Trị duyệt công khai.',
       data: savedDoc,
     });
-  } catch (err: any) {
+  } catch (err) {
     console.error('[Create Contribution Error]:', err);
-    return res.status(500).json({ success: false, message: err?.message || 'Không thể lưu bài đóng góp vào Database.' });
+    return res.status(500).json({ success: false, message: 'Không thể lưu bài đóng góp vào Database.' });
   }
 };
 
-// PUT /api/contributions/:id - Update contribution status or details
+// PUT /api/contributions/:id - Strict whitelist update + atomic approval reward + Trail sync
 export const updateContribution = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const update = req.body;
+    const rawBody = req.body || {};
     const currentUserId = req.user?.userId;
     const currentUserEmail = req.user?.email;
-    const isAdmin = req.user?.role === 'admin';
+    const isStaff = req.user?.role === 'admin' || req.user?.role === 'moderator';
 
-    let existing: any = null;
-    try {
-      existing = await Contribution.findOne({ id }).maxTimeMS(300);
-    } catch (dbErr) {
-      existing = inMemoryContributions.find((c) => c.id === id);
+    if (hasDangerousMongoKeys(rawBody)) {
+      return res.status(400).json({ success: false, message: 'Dữ liệu cập nhật chứa khóa không hợp lệ.' });
     }
 
-    if (!existing) {
+    let existing: any = null;
+    if (mongoose.connection.readyState === 1) {
+      existing = await Contribution.findOne({ id });
+    } else {
       existing = inMemoryContributions.find((c) => c.id === id);
     }
 
@@ -179,168 +436,192 @@ export const updateContribution = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ success: false, message: 'Không tìm thấy bài đóng góp để cập nhật.' });
     }
 
-    // Checking status change: ONLY Admin can approve/reject contributions
-    if (update.status && update.status !== existing.status && !isAdmin) {
-      return res.status(403).json({ success: false, message: 'Chỉ Admin mới có quyền phê duyệt hoặc từ chối bài đóng góp.' });
+    if (rawBody.status !== undefined && rawBody.status !== existing.status) {
+      if (!isStaff) {
+        return res.status(403).json({
+          success: false,
+          message: 'Chỉ Ban Quản Trị mới có quyền phê duyệt hoặc từ chối bài đóng góp.',
+        });
+      }
+      if (typeof rawBody.status !== 'string' || !VALID_STATUSES.has(rawBody.status)) {
+        return res.status(400).json({ success: false, message: 'Trạng thái kiểm duyệt không hợp lệ.' });
+      }
     }
 
-    const previousStatus = existing.status;
+    const isOwner =
+      (currentUserId && existing.userId && String(existing.userId) === String(currentUserId)) ||
+      (currentUserEmail && existing.authorEmail && existing.authorEmail.toLowerCase() === currentUserEmail.toLowerCase());
 
-    // Ownership check for editing contribution content
-    const isOwner = (currentUserId && existing.userId && existing.userId.toString() === currentUserId) ||
-                    (currentUserEmail && existing.authorEmail === currentUserEmail);
-
-    if (!isOwner && !isAdmin) {
+    if (!isOwner && !isStaff) {
       return res.status(403).json({ success: false, message: 'Bạn không có quyền chỉnh sửa bài đóng góp này.' });
     }
 
-    // Whitelist allowed update fields — prevent ownership hijacking via userId/authorEmail injection
-    const ALLOWED_UPDATE_FIELDS = [
-      'name', 'altNames', 'region', 'province', 'district', 'hamlet',
-      'distanceKm', 'elevationGainM', 'maxAltitudeM', 'difficultyLevel', 'difficultyNote',
-      'durationDays', 'durationHoursNote', 'startLat', 'startLng', 'endLat', 'endLng',
-      'description', 'transportationInfo', 'coverImage', 'galleryImages',
-      'permitRequired', 'permitInfo', 'hasCampsite', 'hasWaterSource', 'kidFriendly',
-      'rescueContact', 'waypoints', 'gpxTrack', 'bestMonths', 'avoidMonths', 'status',
-    ];
+    // Security: Prevent non-staff owners from silently mutating already-approved public trails
+    if (!isStaff && existing.status === 'approved') {
+      return res.status(403).json({
+        success: false,
+        message: 'Bài đóng góp đã được phê duyệt công khai. Vui lòng liên hệ Ban Quản Trị nếu cần chỉnh sửa.',
+      });
+    }
+
+    const sanitizedUpdate: Record<string, any> = {};
     for (const key of ALLOWED_UPDATE_FIELDS) {
-      if (update[key] !== undefined) {
-        const val = update[key];
-        (existing as any)[key] = typeof val === 'string' ? sanitizeInput(val) : val;
-      }
-    }
-
-    try {
-      await Contribution.findOneAndUpdate({ id }, update, { new: true });
-    } catch (e) {
-      console.error('Contribution update DB error:', e);
-    }
-
-    const idx = inMemoryContributions.findIndex((c) => c.id === id);
-    if (idx >= 0) {
-      inMemoryContributions[idx] = existing;
-    } else {
-      inMemoryContributions.unshift(existing);
-    }
-
-    // If Admin approves the contribution, auto-upsert into MongoDB `trails` collection as well
-    if (update.status === 'approved' && previousStatus !== 'approved') {
-      try {
-        const startLat = Number(existing.startLat) || 22.3364;
-        const startLng = Number(existing.startLng) || 103.8438;
-        const endLat = Number(existing.endLat) || 22.3512;
-        const endLng = Number(existing.endLng) || 103.864;
-
-        const validGpx = (existing.gpxTrack && Array.isArray(existing.gpxTrack) && existing.gpxTrack.length > 0)
-          ? existing.gpxTrack
-          : [
-              [startLat, startLng],
-              [endLat, endLng],
-            ];
-
-        await TrailModel.findOneAndUpdate(
-          { name: existing.name },
-          {
-            name: existing.name,
-            altNames: existing.altNames || [],
-            region: existing.region || 'Miền Bắc',
-            province: existing.province || 'Lào Cai',
-            district: existing.district || 'Sa Pa',
-            difficultyLevel: Number(existing.difficultyLevel) || 3,
-            difficultyNote: existing.difficultyNote || '',
-            distanceKm: Number(existing.distanceKm) || 15,
-            elevationGainM: Number(existing.elevationGainM) || 800,
-            maxAltitudeM: Number(existing.maxAltitudeM) || 2000,
-            durationDays: Number(existing.durationDays) || Math.ceil((Number(existing.distanceKm) || 15) / 10),
-            durationHoursNote: existing.durationHoursNote || '1 ngày',
-            coverImage: existing.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=1200&q=80',
-            galleryImages: existing.galleryImages && existing.galleryImages.length > 0 ? existing.galleryImages : [existing.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=1200&q=80'],
-            startLocation: {
-              type: 'Point',
-              coordinates: [startLng, startLat],
-            },
-            startLat,
-            startLng,
-            endLat,
-            endLng,
-            gpxTrack: validGpx,
-            waypoints: existing.waypoints || [],
-            description: existing.description || 'Cung đường được đóng góp bởi cộng đồng Trekker TrekMap.',
-            transportationInfo: existing.transportationInfo || 'Phương tiện tự túc',
-            permitRequired: !!existing.permitRequired,
-            permitInfo: existing.permitInfo || '',
-            rescueContact: existing.rescueContact?.phone ? existing.rescueContact : {
-              name: 'Hạt Kiểm Lâm ' + (existing.province || 'Địa phương'),
-              phone: '114 / 115 (Cứu nạn & Cấp cứu 24/7)',
-              rangerContact: 'Trạm Kiểm Lâm ' + (existing.district || 'Cửa Rừng'),
-            },
-            rating: 0,
-            reviewCount: 0,
-            hasCampsite: existing.hasCampsite !== undefined ? !!existing.hasCampsite : true,
-            hasWaterSource: existing.hasWaterSource !== undefined ? !!existing.hasWaterSource : true,
-            kidFriendly: existing.kidFriendly !== undefined ? !!existing.kidFriendly : false,
-            bestMonths: Array.isArray(existing.bestMonths) && existing.bestMonths.length > 0 ? existing.bestMonths : [10, 11, 12, 1, 2, 3, 4],
-            avoidMonths: Array.isArray(existing.avoidMonths) ? existing.avoidMonths : [],
-            status: 'approved',
-          },
-          { upsert: true, new: true, setDefaultsOnInsert: true }
-        );
-        console.log(`✅ [MongoDB Auto-Publish Trail]: Trail "${existing.name}" is now live in MongoDB 'trails' collection!`);
-      } catch (trailErr) {
-        console.error('⚠️ [MongoDB Trail Publish Error]:', trailErr);
-      }
-
-      // Award +50 reputation points & add "Người Đóng Góp" badge to author
-      try {
-        const authorUser = await UserModel.findOne({
-          $or: [
-            ...(existing.userId ? [{ _id: existing.userId }] : []),
-            ...(existing.authorEmail ? [{ email: existing.authorEmail }] : []),
-          ],
-        });
-        if (authorUser) {
-          await awardReputationPoints(authorUser._id.toString(), REPUTATION_POINTS.CONTRIBUTE_TRAIL, 'Bài đóng góp cung đường được duyệt');
-          if (!authorUser.badges.includes('Người Đóng Góp')) {
-            authorUser.badges.push('Người Đóng Góp');
-            await authorUser.save();
+      if (rawBody[key] !== undefined) {
+        const val = rawBody[key];
+        if (key === 'region' && !VALID_REGIONS.has(val)) continue;
+        if (key === 'coverImage') {
+          if (typeof val === 'string' && (val === '' || isSafeHttpUrl(val))) {
+            sanitizedUpdate[key] = val.trim();
           }
-
-          // Send approval notification
-          await sendNotification({
-            recipientId: authorUser._id.toString(),
-            type: 'contribution_approved',
-            category: 'moderation',
-            title: 'Bài đóng góp cung đường được duyệt!',
-            message: `Chúc mừng! Bài đóng góp "${existing.name}" của bạn đã được Admin phê duyệt công khai và nhận +50 điểm uy tín.`,
-            link: `/#trail/${existing.id || existing._id}`,
-            relatedId: existing._id || existing.id,
-          });
+          continue;
         }
-      } catch (repErr) {}
-    } else if (update.status === 'rejected' && previousStatus !== 'rejected') {
-      // Send rejection notification
-      try {
-        const authorUser = await UserModel.findOne({
-          $or: [
-            ...(existing.userId ? [{ _id: existing.userId }] : []),
-            ...(existing.authorEmail ? [{ email: existing.authorEmail }] : []),
-          ],
-        });
-        if (authorUser) {
-          await sendNotification({
-            recipientId: authorUser._id.toString(),
-            type: 'contribution_rejected',
-            category: 'moderation',
-            title: 'Bài đóng góp chưa đạt yêu cầu',
-            message: `Rất tiếc, bài đóng góp "${existing.name}" chưa thể công khai. Vui lòng kiểm tra lại thông tin tọa độ & giấy phép.`,
-            link: '/contribute',
-            relatedId: existing._id || existing.id,
-          });
+        if (key === 'galleryImages') {
+          if (Array.isArray(val)) {
+            sanitizedUpdate[key] = val.filter((u: unknown) => isSafeHttpUrl(u)).slice(0, 10);
+          }
+          continue;
         }
-      } catch (rejErr) {}
+        if (key === 'waypoints') {
+          sanitizedUpdate[key] = sanitizeWaypoints(val);
+          continue;
+        }
+        if (key === 'gpxTrack') {
+          sanitizedUpdate[key] = sanitizeGpxTrack(val);
+          continue;
+        }
+        if (key === 'rescueContact' && val && typeof val === 'object') {
+          sanitizedUpdate[key] = {
+            name: sanitizeInput(String(val.name || '')).slice(0, 120),
+            phone: sanitizeInput(String(val.phone || '')).slice(0, 40),
+            rangerContact: sanitizeInput(String(val.rangerContact || '')).slice(0, 120),
+          };
+          continue;
+        }
+        sanitizedUpdate[key] = typeof val === 'string' ? sanitizeInput(val) : val;
+      }
     }
 
-    return res.json({ success: true, message: 'Đã cập nhật bài đóng góp thành công!', data: existing });
+    // If owner edits a rejected contribution, reset status back to pending for re-review
+    if (!isStaff && existing.status === 'rejected') {
+      sanitizedUpdate.status = 'pending';
+    }
+
+    if (isStaff && rawBody.status !== undefined && VALID_STATUSES.has(rawBody.status)) {
+      sanitizedUpdate.status = rawBody.status;
+    }
+
+    const wantsApproval = sanitizedUpdate.status === 'approved' && existing.status !== 'approved';
+    const wantsRejection = sanitizedUpdate.status === 'rejected' && existing.status !== 'rejected';
+
+    let updatedDoc: any = existing;
+    let firstTimeApproved = false;
+
+    if (mongoose.connection.readyState === 1) {
+      if (wantsApproval) {
+        // Atomic transition guard prevents double-rewarding +50 reputation under concurrent approval clicks
+        const transitioned = await Contribution.findOneAndUpdate(
+          { id, status: { $ne: 'approved' } },
+          { $set: sanitizedUpdate },
+          { new: true, runValidators: true }
+        );
+        if (transitioned) {
+          updatedDoc = transitioned;
+          firstTimeApproved = true;
+        } else {
+          updatedDoc = await Contribution.findOneAndUpdate(
+            { id },
+            { $set: sanitizedUpdate },
+            { new: true, runValidators: true }
+          );
+        }
+      } else {
+        updatedDoc = await Contribution.findOneAndUpdate(
+          { id },
+          { $set: sanitizedUpdate },
+          { new: true, runValidators: true }
+        );
+      }
+    } else {
+      firstTimeApproved = wantsApproval;
+      Object.assign(existing, sanitizedUpdate, { updatedAt: new Date() });
+      updatedDoc = existing;
+    }
+
+    invalidateCache('/api/trails');
+
+    // Publish or sync TrailModel when approved
+    if (updatedDoc && updatedDoc.status === 'approved' && mongoose.connection.readyState === 1) {
+      try {
+        await publishContributionToTrail(updatedDoc);
+      } catch (trailErr) {
+        console.error('[MongoDB Trail Publish Error]:', trailErr);
+      }
+    }
+
+    if (firstTimeApproved && updatedDoc) {
+      await recordAuditLog(req, 'APPROVE_CONTRIBUTION', 'contributions', `Phê duyệt cung đường ${updatedDoc.name} (${updatedDoc.id})`);
+      if (mongoose.connection.readyState === 1) {
+        try {
+          const authorUser = await UserModel.findOne({
+            $or: [
+              ...(isValidObjectId(updatedDoc.userId) ? [{ _id: updatedDoc.userId }] : []),
+              ...(updatedDoc.authorEmail ? [{ email: updatedDoc.authorEmail }] : []),
+            ],
+          }).select('_id');
+
+          if (authorUser) {
+            await awardReputationPoints(
+              authorUser._id.toString(),
+              REPUTATION_POINTS.CONTRIBUTE_TRAIL,
+              'Bài đóng góp cung đường được duyệt'
+            );
+            await UserModel.updateOne(
+              { _id: authorUser._id },
+              { $addToSet: { badges: 'Người Đóng Góp' } }
+            );
+            await sendNotification({
+              recipientId: authorUser._id.toString(),
+              type: 'contribution_approved',
+              category: 'moderation',
+              title: 'Bài đóng góp cung đường được duyệt!',
+              message: `Chúc mừng! Bài đóng góp "${updatedDoc.name}" của bạn đã được Ban Quản Trị phê duyệt công khai và nhận +50 điểm uy tín.`,
+              link: `/#trail/${updatedDoc.id}`,
+              relatedId: updatedDoc._id || updatedDoc.id,
+            });
+          }
+        } catch {
+          // Best-effort reward & notification
+        }
+      }
+    } else if (wantsRejection && updatedDoc) {
+      await recordAuditLog(req, 'REJECT_CONTRIBUTION', 'contributions', `Từ chối cung đường ${updatedDoc.name} (${updatedDoc.id})`);
+      if (mongoose.connection.readyState === 1) {
+        try {
+          const authorUser = await UserModel.findOne({
+            $or: [
+              ...(isValidObjectId(updatedDoc.userId) ? [{ _id: updatedDoc.userId }] : []),
+              ...(updatedDoc.authorEmail ? [{ email: updatedDoc.authorEmail }] : []),
+            ],
+          }).select('_id');
+
+          if (authorUser) {
+            await sendNotification({
+              recipientId: authorUser._id.toString(),
+              type: 'contribution_rejected',
+              category: 'moderation',
+              title: 'Bài đóng góp chưa đạt yêu cầu',
+              message: `Rất tiếc, bài đóng góp "${updatedDoc.name}" chưa thể công khai. Vui lòng kiểm tra lại thông tin tọa độ & giấy phép.`,
+              link: '/contribute',
+              relatedId: updatedDoc._id || updatedDoc.id,
+            });
+          }
+        } catch {
+          // Best-effort notification
+        }
+      }
+    }
+
+    return res.json({ success: true, message: 'Đã cập nhật bài đóng góp thành công!', data: updatedDoc });
   } catch (err) {
     console.error('[Update Contribution Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi cập nhật bài đóng góp.' });
@@ -353,16 +634,12 @@ export const deleteContribution = async (req: AuthRequest, res: Response) => {
     const { id } = req.params;
     const currentUserId = req.user?.userId;
     const currentUserEmail = req.user?.email;
-    const isAdmin = req.user?.role === 'admin';
+    const isStaff = req.user?.role === 'admin' || req.user?.role === 'moderator';
 
     let existing: any = null;
-    try {
-      existing = await Contribution.findOne({ id }).maxTimeMS(300);
-    } catch (dbErr) {
-      existing = inMemoryContributions.find((c) => c.id === id);
-    }
-
-    if (!existing) {
+    if (mongoose.connection.readyState === 1) {
+      existing = await Contribution.findOne({ id });
+    } else {
       existing = inMemoryContributions.find((c) => c.id === id);
     }
 
@@ -370,20 +647,37 @@ export const deleteContribution = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ success: false, message: 'Không tìm thấy bài đóng góp để xóa.' });
     }
 
-    const isOwner = (currentUserId && existing.userId && existing.userId.toString() === currentUserId) ||
-                    (currentUserEmail && existing.authorEmail === currentUserEmail);
+    const isOwner =
+      (currentUserId && existing.userId && String(existing.userId) === String(currentUserId)) ||
+      (currentUserEmail && existing.authorEmail && existing.authorEmail.toLowerCase() === currentUserEmail.toLowerCase());
 
-    if (!isOwner && !isAdmin) {
+    if (!isOwner && !isStaff) {
       return res.status(403).json({ success: false, message: 'Bạn không có quyền xóa bài đóng góp này.' });
     }
 
-    try {
+    if (!isStaff && existing.status === 'approved') {
+      return res.status(403).json({
+        success: false,
+        message: 'Không thể tự xóa bài đóng góp đã được phê duyệt công khai.',
+      });
+    }
+
+    if (mongoose.connection.readyState === 1) {
       await Contribution.findOneAndDelete({ id });
-    } catch (e) {}
+      if (isStaff && existing.status === 'approved') {
+        await TrailModel.findOneAndDelete({ id: existing.id }).catch(() => {});
+        invalidateElevationCache(String(existing.id));
+      }
+    }
 
     const idx = inMemoryContributions.findIndex((c) => c.id === id);
     if (idx >= 0) {
       inMemoryContributions.splice(idx, 1);
+    }
+
+    invalidateCache('/api/trails');
+    if (isStaff) {
+      await recordAuditLog(req, 'DELETE_CONTRIBUTION', 'contributions', `Xóa đóng góp ${existing.name} (${id})`);
     }
 
     return res.json({ success: true, message: 'Đã xóa bài đóng góp thành công!' });

@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import type { Trail } from '../../types.js';
+import { useSlidingIndicator } from '../../hooks/useSlidingIndicator.js';
 import {
   IconSnowflake,
   IconFlower,
@@ -38,7 +39,7 @@ interface MonthMeteorology {
   fallbackImage: string;
 }
 
-// 12-Month Climate Profiles (Meteorological and Geological Characteristics of Vietnam)
+// 100% Verified Vietnam Mountain Photography hosted on LOST Cloudinary CDN (Rule 11)
 const MONTH_METEOROLOGY: MonthMeteorology[] = [
   {
     month: 1,
@@ -53,7 +54,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '2°C - 10°C',
     cloudChance: '85% Săn mây',
     terrainState: 'Khô ráo, có băng giá',
-    fallbackImage: 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=800&q=80',
+    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329097/trekmap/trails/trail_cover_trail-fansipan.jpg',
   },
   {
     month: 2,
@@ -68,7 +69,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '8°C - 16°C',
     cloudChance: '80% Biển mây',
     terrainState: 'Ấm dần, tiết trời dịu mát',
-    fallbackImage: 'https://images.unsplash.com/photo-1528127269322-539801943592?auto=format&fit=crop&w=800&q=80',
+    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329100/trekmap/trails/trail_cover_trail-laothan.jpg',
   },
   {
     month: 3,
@@ -83,7 +84,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '12°C - 20°C',
     cloudChance: '70% Săn mây',
     terrainState: 'Đường khô, thảm hoa rực rỡ',
-    fallbackImage: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=800&q=80',
+    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329101/trekmap/trails/trail_cover_trail-kyquansan.jpg',
   },
   {
     month: 4,
@@ -98,7 +99,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '16°C - 25°C',
     cloudChance: '60% Nắng đẹp',
     terrainState: 'Đường khô ráo, rừng thông reo',
-    fallbackImage: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=800&q=80',
+    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329105/trekmap/trails/trail_cover_trail-bidoup.jpg',
   },
   {
     month: 5,
@@ -113,7 +114,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '18°C - 26°C',
     cloudChance: '65% Nắng trong',
     terrainState: 'Ruộng bậc thang ngập nước',
-    fallbackImage: 'https://images.unsplash.com/photo-1570784428807-6f81e3557e4e?auto=format&fit=crop&w=800&q=80',
+    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329104/trekmap/trails/trail_cover_trail-chuyangsin.jpg',
   },
   {
     month: 6,
@@ -122,18 +123,18 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     badge: 'Mùa Thác Bạc',
     iconName: 'trees',
     IconComponent: IconTrees,
-    overviewText: 'Trốn nóng mùa hè dưới tán rừng đại ngàn, tắm suối mát và thám hiểm hang động.',
+    overviewText: 'Trốn nóng mùa hè dưới tán rừng đại ngàn, tắm suối mát và thám hiểm rừng nguyên sinh.',
     preparationTip: 'Bắt buộc mang túi chống nước điện thoại, giày trekking có lỗ thoát nước nhanh.',
     color: 'var(--color-primary)',
     tempRange: '22°C - 30°C',
     cloudChance: '55% Thác nước đẹp',
     terrainState: 'Suối mát, thảm thực vật tốt',
-    fallbackImage: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=800&q=80',
+    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329104/trekmap/trails/trail_cover_trail-bachma.jpg',
   },
   {
     month: 7,
     label: 'Tháng 7',
-    seasonTheme: 'Trekking Ven Biển, Cực Đông & Hải Đăng Tổ Quốc',
+    seasonTheme: 'Trekking Ven Biển, Cực Đông & Duyên Hải Miền Trung',
     badge: 'Biển Xanh Mùa Hạ',
     iconName: 'sun',
     IconComponent: IconSun,
@@ -143,7 +144,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '25°C - 33°C',
     cloudChance: '50% Nắng gắt',
     terrainState: 'Cát biển, đồi dốc lộng gió',
-    fallbackImage: 'https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&w=800&q=80',
+    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329107/trekmap/trails/trail_cover_trail-nuidinh.jpg',
   },
   {
     month: 8,
@@ -153,12 +154,12 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     iconName: 'sparkles',
     IconComponent: IconSparkles,
     overviewText: 'Băng qua những đồi cỏ xanh ngút ngàn, rừng thông reo và các con thác hùng vĩ miền Trung - Tây Nguyên.',
-    preparationTip: 'Mang theo áo mưa bộ GORE-TEX dự phòng và kiểm tra dự báo thời tiết trước khi hạ trại trên đồi trống.',
+    preparationTip: 'Mang theo áo mưa bộ chống thấm dự phòng và kiểm tra dự báo thời tiết trước khi hạ trại trên đồi trống.',
     color: 'var(--color-primary)',
     tempRange: '18°C - 26°C',
     cloudChance: '70% Mây thung lũng',
     terrainState: 'Đồi cỏ xanh, trơn nhẹ',
-    fallbackImage: 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=800&q=80',
+    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329106/trekmap/trails/trail_cover_trail-tanangphandung.jpg',
   },
   {
     month: 9,
@@ -167,13 +168,13 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     badge: 'Mùa Lúa Chín Vàng',
     iconName: 'sun',
     IconComponent: IconSun,
-    overviewText: 'Hành trình ngắm mùa vàng óng ả Mù Cang Chải, Sa Pa, Y Tý và Pu Luông.',
-    preparationTip: 'Mùa cao điểm du lịch Tây Bắc, bạn nên liên hệ porter và xe trước ít nhất 10 ngày.',
+    overviewText: 'Hành trình ngắm mùa vàng óng ả Mù Cang Chải, Sa Pa, Y Tý và Pù Luông.',
+    preparationTip: 'Mùa cao điểm trekking Tây Bắc, bạn nên liên hệ porter và xe trước ít nhất 10 ngày.',
     color: 'var(--color-sun)',
     tempRange: '15°C - 24°C',
     cloudChance: '75% Nắng thu vàng',
     terrainState: 'Khô ráo, lúa chín vàng',
-    fallbackImage: 'https://images.unsplash.com/photo-1570784428807-6f81e3557e4e?auto=format&fit=crop&w=800&q=80',
+    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329103/trekmap/trails/trail_cover_trail-nhiucosan.jpg',
   },
   {
     month: 10,
@@ -188,7 +189,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '12°C - 20°C',
     cloudChance: '85% Biển mây',
     terrainState: 'Đồi hoa tím, gió mạnh',
-    fallbackImage: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=800&q=80',
+    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329102/trekmap/trails/trail_cover_trail-tachinhu.jpg',
   },
   {
     month: 11,
@@ -197,13 +198,13 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     badge: 'Đỉnh Cao Săn Mây',
     iconName: 'mountain',
     IconComponent: IconMountain,
-    overviewText: 'Tỉ lệ gặp biển mây cao nhất năm trên toàn bộ 10 đỉnh núi Tây Bắc.',
+    overviewText: 'Tỉ lệ gặp biển mây cao nhất năm trên toàn bộ các đỉnh núi Hoàng Liên Sơn và Tây Bắc.',
     preparationTip: 'Đêm trên độ cao 2.500m nhiệt độ có thể xuống 4°C, cần túi ngủ có nhiệt độ chịu lạnh từ 0°C đến 5°C.',
     color: 'var(--color-primary)',
     tempRange: '6°C - 16°C',
     cloudChance: '90% Đỉnh cao săn mây',
     terrainState: 'Khô ráo tuyệt đối',
-    fallbackImage: 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=800&q=80',
+    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329099/trekmap/trails/trail_cover_trail-taxua.jpg',
   },
   {
     month: 12,
@@ -212,34 +213,47 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     badge: 'Băng Tuyết Mùa Đông',
     iconName: 'flame',
     IconComponent: IconFlame,
-    overviewText: 'Trải nghiệm cái lạnh mùa đông, săn tuyết trên các đỉnh cao và cắm trại đêm ngắm sao.',
-    preparationTip: 'Trang bị áo khoác 3 lớp chống gió tuyết, gậy trekking có gắn đệm chống lún và bình giữ nhiệt nước nóng.',
+    overviewText: 'Trải nghiệm cái lạnh mùa đông, săn băng trên các đỉnh cao và cắm trại đêm ngắm sao.',
+    preparationTip: 'Trang bị áo khoác 3 lớp chống gió tuyết, gậy trekking và bình giữ nhiệt nước nóng.',
     color: 'var(--color-earth)',
     tempRange: '0°C - 8°C',
     cloudChance: '85% Băng tuyết & mây',
     terrainState: 'Rất lạnh, sương giá',
-    fallbackImage: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=800&q=80',
+    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329108/trekmap/trails/trail_cover_trail-chuachan.jpg',
   },
 ];
 
-export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
+function getVietnamCalendarMonth(): number {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      month: 'numeric',
+    }).formatToParts(new Date());
+    const monthNum = Number(parts.find((p) => p.type === 'month')?.value);
+    if (Number.isFinite(monthNum) && monthNum >= 1 && monthNum <= 12) return monthNum;
+  } catch {
+    // Fallback to local clock when Intl timezone is unavailable
+  }
+  return new Date().getMonth() + 1;
+}
+
+const SeasonExpeditionRadarBase: React.FC<SeasonExpeditionRadarProps> = ({
   trails,
   onSelectTrail,
   onExploreFilter,
   onFilterSeasonMonth,
 }) => {
-  // Default to current calendar month (1-12)
-  const currentCalendarMonth = new Date().getMonth() + 1;
+  const currentCalendarMonth = useMemo(() => getVietnamCalendarMonth(), []);
   const [activeMonth, setActiveMonth] = useState<number>(currentCalendarMonth);
+  const { trackRef: monthTrackRef, indicatorStyle: monthIndicatorStyle } =
+    useSlidingIndicator<number>(activeMonth);
 
   const selectedMeteorology = MONTH_METEOROLOGY.find((m) => m.month === activeMonth) || MONTH_METEOROLOGY[0];
   const CurrentIcon = selectedMeteorology.IconComponent;
 
-  // 100% Dynamic Database Filter: query live trails matching the selected month
   const matchedTrails = useMemo(() => {
     if (!Array.isArray(trails) || trails.length === 0) return [];
 
-    // Filter valid trails that specify this activeMonth in their bestMonths, or don't explicitly avoid it
     const filtered = trails.filter((t) => {
       if (!t.name || t.name.trim().length < 3) return false;
       if (Array.isArray(t.bestMonths) && t.bestMonths.length > 0) {
@@ -248,16 +262,13 @@ export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
       return !t.avoidMonths?.includes(activeMonth);
     });
 
-    // If matches exist, sort by rating / reviewCount
     if (filtered.length > 0) {
       return filtered.sort((a, b) => (b.rating || 0) - (a.rating || 0) || (b.reviewCount || 0) - (a.reviewCount || 0));
     }
 
-    // Fallback: return top rated trails
-    return trails.filter(t => t.name && t.name.trim().length >= 3).slice(0, 3);
+    return trails.filter((t) => t.name && t.name.trim().length >= 3).slice(0, 3);
   }, [trails, activeMonth]);
 
-  // Dynamic Highlights derived from real trails in the database for the active month
   const dynamicHighlights = useMemo(() => {
     if (!matchedTrails || matchedTrails.length === 0) {
       return [
@@ -268,13 +279,11 @@ export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
     }
 
     const items: string[] = [];
-    // 1. Top trail highlight
     const top = matchedTrails[0];
     if (top && top.name) {
       items.push(`Cung đường tiêu biểu: ${top.name} (${top.province || 'Việt Nam'}) – Cao độ ${top.maxAltitudeM || 0}m, cự ly ${top.distanceKm || 0}km`);
     }
 
-    // 2. Second trail if available
     if (matchedTrails.length > 1) {
       const second = matchedTrails[1];
       if (second && second.name) {
@@ -282,149 +291,157 @@ export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
       }
     }
 
-    // 3. Overall season coverage summary
     items.push(`Hệ sinh thái có ${matchedTrails.length} cung đường lý tưởng sẵn sàng khám phá trong tháng ${activeMonth}`);
 
     return items;
   }, [matchedTrails, activeMonth]);
 
+  const handleExploreSeasonOnMap = () => {
+    if (onFilterSeasonMonth) {
+      // Parent callback handles setting month filter & scrolling to map cleanly (no double scrollIntoView)
+      onFilterSeasonMonth(selectedMeteorology.month);
+    } else {
+      const mapElem = document.getElementById('gis-map-section') || document.getElementById('map-view-container');
+      if (mapElem) {
+        mapElem.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+    if (onExploreFilter) {
+      onExploreFilter(selectedMeteorology.label);
+    }
+  };
+
   return (
     <section
       style={{
-        padding: '24px 0 28px 0',
-        maxWidth: 1280,
+        padding: '44px 0 36px 0',
+        maxWidth: 1320,
         margin: '0 auto',
       }}
     >
-      {/* Section Header */}
-      <div style={{ textAlign: 'center', marginBottom: 20 }}>
-        <div
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: '4px 14px',
-            borderRadius: 20,
-            background: 'var(--color-bg-card)',
-            border: '1px solid var(--color-border)',
-            fontSize: 'var(--font-size-xs)',
-            fontWeight: 800,
-            color: 'var(--color-primary)',
-            textTransform: 'uppercase',
-            letterSpacing: '0.05em',
-            marginBottom: 12,
-            boxShadow: 'var(--shadow-card)',
-          }}
-        >
-          <IconCompass size={16} color="var(--color-primary)" />
-          Lịch Thám Hiểm 12 Tháng
-        </div>
-
+      {/* Editorial Header */}
+      <div style={{ marginBottom: 24 }}>
+        <div className="section-eyebrow">02 / Lịch khí hậu theo tháng</div>
         <h2
+          className="font-editorial"
           style={{
-            fontSize: 'clamp(1.6rem, 3.2vw, 2.4rem)',
-            fontWeight: 900,
+            fontSize: 'clamp(1.75rem, 3.2vw, 2.55rem)',
+            fontWeight: 500,
             color: 'var(--color-text-main)',
-            marginBottom: 10,
+            letterSpacing: '-0.025em',
+            margin: '0 0 6px 0',
+            lineHeight: 1.12,
           }}
         >
-          Nên Đi Đâu Vào <span style={{ color: selectedMeteorology.color }}>{selectedMeteorology.label}</span>?
+          Nên đi đâu vào{' '}
+          <span style={{ color: 'var(--color-primary)', fontWeight: 700 }}>
+            {selectedMeteorology.label}?
+          </span>
         </h2>
-        <p style={{ color: 'var(--color-text-muted)', fontSize: '0.95rem', maxWidth: 650, margin: '0 auto' }}>
-          Khám phá trọn vẹn đặc trưng mùa hoa, mùa lúa chín, mùa săn mây và băng tuyết theo dữ liệu khí tượng thực địa.
+        <p style={{ color: 'var(--color-text-muted)', fontSize: '0.88rem', maxWidth: 640, margin: 0 }}>
+          Mùa hoa rừng, mùa lúa chín, săn mây và thời tiết vùng cao tổng hợp theo đặc trưng khí tượng cho {trails.length} cung đường thực địa Việt Nam.
         </p>
       </div>
 
-      {/* 12-Month Interactive Selector */}
+      {/* Minimalist Topographic 12-Month Ruler with Liquid Gold Glider */}
       <div
+        ref={monthTrackRef}
+        className="lost-glider-track"
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(80px, 1fr))',
-          gap: 8,
-          background: 'var(--color-bg-card)',
-          padding: '12px 14px',
-          borderRadius: 24,
-          border: '1px solid var(--color-border)',
-          boxShadow: 'var(--shadow-card)',
-          marginBottom: 28,
+          gridTemplateColumns: 'repeat(12, minmax(56px, 1fr))',
+          overflowX: 'auto',
+          borderTop: '1px solid var(--color-border-strong)',
+          borderBottom: '1px solid var(--color-border)',
+          marginBottom: 22,
         }}
       >
+        <span
+          aria-hidden="true"
+          className="lost-glider-gold"
+          style={monthIndicatorStyle}
+        />
         {MONTH_METEOROLOGY.map((item) => {
           const isActive = item.month === activeMonth;
           const isNow = item.month === currentCalendarMonth;
-          const MonthIcon = item.IconComponent;
 
           return (
             <button
               key={item.month}
               type="button"
+              aria-pressed={isActive}
+              data-glider-active={isActive ? 'true' : undefined}
               onClick={() => setActiveMonth(item.month)}
-              className={`interactive-click ${isActive ? 'month-active-pop' : ''}`}
+              className="lost-glider-item"
               style={{
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
                 justifyContent: 'center',
-                padding: '10px 4px',
-                borderRadius: 14,
-                border: isActive ? `1.5px solid ${item.color}` : '1px solid transparent',
-                background: isActive ? 'rgba(16, 185, 129, 0.12)' : 'transparent',
+                padding: '13px 4px',
+                border: 'none',
+                background: 'transparent',
                 cursor: 'pointer',
                 position: 'relative',
-                boxShadow: isActive ? '0 0 14px rgba(16, 185, 129, 0.25)' : 'none',
-                transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                transition: 'color 200ms ease',
               }}
             >
               {isNow && (
                 <span
                   style={{
                     position: 'absolute',
-                    top: -6,
+                    top: 6,
+                    right: 8,
+                    width: 4,
+                    height: 4,
+                    borderRadius: '50%',
                     background: 'var(--color-primary)',
-                    color: '#ffffff',
-                    fontSize: '0.55rem',
-                    fontWeight: 800,
-                    padding: '1px 5px',
-                    borderRadius: 6,
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.02em',
                   }}
-                >
-                  Hiện Tại
-                </span>
+                  title="Tháng hiện tại"
+                />
               )}
-              <MonthIcon
-                size={20}
-                color={isActive ? item.color : 'var(--color-text-dim)'}
-                className={isActive ? 'icon-spin-subtle' : ''}
-              />
+              <span
+                className={isActive ? 'font-editorial' : undefined}
+                style={{
+                  fontSize: isActive ? '1.15rem' : '0.84rem',
+                  fontWeight: isActive ? 600 : 500,
+                  color: isActive ? 'var(--color-text-main)' : 'var(--color-text-dim)',
+                  fontVariantNumeric: 'tabular-nums',
+                  lineHeight: 1.1,
+                }}
+              >
+                {String(item.month).padStart(2, '0')}
+              </span>
               <span
                 style={{
-                  fontSize: '0.78rem',
-                  fontWeight: isActive ? 800 : 600,
-                  color: isActive ? 'var(--color-text-main)' : 'var(--color-text-dim)',
+                  fontSize: '0.62rem',
+                  letterSpacing: '0.08em',
+                  textTransform: 'uppercase',
+                  color: isActive ? 'var(--color-sun)' : 'var(--color-text-dim)',
                   marginTop: 4,
                 }}
               >
-                T{item.month}
+                Th.{item.month}
               </span>
             </button>
           );
         })}
       </div>
 
-      {/* Main Season Overview Grid */}
+      {/* Main Season Overview Grid (Smooth Cross-Fade on Month Switch) */}
       <div
-        className="card card-glow"
+        key={activeMonth}
+        className="card tab-content-slide"
         style={{
-          padding: '28px 32px',
+          padding: '22px 24px',
+          borderRadius: 6,
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
-          gap: 32,
+          gridTemplateColumns: 'repeat(auto-fit, minmax(min(300px, 100%), 1fr))',
+          gap: 28,
           alignItems: 'stretch',
         }}
       >
-        {/* Left Column: Season Theme & Radar Gauges */}
+        {/* Left Column */}
         <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
@@ -433,11 +450,11 @@ export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: 6,
-                  background: 'rgba(16, 185, 129, 0.12)',
+                  background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
                   border: '1px solid var(--color-border)',
                   color: selectedMeteorology.color,
-                  padding: '4px 12px',
-                  borderRadius: 20,
+                  padding: '4px 10px',
+                  borderRadius: 4,
                   fontSize: '0.78rem',
                   fontWeight: 800,
                 }}
@@ -453,7 +470,7 @@ export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
 
             <h3
               style={{
-                fontSize: 'clamp(1.3rem, 2.2vw, 1.8rem)',
+                fontSize: 'clamp(1.25rem, 2.2vw, 1.75rem)',
                 fontWeight: 900,
                 color: 'var(--color-text-main)',
                 marginBottom: 12,
@@ -463,42 +480,38 @@ export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
               {selectedMeteorology.seasonTheme}
             </h3>
 
-            <p style={{ color: 'var(--color-text-muted)', fontSize: '0.92rem', lineHeight: 1.6, marginBottom: 18 }}>
+            <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem', lineHeight: 1.6, marginBottom: 18 }}>
               {selectedMeteorology.overviewText}
             </p>
 
-            {/* Weather & Radar Gauges */}
+            {/* Weather & Radar Gauges (Mobile-safe responsive grid) */}
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: 'repeat(3, 1fr)',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(min(88px, 100%), 1fr))',
                 gap: 8,
                 marginBottom: 20,
-                background: 'var(--color-bg-main)',
-                padding: '10px 12px',
-                borderRadius: 14,
-                border: '1px solid var(--color-border)',
+                fontVariantNumeric: 'tabular-nums',
               }}
             >
-              <div style={{ textAlign: 'center' }}>
+              <div style={{ textAlign: 'center', background: 'var(--color-bg-main)', padding: '9px 10px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
                 <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', marginBottom: 2 }}>Nhiệt độ</div>
                 <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-sun)' }}>{selectedMeteorology.tempRange}</div>
               </div>
-              <div style={{ textAlign: 'center', borderLeft: '1px solid var(--color-border)', borderRight: '1px solid var(--color-border)' }}>
+              <div style={{ textAlign: 'center', background: 'var(--color-bg-main)', padding: '9px 10px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
                 <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', marginBottom: 2 }}>Săn mây</div>
                 <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-sky)' }}>{selectedMeteorology.cloudChance}</div>
               </div>
-              <div style={{ textAlign: 'center' }}>
+              <div style={{ textAlign: 'center', background: 'var(--color-bg-main)', padding: '9px 10px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
                 <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', marginBottom: 2 }}>Địa hình</div>
                 <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-primary)' }}>{selectedMeteorology.terrainState}</div>
               </div>
             </div>
 
-            {/* Dynamic Highlights from Real Trails */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
               {dynamicHighlights.map((h, i) => (
                 <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: '0.86rem', color: 'var(--color-text-muted)' }}>
-                  <span style={{ color: selectedMeteorology.color, fontWeight: 900, marginTop: 1 }}>•</span>
+                  <span style={{ color: selectedMeteorology.color, fontWeight: 900, marginTop: 1 }}>·</span>
                   <span>{h}</span>
                 </div>
               ))}
@@ -510,8 +523,8 @@ export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
             style={{
               background: 'var(--color-bg-main)',
               border: '1px solid var(--color-border)',
-              borderRadius: 16,
-              padding: '12px 16px',
+              borderRadius: 4,
+              padding: '12px 14px',
               display: 'flex',
               alignItems: 'flex-start',
               gap: 12,
@@ -536,8 +549,8 @@ export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
           style={{
             background: 'var(--color-bg-main)',
             border: '1px solid var(--color-border)',
-            borderRadius: 20,
-            padding: 22,
+            borderRadius: 6,
+            padding: 20,
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'space-between',
@@ -555,31 +568,35 @@ export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
               )}
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {matchedTrails.slice(0, 3).map((trail, idx) => (
-                <div
-                  key={trail.id || (trail as any)._id || `matched-trail-${idx}`}
+                <button
+                  key={trail.id || (trail as Trail & { _id?: string })._id || `matched-trail-${idx}`}
+                  type="button"
                   onClick={() => onSelectTrail?.(trail)}
-                  className="interactive-click card-hover-lift"
+                  className="interactive-click card-hover-lift scene-card-enter"
                   style={{
                     background: 'var(--color-bg-card)',
                     border: '1px solid var(--color-border)',
-                    borderRadius: 16,
-                    padding: '14px 16px',
+                    borderRadius: 4,
+                    padding: '12px 14px',
                     cursor: 'pointer',
                     display: 'flex',
                     alignItems: 'center',
                     gap: 14,
+                    textAlign: 'left',
+                    width: '100%',
+                    ['--stagger-i' as string]: idx,
                   }}
                 >
-                  {/* Trail Thumbnail */}
                   <img
                     src={trail.coverImage || selectedMeteorology.fallbackImage}
                     alt={trail.name}
+                    loading="lazy"
                     style={{
-                      width: 64,
-                      height: 64,
-                      borderRadius: 12,
+                      width: 60,
+                      height: 60,
+                      borderRadius: 4,
                       objectFit: 'cover',
                       flexShrink: 0,
                       border: '1px solid var(--color-border)',
@@ -597,7 +614,7 @@ export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
                           fontWeight: 800,
                           color: 'var(--color-text-main)',
                           margin: 0,
-                          lineHeight: 1.4,
+                          lineHeight: 1.38,
                           wordBreak: 'break-word',
                         }}
                       >
@@ -608,10 +625,10 @@ export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
                           style={{
                             fontSize: '0.68rem',
                             fontWeight: 700,
-                            background: 'rgba(16, 185, 129, 0.12)',
+                            background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
                             border: '1px solid var(--color-border)',
                             padding: '2px 8px',
-                            borderRadius: 6,
+                            borderRadius: 4,
                             color: 'var(--color-primary)',
                             flexShrink: 0,
                             whiteSpace: 'nowrap',
@@ -621,54 +638,48 @@ export const SeasonExpeditionRadar: React.FC<SeasonExpeditionRadarProps> = ({
                         </span>
                       )}
                     </div>
-                    <div style={{ fontSize: '0.76rem', color: 'var(--color-text-dim)', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-                      <span>Độ cao: <strong style={{ color: 'var(--color-sun)' }}>{trail.maxAltitudeM}m</strong></span>
+                    <div style={{ fontSize: '0.76rem', color: 'var(--color-text-dim)', display: 'flex', gap: 12, flexWrap: 'wrap', fontVariantNumeric: 'tabular-nums' }}>
+                      <span>Độ cao: <strong style={{ color: 'var(--color-sun)' }}>{trail.maxAltitudeM.toLocaleString('vi-VN')}m</strong></span>
                       <span>Cự ly: <strong style={{ color: 'var(--color-sky)' }}>{trail.distanceKm}km</strong></span>
                       <span>Độ khó: <strong style={{ color: 'var(--color-primary)' }}>{trail.difficultyLevel}/5</strong></span>
                     </div>
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           </div>
 
-          {/* Bottom Explore Link Box */}
-          <div
-            onClick={() => {
-              if (onFilterSeasonMonth) {
-                onFilterSeasonMonth(selectedMeteorology.month);
-              }
-              const mapElem = document.getElementById('gis-map-section') || document.getElementById('map-view-container');
-              if (mapElem) {
-                mapElem.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              }
-              if (onExploreFilter) {
-                onExploreFilter(selectedMeteorology.label);
-              }
-            }}
+          <button
+            type="button"
+            onClick={handleExploreSeasonOnMap}
             className="interactive-click"
             style={{
               marginTop: 16,
-              padding: '12px 16px',
-              borderRadius: 14,
-              background: 'rgba(16, 185, 129, 0.08)',
-              border: '1px solid var(--color-border)',
+              padding: '11px 14px',
+              borderRadius: 4,
+              background: 'color-mix(in srgb, var(--color-primary) 10%, transparent)',
+              border: '1px solid var(--color-border-glow)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
+              gap: 8,
               cursor: 'pointer',
+              width: '100%',
+              textAlign: 'left',
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <IconCompass size={16} color="var(--color-primary)" />
               <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                Xem toàn bộ {matchedTrails.length} cung đường tháng {selectedMeteorology.month} trên Bản Đồ 3D
+                Xem toàn bộ {matchedTrails.length} cung đường tháng {selectedMeteorology.month} trên Bản Đồ Thực Địa
               </span>
             </div>
-            <span style={{ fontSize: '0.82rem', color: 'var(--color-primary)', fontWeight: 800 }}>↑ Lên Bản Đồ</span>
-          </div>
+            <span style={{ fontSize: '0.8rem', color: 'var(--color-primary)', fontWeight: 800, flexShrink: 0 }}>Lên Bản Đồ</span>
+          </button>
         </div>
       </div>
     </section>
   );
 };
+
+export const SeasonExpeditionRadar = React.memo(SeasonExpeditionRadarBase);

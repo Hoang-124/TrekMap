@@ -24,30 +24,35 @@ export const PENALTY_POINTS = {
   DELETED_POST: 30,
 };
 
-/**
- * Calculates badge list according to reputation score progression
- */
-export function calculateBadgesForScore(score: number, existingBadges: string[] = []): string[] {
+const SCORE_TIER_BADGES: Array<{ minScore: number; name: string }> = [
+  { minScore: 100, name: 'Người Khai Phá' },
+  { minScore: 200, name: 'Trekker Kỳ Cựu' },
+  { minScore: 500, name: 'Chuyên Gia Núi Rừng' },
+];
+
+export function calculateBadgesForScore(
+  score: number,
+  existingBadges: string[] = [],
+  isVerifiedAccount = false
+): string[] {
   const badgeSet = new Set<string>(existingBadges);
-  
-  if (!badgeSet.has('Trekker Mới')) badgeSet.add('Trekker Mới');
-  if (score >= 50 && !badgeSet.has('Verified Trekker')) badgeSet.add('Verified Trekker');
-  if (score >= 100 && !badgeSet.has('Người Khai Phá')) badgeSet.add('Người Khai Phá');
-  if (score >= 200 && !badgeSet.has('Trekker Kỳ Cựu')) badgeSet.add('Trekker Kỳ Cựu');
-  if (score >= 500 && !badgeSet.has('Chuyên Gia Núi Rừng')) badgeSet.add('Chuyên Gia Núi Rừng');
-  
-  // Demote higher rank badges if score drops below threshold
-  if (score < 500) badgeSet.delete('Chuyên Gia Núi Rừng');
-  if (score < 200) badgeSet.delete('Trekker Kỳ Cựu');
-  if (score < 100) badgeSet.delete('Người Khai Phá');
-  if (score < 50) badgeSet.delete('Verified Trekker');
+
+  badgeSet.add('Trekker Mới');
+  // Preserve Verified Trekker for verified accounts regardless of reputation dips
+  if (score >= 50 || isVerifiedAccount) {
+    badgeSet.add('Verified Trekker');
+  } else {
+    badgeSet.delete('Verified Trekker');
+  }
+
+  for (const tier of SCORE_TIER_BADGES) {
+    if (score >= tier.minScore) badgeSet.add(tier.name);
+    else badgeSet.delete(tier.name);
+  }
 
   return Array.from(badgeSet);
 }
 
-/**
- * Returns human-readable reputation tier title
- */
 export function getReputationTierTitle(score: number): string {
   if (score >= 500) return 'Chuyên Gia Núi Rừng';
   if (score >= 200) return 'Trekker Kỳ Cựu';
@@ -56,68 +61,108 @@ export function getReputationTierTitle(score: number): string {
   return 'Trekker Tập Sự';
 }
 
-/**
- * Centralized reputation reward engine for TrekMap
- */
 export async function awardReputationPoints(
   userId: string,
   points: number,
   actionDescription: string
 ): Promise<ReputationRewardResult | null> {
-  if (!userId) return null;
+  if (!userId || !Number.isFinite(points) || points <= 0) return null;
 
   try {
-    const user = await UserModel.findById(userId).exec();
-    if (!user) return null;
+    const updatedUser = await UserModel.findByIdAndUpdate(
+      userId,
+      { $inc: { reputationScore: points } },
+      { new: true }
+    )
+      .select('reputationScore badges isEmailVerified authProvider')
+      .lean();
 
-    const previousScore = user.reputationScore || 0;
-    const newScore = previousScore + points;
-    const previousBadges = user.badges || [];
-    const updatedBadges = calculateBadgesForScore(newScore, previousBadges);
+    if (!updatedUser) return null;
 
-    const newBadgesEarned = updatedBadges.filter((b) => !previousBadges.includes(b));
+    const newScore = Math.max(0, updatedUser.reputationScore || 0);
+    const previousScore = Math.max(0, newScore - points);
+    const previousBadges = updatedUser.badges || [];
+    const isVerified = Boolean(updatedUser.isEmailVerified || updatedUser.authProvider === 'google');
 
-    user.reputationScore = newScore;
-    user.badges = updatedBadges;
-    await user.save();
+    const badgesToAdd: string[] = [];
+    if (!previousBadges.includes('Trekker Mới')) badgesToAdd.push('Trekker Mới');
+    if ((newScore >= 50 || isVerified) && !previousBadges.includes('Verified Trekker')) {
+      badgesToAdd.push('Verified Trekker');
+    }
+    for (const tier of SCORE_TIER_BADGES) {
+      if (newScore >= tier.minScore && !previousBadges.includes(tier.name)) {
+        badgesToAdd.push(tier.name);
+      }
+    }
+
+    // Atomic $addToSet prevents concurrent badge updates from clobbering custom badges
+    if (badgesToAdd.length > 0) {
+      await UserModel.updateOne({ _id: userId }, { $addToSet: { badges: { $each: badgesToAdd } } });
+    }
+
+    const totalBadges = Array.from(new Set([...previousBadges, ...badgesToAdd]));
 
     return {
       previousScore,
       newScore,
       pointsAwarded: points,
       action: actionDescription,
-      newBadgesEarned,
-      totalBadges: updatedBadges,
+      newBadgesEarned: badgesToAdd,
+      totalBadges,
     };
   } catch (err) {
-    console.error('⚠️ [Reputation Engine Notice]:', (err as Error).message);
+    console.error('[Reputation Engine Notice]:', (err as Error).message);
     return null;
   }
 }
 
-/**
- * Deducts reputation points for violations (profanity, false reports, spam)
- */
 export async function deductReputationPoints(
   userId: string,
   penaltyPoints: number,
   violationReason: string
 ): Promise<ReputationRewardResult | null> {
-  if (!userId) return null;
+  if (!userId || !Number.isFinite(penaltyPoints) || penaltyPoints <= 0) return null;
 
   try {
-    const user = await UserModel.findById(userId).exec();
-    if (!user) return null;
+    // Atomic floor-clamped deduction via aggregation pipeline update (MongoDB 4.2+)
+    const updatedUser = await UserModel.findByIdAndUpdate(
+      userId,
+      [
+        {
+          $set: {
+            reputationScore: {
+              $max: [0, { $subtract: [{ $ifNull: ['$reputationScore', 0] }, penaltyPoints] }],
+            },
+          },
+        },
+      ],
+      { new: true }
+    )
+      .select('reputationScore badges isEmailVerified authProvider')
+      .lean();
 
-    const previousScore = user.reputationScore || 0;
-    // Ensure reputation score floor does not drop below 0
-    const newScore = Math.max(0, previousScore - penaltyPoints);
-    const previousBadges = user.badges || [];
-    const updatedBadges = calculateBadgesForScore(newScore, previousBadges);
+    if (!updatedUser) return null;
 
-    user.reputationScore = newScore;
-    user.badges = updatedBadges;
-    await user.save();
+    const newScore = Math.max(0, updatedUser.reputationScore || 0);
+    const previousScore = newScore + penaltyPoints;
+    const previousBadges = updatedUser.badges || [];
+    const isVerified = Boolean(updatedUser.isEmailVerified || updatedUser.authProvider === 'google');
+
+    const badgesToRemove: string[] = [];
+    if (!isVerified && newScore < 50 && previousBadges.includes('Verified Trekker')) {
+      badgesToRemove.push('Verified Trekker');
+    }
+    for (const tier of SCORE_TIER_BADGES) {
+      if (newScore < tier.minScore && previousBadges.includes(tier.name)) {
+        badgesToRemove.push(tier.name);
+      }
+    }
+
+    if (badgesToRemove.length > 0) {
+      await UserModel.updateOne({ _id: userId }, { $pull: { badges: { $in: badgesToRemove } } });
+    }
+
+    const totalBadges = previousBadges.filter((b) => !badgesToRemove.includes(b));
 
     return {
       previousScore,
@@ -125,10 +170,10 @@ export async function deductReputationPoints(
       pointsAwarded: -penaltyPoints,
       action: `Hình phạt: ${violationReason}`,
       newBadgesEarned: [],
-      totalBadges: updatedBadges,
+      totalBadges,
     };
   } catch (err) {
-    console.error('⚠️ [Reputation Penalty Error]:', (err as Error).message);
+    console.error('[Reputation Penalty Error]:', (err as Error).message);
     return null;
   }
 }

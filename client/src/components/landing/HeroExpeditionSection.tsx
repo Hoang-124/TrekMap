@@ -1,24 +1,16 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Trail } from '../../types.js';
-import {
-  IconRadar,
-  IconTrees,
-  IconTree,
-  IconCloud,
-  IconTent,
-  IconCloudFog,
-  IconSunMedium,
-  IconMountain,
-  IconSun,
-  IconSearch,
-  IconCompass,
-  IconShieldCheck,
-  IconSparkles,
-  IconFlame,
-  IconMapPin,
-  IconX,
-  IconCheck,
-} from '../common/SvgIcons.js';
+import { mockTrails } from '../../data/seedData.js';
+import { VIETNAM_RANGER_STATIONS } from '../../data/vietnamDirectory.js';
+import { fetchPlatformStatsSummary, type PlatformStatsSummary } from '../../services/api.js';
+import { IconSearch, IconX, IconCheck, IconArrowRight } from '../common/SvgIcons.js';
+import { isLitePerfMode } from '../../utils/perfTier.js';
+
+const INITIAL_CATALOG_BASELINE = {
+  totalTrails: mockTrails.length,
+  totalKm: Math.round(mockTrails.reduce((acc, t) => acc + (t?.distanceKm || 0), 0)),
+  maxAltitude: mockTrails.length > 0 ? Math.max(...mockTrails.map((t) => t?.maxAltitudeM || 0)) : 3143,
+};
 
 interface HeroExpeditionSectionProps {
   trails: Trail[];
@@ -37,7 +29,97 @@ interface HeroExpeditionSectionProps {
   activeFilterCount?: number;
 }
 
-export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
+interface HeroPeakShowcase {
+  key: string;
+  id: string;
+  code: string;
+  name: string;
+  subtitle: string;
+  province: string;
+  elevationM: number;
+  distanceKm: number;
+  coords: string;
+  image: string;
+  // All silhouettePaths use exactly 12 vertices (M + 11 L + Z) for silky-smooth SVG path morphing
+  silhouettePath: string;
+}
+
+const SHOWCASE_PEAKS: HeroPeakShowcase[] = [
+  {
+    key: 'fansipan',
+    id: 'trail-fansipan',
+    code: 'VN-01',
+    name: 'Fansipan',
+    subtitle: 'Nóc nhà Đông Dương · Trạm Tôn',
+    province: 'Lào Cai',
+    elevationM: 3143,
+    distanceKm: 22.4,
+    coords: '22°18′12″N  103°46′30″E',
+    image:
+      'https://res.cloudinary.com/dsxbuk4pe/image/upload/f_auto,q_auto,w_1800/v1785329097/trekmap/trails/trail_cover_trail-fansipan.jpg',
+    silhouettePath: 'M0,120 L110,98 L210,72 L340,86 L460,44 L580,58 L710,16 L840,52 L960,76 L1120,96 L1200,120 Z',
+  },
+  {
+    key: 'taxua',
+    id: 'trail-taxua',
+    code: 'VN-02',
+    name: 'Tà Xùa',
+    subtitle: 'Sống lưng Khủng Long · Háng Đồng',
+    province: 'Sơn La',
+    elevationM: 2865,
+    distanceKm: 18.5,
+    coords: '21°24′30″N  104°19′30″E',
+    image:
+      'https://res.cloudinary.com/dsxbuk4pe/image/upload/f_auto,q_auto,w_1800/v1785329099/trekmap/trails/trail_cover_trail-taxua.jpg',
+    silhouettePath: 'M0,120 L120,86 L240,42 L370,64 L500,26 L640,54 L760,32 L880,68 L1000,82 L1110,96 L1200,120 Z',
+  },
+  {
+    key: 'kyquansan',
+    id: 'trail-kyquansan',
+    code: 'VN-03',
+    name: 'Kỳ Quan San',
+    subtitle: 'Bạch Mộc Lương Tử · Núi Muối',
+    province: 'Lai Châu — Lào Cai',
+    elevationM: 3046,
+    distanceKm: 30.0,
+    coords: '22°30′25″N  103°35′15″E',
+    image:
+      'https://res.cloudinary.com/dsxbuk4pe/image/upload/f_auto,q_auto,w_1800/v1785329101/trekmap/trails/trail_cover_trail-kyquansan.jpg',
+    silhouettePath: 'M0,120 L95,100 L220,66 L360,78 L490,36 L640,48 L770,18 L900,56 L1010,74 L1110,92 L1200,120 Z',
+  },
+  {
+    key: 'laothan',
+    id: 'trail-laothan',
+    code: 'VN-04',
+    name: 'Lảo Thẩn',
+    subtitle: 'Biển mây Y Tý · Bát Xát',
+    province: 'Lào Cai',
+    elevationM: 2860,
+    distanceKm: 16.0,
+    coords: '22°36′37″N  103°41′11″E',
+    image:
+      'https://res.cloudinary.com/dsxbuk4pe/image/upload/f_auto,q_auto,w_1800/v1785329100/trekmap/trails/trail_cover_trail-laothan.jpg',
+    silhouettePath: 'M0,120 L130,96 L260,74 L390,62 L520,44 L630,24 L760,44 L890,66 L1000,84 L1110,100 L1200,120 Z',
+  },
+  {
+    key: 'tanang',
+    id: 'trail-tanangphandung',
+    code: 'VN-05',
+    name: 'Tà Năng — Phan Dũng',
+    subtitle: 'Đồi cỏ cháy xuyên 3 tỉnh Nam Trung Bộ',
+    province: 'Lâm Đồng — Bình Thuận',
+    elevationM: 1100,
+    distanceKm: 55.0,
+    coords: '11°33′32″N  108°28′41″E',
+    image:
+      'https://res.cloudinary.com/dsxbuk4pe/image/upload/f_auto,q_auto,w_1800/v1785329106/trekmap/trails/trail_cover_trail-tanangphandung.jpg',
+    silhouettePath: 'M0,120 L120,82 L250,62 L380,72 L510,56 L640,48 L770,64 L900,76 L1020,88 L1120,104 L1200,120 Z',
+  },
+];
+
+const AUTO_STEP_MS = 4000;
+
+export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React.memo(({
   trails,
   selectedRegion,
   onSelectRegion,
@@ -48,840 +130,1054 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = ({
   onOpenAdvancedFilter,
   onScrollToMap,
   onScrollToAllTrails,
+  onExploreClick,
   onSelectTrail,
   onOpenEmergencyContacts,
   activeFilterCount = 0,
 }) => {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [loadedSlides, setLoadedSlides] = useState<Set<number>>(() => new Set([0, 1]));
+  const [isPeakListPaused, setIsPeakListPaused] = useState(false);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [isHeroVisible, setIsHeroVisible] = useState(true);
+  const [isTabVisible, setIsTabVisible] = useState(
+    () => (typeof document === 'undefined' ? true : !document.hidden)
+  );
+  const [isCloudChipActive, setIsCloudChipActive] = useState(false);
+  const [liveSummary, setLiveSummary] = useState<PlatformStatsSummary | null>(null);
+  const [gliderRect, setGliderRect] = useState<{ top: number; height: number; ready: boolean }>({
+    top: 0,
+    height: 54,
+    ready: false,
+  });
+  const heroSectionRef = useRef<HTMLElement | null>(null);
+  const peakBtnRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const peakStageRef = useRef<HTMLDivElement | null>(null);
+  const savedQueryBeforeCloudRef = useRef<string>('');
+  const blurTimeoutRef = useRef<number | null>(null);
+  const catalogBaselineRef = useRef<{ totalTrails: number; totalKm: number; maxAltitude: number }>({
+    ...INITIAL_CATALOG_BASELINE,
+  });
 
-  // Click handler for mountain peaks in weather radar
-  const handleMountainClick = (mountainName: string) => {
-    const list = Array.isArray(trails) ? trails : [];
-    const cleanName = mountainName.split('(')[0].trim().toLowerCase();
-    const matched = list.find((t) =>
-      t.name.toLowerCase().includes(cleanName) ||
-      (t.altNames && t.altNames.some((a) => a.toLowerCase().includes(cleanName)))
+  useEffect(() => {
+    return () => {
+      if (blurTimeoutRef.current !== null) {
+        window.clearTimeout(blurTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Pause Hero auto-scene transitions when scrolled off-screen or browser tab is hidden (saves CPU/GPU on weak devices)
+  useEffect(() => {
+    const handleVisibility = () => {
+      setIsTabVisible(!document.hidden);
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    const sectionEl = heroSectionRef.current;
+    let observer: IntersectionObserver | null = null;
+    if (sectionEl && typeof IntersectionObserver !== 'undefined') {
+      observer = new IntersectionObserver(
+        (entries) => {
+          const visible = entries[0]?.isIntersecting ?? true;
+          setIsHeroVisible((prev) => (prev === visible ? prev : visible));
+        },
+        { threshold: 0.05 }
+      );
+      observer.observe(sectionEl);
+    }
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      observer?.disconnect();
+    };
+  }, []);
+
+  // Measure active peak row so the sliding highlight frame glides smoothly down from peak to peak
+  useLayoutEffect(() => {
+    const syncGlider = () => {
+      const btn = peakBtnRefs.current[activeIndex];
+      if (!btn) return;
+      setGliderRect({
+        top: btn.offsetTop,
+        height: btn.offsetHeight,
+        ready: true,
+      });
+    };
+    syncGlider();
+    const rafId = window.requestAnimationFrame(syncGlider);
+    const stageEl = peakStageRef.current;
+    let observer: ResizeObserver | null = null;
+    if (stageEl && typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(syncGlider);
+      observer.observe(stageEl);
+    }
+    window.addEventListener('resize', syncGlider, { passive: true });
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      observer?.disconnect();
+      window.removeEventListener('resize', syncGlider);
+    };
+  }, [activeIndex]);
+
+  // Continuous cinematic auto-transition across the 5 showcase peaks (pauses when hovered, offscreen, or hidden tab)
+  useEffect(() => {
+    if (isPeakListPaused || isSearchFocused || !isHeroVisible || !isTabVisible) return;
+
+    const nextIdx = (activeIndex + 1) % SHOWCASE_PEAKS.length;
+    const preloadIdx = (activeIndex + 2) % SHOWCASE_PEAKS.length;
+
+    const timerId = window.setTimeout(() => {
+      setLoadedSlides((prev) => {
+        if (prev.has(nextIdx) && prev.has(preloadIdx)) return prev;
+        const next = new Set(prev);
+        next.add(nextIdx);
+        next.add(preloadIdx);
+        return next;
+      });
+      setActiveIndex(nextIdx);
+    }, AUTO_STEP_MS);
+
+    return () => window.clearTimeout(timerId);
+  }, [activeIndex, isPeakListPaused, isSearchFocused, isHeroVisible, isTabVisible]);
+
+  // Fetch live platform telemetry once on mount (instant fallback to trails prop prevents layout shift)
+  useEffect(() => {
+    let cancelled = false;
+    fetchPlatformStatsSummary().then((summary) => {
+      if (!cancelled && summary && summary.totalTrails > 0) {
+        setLiveSummary(summary);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleSelectPeakSlide = (idx: number) => {
+    const preloadNext = (idx + 1) % SHOWCASE_PEAKS.length;
+    setActiveIndex(idx);
+    setLoadedSlides((prev) => {
+      if (prev.has(idx) && prev.has(preloadNext)) return prev;
+      const next = new Set(prev);
+      next.add(idx);
+      next.add(preloadNext);
+      return next;
+    });
+  };
+
+  const activePeak = SHOWCASE_PEAKS[activeIndex] || SHOWCASE_PEAKS[0];
+
+  const resolvePeakTrail = (peak: HeroPeakShowcase): Trail | null => {
+    const list = Array.isArray(trails) && trails.length > 0 ? trails : mockTrails;
+    const byId = list.find((t) => t.id === peak.id);
+    if (byId) return byId;
+    const clean = peak.name.split('—')[0].trim().toLowerCase();
+    return (
+      list.find(
+        (t) =>
+          t.name.toLowerCase().includes(clean) ||
+          (t.altNames && t.altNames.some((a) => a.toLowerCase().includes(clean)))
+      ) || null
     );
+  };
+
+  const activePeakMatched = resolvePeakTrail(activePeak);
+  const activePeakElevationM = activePeakMatched?.maxAltitudeM || activePeak.elevationM;
+
+  const handleOpenActivePeak = () => {
+    const matched = resolvePeakTrail(activePeak);
     if (matched && onSelectTrail) {
       onSelectTrail(matched);
     } else {
-      onSearchChange(cleanName);
+      onSearchChange(activePeak.name.split('—')[0].trim());
       onScrollToMap();
     }
   };
 
-  // Click handler for Fansipan peak card
-  const handleFansipanClick = () => {
-    const list = Array.isArray(trails) ? trails : [];
-    const fansipan = list.find((t) =>
-      t.name.toLowerCase().includes('fansipan') ||
-      t.id === 'trail-fansipan' ||
-      t.maxAltitudeM === 3143
-    );
-    if (fansipan && onSelectTrail) {
-      onSelectTrail(fansipan);
-    } else {
-      onSearchChange('Fansipan');
-      onScrollToMap();
-    }
-  };
-
-  // Click handler for 24/7 rescue card
-  const handleRescueClick = () => {
-    if (onOpenEmergencyContacts) {
-      onOpenEmergencyContacts();
-    } else {
-      onScrollToMap();
-    }
-  };
-
-  // Handle enter key in search bar
   const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       const list = Array.isArray(trails) ? trails : [];
       const q = searchQuery.trim().toLowerCase();
       if (q) {
-        const directMatch = list.find((t) =>
-          t.name.toLowerCase().includes(q) ||
-          (t.altNames && t.altNames.some((a) => a.toLowerCase().includes(q)))
+        const directMatch = list.find(
+          (t) =>
+            t.name.toLowerCase().includes(q) ||
+            (t.altNames && t.altNames.some((a) => a.toLowerCase().includes(q)))
         );
-        if (directMatch && onSelectTrail) {
-          onSelectTrail(directMatch);
-        } else {
-          onScrollToMap();
-        }
+        if (directMatch && onSelectTrail) onSelectTrail(directMatch);
+        else onScrollToMap();
       } else {
         onScrollToMap();
       }
     }
   };
 
-  // Live statistics dynamically calculated from database trails
+  // Preserve unfiltered catalog baseline & blend authoritative live platform stats (zero layout shift)
   const stats = useMemo(() => {
     const list = Array.isArray(trails) ? trails : [];
-    const totalTrails = list.length > 0 ? list.length : 18;
-    const totalKm = list.reduce((acc, t) => acc + (t?.distanceKm || 0), 0);
-    const maxAltitude = list.length > 0 ? Math.max(...list.map((t) => t?.maxAltitudeM || 0), 3143) : 3143;
-    const summitsAbove3k = list.filter((t) => (t?.maxAltitudeM || 0) >= 3000).length;
+    const curTrails = list.length;
+    const curKm = Math.round(list.reduce((acc, t) => acc + (t?.distanceKm || 0), 0));
+    const curMaxAlt = list.length > 0 ? Math.max(...list.map((t) => t?.maxAltitudeM || 0)) : 3143;
+
+    if (curTrails >= catalogBaselineRef.current.totalTrails) {
+      catalogBaselineRef.current = {
+        totalTrails: curTrails,
+        totalKm: Math.max(curKm, catalogBaselineRef.current.totalKm),
+        maxAltitude: Math.max(curMaxAlt, catalogBaselineRef.current.maxAltitude),
+      };
+    }
+
+    const baseTrails = Math.max(curTrails, catalogBaselineRef.current.totalTrails);
+    const baseKm = Math.max(curKm, catalogBaselineRef.current.totalKm);
+    const baseMaxAlt = catalogBaselineRef.current.maxAltitude;
 
     return {
-      totalTrails,
-      totalKm: totalKm > 0 ? Math.round(totalKm) : 450,
-      maxAltitude,
-      summitsAbove3k: summitsAbove3k > 0 ? summitsAbove3k : 6,
+      visibleTrails: curTrails,
+      totalTrails: liveSummary?.totalTrails ? Math.max(liveSummary.totalTrails, baseTrails) : baseTrails,
+      totalKm: liveSummary?.totalKm ? Math.round(Math.max(liveSummary.totalKm, baseKm)) : baseKm,
+      maxAltitude: liveSummary?.highestPeakM ? Math.max(liveSummary.highestPeakM, baseMaxAlt) : baseMaxAlt,
+      totalRangers: Math.max(liveSummary?.totalRangers || 0, VIETNAM_RANGER_STATIONS.length),
+      verifiedCheckins: liveSummary?.verifiedCheckins || 0,
+      totalCheckins: liveSummary?.totalCheckins || 0,
     };
-  }, [trails]);
+  }, [trails, liveSummary]);
 
-  // Curated live mountain weather coordinates
-  const liveMountainPills = useMemo(() => [
-    { name: 'Fansipan', alt: '3.143m', temp: '14°C', condition: 'Sương mù nhẹ', IconComponent: IconCloudFog, color: 'var(--color-sky)' },
-    { name: 'Bạch Mộc (Kỳ Quan San)', alt: '3.046m', temp: '12°C', condition: 'Se lạnh • Lán khô', IconComponent: IconMountain, color: 'var(--color-sky)' },
-    { name: 'Tà Xùa', alt: '2.865m', temp: '17°C', condition: 'Biển mây 85%', IconComponent: IconCloud, color: 'var(--color-primary)' },
-    { name: 'Lảo Thẩn', alt: '2.860m', temp: '16°C', condition: 'Gió nhẹ • Nắng vàng', IconComponent: IconSunMedium, color: 'var(--color-sun)' },
-    { name: 'Chư Yang Sin', alt: '2.442m', temp: '19°C', condition: 'Rừng nguyên sinh', IconComponent: IconTree, color: 'var(--color-earth)' },
-    { name: 'Núi Bà Đen', alt: '986m', temp: '26°C', condition: 'Trời quang đãng', IconComponent: IconSun, color: 'var(--color-earth)' },
-  ], []);
+  const handleToggleCloudQuickChip = () => {
+    if (isCloudChipActive) {
+      setIsCloudChipActive(false);
+      // Restore whatever the user had typed before clicking "Săn mây"
+      onSearchChange(savedQueryBeforeCloudRef.current);
+      savedQueryBeforeCloudRef.current = '';
+    } else {
+      savedQueryBeforeCloudRef.current = searchQuery;
+      setIsCloudChipActive(true);
+      if (!searchQuery.trim()) {
+        onSearchChange('mây');
+      }
+    }
+  };
+
+  const isCloudVisualActive = isCloudChipActive || searchQuery.toLowerCase().includes('mây');
+
+  const litePerf = isLitePerfMode();
 
   return (
     <section
-      className="hero-expedition-wrapper"
+      ref={heroSectionRef}
       style={{
         position: 'relative',
-        padding: '24px 20px 32px 20px',
-        background: 'var(--hero-bg-gradient), url(https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1920&q=80)',
-        backgroundSize: 'cover',
-        backgroundPosition: 'center 30%',
+        minHeight: 'min(88vh, 790px)',
         display: 'flex',
         flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        textAlign: 'center',
+        justifyContent: 'space-between',
         overflow: 'hidden',
+        backgroundColor: 'var(--color-bg-main)',
+        borderBottom: '1px solid var(--color-border)',
       }}
     >
-      {/* Topographic GIS Contour Grid Visual Overlay */}
+      {/* Crossfading Full-Bleed Authentic Vietnamese Mountain Photography (Cinematic Ken Burns + Dissolve) */}
+      {SHOWCASE_PEAKS.map((peak, idx) => {
+        const shouldMountImage = loadedSlides.has(idx);
+        if (!shouldMountImage) return null;
+        const adaptiveHeroSrc = litePerf
+          ? peak.image.replace('f_auto,q_auto,w_1800', 'f_auto,q_auto:eco,w_1200')
+          : peak.image.replace('w_1800', 'w_1600');
+        return (
+          <img
+            key={peak.key}
+            src={adaptiveHeroSrc}
+            alt={peak.name}
+            loading={idx === 0 ? 'eager' : 'lazy'}
+            decoding="async"
+            fetchPriority={idx === 0 ? 'high' : 'auto'}
+            className={`hero-bg-slide${idx === activeIndex ? ' active' : ''}`}
+          />
+        );
+      })}
+
+      {/* Subtle Atmospheric Scene-Transition Sweep */}
+      <div key={`veil-${activePeak.key}`} className="hero-scene-veil" aria-hidden="true" />
+
+      {/* Subtle Swiss Topographic Contour SVG Lines */}
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 1440 800"
+        preserveAspectRatio="xMidYMid slice"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          width: '100%',
+          height: '100%',
+          opacity: 0.14,
+          pointerEvents: 'none',
+        }}
+      >
+        <g fill="none" stroke="var(--color-on-media)" strokeWidth="0.75">
+          <path d="M-80,620 C220,510 380,680 680,540 C980,400 1160,580 1520,440" />
+          <path d="M-80,560 C240,450 400,620 700,480 C1000,340 1180,520 1520,380" />
+          <path d="M-80,500 C260,390 420,560 720,420 C1020,280 1200,460 1520,320" />
+          <path d="M-80,440 C280,330 440,500 740,360 C1040,220 1220,400 1520,260" />
+          <path d="M-80,380 C300,270 460,440 760,300 C1060,160 1240,340 1520,200" />
+        </g>
+      </svg>
+
+      {/* Editorial Atmospheric Photographic Scrims (100% Design-Token Driven) */}
       <div
         style={{
           position: 'absolute',
           inset: 0,
-          backgroundImage: 'var(--hero-contour-overlay)',
+          background:
+            'linear-gradient(104deg, var(--overlay-bg) 0%, color-mix(in srgb, var(--overlay-bg) 72%, transparent) 52%, color-mix(in srgb, var(--overlay-bg) 88%, transparent) 100%)',
           pointerEvents: 'none',
-          zIndex: 1,
+        }}
+      />
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background:
+            'linear-gradient(180deg, color-mix(in srgb, var(--overlay-bg) 42%, transparent) 0%, transparent 35%, var(--overlay-bg) 100%)',
+          pointerEvents: 'none',
         }}
       />
 
-      <div style={{ position: 'relative', zIndex: 2, maxWidth: 1040, width: '100%', margin: '0 auto' }}>
-        {/* 1. Live Weather & GIS Radar Capsule */}
-        <div
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 10,
-            background: 'var(--color-bg-glass)',
-            border: '1px solid var(--color-border)',
-            backdropFilter: 'blur(16px)',
-            padding: '5px 14px',
-            borderRadius: 24,
-            marginBottom: 14,
-            boxShadow: 'var(--shadow-header)',
-            maxWidth: '100%',
-            overflowX: 'auto',
-          }}
-        >
-          {/* Pulsing Live Beacon */}
-          <span
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              fontSize: '0.72rem',
-              fontWeight: 800,
-              color: 'var(--color-primary)',
-              letterSpacing: '0.04em',
-              textTransform: 'uppercase',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            <span
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: '50%',
-                background: 'var(--color-primary)',
-                boxShadow: '0 0 8px var(--color-primary)',
-                animation: 'pulse 2s infinite',
-              }}
-            />
-            <IconRadar size={13} color="var(--color-primary)" />
-            Radar Khí Tượng Đỉnh Núi
-          </span>
+      {/* Smoothly Morphing Mountain Silhouette Along Bottom Horizon (Equal 12-Vertex Paths) */}
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 1200 120"
+        preserveAspectRatio="none"
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          width: '100%',
+          height: 92,
+          pointerEvents: 'none',
+          zIndex: 1,
+          opacity: 0.26,
+        }}
+      >
+        <path
+          d={activePeak.silhouettePath}
+          fill="none"
+          stroke="var(--color-sun)"
+          strokeWidth="1.25"
+          style={{ transition: 'd 0.65s cubic-bezier(0.16, 1, 0.3, 1)' }}
+        />
+      </svg>
 
-          <span style={{ width: 1, height: 14, background: 'var(--color-border)' }} />
-
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 14,
-              fontSize: '0.74rem',
-              color: 'var(--color-text-muted)',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {liveMountainPills.map((item, idx) => {
-              const ItemIcon = item.IconComponent;
-              return (
-                <button
-                  key={idx}
-                  type="button"
-                  onClick={() => handleMountainClick(item.name)}
-                  title={`Bấm để xem chi tiết cung đường & thời tiết thực tế đỉnh ${item.name}`}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 5,
-                    background: 'transparent',
-                    border: 'none',
-                    padding: '3px 8px',
-                    borderRadius: 12,
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease',
-                    color: 'inherit',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
-                    e.currentTarget.style.transform = 'translateY(-1px)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = 'transparent';
-                    e.currentTarget.style.transform = 'translateY(0)';
-                  }}
-                >
-                  <ItemIcon size={13} color={item.color} />
-                  <strong style={{ color: 'var(--color-text-main)', fontSize: '0.76rem' }}>{item.name}</strong>
-                  <span style={{ color: item.color, fontWeight: 800, fontSize: '0.74rem' }}>{item.temp}</span>
-                  <span style={{ color: 'var(--color-text-dim)', fontSize: '0.7rem' }}>• {item.condition}</span>
-                </button>
-              );
-            })}
-          </div>
+      {/* Top Architectural Map Sheet Margin Header */}
+      <div
+        style={{
+          position: 'relative',
+          zIndex: 3,
+          maxWidth: 1360,
+          width: '100%',
+          margin: '0 auto',
+          padding: '24px 24px 0 24px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 12,
+          fontSize: '0.7rem',
+          fontWeight: 600,
+          letterSpacing: '0.16em',
+          textTransform: 'uppercase',
+          color: 'color-mix(in srgb, var(--color-on-media) 65%, transparent)',
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ color: 'var(--color-sun)' }}>+</span>
+          <span>ATLAS ĐỊA HÌNH VIỆT NAM · EDITION 2026</span>
         </div>
+        <div key={activePeak.key} className="hero-peak-drop-in" style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
+          <span>{activePeak.coords}</span>
+          <span style={{ color: 'var(--color-primary)' }}>
+            {activePeakElevationM.toLocaleString('vi-VN')} M ASL
+          </span>
+        </div>
+      </div>
 
-        {/* 2. Main Hero Title & Slogan */}
-        <div style={{ marginBottom: 14 }}>
-          <div
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              color: 'var(--color-sky)',
-              fontSize: '0.72rem',
-              fontWeight: 800,
-              textTransform: 'uppercase',
-              letterSpacing: '0.06em',
-              marginBottom: 6,
-              background: 'rgba(56, 189, 248, 0.1)',
-              padding: '3px 12px',
-              borderRadius: 16,
-              border: '1px solid rgba(56, 189, 248, 0.25)',
-            }}
-          >
-            <IconSparkles size={12} color="var(--color-sky)" />
-            HỆ THỐNG BẢN ĐỒ ĐỊA HÌNH & DỮ LIỆU TREKKING VIỆT NAM
-          </div>
-
-          <h1
-            style={{
-              fontSize: 'clamp(1.8rem, 3.4vw, 2.6rem)',
-              fontWeight: 900,
-              color: 'var(--color-text-main)',
-              margin: '0 0 8px 0',
-              lineHeight: 1.15,
-              letterSpacing: '-0.02em',
-            }}
-          >
-            Chinh Phục Mọi Đỉnh Cao{' '}
-            <span
+      {/* Center Stage: Monumental Asymmetric Editorial Composition */}
+      <div
+        style={{
+          position: 'relative',
+          zIndex: 3,
+          maxWidth: 1360,
+          width: '100%',
+          margin: 'auto',
+          padding: '32px 24px 28px 24px',
+        }}
+      >
+        <div className="hero-editorial-grid">
+          {/* LEFT COLUMN */}
+          <div>
+            <div
+              key={`code-${activePeak.key}`}
+              className="hero-peak-drop-in"
               style={{
-                background: 'linear-gradient(135deg, #10b981 0%, #38bdf8 50%, #facc15 100%)',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-                filter: 'drop-shadow(0 2px 10px rgba(16, 185, 129, 0.25))',
+                fontSize: '0.72rem',
+                fontWeight: 700,
+                letterSpacing: '0.18em',
+                textTransform: 'uppercase',
+                color: 'var(--color-sun)',
+                marginBottom: 16,
               }}
             >
-              Trekking Việt Nam
-            </span>
-          </h1>
+              {activePeak.code} — {activePeak.province}
+            </div>
 
-          <p
+            <h1
+              className="font-editorial"
+              style={{
+                fontSize: 'clamp(2.85rem, 6.2vw, 5.15rem)',
+                fontWeight: 500,
+                color: 'var(--color-on-media)',
+                margin: '0 0 18px 0',
+                lineHeight: 0.98,
+                letterSpacing: '-0.03em',
+                maxWidth: 740,
+              }}
+            >
+              Nơi bản đồ phổ thông{' '}
+              <span
+                style={{
+                  fontWeight: 700,
+                  color: 'var(--color-sun)',
+                }}
+              >
+                dừng lại.
+              </span>
+            </h1>
+
+            <p
+              key={`desc-${activePeak.key}`}
+              className="hero-peak-drop-in"
+              style={{
+                fontSize: '0.98rem',
+                color: 'color-mix(in srgb, var(--color-on-media) 80%, transparent)',
+                lineHeight: 1.68,
+                maxWidth: 540,
+                margin: '0 0 26px 0',
+                fontWeight: 400,
+              }}
+            >
+              <strong style={{ color: 'var(--color-on-media)', fontWeight: 600 }}>{activePeak.name}</strong> ({activePeak.subtitle}) —{' '}
+              {stats.totalTrails > 1
+                ? `và ${stats.totalTrails - 1} cung đường hoang sơ khác`
+                : 'cùng hệ thống cung đường hoang sơ'}{' '}
+              trên dải đất Việt Nam, với tracklog GPX thực địa, địa hình 3D DEM và tải gói offline khi mất sóng.
+            </p>
+
+            {/* Primary Editorial CTA Pair */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="interactive-click"
+                onClick={handleOpenActivePeak}
+                style={{
+                  padding: '12px 22px',
+                  borderRadius: 4,
+                  background: 'var(--color-primary)',
+                  color: 'var(--color-on-primary)',
+                  border: '1px solid var(--color-primary)',
+                  fontSize: '0.84rem',
+                  fontWeight: 700,
+                  letterSpacing: '0.02em',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 8,
+                }}
+              >
+                <span>Khám phá {activePeak.name}</span>
+                <IconArrowRight size={15} color="var(--color-on-primary)" />
+              </button>
+
+              <button
+                type="button"
+                className="interactive-click"
+                onClick={onScrollToMap}
+                style={{
+                  padding: '12px 20px',
+                  borderRadius: 4,
+                  background: 'transparent',
+                  color: 'var(--color-on-media)',
+                  border: '1px solid color-mix(in srgb, var(--color-on-media) 35%, transparent)',
+                  fontSize: '0.84rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Mở bản đồ địa hình
+              </button>
+
+              <button
+                type="button"
+                className="interactive-click"
+                onClick={() => (onOpenEmergencyContacts ? onOpenEmergencyContacts() : onScrollToMap())}
+                style={{
+                  padding: '12px 16px',
+                  borderRadius: 4,
+                  background: 'color-mix(in srgb, var(--color-error) 84%, var(--overlay-bg))',
+                  color: 'var(--color-on-danger)',
+                  border: '1px solid color-mix(in srgb, var(--color-on-danger) 28%, var(--color-error))',
+                  fontSize: '0.8rem',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                Cứu hộ 112 / 114
+              </button>
+            </div>
+
+            {/* Live Vietnam Platform Telemetry Strip (Instant baseline -> Live DB metrics, zero layout shift) */}
+            <div
+              style={{
+                marginTop: 28,
+                paddingTop: 18,
+                borderTop: '1px solid color-mix(in srgb, var(--color-on-media) 16%, transparent)',
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(min(112px, 100%), 1fr))',
+                gap: '12px 18px',
+                maxWidth: 580,
+                fontVariantNumeric: 'tabular-nums',
+              }}
+            >
+              <div>
+                <div style={{ fontSize: '0.64rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'color-mix(in srgb, var(--color-on-media) 55%, transparent)' }}>
+                  Cung thực địa DEM
+                </div>
+                <div style={{ fontSize: '1.22rem', fontWeight: 800, color: 'var(--color-on-media)', marginTop: 2 }}>
+                  {stats.totalTrails > 0 ? `${stats.totalTrails} tuyến` : 'Đang đồng bộ...'}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: '0.64rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'color-mix(in srgb, var(--color-on-media) 55%, transparent)' }}>
+                  Tổng tuyến GPX
+                </div>
+                <div style={{ fontSize: '1.22rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: 2 }}>
+                  {stats.totalKm > 0 ? `${stats.totalKm.toLocaleString('vi-VN')} km` : 'Đang đồng bộ...'}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: '0.64rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'color-mix(in srgb, var(--color-on-media) 55%, transparent)' }}>
+                  Đỉnh cao nhất
+                </div>
+                <div style={{ fontSize: '1.22rem', fontWeight: 800, color: 'var(--color-sun)', marginTop: 2 }}>
+                  {stats.maxAltitude.toLocaleString('vi-VN')} m
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: '0.64rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'color-mix(in srgb, var(--color-on-media) 55%, transparent)' }}>
+                  {stats.verifiedCheckins > 0 ? 'Check-in GPS thật' : 'Trạm VQG / Kiểm lâm'}
+                </div>
+                <div style={{ fontSize: '1.22rem', fontWeight: 800, color: 'var(--color-on-media)', marginTop: 2 }}>
+                  {stats.verifiedCheckins > 0
+                    ? `${stats.verifiedCheckins.toLocaleString('vi-VN')} lượt`
+                    : `${stats.totalRangers} cơ sở`}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* RIGHT COLUMN: Continuous Downward-Cascading Vertical Altitude Ruler */}
+          <div
+            className="hero-peak-ruler"
+            data-paused={isPeakListPaused || isSearchFocused || !isHeroVisible || !isTabVisible ? 'true' : undefined}
+            onMouseEnter={() => setIsPeakListPaused(true)}
+            onMouseLeave={() => setIsPeakListPaused(false)}
+            onFocus={() => setIsPeakListPaused(true)}
+            onBlur={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                setIsPeakListPaused(false);
+              }
+            }}
             style={{
-              fontSize: '0.88rem',
-              color: 'var(--color-text-muted)',
-              lineHeight: 1.5,
-              maxWidth: 680,
-              margin: '0 auto',
+              borderLeft: '1px solid color-mix(in srgb, var(--color-on-media) 20%, transparent)',
+              paddingLeft: 24,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 3,
+              ['--hero-step-ms' as string]: `${AUTO_STEP_MS}ms`,
             }}
           >
-            Dữ liệu số hóa <strong>{stats.totalTrails}+ cung đường thực địa</strong>: Tọa độ 3D GIS, tải tracklog GPX chuẩn xác, 
-            dự báo thời tiết thời gian thực và mạng lưới cứu hộ 24/7.
-          </p>
-        </div>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 10,
+                marginBottom: 10,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: '0.68rem',
+                  fontWeight: 700,
+                  letterSpacing: '0.16em',
+                  textTransform: 'uppercase',
+                  color: 'color-mix(in srgb, var(--color-on-media) 60%, transparent)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 7,
+                }}
+              >
+                <span
+                  className={isPeakListPaused || isSearchFocused ? undefined : 'radar-pulse-dot'}
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    background: isPeakListPaused || isSearchFocused ? 'var(--color-sun)' : 'var(--color-primary)',
+                    display: 'inline-block',
+                    flexShrink: 0,
+                  }}
+                />
+                <span>Chọn đỉnh để xem địa hình</span>
+              </div>
+              <div
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  fontSize: '0.68rem',
+                  fontWeight: 700,
+                  letterSpacing: '0.08em',
+                  color: 'var(--color-sun)',
+                  fontVariantNumeric: 'tabular-nums',
+                }}
+              >
+                <span>
+                  0{activeIndex + 1}/0{SHOWCASE_PEAKS.length}
+                </span>
+                <span className="hero-cascade-arrow" aria-hidden="true">
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </span>
+              </div>
+            </div>
 
-        {/* 3. Compact Spotlight Search Bar */}
+            <div ref={peakStageRef} className="hero-peak-list-stage">
+              {/* Single Gliding Architectural Frame that slides smoothly down from peak to peak */}
+              <div
+                aria-hidden="true"
+                className="hero-peak-glider"
+                style={{
+                  transform: `translateY(${gliderRect.top}px)`,
+                  height: gliderRect.height,
+                  opacity: gliderRect.ready ? 1 : 0,
+                }}
+              >
+                <span
+                  key={`progress-${activePeak.key}-${activeIndex}`}
+                  className="hero-peak-progress"
+                />
+              </div>
+
+              {SHOWCASE_PEAKS.map((peak, idx) => {
+                const isSelected = idx === activeIndex;
+                const matched = resolvePeakTrail(peak);
+                const displayElevationM = matched?.maxAltitudeM || peak.elevationM;
+                const displayDistanceKm = matched?.distanceKm || peak.distanceKm;
+                return (
+                  <button
+                    key={peak.key}
+                    ref={(el) => {
+                      peakBtnRefs.current[idx] = el;
+                    }}
+                    type="button"
+                    aria-pressed={isSelected}
+                    className="hero-peak-btn"
+                    onClick={() => {
+                      if (isSelected) {
+                        handleOpenActivePeak();
+                      } else {
+                        handleSelectPeakSlide(idx);
+                      }
+                    }}
+                    title={
+                      isSelected
+                        ? `Nhấn để mở hồ sơ chi tiết ${peak.name}`
+                        : `Nhấn để chuyển cảnh sang ${peak.name}`
+                    }
+                    style={{
+                      display: 'flex',
+                      alignItems: 'baseline',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      padding: '11px 12px 12px 12px',
+                      background: 'transparent',
+                      border: 'none',
+                      borderBottom: '1px solid color-mix(in srgb, var(--color-on-media) 10%, transparent)',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      color: isSelected
+                        ? 'var(--color-on-media)'
+                        : 'color-mix(in srgb, var(--color-on-media) 58%, transparent)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, minWidth: 0 }}>
+                      <span
+                        style={{
+                          fontSize: '0.68rem',
+                          fontWeight: 700,
+                          letterSpacing: '0.08em',
+                          color: isSelected
+                            ? 'var(--color-sun)'
+                            : 'color-mix(in srgb, var(--color-on-media) 40%, transparent)',
+                          fontVariantNumeric: 'tabular-nums',
+                          transition: 'color var(--dur-base) ease',
+                        }}
+                      >
+                        0{idx + 1}
+                      </span>
+                      <div style={{ minWidth: 0 }}>
+                        <div
+                          className={isSelected ? 'font-editorial' : undefined}
+                          style={{
+                            fontSize: '1.12rem',
+                            fontWeight: isSelected ? 700 : 500,
+                            lineHeight: 1.2,
+                            transform: isSelected ? 'scale(1.04)' : 'scale(1)',
+                            transformOrigin: 'left center',
+                            transition:
+                              'transform 0.42s cubic-bezier(0.22, 1, 0.36, 1), color var(--dur-base) ease',
+                          }}
+                        >
+                          {peak.name}
+                        </div>
+                        {isSelected && (
+                          <div
+                            key={`sub-${peak.key}`}
+                            className="hero-peak-drop-in"
+                            style={{
+                              fontSize: '0.73rem',
+                              color: 'color-mix(in srgb, var(--color-on-media) 76%, transparent)',
+                              marginTop: 3,
+                              fontVariantNumeric: 'tabular-nums',
+                            }}
+                          >
+                            {peak.province} · {displayDistanceKm} km
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <span
+                      style={{
+                        fontSize: '0.76rem',
+                        fontWeight: isSelected ? 700 : 600,
+                        fontVariantNumeric: 'tabular-nums',
+                        color: isSelected
+                          ? 'var(--color-primary)'
+                          : 'color-mix(in srgb, var(--color-on-media) 46%, transparent)',
+                        flexShrink: 0,
+                        transition: 'color var(--dur-base) ease',
+                      }}
+                    >
+                      {displayElevationM.toLocaleString('vi-VN')} m
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Bottom Floating Architectural Command Dock */}
+      <div
+        style={{
+          position: 'relative',
+          zIndex: 4,
+          maxWidth: 1360,
+          width: '100%',
+          margin: '0 auto',
+          padding: '0 24px 28px 24px',
+        }}
+      >
         <div
           style={{
-            maxWidth: 620,
-            margin: '0 auto 12px auto',
-            position: 'relative',
+            background: 'var(--color-bg-card)',
+            border: '1px solid var(--color-border-strong)',
+            borderRadius: 6,
+            padding: 8,
+            boxShadow: 'var(--shadow-3d)',
+            display: 'flex',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 8,
           }}
         >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              background: 'var(--color-bg-card)',
-              border: isSearchFocused ? '1.5px solid var(--color-primary)' : '1.5px solid var(--color-border)',
-              borderRadius: 30,
-              padding: '4px 6px 4px 16px',
-              boxShadow: isSearchFocused
-                ? '0 0 20px rgba(16, 185, 129, 0.35), 0 12px 28px rgba(0, 0, 0, 0.5)'
-                : 'var(--shadow-card)',
-              backdropFilter: 'blur(20px)',
-              transition: 'all 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
-            }}
-          >
+          {/* Search Input with Live Dropdown */}
+          <div style={{ position: 'relative', flex: '1 1 260px', display: 'flex', alignItems: 'center', paddingLeft: 10 }}>
             <IconSearch
-              size={18}
+              size={16}
               color={isSearchFocused ? 'var(--color-primary)' : 'var(--color-text-dim)'}
-              style={{ flexShrink: 0, marginRight: 10, transition: 'color 0.2s ease' }}
+              style={{ flexShrink: 0, marginRight: 10 }}
             />
-
             <input
               type="text"
               value={searchQuery}
-              onFocus={() => setIsSearchFocused(true)}
-              onBlur={() => setTimeout(() => setIsSearchFocused(false), 250)}
-              onChange={(e) => onSearchChange(e.target.value)}
+              aria-label="Tìm cung đường trekking Việt Nam"
+              onFocus={() => {
+                if (blurTimeoutRef.current !== null) {
+                  window.clearTimeout(blurTimeoutRef.current);
+                  blurTimeoutRef.current = null;
+                }
+                setIsSearchFocused(true);
+              }}
+              onBlur={() => {
+                blurTimeoutRef.current = window.setTimeout(() => {
+                  setIsSearchFocused(false);
+                  blurTimeoutRef.current = null;
+                }, 220);
+              }}
+              onChange={(e) => {
+                setIsCloudChipActive(false);
+                onSearchChange(e.target.value);
+              }}
               onKeyDown={handleSearchKeyDown}
-              placeholder="Tìm kiếm cung đường (VD: Fansipan, Tà Xùa, Lảo Thẩn, Săn mây, Cắm trại...)"
+              placeholder={
+                stats.totalTrails > 0
+                  ? `Tìm trong ${stats.totalTrails} cung đường (${stats.totalKm} km GPX)...`
+                  : 'Tìm cung đường trekking, đỉnh núi, tỉnh thành Việt Nam...'
+              }
               style={{
                 flex: 1,
                 background: 'transparent',
                 border: 'none',
                 outline: 'none',
                 color: 'var(--color-text-main)',
-                fontSize: '0.88rem',
-                fontWeight: 600,
-                padding: '6px 0',
+                fontSize: '0.86rem',
+                fontWeight: 500,
+                padding: '8px 0',
+                minWidth: 0,
               }}
             />
-
             {searchQuery && (
               <button
                 type="button"
-                onClick={() => onSearchChange('')}
+                onClick={() => {
+                  setIsCloudChipActive(false);
+                  onSearchChange('');
+                }}
                 title="Xóa tìm kiếm"
+                aria-label="Xóa tìm kiếm"
                 style={{
-                  background: 'var(--color-bg-main)',
-                  border: '1px solid var(--color-border)',
-                  color: 'var(--color-text-muted)',
-                  borderRadius: '50%',
-                  width: 24,
-                  height: 24,
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--color-text-dim)',
                   cursor: 'pointer',
+                  padding: 4,
                   display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginRight: 6,
-                  fontSize: '0.75rem',
                 }}
               >
-                <IconX size={12} />
+                <IconX size={14} />
               </button>
             )}
+
+            {/* Autocomplete */}
+            {isSearchFocused && searchQuery.trim().length > 0 && (() => {
+              const list = Array.isArray(trails) ? trails : [];
+              const q = searchQuery.trim().toLowerCase();
+              const matches = list
+                .filter(
+                  (t) =>
+                    (t?.name || '').toLowerCase().includes(q) ||
+                    (t?.province || '').toLowerCase().includes(q) ||
+                    (t?.district || '').toLowerCase().includes(q) ||
+                    (t?.region || '').toLowerCase().includes(q)
+                )
+                .slice(0, 4);
+
+              if (matches.length === 0) return null;
+
+              return (
+                <div
+                  className="dropdown-up-pop"
+                  style={{
+                    position: 'absolute',
+                    bottom: 'calc(100% + 10px)',
+                    left: 0,
+                    right: 0,
+                    zIndex: 'var(--z-dropdown, 1100)' as unknown as number,
+                    background: 'var(--color-bg-card)',
+                    border: '1px solid var(--color-border-strong)',
+                    borderRadius: 6,
+                    padding: 6,
+                    boxShadow: 'var(--shadow-3d)',
+                  }}
+                >
+                  {matches.map((m, idx) => (
+                    <div
+                      key={m.id || (m as Trail & { _id?: string })._id || `match-${idx}`}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setIsSearchFocused(false);
+                        if (onSelectTrail) onSelectTrail(m);
+                        else onSearchChange(m.name);
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '8px 10px',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
+                          {m.name}
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)' }}>
+                          {m.province} · {m.region}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
+                        {m.maxAltitudeM.toLocaleString('vi-VN')} m
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+
+          <div style={{ width: 1, height: 24, background: 'var(--color-border)' }} />
+
+          {/* Region Tabs */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+            {[
+              { id: 'All', label: 'Tất cả' },
+              { id: 'Miền Bắc', label: 'Bắc' },
+              { id: 'Miền Trung', label: 'Trung' },
+              { id: 'Miền Nam', label: 'Nam' },
+            ].map((r) => {
+              const isSel = selectedRegion === r.id;
+              return (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => onSelectRegion(r.id)}
+                  style={{
+                    padding: '7px 11px',
+                    borderRadius: 4,
+                    fontSize: '0.78rem',
+                    fontWeight: isSel ? 700 : 500,
+                    cursor: 'pointer',
+                    border: 'none',
+                    background: isSel ? 'var(--color-surface-elevated)' : 'transparent',
+                    color: isSel ? 'var(--color-text-main)' : 'var(--color-text-muted)',
+                  }}
+                >
+                  {r.label}
+                </button>
+              );
+            })}
 
             <button
               type="button"
-              onClick={onOpenAdvancedFilter}
-              className="btn btn-outline interactive-click"
-              title="Mở bộ lọc nâng cao (Độ khó, Thời gian, Vùng miền, Tiêu chí)"
+              onClick={handleToggleCloudQuickChip}
               style={{
-                borderRadius: 22,
-                padding: '6px 14px',
+                padding: '7px 10px',
+                borderRadius: 4,
                 fontSize: '0.78rem',
-                fontWeight: 700,
+                fontWeight: isCloudVisualActive ? 700 : 500,
+                cursor: 'pointer',
+                border: 'none',
+                background: isCloudVisualActive ? 'color-mix(in srgb, var(--color-primary) 16%, transparent)' : 'transparent',
+                color: isCloudVisualActive ? 'var(--color-primary)' : 'var(--color-text-muted)',
                 display: 'inline-flex',
                 alignItems: 'center',
-                gap: 6,
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-                background: activeFilterCount > 0 ? 'rgba(16, 185, 129, 0.15)' : 'var(--color-bg-main)',
-                border: activeFilterCount > 0 ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)',
-                color: activeFilterCount > 0 ? 'var(--color-primary)' : 'var(--color-text-main)',
-                transition: 'all 0.2s ease',
+                gap: 4,
               }}
             >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
-              </svg>
-              <span>Bộ Lọc</span>
-              {activeFilterCount > 0 && (
-                <span
-                  style={{
-                    background: 'var(--color-primary)',
-                    color: '#041108',
-                    borderRadius: '50%',
-                    width: 17,
-                    height: 17,
-                    fontSize: '0.65rem',
-                    fontWeight: 900,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  {activeFilterCount}
-                </span>
-              )}
+              {isCloudVisualActive && <IconCheck size={12} />}
+              <span>Săn mây</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (onToggleCampsite) onToggleCampsite();
+                else onSearchChange(searchQuery === 'cắm trại' ? '' : 'cắm trại');
+              }}
+              style={{
+                padding: '7px 10px',
+                borderRadius: 4,
+                fontSize: '0.78rem',
+                fontWeight: campsiteOnly ? 700 : 500,
+                cursor: 'pointer',
+                border: 'none',
+                background: campsiteOnly ? 'color-mix(in srgb, var(--color-primary) 16%, transparent)' : 'transparent',
+                color: campsiteOnly ? 'var(--color-primary)' : 'var(--color-text-muted)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+            >
+              {campsiteOnly && <IconCheck size={12} />}
+              <span>Hạ trại</span>
             </button>
           </div>
 
-          {/* Live Autocomplete Suggestions Dropdown */}
-          {searchQuery && searchQuery.trim().length > 0 && (() => {
-            const list = Array.isArray(trails) ? trails : [];
-            const q = searchQuery.trim().toLowerCase();
-            const matches = list.filter(
-              (t) =>
-                (t?.name || '').toLowerCase().includes(q) ||
-                (t?.province || '').toLowerCase().includes(q) ||
-                (t?.district || '').toLowerCase().includes(q) ||
-                (t?.region || '').toLowerCase().includes(q)
-            ).slice(0, 4);
-
-            if (matches.length === 0) return null;
-
-            return (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: 'calc(100% + 6px)',
-                  left: 0,
-                  right: 0,
-                  zIndex: 999,
-                  background: 'var(--color-bg-card)',
-                  border: '1.5px solid var(--color-primary)',
-                  borderRadius: 16,
-                  padding: 6,
-                  boxShadow: '0 16px 36px rgba(0, 0, 0, 0.7), 0 0 20px rgba(16, 185, 129, 0.25)',
-                  backdropFilter: 'blur(20px)',
-                  textAlign: 'left',
-                }}
-              >
-                <div style={{ padding: '4px 10px', fontSize: '0.68rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                  Gợi ý cung đường phù hợp ({matches.length})
-                </div>
-                {matches.map((m, idx) => (
-                  <div
-                    key={m.id || (m as any)._id || `match-${idx}`}
-                    onClick={() => {
-                      if (onSelectTrail) {
-                        onSelectTrail(m);
-                      } else {
-                        onSearchChange(m.name);
-                      }
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      padding: '6px 10px',
-                      borderRadius: 8,
-                      cursor: 'pointer',
-                      transition: 'background 0.2s ease',
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(16, 185, 129, 0.12)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <img
-                        src={m.coverImage || 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=100&q=80'}
-                        alt={m.name}
-                        style={{ width: 32, height: 32, borderRadius: 6, objectFit: 'cover' }}
-                      />
-                      <div>
-                        <div style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--color-text-main)' }}>{m.name}</div>
-                        <div style={{ fontSize: '0.68rem', color: 'var(--color-sky)' }}>{m.province} • {m.region}</div>
-                      </div>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-sun)', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 3 }}>
-                        <IconMountain size={12} color="var(--color-sun)" />
-                        <span>{m.maxAltitudeM}m</span>
-                      </div>
-                      <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)' }}>{m.distanceKm} km</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            );
-          })()}
-        </div>
-
-        {/* 4. Single Unified Filter & Region Pill Bar */}
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
-            gap: 8,
-            flexWrap: 'wrap',
-            marginBottom: 20,
-          }}
-        >
-          {/* Region Buttons */}
-          {[
-            { id: 'All', label: 'Tất Cả Vùng Miền', IconComponent: IconTrees },
-            { id: 'Miền Bắc', label: 'Miền Bắc', IconComponent: IconMountain },
-            { id: 'Miền Trung', label: 'Miền Trung', IconComponent: IconSun },
-            { id: 'Miền Nam', label: 'Miền Nam', IconComponent: IconTree },
-          ].map((r) => {
-            const isSelected = selectedRegion === r.id;
-            const RegionIcon = r.IconComponent;
-            return (
-              <button
-                key={r.id}
-                type="button"
-                onClick={() => {
-                  onSelectRegion(r.id);
-                  onScrollToMap();
-                }}
-                className="interactive-click"
-                style={{
-                  padding: '6px 14px',
-                  borderRadius: 18,
-                  fontSize: '0.78rem',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  border: isSelected ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
-                  background: isSelected
-                    ? 'linear-gradient(135deg, var(--color-primary) 0%, #059669 100%)'
-                    : 'var(--color-bg-glass)',
-                  color: isSelected ? '#ffffff' : 'var(--color-text-main)',
-                  boxShadow: isSelected ? '0 0 12px rgba(16, 185, 129, 0.4)' : 'none',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 5,
-                  transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
-                }}
-              >
-                <RegionIcon size={13} color={isSelected ? '#ffffff' : 'var(--color-primary)'} />
-                {r.label}
-              </button>
-            );
-          })}
-
-          <span style={{ color: 'var(--color-border)', margin: '0 2px' }}>|</span>
-
-          {/* Săn Mây Filter Tag */}
-          {(() => {
-            const isCloudActive = searchQuery.toLowerCase().includes('mây');
-            return (
-              <button
-                type="button"
-                onClick={() => {
-                  onSearchChange(isCloudActive ? '' : 'mây');
-                  onScrollToMap();
-                }}
-                className="interactive-click"
-                style={{
-                  padding: '6px 12px',
-                  borderRadius: 18,
-                  fontSize: '0.76rem',
-                  fontWeight: 700,
-                  border: isCloudActive ? '1px solid var(--color-sky)' : '1px solid rgba(56, 189, 248, 0.3)',
-                  background: isCloudActive ? 'linear-gradient(135deg, var(--color-sky) 0%, #0284c7 100%)' : 'rgba(56, 189, 248, 0.1)',
-                  color: isCloudActive ? '#ffffff' : 'var(--color-sky)',
-                  cursor: 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 5,
-                  boxShadow: isCloudActive ? '0 0 12px rgba(56, 189, 248, 0.4)' : 'none',
-                  transition: 'all 0.2s ease',
-                }}
-              >
-                <IconCloud size={13} color={isCloudActive ? '#ffffff' : 'var(--color-sky)'} />
-                {isCloudActive ? (
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    <IconCheck size={12} /> Đang Lọc Săn Mây
-                  </span>
-                ) : (
-                  'Săn Mây'
-                )}
-              </button>
-            );
-          })()}
-
-          {/* Cắm Trại Rừng Filter Tag */}
-          <button
-            type="button"
-            onClick={() => {
-              if (onToggleCampsite) {
-                onToggleCampsite();
-              } else {
-                onSearchChange(searchQuery === 'cắm trại' ? '' : 'cắm trại');
-              }
-              onScrollToMap();
-            }}
-            className="interactive-click"
-            style={{
-              padding: '6px 12px',
-              borderRadius: 18,
-              fontSize: '0.76rem',
-              fontWeight: 700,
-              border: campsiteOnly ? '1px solid var(--color-primary)' : '1px solid rgba(16, 185, 129, 0.3)',
-              background: campsiteOnly ? 'linear-gradient(135deg, var(--color-primary) 0%, #059669 100%)' : 'rgba(16, 185, 129, 0.1)',
-              color: campsiteOnly ? '#ffffff' : 'var(--color-primary)',
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 5,
-              boxShadow: campsiteOnly ? '0 0 12px rgba(16, 185, 129, 0.4)' : 'none',
-              transition: 'all 0.2s ease',
-            }}
-          >
-            <IconTent size={13} color={campsiteOnly ? '#ffffff' : 'var(--color-primary)'} />
-            {campsiteOnly ? (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                <IconCheck size={12} /> Đang Lọc Bãi Trại
-              </span>
-            ) : (
-              'Cắm Trại Rừng'
-            )}
-          </button>
-
-          {/* Smooth Scroll To Map Button */}
-          <button
-            type="button"
-            onClick={() => onScrollToMap()}
-            className="interactive-click"
-            style={{
-              padding: '6px 13px',
-              borderRadius: 18,
-              fontSize: '0.76rem',
-              fontWeight: 800,
-              border: '1px solid var(--color-sun)',
-              background: 'rgba(250, 204, 21, 0.12)',
-              color: 'var(--color-sun)',
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 5,
-              transition: 'all 0.2s ease',
-            }}
-          >
-            <IconCompass size={13} color="var(--color-sun)" />
-            Bản Đồ 3D (GIS) ↓
-          </button>
-        </div>
-
-        {/* 5. Streamlined 4 Metric Stat Cards (Clickable & Scrolls to Map / Actions) */}
-        <div className="hero-stats-grid">
-          {/* Metric 1 */}
-          <div
-            onClick={() => (onScrollToAllTrails ? onScrollToAllTrails() : onScrollToMap())}
-            className="card-hover-lift"
-            title="Bấm để khám phá toàn bộ cung đường thực địa Việt Nam"
-            style={{
-              background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, var(--color-bg-card) 100%)',
-              border: '1px solid rgba(16, 185, 129, 0.3)',
-              backdropFilter: 'blur(16px)',
-              padding: '10px 14px',
-              borderRadius: 14,
-              textAlign: 'left',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              boxShadow: 'var(--shadow-card)',
-              cursor: 'pointer',
-              transition: 'all 0.2s ease',
-            }}
-          >
-            <div
+          {/* Filter & All Trails Action */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
+            <button
+              type="button"
+              onClick={onOpenAdvancedFilter}
               style={{
-                width: 36,
-                height: 36,
-                borderRadius: 10,
-                background: 'rgba(16, 185, 129, 0.2)',
-                border: '1px solid rgba(16, 185, 129, 0.4)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
+                padding: '8px 13px',
+                borderRadius: 4,
+                fontSize: '0.78rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+                background: activeFilterCount > 0 ? 'var(--color-primary)' : 'var(--color-surface-elevated)',
+                color: activeFilterCount > 0 ? 'var(--color-on-primary)' : 'var(--color-text-main)',
+                border: '1px solid var(--color-border)',
               }}
             >
-              <IconMountain size={18} color="var(--color-primary)" />
-            </div>
-            <div>
-              <div style={{ fontSize: '1.25rem', fontWeight: 900, color: 'var(--color-primary)', lineHeight: 1.1 }}>
-                {stats.totalTrails}+
-              </div>
-              <div style={{ fontSize: '0.74rem', color: 'var(--color-text-main)', fontWeight: 700 }}>
-                Cung Đường Đã Xác Thực
-              </div>
-              <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)' }}>
-                100% Thực địa Việt Nam
-              </div>
-            </div>
-          </div>
+              Bộ lọc{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+            </button>
 
-          {/* Metric 2 */}
-          <div
-            onClick={() => onScrollToMap()}
-            className="card-hover-lift"
-            title="Bấm để xem trắc diện cao độ và đường GPS trên bản đồ 3D"
-            style={{
-              background: 'linear-gradient(135deg, rgba(56, 189, 248, 0.12) 0%, var(--color-bg-card) 100%)',
-              border: '1px solid rgba(56, 189, 248, 0.3)',
-              backdropFilter: 'blur(16px)',
-              padding: '10px 14px',
-              borderRadius: 14,
-              textAlign: 'left',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              boxShadow: 'var(--shadow-card)',
-              cursor: 'pointer',
-              transition: 'all 0.2s ease',
-            }}
-          >
-            <div
+            <button
+              type="button"
+              onClick={() => {
+                if (onScrollToAllTrails) onScrollToAllTrails();
+                else if (onExploreClick) onExploreClick();
+                else onScrollToMap();
+              }}
+              className="btn btn-primary"
               style={{
-                width: 36,
-                height: 36,
-                borderRadius: 10,
-                background: 'rgba(56, 189, 248, 0.2)',
-                border: '1px solid rgba(56, 189, 248, 0.4)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
+                padding: '8px 16px',
+                borderRadius: 4,
+                fontSize: '0.78rem',
+                fontWeight: 700,
               }}
             >
-              <IconMapPin size={18} color="var(--color-sky)" />
-            </div>
-            <div>
-              <div style={{ fontSize: '1.25rem', fontWeight: 900, color: 'var(--color-sky)', lineHeight: 1.1 }}>
-                {stats.totalKm}+ km
-              </div>
-              <div style={{ fontSize: '0.74rem', color: 'var(--color-text-main)', fontWeight: 700 }}>
-                Tracklog GPX Chuẩn
-              </div>
-              <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)' }}>
-                Độ dốc & Trắc diện cao độ
-              </div>
-            </div>
-          </div>
-
-          {/* Metric 3 */}
-          <div
-            onClick={handleFansipanClick}
-            className="card-hover-lift"
-            title="Bấm để xem chi tiết đỉnh Fansipan 3.143m (nóc nhà Đông Dương)"
-            style={{
-              background: 'linear-gradient(135deg, rgba(250, 204, 21, 0.12) 0%, var(--color-bg-card) 100%)',
-              border: '1px solid rgba(250, 204, 21, 0.3)',
-              backdropFilter: 'blur(16px)',
-              padding: '10px 14px',
-              borderRadius: 14,
-              textAlign: 'left',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              boxShadow: 'var(--shadow-card)',
-              cursor: 'pointer',
-              transition: 'all 0.2s ease',
-            }}
-          >
-            <div
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: 10,
-                background: 'rgba(250, 204, 21, 0.2)',
-                border: '1px solid rgba(250, 204, 21, 0.4)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-              }}
-            >
-              <IconFlame size={18} color="var(--color-sun)" />
-            </div>
-            <div>
-              <div style={{ fontSize: '1.25rem', fontWeight: 900, color: 'var(--color-sun)', lineHeight: 1.1 }}>
-                {stats.maxAltitude}m
-              </div>
-              <div style={{ fontSize: '0.74rem', color: 'var(--color-text-main)', fontWeight: 700 }}>
-                Đỉnh Fansipan Cao Nhất
-              </div>
-              <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)' }}>
-                {stats.summitsAbove3k} Đỉnh &gt; 3.000m
-              </div>
-            </div>
-          </div>
-
-          {/* Metric 4 */}
-          <div
-            onClick={handleRescueClick}
-            className="card-hover-lift"
-            title="Bấm để mở danh bạ hotline cứu hộ khẩn cấp & kiểm lâm 24/7 (114, 115, 112...)"
-            style={{
-              background: 'linear-gradient(135deg, rgba(34, 211, 238, 0.12) 0%, var(--color-bg-card) 100%)',
-              border: '1px solid rgba(34, 211, 238, 0.3)',
-              backdropFilter: 'blur(16px)',
-              padding: '10px 14px',
-              borderRadius: 14,
-              textAlign: 'left',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              boxShadow: 'var(--shadow-card)',
-              cursor: 'pointer',
-              transition: 'all 0.2s ease',
-            }}
-          >
-            <div
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: 10,
-                background: 'rgba(34, 211, 238, 0.2)',
-                border: '1px solid rgba(34, 211, 238, 0.4)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-              }}
-            >
-              <IconShieldCheck size={18} color="var(--color-stream)" />
-            </div>
-            <div>
-              <div style={{ fontSize: '1.25rem', fontWeight: 900, color: 'var(--color-stream)', lineHeight: 1.1 }}>
-                100%
-              </div>
-              <div style={{ fontSize: '0.74rem', color: 'var(--color-text-main)', fontWeight: 700 }}>
-                Kiểm Lâm & Cứu Hộ
-              </div>
-              <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)' }}>
-                Xác thực danh bạ 24/7
-              </div>
-            </div>
+              Xem {stats.visibleTrails} tuyến
+            </button>
           </div>
         </div>
       </div>
     </section>
   );
-};
-
-
+});

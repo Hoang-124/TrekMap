@@ -1,10 +1,15 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import type { UserProfile, Trail, ForumThread } from '../../types.js';
-import { fetchTrails } from '../../services/api.js';
+import { fetchTrails, updateSavedTrailMeta, uploadImageToCloudinary } from '../../services/api.js';
 import { ThreadDetailModal } from '../forum/ThreadDetailModal.js';
 import { AuthorProfileModal } from '../forum/AuthorProfileModal.js';
+import { ProfileAnalyticsPanel, type RawCheckinInput } from './ProfileAnalyticsPanel.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
+import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
+import { useSlidingIndicator } from '../../hooks/useSlidingIndicator.js';
+import { DEFAULT_VIETNAM_TRAIL_COVER } from '../../utils/cloudinary.js';
+import { generateQrMatrix, buildQrSvgPath } from '../../utils/qrMatrix.js';
 
 const createSvgIcon = (d: string | React.ReactNode, defaultSize = 18) => {
   return ({ size = defaultSize, color = 'currentColor', style, className }: { size?: number; color?: string; style?: React.CSSProperties; className?: string }) => (
@@ -40,6 +45,171 @@ const Check = createSvgIcon('M20 6L9 17l-5-5');
 const Camera = createSvgIcon(<><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" /><circle cx="12" cy="13" r="4" /></>);
 const Maximize2 = createSvgIcon(<><polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" /></>);
 const ExternalLink = createSvgIcon(<><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></>);
+const BarChart3 = createSvgIcon(<><line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" /></>);
+const Folder = createSvgIcon(<><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></>);
+const CalendarIcon = createSvgIcon(<><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></>);
+const DownloadIcon = createSvgIcon(<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></>);
+
+type SavedCollectionName = 'Muốn đi' | 'Sắp đi' | 'Đã chinh phục' | 'Mục tiêu năm';
+
+const SAVED_COLLECTION_FOLDERS: readonly SavedCollectionName[] = [
+  'Muốn đi',
+  'Sắp đi',
+  'Đã chinh phục',
+  'Mục tiêu năm',
+] as const;
+
+const getSavedMetaStorageKey = (uid?: string | null): string =>
+  uid ? `lost_saved_meta_v1_${uid}` : 'lost_saved_meta_v1_guest';
+
+interface SavedTrailLocalMeta {
+  collectionName: SavedCollectionName;
+  personalNote: string;
+  plannedMonth: number | null;
+  pendingSync?: boolean;
+}
+
+const normalizeSavedCollection = (raw?: string | null): SavedCollectionName => {
+  const cleaned = String(raw || '').trim().toLowerCase();
+  if (!cleaned || cleaned === 'muốn đi' || cleaned === 'cuối tuần nhẹ nhàng' || cleaned === 'khác') {
+    return 'Muốn đi';
+  }
+  if (cleaned === 'sắp đi') return 'Sắp đi';
+  if (cleaned === 'đã chinh phục') return 'Đã chinh phục';
+  if (
+    cleaned === 'mục tiêu năm' ||
+    cleaned === 'muốn đi năm nay' ||
+    cleaned === 'đỉnh >3.000m' ||
+    cleaned === 'đỉnh >3000m'
+  ) {
+    return 'Mục tiêu năm';
+  }
+  return 'Muốn đi';
+};
+
+/** RFC-4180 CSV cell escaping with leading-whitespace-aware spreadsheet formula-injection neutralization. */
+const escapeCsvCell = (value: string | number | boolean | null | undefined): string => {
+  let str = value === null || value === undefined ? '' : String(value);
+  if (/^[\s\u00A0]*[=+\-@\t\r]/.test(str)) {
+    str = `'${str}`;
+  }
+  if (/[",\r\n]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+};
+
+const formatCsvDateStamp = (date: Date): string => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}${m}${d}`;
+};
+
+type UserWithMongoId = UserProfile & { _id?: string };
+type TrailWithMongoId = Trail & { _id?: string };
+type ProfileTabId = 'overview' | 'analytics' | 'saved' | 'contributions' | 'forum' | 'gear';
+
+interface ProfileContributionItem {
+  _id?: string;
+  id?: string;
+  name?: string;
+  province?: string;
+  district?: string;
+  region?: string;
+  distanceKm?: number;
+  elevationGainM?: number;
+  coverImage?: string;
+  status?: string;
+  createdAt?: string;
+  authorEmail?: string;
+  authorName?: string;
+  userId?: string | { _id?: string };
+  createdBy?: string | { _id?: string };
+}
+
+interface SavedTrailRecord {
+  _id?: string;
+  trailId?: Partial<TrailWithMongoId> | string;
+  savedOffline?: boolean;
+  collectionName?: string;
+  personalNote?: string;
+  plannedMonth?: number | null;
+}
+
+interface ProfileActivityItem {
+  _id?: string;
+  content?: string;
+  createdAt?: string;
+}
+
+interface LeaderboardRow {
+  userId: string;
+  rank: number;
+  fullName?: string;
+  avatarUrl?: string;
+  summitsCount?: number;
+  totalDistanceKm?: number;
+  highestAltitudeM?: number;
+  verifiedCount?: number;
+}
+
+type ForumThreadExtended = Omit<ForumThread, 'userId'> & {
+  userId?: string | { _id?: string };
+  authorEmail?: string;
+  userEmail?: string;
+  authorName?: string;
+  userReaction?: string | null;
+  replies?: number;
+};
+
+const readSavedTrailMetaMap = (uid?: string | null): Record<string, SavedTrailLocalMeta> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(getSavedMetaStorageKey(uid));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, SavedTrailLocalMeta> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, Record<string, unknown>>)) {
+      if (!v || typeof v !== 'object') continue;
+      const monthNum = typeof v.plannedMonth === 'number' && v.plannedMonth >= 1 && v.plannedMonth <= 12
+        ? Math.trunc(v.plannedMonth)
+        : null;
+      out[k] = {
+        collectionName: normalizeSavedCollection(typeof v.collectionName === 'string' ? v.collectionName : undefined),
+        personalNote: typeof v.personalNote === 'string' ? v.personalNote.slice(0, 500) : '',
+        plannedMonth: monthNum,
+        pendingSync: Boolean(v.pendingSync),
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+};
+
+const persistSavedTrailMetaMap = (
+  uid: string | null | undefined,
+  map: Record<string, SavedTrailLocalMeta>
+) => {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(getSavedMetaStorageKey(uid), JSON.stringify(map));
+  } catch {
+    // ignore storage quota
+  }
+};
+
+const formatShortDate = (value?: string): string => {
+  if (!value) return 'Mới cập nhật';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString('vi-VN');
+};
+
+const getCoverStorageKey = (uid?: string | null): string =>
+  uid ? `lost_cover_url_${uid}` : 'lost_cover_url_guest';
 
 interface CoverPreset {
   id: string;
@@ -139,58 +309,62 @@ interface SystemBadge {
   glow: string;
 }
 
+const getDifficultyText = (level?: number): string => {
+  if (!level) return 'Đang cập nhật';
+  if (level <= 2) return `Dễ (${level}/5)`;
+  if (level === 3) return 'Trung Bình (3/5)';
+  if (level === 4) return 'Khó (4/5)';
+  return 'Rất Khó (5/5)';
+};
+
 const SYSTEM_BADGES: SystemBadge[] = [
   {
     id: 'b-1',
     name: 'Trekker Mới',
     rarity: 'Phổ Biến',
-    unlocked: true,
-    unlockedAt: '12/10/2025',
-    description: 'Huy hiệu ghi nhận thành viên vừa khởi tạo tài khoản trên TrekMap thành công.',
-    requirement: 'Đăng ký tài khoản hệ thống TrekMap.',
-    color: '#10b981',
-    bg: 'rgba(16, 185, 129, 0.12)',
-    border: 'rgba(16, 185, 129, 0.6)',
-    glow: '0 0 16px rgba(16, 185, 129, 0.35)',
+    unlocked: false,
+    description: 'Huy hiệu ghi nhận thành viên vừa khởi tạo tài khoản trên LOST thành công.',
+    requirement: 'Đăng ký tài khoản hệ thống LOST.',
+    color: 'var(--color-primary)',
+    bg: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
+    border: 'color-mix(in srgb, var(--color-primary) 36%, transparent)',
+    glow: 'none',
   },
   {
     id: 'b-2',
     name: 'Verified Trekker',
     rarity: 'Hiếm',
-    unlocked: true,
-    unlockedAt: '12/10/2025',
+    unlocked: false,
     description: 'Huy hiệu xác thực chính chủ dành cho tài khoản đã xác minh Email OTP hoặc Đăng nhập bằng Google.',
     requirement: 'Kích hoạt xác minh OTP Email hoặc Google OAuth thành công.',
-    color: '#00ffd5',
-    bg: 'rgba(0, 255, 213, 0.14)',
-    border: 'rgba(0, 255, 213, 0.7)',
-    glow: '0 0 20px rgba(0, 255, 213, 0.4)',
+    color: 'var(--color-sky)',
+    bg: 'color-mix(in srgb, var(--color-sky) 12%, transparent)',
+    border: 'color-mix(in srgb, var(--color-sky) 36%, transparent)',
+    glow: 'none',
   },
   {
     id: 'b-3',
     name: 'Fansipan Peak Conqueror',
     rarity: 'Huyền Thoại',
-    unlocked: true,
-    unlockedAt: '18/01/2026',
+    unlocked: false,
     description: 'Vượt qua tuyến đường Trạm Tôn chinh phục Nóc nhà Đông Dương ở độ cao 3,143m.',
     requirement: 'Check-in thành công tại đỉnh Fansipan (Lào Cai).',
-    color: '#fbbf24',
-    bg: 'rgba(251, 191, 36, 0.15)',
-    border: 'rgba(251, 191, 36, 0.8)',
-    glow: '0 0 22px rgba(251, 191, 36, 0.45)',
+    color: 'var(--color-sun)',
+    bg: 'color-mix(in srgb, var(--color-sun) 12%, transparent)',
+    border: 'color-mix(in srgb, var(--color-sun) 36%, transparent)',
+    glow: 'none',
   },
   {
     id: 'b-4',
     name: 'Alpine Master',
     rarity: 'Hiếm',
-    unlocked: true,
-    unlockedAt: '05/03/2026',
+    unlocked: false,
     description: 'Đạt cấp độ sinh tồn cao cấp nhờ tích lũy hơn 50 điểm uy tín và hoàn thành nhiều cung đường trek khó.',
     requirement: 'Đạt từ 50 điểm uy tín (Reputation Score) trở lên.',
-    color: '#38bdf8',
-    bg: 'rgba(56, 189, 248, 0.14)',
-    border: 'rgba(56, 189, 248, 0.7)',
-    glow: '0 0 18px rgba(56, 189, 248, 0.38)',
+    color: 'var(--color-sky)',
+    bg: 'color-mix(in srgb, var(--color-sky) 12%, transparent)',
+    border: 'color-mix(in srgb, var(--color-sky) 36%, transparent)',
+    glow: 'none',
   },
   {
     id: 'b-5',
@@ -199,10 +373,10 @@ const SYSTEM_BADGES: SystemBadge[] = [
     unlocked: false,
     description: 'Vinh danh nhà thám hiểm có những đóng góp cảnh báo sự cố sạt lở hoặc hỗ trợ SOS cho cộng đồng.',
     requirement: 'Gửi từ 3 bài cảnh báo sự cố an toàn trên Diễn đàn được cộng đồng xác minh.',
-    color: '#ef4444',
-    bg: 'rgba(239, 68, 68, 0.06)',
-    border: 'rgba(239, 68, 68, 0.3)',
-    glow: '0 0 15px rgba(239, 68, 68, 0.25)',
+    color: 'var(--color-error-text, var(--color-error))',
+    bg: 'color-mix(in srgb, var(--color-error) 10%, transparent)',
+    border: 'color-mix(in srgb, var(--color-error) 34%, transparent)',
+    glow: 'none',
   },
   {
     id: 'b-6',
@@ -211,48 +385,115 @@ const SYSTEM_BADGES: SystemBadge[] = [
     unlocked: false,
     description: 'Dành riêng cho những nhà thám hiểm bền bỉ chinh phục tổng quãng đường leo núi trên 100 km.',
     requirement: 'Hoàn thành tổng quãng đường trek tích lũy vượt mốc 100 km.',
-    color: '#a855f7',
-    bg: 'rgba(168, 85, 247, 0.06)',
-    border: 'rgba(168, 85, 247, 0.3)',
-    glow: '0 0 15px rgba(168, 85, 247, 0.25)',
+    color: 'var(--color-stream)',
+    bg: 'color-mix(in srgb, var(--color-stream) 12%, transparent)',
+    border: 'color-mix(in srgb, var(--color-stream) 36%, transparent)',
+    glow: 'none',
   },
 ];
 
 // Color Theme Palettes for Conquered Trail Cards
 const TRAIL_CARD_THEMES = [
-  { color: '#fbbf24', border: 'rgba(251, 191, 36, 0.45)', bg: 'rgba(251, 191, 36, 0.06)', glow: '0 0 20px rgba(251, 191, 36, 0.25)', tag: 'Huyền Thoại 3,143m' },
-  { color: '#38bdf8', border: 'rgba(56, 189, 248, 0.45)', bg: 'rgba(56, 189, 248, 0.06)', glow: '0 0 20px rgba(56, 189, 248, 0.25)', tag: 'Săn Mây Đỉnh Cao' },
-  { color: '#10b981', border: 'rgba(16, 185, 129, 0.45)', bg: 'rgba(16, 185, 129, 0.06)', glow: '0 0 20px rgba(16, 185, 129, 0.25)', tag: 'Rừng Nguyên Sinh' },
-  { color: '#00ffd5', border: 'rgba(0, 255, 213, 0.45)', bg: 'rgba(0, 255, 213, 0.06)', glow: '0 0 20px rgba(0, 255, 213, 0.25)', tag: 'Tuyệt Cảnh Dã Ngoại' },
+  { color: 'var(--color-sun)', border: 'color-mix(in srgb, var(--color-sun) 34%, transparent)', bg: 'var(--color-bg-main)' },
+  { color: 'var(--color-sky)', border: 'color-mix(in srgb, var(--color-sky) 34%, transparent)', bg: 'var(--color-bg-main)' },
+  { color: 'var(--color-primary)', border: 'color-mix(in srgb, var(--color-primary) 34%, transparent)', bg: 'var(--color-bg-main)' },
+  { color: 'var(--color-stream)', border: 'color-mix(in srgb, var(--color-stream) 34%, transparent)', bg: 'var(--color-bg-main)' },
 ];
 
 
 
 export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, onSelectTrail, onShowToast, onProfileUpdate, onNavigateToContribute }) => {
+  const currentUserId = String(currentUser?.id || (currentUser as UserWithMongoId | null)?._id || '');
+  const currentUserEmail = String(currentUser?.email || '');
+  const currentUserRef = useRef<UserProfile | null>(currentUser || null);
+  useEffect(() => {
+    currentUserRef.current = currentUser || null;
+  }, [currentUser]);
+
   const [profile, setProfile] = useState<UserProfile | null>(currentUser || null);
+  const [profileStats, setProfileStats] = useState<{
+    totalDistanceKm: number;
+    highestAltitudeM: number;
+    summitTrailName: string;
+    checkinsCount: number;
+    contributionsCount: number;
+    threadsCount: number;
+    reviewsCount: number;
+    tripReportsCount: number;
+  }>({
+    totalDistanceKm: 0,
+    highestAltitudeM: 0,
+    summitTrailName: '',
+    checkinsCount: 0,
+    contributionsCount: 0,
+    threadsCount: 0,
+    reviewsCount: 0,
+    tripReportsCount: 0,
+  });
   const [checkedTrails, setCheckedTrails] = useState<Trail[]>([]);
+  const [rawCheckins, setRawCheckins] = useState<RawCheckinInput[]>([]);
+  const [verifiedCheckinIds, setVerifiedCheckinIds] = useState<string[]>([]);
+  const [savedTrails, setSavedTrails] = useState<SavedTrailRecord[]>([]);
+  const [savedCollectionFilter, setSavedCollectionFilter] = useState<'all' | SavedCollectionName>('all');
+  const [savedMetaMap, setSavedMetaMap] = useState<Record<string, SavedTrailLocalMeta>>(() =>
+    readSavedTrailMetaMap(currentUserId)
+  );
+  const [editingSavedId, setEditingSavedId] = useState<string | null>(null);
+  const [savedNoteDraft, setSavedNoteDraft] = useState('');
+  const [savingSavedMetaIds, setSavingSavedMetaIds] = useState<Set<string>>(() => new Set());
+  const [confirmRemoveSavedId, setConfirmRemoveSavedId] = useState<string | null>(null);
+  const [removingSavedIds, setRemovingSavedIds] = useState<Set<string>>(() => new Set());
+  const [activities, setActivities] = useState<ProfileActivityItem[]>([]);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardRow[]>([]);
   const [allAvailableTrails, setAllAvailableTrails] = useState<Trail[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLightTheme, setIsLightTheme] = useState(() =>
+    typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme') === 'light'
+  );
+
+  // Check-in GPS & Duration controls
+  const [checkinHours, setCheckinHours] = useState('8');
+  const [checkinCoords, setCheckinCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [isCapturingCheckinGps, setIsCapturingCheckinGps] = useState(false);
+  const [isSubmittingCheckin, setIsSubmittingCheckin] = useState(false);
 
   // File Upload Ref
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Modals & Navigation
-  const [activeTab, setActiveTab] = useState<'overview' | 'contributions' | 'forum' | 'gear'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'analytics' | 'saved' | 'contributions' | 'forum' | 'gear'>('overview');
+  const { trackRef: profileTabTrackRef, indicatorStyle: profileTabIndicatorStyle } =
+    useSlidingIndicator<string>(activeTab);
   const [showQrModal, setShowQrModal] = useState(false);
   const [showGearModal, setShowGearModal] = useState(false);
   const [selectedBadge, setSelectedBadge] = useState<SystemBadge | null>(null);
   const [selectedTrailPassport, setSelectedTrailPassport] = useState<Trail | null>(null);
   const [showCheckInModal, setShowCheckInModal] = useState(false);
 
-  // Cover Photo Customization
+  // Cover Photo Customization (scoped per user ID so covers never leak across accounts)
   const [customCoverUrl, setCustomCoverUrl] = useState<string>(() => {
-    return localStorage.getItem('trekmap_cover_url') || (currentUser as any)?.coverUrl || DEFAULT_COVER_URL;
+    const storedForUser = currentUserId ? localStorage.getItem(getCoverStorageKey(currentUserId)) : null;
+    return currentUser?.coverUrl || storedForUser || DEFAULT_COVER_URL;
   });
   const [showCoverModal, setShowCoverModal] = useState(false);
   const [previewCover, setPreviewCover] = useState<string>(customCoverUrl);
   const [customCoverInput, setCustomCoverInput] = useState<string>('');
   const coverFileInputRef = useRef<HTMLInputElement>(null);
+  const savedTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const csvBlobCleanupRef = useRef<Map<number, string>>(new Map());
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    const cleanupMap = csvBlobCleanupRef.current;
+    return () => {
+      isMountedRef.current = false;
+      cleanupMap.forEach((url, timerId) => {
+        window.clearTimeout(timerId);
+        URL.revokeObjectURL(url);
+      });
+      cleanupMap.clear();
+    };
+  }, []);
 
   // Lightbox Full Photo View State
   const [fullViewImage, setFullViewImage] = useState<{
@@ -262,27 +503,42 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     type: 'cover' | 'avatar';
   } | null>(null);
 
-  // Close modals on Escape key
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (fullViewImage) setFullViewImage(null);
-        else if (showCoverModal) setShowCoverModal(false);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [fullViewImage, showCoverModal]);
+    if (typeof document === 'undefined') return;
+    const sync = () =>
+      setIsLightTheme(document.documentElement.getAttribute('data-theme') === 'light');
+    sync();
+    const obs = new MutationObserver(sync);
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    return () => obs.disconnect();
+  }, []);
 
-  useEffect(() => {
-    if (currentUser?.coverUrl) {
-      setCustomCoverUrl(currentUser.coverUrl);
-      setPreviewCover(currentUser.coverUrl);
-      try {
-        localStorage.setItem('trekmap_cover_url', currentUser.coverUrl);
-      } catch (e) {}
-    }
-  }, [currentUser?.coverUrl]);
+  const coverSyncKey = `${currentUserId}|${currentUser?.coverUrl || ''}`;
+  const [prevCoverSyncKey, setPrevCoverSyncKey] = useState(coverSyncKey);
+  if (prevCoverSyncKey !== coverSyncKey) {
+    setPrevCoverSyncKey(coverSyncKey);
+    const nextCover =
+      currentUser?.coverUrl ||
+      (currentUserId ? localStorage.getItem(getCoverStorageKey(currentUserId)) : null) ||
+      DEFAULT_COVER_URL;
+    setCustomCoverUrl(nextCover);
+    setPreviewCover(nextCover);
+  }
+
+  const userSyncKey = `${currentUserId}|${currentUserEmail}`;
+  const [prevUserSyncKey, setPrevUserSyncKey] = useState(userSyncKey);
+  if (prevUserSyncKey !== userSyncKey) {
+    setPrevUserSyncKey(userSyncKey);
+    setProfile(currentUser || null);
+    setSavedTrails([]);
+    setSavedMetaMap(readSavedTrailMetaMap(currentUserId));
+    setSavedCollectionFilter('all');
+    setEditingSavedId(null);
+    setSavedNoteDraft('');
+    setConfirmRemoveSavedId(null);
+    setSavingSavedMetaIds(new Set());
+    setRemovingSavedIds(new Set());
+  }
 
   // Gear Locker State (Feature 2)
   const [userGear, setUserGear] = useState<string[]>(['tent', 'backpack', 'boots', 'flashlight', 'firstaid']);
@@ -292,10 +548,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   const [selectedThreadForModal, setSelectedThreadForModal] = useState<ForumThread | null>(null);
   const [selectedAuthorForModal, setSelectedAuthorForModal] = useState<{ name: string; avatar: string } | null>(null);
 
-  // User Submitted Trail Contributions State
-  const [userContributions, setUserContributions] = useState<any[]>(() => {
-    return JSON.parse(localStorage.getItem('trekmap_contributions') || '[]');
-  });
+  // User Submitted Trail Contributions State (strictly server-backed — no global lost_contributions dump)
+  const [userContributions, setUserContributions] = useState<ProfileContributionItem[]>([]);
   const [deletingContribution, setDeletingContribution] = useState<{ id: string; name: string } | null>(null);
 
   const handleDeleteContribution = (id: string, name: string) => {
@@ -306,34 +560,38 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     if (!deletingContribution) return;
     const targetId = deletingContribution.id;
     const targetName = deletingContribution.name;
-    const token = localStorage.getItem('trekmap_token');
+    const token = localStorage.getItem('lost_token');
 
-    // 1. Delete from Server DB if token exists
+    // 1. Delete from Server DB if token exists and verify response
     try {
       if (token) {
-        await fetch(`/api/contributions/${targetId}`, {
+        const res = await fetch(`/api/contributions/${targetId}`, {
           method: 'DELETE',
           headers: { Authorization: `Bearer ${token}` },
         });
+        if (!res.ok && res.status !== 404) {
+          const errData = await res.json().catch(() => ({}));
+          onShowToast?.(errData.message || 'Không thể xóa bài đóng góp trên máy chủ.', 'error');
+          setDeletingContribution(null);
+          return;
+        }
       }
     } catch (err) {
       console.warn('Delete contribution API error:', err);
+      onShowToast?.('Lỗi kết nối máy chủ khi xóa bài đóng góp.', 'error');
+      setDeletingContribution(null);
+      return;
     }
 
-    // 2. Delete from localStorage
-    const allContribs: any[] = JSON.parse(localStorage.getItem('trekmap_contributions') || '[]');
-    const updatedGlobal = allContribs.filter((item) => (item.id !== targetId && item._id !== targetId));
-    localStorage.setItem('trekmap_contributions', JSON.stringify(updatedGlobal));
-    
-    setUserContributions((prev) => prev.filter((item) => (item.id !== targetId && item._id !== targetId)));
+    setUserContributions((prev) => prev.filter((item) => item.id !== targetId && item._id !== targetId));
     setDeletingContribution(null);
     if (onShowToast) {
       onShowToast(`Đã xóa bài đóng góp "${targetName}" thành công!`, 'info');
     }
   };
 
-  const handleEditContribution = (contrib: any) => {
-    localStorage.setItem('trekmap_editing_contribution', JSON.stringify(contrib));
+  const handleEditContribution = (contrib: ProfileContributionItem) => {
+    localStorage.setItem('lost_editing_contribution', JSON.stringify(contrib));
     if (onNavigateToContribute) {
       onNavigateToContribute();
     }
@@ -360,9 +618,21 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     general?: string;
   }>({});
 
-  const loadProfileData = async () => {
+  const populateForm = useCallback((u: UserProfile) => {
+    setEditFullName(u.fullName || u.name || '');
+    setEditUsername(u.username || '');
+    setEditPhone(u.phone || '');
+    setEditBio(u.bio || '');
+    setEditEmergency(u.emergencyContact || '');
+    setEditStyle(u.preferredStyle || 'Trekking & Camping');
+    setEditAvatarUrl(u.avatarUrl || u.avatar || '');
+    setFieldErrors({});
+  }, []);
+
+  const loadProfileData = useCallback(async () => {
     setIsLoading(true);
-    const token = localStorage.getItem('trekmap_token');
+    const token = localStorage.getItem('lost_token');
+    let loadedUser: UserProfile | null = currentUserRef.current || null;
 
     try {
       if (token) {
@@ -371,44 +641,41 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         });
         const data = await res.json();
         if (data.success && data.user) {
+          loadedUser = data.user;
           setProfile(data.user);
           populateForm(data.user);
           if (data.user.coverUrl) {
             setCustomCoverUrl(data.user.coverUrl);
             setPreviewCover(data.user.coverUrl);
             try {
-              localStorage.setItem('trekmap_cover_url', data.user.coverUrl);
-            } catch (e) {}
+              const uid = String(data.user._id || data.user.id || '');
+              localStorage.setItem(getCoverStorageKey(uid), data.user.coverUrl);
+            } catch {
+              // ignore quota error
+            }
           }
           if (data.user.gearLocker && Array.isArray(data.user.gearLocker)) {
             setUserGear(data.user.gearLocker);
           }
 
           // Fetch live contributions from Server API and merge with localStorage
-          let serverContribs: any[] = [];
+          let serverContribs: ProfileContributionItem[] = [];
           try {
             const cRes = await fetch('/api/contributions', {
               headers: { Authorization: `Bearer ${token}` },
             });
             const cData = await cRes.json();
             if (cData.success && Array.isArray(cData.data)) {
-              serverContribs = cData.data;
+              serverContribs = cData.data as ProfileContributionItem[];
             }
           } catch (cErr) {
             console.warn('[Profile Contrib API Fetch]:', cErr);
           }
 
-          const localContribs: any[] = JSON.parse(localStorage.getItem('trekmap_contributions') || '[]');
-          const contribMap = new Map<string, any>();
+          const contribMap = new Map<string, ProfileContributionItem>();
           serverContribs.forEach((c) => {
             const key = c.id || c._id;
             if (key) contribMap.set(String(key), c);
-          });
-          localContribs.forEach((c) => {
-            const key = c.id || c._id;
-            if (key && !contribMap.has(String(key))) {
-              contribMap.set(String(key), c);
-            }
           });
           const allContribs = Array.from(contribMap.values());
 
@@ -416,17 +683,20 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           const userId = String(data.user._id || data.user.id || '').trim();
           const userName = (data.user.fullName || data.user.username || data.user.name || '').toLowerCase().trim();
 
-          const filtered = allContribs.filter((c: any) => {
+          const filtered = allContribs.filter((c) => {
             const cEmail = (c.authorEmail || '').toLowerCase().trim();
-            const cUserId = String(c.userId || c.createdBy || '').trim();
+            const cUserId = String(
+              typeof c.userId === 'object'
+                ? c.userId?._id || ''
+                : c.userId || (typeof c.createdBy === 'object' ? c.createdBy?._id || '' : c.createdBy || '')
+            ).trim();
             const cName = (c.authorName || '').toLowerCase().trim();
 
             const emailMatch = Boolean(userEmail && cEmail && cEmail === userEmail);
             const idMatch = Boolean(userId && cUserId && cUserId === userId);
             const nameMatch = Boolean(userName && cName && cName === userName);
-            const noMeta = !cEmail && !cUserId && (!cName || cName === 'người dùng trekmap');
 
-            return emailMatch || idMatch || nameMatch || noMeta;
+            return emailMatch || idMatch || nameMatch;
           });
           setUserContributions(filtered);
         }
@@ -437,10 +707,191 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       setIsLoading(false);
     }
 
+    const activeUserId = String((loadedUser as UserWithMongoId | null)?._id || loadedUser?.id || loadedUser?.username || '').trim();
+    if (activeUserId) {
+      try {
+        const statsRes = await fetch(`/api/users/profile/${encodeURIComponent(activeUserId)}`, {
+          headers: getApiHeaders(),
+        });
+        const statsData = await statsRes.json();
+        if (statsData.success && statsData.data?.stats) {
+          setProfileStats({
+            totalDistanceKm: Number(statsData.data.stats.totalDistanceKm) || 0,
+            highestAltitudeM: Number(statsData.data.stats.highestAltitudeM) || 0,
+            summitTrailName: statsData.data.stats.summitTrailName || '',
+            checkinsCount: Number(statsData.data.stats.checkinsCount) || 0,
+            contributionsCount: Number(statsData.data.stats.contributionsCount) || 0,
+            threadsCount: Number(statsData.data.stats.threadsCount) || 0,
+            reviewsCount: Number(statsData.data.stats.reviewsCount) || 0,
+            tripReportsCount: Number(statsData.data.stats.tripReportsCount) || 0,
+          });
+        }
+      } catch (err) {
+        console.warn('[Profile Stats Fetch Error]:', err);
+      }
+    }
+
     try {
-      const allTrails = await fetchTrails();
+      const [allTrails, checkinsRes, savedRes, activitiesRes, leaderboardRes] = await Promise.all([
+        fetchTrails(),
+        token ? fetch('/api/checkins/me', { headers: { Authorization: `Bearer ${token}` } }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
+        token ? fetch('/api/saved-trails', { headers: { Authorization: `Bearer ${token}` } }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
+        token ? fetch('/api/activities/me?limit=15', { headers: { Authorization: `Bearer ${token}` } }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
+        fetch('/api/checkins/leaderboard?limit=10').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      ]);
       setAllAvailableTrails(allTrails);
-      setCheckedTrails(allTrails.slice(0, 3));
+
+      if (savedRes?.success && Array.isArray(savedRes.data)) {
+        const refUserId = String(
+          currentUserRef.current?.id || (currentUserRef.current as UserWithMongoId | null)?._id || ''
+        );
+        const metaUid = activeUserId || refUserId || 'guest';
+        const localMap = readSavedTrailMetaMap(metaUid);
+        let mapChanged = false;
+        const pendingReplayList: Array<{ tid: string; entry: SavedTrailLocalMeta }> = [];
+
+        const hydratedSaved = (savedRes.data as SavedTrailRecord[]).map((item) => {
+          const trailObj = item.trailId && typeof item.trailId === 'object' ? item.trailId : null;
+          const tid = String(trailObj?.id || trailObj?._id || (typeof item.trailId === 'string' ? item.trailId : '') || '');
+          const localEntry = tid ? localMap[tid] : undefined;
+          const serverCol = normalizeSavedCollection(item.collectionName);
+          const serverNote = typeof item.personalNote === 'string' ? item.personalNote : '';
+          const serverMonth =
+            typeof item.plannedMonth === 'number' && item.plannedMonth >= 1 && item.plannedMonth <= 12
+              ? Math.trunc(item.plannedMonth)
+              : null;
+
+          if (tid && localEntry?.pendingSync) {
+            pendingReplayList.push({ tid, entry: localEntry });
+            return {
+              ...item,
+              collectionName: localEntry.collectionName,
+              personalNote: localEntry.personalNote,
+              plannedMonth: localEntry.plannedMonth,
+            };
+          }
+          if (tid) {
+            localMap[tid] = {
+              collectionName: serverCol,
+              personalNote: serverNote,
+              plannedMonth: serverMonth,
+              pendingSync: false,
+            };
+            mapChanged = true;
+          }
+          return {
+            ...item,
+            collectionName: serverCol,
+            personalNote: serverNote,
+            plannedMonth: serverMonth,
+          };
+        });
+        if (mapChanged) {
+          persistSavedTrailMetaMap(metaUid, localMap);
+          setSavedMetaMap(localMap);
+        }
+        setSavedTrails(hydratedSaved);
+
+        // Replay any offline pendingSync entries cleanly once authenticated & online
+        if (token && pendingReplayList.length > 0 && (typeof navigator === 'undefined' || navigator.onLine)) {
+          void Promise.allSettled(
+            pendingReplayList.map(async ({ tid, entry }) => {
+              const synced = await updateSavedTrailMeta(tid, {
+                collectionName: entry.collectionName,
+                personalNote: entry.personalNote,
+                plannedMonth: entry.plannedMonth,
+              });
+              return { tid, synced };
+            })
+          ).then((results) => {
+            if (!isMountedRef.current) return;
+            const freshMap = readSavedTrailMetaMap(metaUid);
+            let replayedAny = false;
+            const updatesByTid = new Map<string, SavedTrailLocalMeta>();
+            results.forEach((r) => {
+              if (r.status !== 'fulfilled') return;
+              const { tid, synced } = r.value;
+              const syncedMeta: SavedTrailLocalMeta = {
+                collectionName: normalizeSavedCollection(synced.collectionName),
+                personalNote: typeof synced.personalNote === 'string' ? synced.personalNote : '',
+                plannedMonth:
+                  typeof synced.plannedMonth === 'number' &&
+                    synced.plannedMonth >= 1 &&
+                    synced.plannedMonth <= 12
+                    ? Math.trunc(synced.plannedMonth)
+                    : null,
+                pendingSync: false,
+              };
+              freshMap[tid] = syncedMeta;
+              updatesByTid.set(tid, syncedMeta);
+              replayedAny = true;
+            });
+            if (replayedAny) {
+              persistSavedTrailMetaMap(metaUid, freshMap);
+              setSavedMetaMap(freshMap);
+              setSavedTrails((prev) =>
+                prev.map((item) => {
+                  const tObj = item.trailId && typeof item.trailId === 'object' ? item.trailId : null;
+                  const tid = String(tObj?.id || tObj?._id || (typeof item.trailId === 'string' ? item.trailId : '') || '');
+                  const synced = updatesByTid.get(tid);
+                  if (!synced) return item;
+                  return {
+                    ...item,
+                    collectionName: synced.collectionName,
+                    personalNote: synced.personalNote,
+                    plannedMonth: synced.plannedMonth,
+                  };
+                })
+              );
+            }
+          });
+        }
+      }
+      if (activitiesRes?.success && Array.isArray(activitiesRes.data)) {
+        setActivities(activitiesRes.data as ProfileActivityItem[]);
+      }
+      if (leaderboardRes?.success && Array.isArray(leaderboardRes.data)) {
+        setLeaderboard(leaderboardRes.data as LeaderboardRow[]);
+      }
+
+      // Populate ONLY genuinely checked-in trails for this user (merging server CheckinModel + user profile + local cache)
+      const checkedIds = new Set<string>(
+        Array.isArray(loadedUser?.checkedInTrails) ? loadedUser!.checkedInTrails.map(String) : []
+      );
+      const verifiedIds: string[] = [];
+      if (checkinsRes?.success && Array.isArray(checkinsRes.data)) {
+        const checkinItems = checkinsRes.data as RawCheckinInput[];
+        setRawCheckins(checkinItems);
+        checkinItems.forEach((c) => {
+          const tObj = c.trailId && typeof c.trailId === 'object' ? c.trailId : null;
+          const tid = tObj?.id || tObj?._id || (typeof c.trailId === 'string' ? c.trailId : '');
+          if (tid) {
+            checkedIds.add(String(tid));
+            if (c.verifiedBadge) {
+              verifiedIds.push(String(tid));
+              if (tObj?.id) verifiedIds.push(String(tObj.id));
+            }
+          }
+        });
+      } else {
+        setRawCheckins([]);
+      }
+      setVerifiedCheckinIds(verifiedIds);
+
+      try {
+        const savedCheckins = JSON.parse(localStorage.getItem(`lost_checkins_${activeUserId || 'guest'}`) || '[]');
+        if (Array.isArray(savedCheckins)) {
+          savedCheckins.forEach((id: string) => checkedIds.add(String(id)));
+        }
+      } catch {
+        // ignore invalid local cache
+      }
+      setCheckedTrails(
+        allTrails.filter((t) => {
+          const mongoId = (t as TrailWithMongoId)._id;
+          return checkedIds.has(String(t.id)) || (mongoId && checkedIds.has(String(mongoId)));
+        })
+      );
     } catch (err) {
       console.error('[Trails Fetch Error]:', err);
     }
@@ -456,7 +907,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     } catch (err) {
       console.error('[Forum Posts Fetch Error]:', err);
     }
-  };
+  }, [populateForm]);
 
   useEffect(() => {
     const handleGlobalUpdate = (e: Event) => {
@@ -467,7 +918,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             if (t.id === detail.threadId) {
               return {
                 ...t,
-                userReaction: detail.userReaction !== undefined ? detail.userReaction : (t as any).userReaction,
+                userReaction: detail.userReaction !== undefined ? detail.userReaction : (t as ForumThreadExtended).userReaction,
                 reactions: detail.reactionsSummary || t.reactions,
                 upvotes: detail.upvotes !== undefined ? detail.upvotes : t.upvotes,
               };
@@ -477,24 +928,111 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         );
       }
     };
-    window.addEventListener('trekmap:forum-updated', handleGlobalUpdate);
-    return () => window.removeEventListener('trekmap:forum-updated', handleGlobalUpdate);
+    window.addEventListener('lost:forum-updated', handleGlobalUpdate);
+    return () => window.removeEventListener('lost:forum-updated', handleGlobalUpdate);
   }, []);
-
-  const populateForm = (u: UserProfile) => {
-    setEditFullName(u.fullName || u.name || '');
-    setEditUsername(u.username || '');
-    setEditPhone(u.phone || '');
-    setEditBio(u.bio || '');
-    setEditEmergency(u.emergencyContact || '');
-    setEditStyle(u.preferredStyle || 'Trekking & Camping');
-    setEditAvatarUrl(u.avatarUrl || u.avatar || '');
-    setFieldErrors({});
-  };
 
   useEffect(() => {
-    loadProfileData();
-  }, []);
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (active) void loadProfileData();
+    });
+    return () => {
+      active = false;
+    };
+  }, [currentUserId, currentUserEmail, loadProfileData]);
+
+  // LIFO Focus Trap refs for all 9 inline profile portal modals
+  const qrModalRef = useRef<HTMLDivElement | null>(null);
+  const badgeModalRef = useRef<HTMLDivElement | null>(null);
+  const passportModalRef = useRef<HTMLDivElement | null>(null);
+  const deleteContribModalRef = useRef<HTMLDivElement | null>(null);
+  const checkInModalRef = useRef<HTMLDivElement | null>(null);
+  const editProfileModalRef = useRef<HTMLDivElement | null>(null);
+  const gearModalRef = useRef<HTMLDivElement | null>(null);
+  const coverModalRef = useRef<HTMLDivElement | null>(null);
+  const lightboxModalRef = useRef<HTMLDivElement | null>(null);
+
+  useFocusTrap(showQrModal, qrModalRef);
+  useFocusTrap(Boolean(selectedBadge), badgeModalRef);
+  useFocusTrap(Boolean(selectedTrailPassport), passportModalRef);
+  useFocusTrap(Boolean(deletingContribution), deleteContribModalRef);
+  useFocusTrap(showCheckInModal, checkInModalRef);
+  useFocusTrap(isEditing, editProfileModalRef);
+  useFocusTrap(showGearModal, gearModalRef);
+  useFocusTrap(showCoverModal, coverModalRef);
+  useFocusTrap(Boolean(fullViewImage), lightboxModalRef);
+
+  // Unified Escape key handler for ALL profile modals (LIFO focus-trap + IME safe)
+  useEffect(() => {
+    const hasOpenModal = Boolean(
+      fullViewImage ||
+      deletingContribution ||
+      showCoverModal ||
+      showCheckInModal ||
+      isEditing ||
+      showGearModal ||
+      selectedTrailPassport ||
+      selectedBadge ||
+      showQrModal
+    );
+    if (!hasOpenModal) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.isComposing) return;
+      if (fullViewImage && isTopmostFocusTrap(lightboxModalRef.current)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setFullViewImage(null);
+      } else if (deletingContribution && isTopmostFocusTrap(deleteContribModalRef.current)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setDeletingContribution(null);
+      } else if (showCoverModal && isTopmostFocusTrap(coverModalRef.current)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setShowCoverModal(false);
+      } else if (showCheckInModal && isTopmostFocusTrap(checkInModalRef.current)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (!isSubmittingCheckin) setShowCheckInModal(false);
+      } else if (isEditing && isTopmostFocusTrap(editProfileModalRef.current)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (!isSaving) setIsEditing(false);
+      } else if (showGearModal && isTopmostFocusTrap(gearModalRef.current)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setShowGearModal(false);
+      } else if (selectedTrailPassport && isTopmostFocusTrap(passportModalRef.current)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setSelectedTrailPassport(null);
+      } else if (selectedBadge && isTopmostFocusTrap(badgeModalRef.current)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setSelectedBadge(null);
+      } else if (showQrModal && isTopmostFocusTrap(qrModalRef.current)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setShowQrModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    fullViewImage,
+    deletingContribution,
+    showCoverModal,
+    showCheckInModal,
+    isSubmittingCheckin,
+    isEditing,
+    isSaving,
+    showGearModal,
+    selectedTrailPassport,
+    selectedBadge,
+    showQrModal,
+  ]);
 
   const handleToggleGear = async (gearId: string) => {
     const nextGear = userGear.includes(gearId)
@@ -502,7 +1040,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       : [...userGear, gearId];
 
     setUserGear(nextGear);
-    const token = localStorage.getItem('trekmap_token');
+    const token = localStorage.getItem('lost_token');
 
     try {
       if (token) {
@@ -523,14 +1061,496 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     }
   };
 
-  const handleAddCheckInTrail = (trail: Trail) => {
-    if (!checkedTrails.some((t) => t.id === trail.id)) {
-      setCheckedTrails([trail, ...checkedTrails]);
-      if (onShowToast) {
-        onShowToast(`Đã thêm check-in thành công cung đường ${trail.name}!`, 'success');
+  const handleCaptureCheckinGps = () => {
+    if (!navigator.geolocation) {
+      onShowToast?.('Trình duyệt không hỗ trợ định vị GPS.', 'error');
+      return;
+    }
+    setIsCapturingCheckinGps(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (!isMountedRef.current) return;
+        setCheckinCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setIsCapturingCheckinGps(false);
+        onShowToast?.('Đã đính kèm tọa độ GPS hiện tại để xác thực đỉnh!', 'success');
+      },
+      () => {
+        if (!isMountedRef.current) return;
+        setIsCapturingCheckinGps(false);
+        onShowToast?.('Không lấy được tín hiệu GPS. Bạn vẫn có thể check-in thủ công.', 'info');
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  const handleAddCheckInTrail = async (trail: Trail) => {
+    if (isSubmittingCheckin) return;
+    if (checkedTrails.some((t) => t.id === trail.id)) {
+      setShowCheckInModal(false);
+      return;
+    }
+
+    const token = localStorage.getItem('lost_token');
+    const hours = Math.max(0.5, Math.min(240, Number(checkinHours) || 8));
+
+    if (token) {
+      setIsSubmittingCheckin(true);
+      try {
+        const res = await fetch('/api/checkins', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            trailId: trail.id,
+            completionTimeHours: hours,
+            ...(checkinCoords ? { lat: checkinCoords.lat, lng: checkinCoords.lng } : {}),
+          }),
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          const nextChecked = [trail, ...checkedTrails];
+          setCheckedTrails(nextChecked);
+          if (data.data?.verifiedBadge) {
+            setVerifiedCheckinIds((prev) => Array.from(new Set([...prev, trail.id])));
+          }
+          const badgeNote =
+            Array.isArray(data.unlockedBadges) && data.unlockedBadges.length > 0
+              ? ` Mở khóa huy hiệu: ${data.unlockedBadges.join(', ')}!`
+              : '';
+          onShowToast?.(`${data.message || `Check-in ${trail.name} thành công!`}${badgeNote}`, 'success');
+          setShowCheckInModal(false);
+          setCheckinCoords(null);
+          // Refresh leaderboard & activities silently
+          fetch('/api/checkins/leaderboard?limit=10')
+            .then((r) => (r.ok ? r.json() : null))
+            .then((j) => j?.success && Array.isArray(j.data) && setLeaderboard(j.data))
+            .catch(() => { });
+          fetch('/api/activities/me?limit=15', { headers: { Authorization: `Bearer ${token}` } })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((j) => j?.success && Array.isArray(j.data) && setActivities(j.data))
+            .catch(() => { });
+          return;
+        }
+        onShowToast?.(data.message || 'Không thể ghi nhận check-in lên máy chủ.', 'error');
+        return;
+      } catch {
+        // Offline fallback below
+      } finally {
+        setIsSubmittingCheckin(false);
       }
     }
+
+    const nextChecked = [trail, ...checkedTrails];
+    setCheckedTrails(nextChecked);
+    const userKey = String((profile as UserWithMongoId | null)?._id || profile?.id || currentUser?.id || 'guest');
+    try {
+      localStorage.setItem(`lost_checkins_${userKey}`, JSON.stringify(nextChecked.map((t) => t.id)));
+    } catch {
+      // ignore storage quota
+    }
+    onShowToast?.(`Đã lưu check-in cục bộ cung đường ${trail.name}!`, 'info');
     setShowCheckInModal(false);
+  };
+
+  const getActiveMetaUid = (): string =>
+    String((profile as UserWithMongoId | null)?._id || profile?.id || currentUserId || 'guest');
+
+  const resolveSavedItemMeta = (item: SavedTrailRecord | undefined, trailIdKey: string): SavedTrailLocalMeta => {
+    const localOverride = savedMetaMap[trailIdKey];
+    if (localOverride?.pendingSync) {
+      return localOverride;
+    }
+    if (item) {
+      const serverMonth =
+        typeof item.plannedMonth === 'number' && item.plannedMonth >= 1 && item.plannedMonth <= 12
+          ? Math.trunc(item.plannedMonth)
+          : null;
+      return {
+        collectionName: normalizeSavedCollection(item.collectionName),
+        personalNote: typeof item.personalNote === 'string' ? item.personalNote : '',
+        plannedMonth: serverMonth,
+      };
+    }
+    return {
+      collectionName: normalizeSavedCollection(localOverride?.collectionName),
+      personalNote: localOverride?.personalNote || '',
+      plannedMonth: localOverride?.plannedMonth ?? null,
+    };
+  };
+
+  const getSavedTrailId = (item: SavedTrailRecord): string =>
+    typeof item.trailId === 'object' && item.trailId
+      ? String(item.trailId.id || item.trailId._id || '')
+      : String(item.trailId || '');
+
+  const handleUpdateSavedTrailMeta = async (
+    trailId: string,
+    trailName: string,
+    patch: {
+      collectionName?: SavedCollectionName;
+      personalNote?: string;
+      plannedMonth?: number | null;
+    }
+  ) => {
+    const key = String(trailId);
+    const metaUid = getActiveMetaUid();
+    const existingItem = savedTrails.find((item) => getSavedTrailId(item) === key);
+    const currentMeta = resolveSavedItemMeta(existingItem, key);
+    const nextMeta: SavedTrailLocalMeta = {
+      collectionName: patch.collectionName !== undefined ? normalizeSavedCollection(patch.collectionName) : currentMeta.collectionName,
+      personalNote: patch.personalNote !== undefined ? patch.personalNote.trim().slice(0, 500) : currentMeta.personalNote,
+      plannedMonth: patch.plannedMonth !== undefined ? patch.plannedMonth : currentMeta.plannedMonth,
+    };
+
+    // Optimistic UI + fresh-merged per-user local fallback persistence
+    setSavedTrails((prev) =>
+      prev.map((item) => {
+        if (getSavedTrailId(item) !== key) return item;
+        return {
+          ...item,
+          collectionName: nextMeta.collectionName,
+          personalNote: nextMeta.personalNote,
+          plannedMonth: nextMeta.plannedMonth,
+        };
+      })
+    );
+    const token = typeof window !== 'undefined' ? localStorage.getItem('lost_token') : null;
+    const optimisticMap: Record<string, SavedTrailLocalMeta> = {
+      ...readSavedTrailMetaMap(metaUid),
+      [key]: { ...nextMeta, pendingSync: !token },
+    };
+    setSavedMetaMap(optimisticMap);
+    persistSavedTrailMetaMap(metaUid, optimisticMap);
+
+    if (!token) {
+      if (patch.personalNote !== undefined) setEditingSavedId(null);
+      onShowToast?.(`Đã lưu cục bộ cho "${trailName}".`, 'info');
+      return;
+    }
+
+    setSavingSavedMetaIds((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+    try {
+      const savedRecord = await updateSavedTrailMeta(key, {
+        collectionName: nextMeta.collectionName,
+        personalNote: nextMeta.personalNote,
+        plannedMonth: nextMeta.plannedMonth,
+      });
+      if (!isMountedRef.current) return;
+      const syncedMeta: SavedTrailLocalMeta = {
+        collectionName: normalizeSavedCollection(savedRecord.collectionName || nextMeta.collectionName),
+        personalNote: typeof savedRecord.personalNote === 'string' ? savedRecord.personalNote : nextMeta.personalNote,
+        plannedMonth:
+          typeof savedRecord.plannedMonth === 'number' &&
+            savedRecord.plannedMonth >= 1 &&
+            savedRecord.plannedMonth <= 12
+            ? Math.trunc(savedRecord.plannedMonth)
+            : null,
+        pendingSync: false,
+      };
+      const syncedMap = { ...readSavedTrailMetaMap(metaUid), [key]: syncedMeta };
+      setSavedMetaMap(syncedMap);
+      persistSavedTrailMetaMap(metaUid, syncedMap);
+      setSavedTrails((prev) =>
+        prev.map((item) => {
+          if (getSavedTrailId(item) !== key) return item;
+          return {
+            ...item,
+            collectionName: syncedMeta.collectionName,
+            personalNote: syncedMeta.personalNote,
+            plannedMonth: syncedMeta.plannedMonth,
+          };
+        })
+      );
+      if (patch.personalNote !== undefined) setEditingSavedId(null);
+      onShowToast?.(`Đã cập nhật thông tin "${trailName}".`, 'success');
+    } catch (err) {
+      if (!isMountedRef.current) return;
+      const errMsg = err instanceof Error ? err.message : '';
+      const isTransientOutage =
+        (typeof navigator !== 'undefined' && !navigator.onLine) ||
+        err instanceof TypeError ||
+        /cơ sở dữ liệu chưa sẵn sàng|lỗi khi cập nhật|máy chủ|failed to fetch|network|502|503|504/i.test(
+          errMsg
+        );
+      if (isTransientOutage) {
+        const fallbackMap = {
+          ...readSavedTrailMetaMap(metaUid),
+          [key]: { ...nextMeta, pendingSync: true },
+        };
+        setSavedMetaMap(fallbackMap);
+        persistSavedTrailMetaMap(metaUid, fallbackMap);
+        if (patch.personalNote !== undefined) setEditingSavedId(null);
+        onShowToast?.(
+          `Đã lưu cục bộ cho "${trailName}" — sẽ tự đồng bộ khi máy chủ sẵn sàng.`,
+          'info'
+        );
+      } else {
+        // Revert optimistic update when server rejects invalid 4xx payload (e.g. profanity/validation)
+        setSavedTrails((prev) =>
+          prev.map((item) => {
+            if (getSavedTrailId(item) !== key) return item;
+            return {
+              ...item,
+              collectionName: currentMeta.collectionName,
+              personalNote: currentMeta.personalNote,
+              plannedMonth: currentMeta.plannedMonth,
+            };
+          })
+        );
+        const revertedMap = {
+          ...readSavedTrailMetaMap(metaUid),
+          [key]: { ...currentMeta, pendingSync: false },
+        };
+        setSavedMetaMap(revertedMap);
+        persistSavedTrailMetaMap(metaUid, revertedMap);
+        onShowToast?.(errMsg || 'Nội dung ghi chú hoặc bộ sưu tập không hợp lệ.', 'error');
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setSavingSavedMetaIds((prev) => {
+          if (!prev.has(key)) return prev;
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+      }
+    }
+  };
+
+  const handleRemoveSavedTrail = async (trailId: string, trailName: string) => {
+    const key = String(trailId);
+    const token = localStorage.getItem('lost_token');
+    if (!token) {
+      onShowToast?.('Vui lòng đăng nhập để bỏ lưu cung đường.', 'info');
+      return;
+    }
+    if (removingSavedIds.has(key)) return;
+    const metaUid = getActiveMetaUid();
+    setRemovingSavedIds((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+    try {
+      const res = await fetch(`/api/saved-trails/${encodeURIComponent(key)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        if (!isMountedRef.current) return;
+        setSavedTrails((prev) => prev.filter((item) => getSavedTrailId(item) !== key));
+        const nextMap = { ...readSavedTrailMetaMap(metaUid) };
+        delete nextMap[key];
+        setSavedMetaMap(nextMap);
+        persistSavedTrailMetaMap(metaUid, nextMap);
+        if (editingSavedId === key) setEditingSavedId(null);
+        if (confirmRemoveSavedId === key) setConfirmRemoveSavedId(null);
+        onShowToast?.(`Đã bỏ lưu cung đường "${trailName}".`, 'info');
+      } else {
+        const errData = await res.json().catch(() => null);
+        if (isMountedRef.current) {
+          onShowToast?.(
+            errData?.message || 'Không thể bỏ lưu cung đường trên máy chủ lúc này.',
+            'error'
+          );
+        }
+      }
+    } catch {
+      if (isMountedRef.current) {
+        onShowToast?.('Không thể bỏ lưu cung đường lúc này.', 'error');
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setRemovingSavedIds((prev) => {
+          if (!prev.has(key)) return prev;
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+      }
+    }
+  };
+
+  const handleExportProfileCsv = () => {
+    if (isLoading) return;
+    const headerRow = [
+      'Loại Mục',
+      'Mã Tuyến',
+      'Tên Cung Đường',
+      'Tỉnh / Thành',
+      'Khu Vực',
+      'Cự Ly (km)',
+      'Độ Cao Đỉnh (m)',
+      'Tổng Dốc (+m)',
+      'Trạng Thái / Bộ Sưu Tập',
+      'Xác Thực GPS / Offline',
+      'Tháng Dự Kiến / Thời Gian',
+      'Ngày Ghi Nhận',
+      'Ghi Chú Cá Nhân',
+    ];
+
+    const dataRows: Array<Array<string | number>> = [];
+    const exportedCheckinIds = new Set<string>();
+
+    // 1. Completed Check-ins from server telemetry
+    rawCheckins.forEach((c) => {
+      const tObj = c.trailId && typeof c.trailId === 'object' ? c.trailId : null;
+      const tid = String(tObj?.id || tObj?._id || (typeof c.trailId === 'string' ? c.trailId : '') || '');
+      const catalogMatch = allAvailableTrails.find(
+        (t) => String(t.id) === tid || String((t as TrailWithMongoId)._id) === tid
+      );
+      const slug = String(tObj?.id || catalogMatch?.id || tid);
+      if (slug) exportedCheckinIds.add(slug);
+      if (tid) exportedCheckinIds.add(tid);
+
+      const distanceKm = Number(
+        c.effectiveDistanceKm ?? c.distanceRecordedKm ?? c.distanceKm ?? tObj?.distanceKm ?? catalogMatch?.distanceKm ?? 0
+      );
+      const maxAltM = Number(c.maxAltitudeM ?? tObj?.maxAltitudeM ?? catalogMatch?.maxAltitudeM ?? 0);
+      const gainM = Number(
+        c.effectiveElevationGainM ??
+        c.elevationGainRecordedM ??
+        c.elevationGainM ??
+        tObj?.elevationGainM ??
+        catalogMatch?.elevationGainM ??
+        0
+      );
+      const extraNoteParts = [
+        c.notes?.trim() || '',
+        c.weatherObserved ? `Thời tiết: ${c.weatherObserved}` : '',
+        typeof c.packWeightKg === 'number' && c.packWeightKg > 0 ? `Balo: ${c.packWeightKg}kg` : '',
+      ].filter(Boolean);
+
+      dataRows.push([
+        'Đã chinh phục (Check-in)',
+        slug,
+        c.trailName || c.name || tObj?.name || catalogMatch?.name || slug,
+        c.province || tObj?.province || catalogMatch?.province || '',
+        c.region || tObj?.region || catalogMatch?.region || '',
+        Number.isFinite(distanceKm) ? distanceKm : 0,
+        Number.isFinite(maxAltM) ? maxAltM : 0,
+        Number.isFinite(gainM) ? gainM : 0,
+        'Đã chinh phục',
+        c.verifiedBadge ? 'Đã xác thực GPS' : 'Check-in thủ công',
+        typeof c.completionTimeHours === 'number' && c.completionTimeHours > 0
+          ? `${c.completionTimeHours} giờ`
+          : '',
+        formatShortDate(c.checkinDate || c.createdAt),
+        extraNoteParts.join(' | '),
+      ]);
+    });
+
+    // 2. Any additional checked-in trails from local/profile state not in rawCheckins
+    checkedTrails.forEach((t) => {
+      const mongoId = String((t as TrailWithMongoId)._id || '');
+      if (exportedCheckinIds.has(String(t.id)) || (mongoId && exportedCheckinIds.has(mongoId))) {
+        return;
+      }
+      exportedCheckinIds.add(String(t.id));
+      const isGpsVerified =
+        verifiedCheckinIds.includes(String(t.id)) ||
+        (Boolean(mongoId) && verifiedCheckinIds.includes(mongoId));
+
+      dataRows.push([
+        'Đã chinh phục (Check-in)',
+        t.id,
+        t.name,
+        t.province || '',
+        t.region || '',
+        Number(t.distanceKm) || 0,
+        Number(t.maxAltitudeM) || 0,
+        Number(t.elevationGainM) || 0,
+        'Đã chinh phục',
+        isGpsVerified ? 'Đã xác thực GPS' : 'Check-in thủ công',
+        '',
+        '',
+        '',
+      ]);
+    });
+
+    const exportedCheckinsCount = dataRows.length;
+
+    // 3. Saved Wishlist Trails with Collection, Planned Month & Personal Note
+    savedTrails.forEach((item) => {
+      const trailObj = item.trailId && typeof item.trailId === 'object' ? item.trailId : null;
+      const tid = String(
+        trailObj?.id || trailObj?._id || (typeof item.trailId === 'string' ? item.trailId : '') || ''
+      );
+      const matchedFull = allAvailableTrails.find(
+        (t) => String(t.id) === tid || String((t as TrailWithMongoId)._id) === tid
+      );
+      const meta = resolveSavedItemMeta(item, tid);
+
+      dataRows.push([
+        'Cung đường đã lưu',
+        String(trailObj?.id || matchedFull?.id || tid),
+        trailObj?.name || matchedFull?.name || tid,
+        trailObj?.province || matchedFull?.province || '',
+        trailObj?.region || matchedFull?.region || '',
+        Number(trailObj?.distanceKm || matchedFull?.distanceKm || 0),
+        Number(trailObj?.maxAltitudeM || matchedFull?.maxAltitudeM || 0),
+        Number(trailObj?.elevationGainM || matchedFull?.elevationGainM || 0),
+        meta.collectionName,
+        item.savedOffline ? 'Đã lưu Offline' : 'Đám mây',
+        meta.plannedMonth ? `Tháng ${meta.plannedMonth}` : '',
+        '',
+        meta.personalNote || '',
+      ]);
+    });
+
+    if (dataRows.length === 0) {
+      onShowToast?.(
+        'Bạn chưa có đỉnh đã check-in hoặc cung đường đã lưu nào để xuất CSV.',
+        'info'
+      );
+      return;
+    }
+
+    const csvLines = [
+      headerRow.map(escapeCsvCell).join(','),
+      ...dataRows.map((row) => row.map(escapeCsvCell).join(',')),
+    ];
+    const csvContent = `\uFEFF${csvLines.join('\r\n')}`;
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+
+    const exportUser = profile || currentUser;
+    const exportExpId = `LS-${String(
+      exportUser?.id || (exportUser as UserWithMongoId | null)?._id || '000000'
+    )
+      .slice(-6)
+      .toUpperCase()}`;
+    const safeHandle =
+      (exportUser?.username || exportExpId || 'trekker')
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'trekker';
+    const fileName = `lost-ho-so-leo-nui-${safeHandle}-${formatCsvDateStamp(new Date())}.csv`;
+
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    const revokeTimer = window.setTimeout(() => {
+      URL.revokeObjectURL(url);
+      csvBlobCleanupRef.current.delete(revokeTimer);
+    }, 1500);
+    csvBlobCleanupRef.current.set(revokeTimer, url);
+
+    onShowToast?.(
+      `Đã xuất hồ sơ CSV (${exportedCheckinsCount} check-in, ${savedTrails.length} cung đã lưu)!`,
+      'success'
+    );
   };
 
   const handleCoverFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -548,7 +1568,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         const base64 = reader.result;
         setPreviewCover(base64);
         setCustomCoverInput('');
-        if (onShowToast) onShowToast('Đã nạp ảnh từ máy tính vào bản xem trước! Nhấn "Lưu & Áp Dụng Ảnh Bìa" để hoàn tất.', 'info');
+        if (onShowToast) onShowToast('Đã nạp ảnh từ máy tính vào bản xem trước! Nhấn "Lưu & Áp Dụng Ảnh Bìa" để tải lên và hoàn tất.', 'info');
       }
     };
     reader.readAsDataURL(file);
@@ -556,23 +1576,35 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   };
 
   const handleApplyCover = async (coverUrlToApply?: string) => {
-    const finalUrl = (coverUrlToApply || previewCover || customCoverInput).trim();
+    let finalUrl = (coverUrlToApply || previewCover || customCoverInput).trim();
     if (!finalUrl) {
       if (onShowToast) onShowToast('Vui lòng chọn hoặc dán đường dẫn ảnh bìa hợp lệ.', 'error');
       return;
     }
 
+    // Upload base64 data URIs to Cloudinary instead of storing megabytes in localStorage
+    if (finalUrl.startsWith('data:image/')) {
+      try {
+        onShowToast?.('Đang tải ảnh bìa lên máy chủ lưu trữ...', 'info');
+        finalUrl = await uploadImageToCloudinary(finalUrl, `cover_${Date.now()}.jpg`, 'avatars');
+      } catch (err: unknown) {
+        onShowToast?.(err instanceof Error ? err.message : 'Không thể tải ảnh bìa lên Cloudinary.', 'error');
+        return;
+      }
+    }
+
+    const activeUid = String((profile as UserWithMongoId | null)?._id || profile?.id || currentUserId || '');
     setCustomCoverUrl(finalUrl);
     setPreviewCover(finalUrl);
     try {
-      localStorage.setItem('trekmap_cover_url', finalUrl);
+      localStorage.setItem(getCoverStorageKey(activeUid), finalUrl);
     } catch (e) {
       console.warn('[Cover LocalStorage Warning]:', e);
     }
     setShowCoverModal(false);
     if (onShowToast) onShowToast('Đã lưu và cập nhật ảnh bìa mới thành công!', 'success');
 
-    const token = localStorage.getItem('trekmap_token');
+    const token = localStorage.getItem('lost_token');
     if (token) {
       try {
         const res = await fetch('/api/auth/profile', {
@@ -589,8 +1621,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           setCustomCoverUrl(persistedCover);
           setPreviewCover(persistedCover);
           try {
-            localStorage.setItem('trekmap_cover_url', persistedCover);
-          } catch (e) {}
+            const persistedUid = String(data.user._id || data.user.id || activeUid);
+            localStorage.setItem(getCoverStorageKey(persistedUid), persistedCover);
+          } catch {
+            // ignore
+          }
           setProfile(data.user);
           if (onProfileUpdate) onProfileUpdate({ ...data.user, coverUrl: persistedCover });
         }
@@ -620,7 +1655,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         }
 
         // Send to backend profile update handler which performs Cloudinary upload ONCE
-        const token = localStorage.getItem('trekmap_token');
+        const token = localStorage.getItem('lost_token');
         if (token) {
           try {
             const res = await fetch('/api/auth/profile', {
@@ -684,7 +1719,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
     setFieldErrors({});
     setIsSaving(true);
-    const token = localStorage.getItem('trekmap_token');
+    const token = localStorage.getItem('lost_token');
 
     try {
       const res = await fetch('/api/auth/profile', {
@@ -695,7 +1730,6 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         },
         body: JSON.stringify({
           fullName: editFullName,
-          username: editUsername,
           phone: editPhone,
           bio: editBio,
           emergencyContact: editEmergency,
@@ -719,76 +1753,175 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       if (onShowToast) {
         onShowToast(data.message || 'Cập nhật hồ sơ thành công!', 'success');
       }
-    } catch (err) {
+    } catch {
       setIsSaving(false);
       setFieldErrors({ general: 'Lỗi máy chủ khi cập nhật hồ sơ cá nhân.' });
     }
   };
 
-  const activeProfile: UserProfile = profile || currentUser || {
-    id: 'user-8848',
-    username: 'Trekker',
-    email: 'user@trekmap.vn',
-    fullName: 'Nhà Thám Hiểm',
-    avatarUrl: 'https://api.dicebear.com/7.x/bottts/svg?seed=Trekker',
-    role: 'user',
-    reputationScore: 100,
-    badges: ['Trekker Mới', 'Verified Trekker'],
-    checkedInTrails: [],
-    contributedTrails: [],
-    phone: 'Chưa cập nhật',
-    bio: 'Đam mê leo núi và khám phá bản đồ địa hình 3D.',
-    emergencyContact: 'Chưa cập nhật',
-    preferredStyle: 'Trekking & Camping',
-    authProvider: 'local',
-    isEmailVerified: true,
-  };
+  const activeProfile: UserProfile = useMemo(
+    () =>
+      profile ||
+      currentUser || {
+        id: '',
+        username: 'Trekker',
+        email: '',
+        fullName: 'Thành Viên',
+        avatarUrl: 'https://api.dicebear.com/7.x/bottts/svg?seed=Trekker',
+        role: 'user',
+        reputationScore: 0,
+        badges: [],
+        checkedInTrails: [],
+        contributedTrails: [],
+        phone: '',
+        bio: '',
+        emergencyContact: '',
+        preferredStyle: 'Trekking & Camping',
+        authProvider: 'local',
+        isEmailVerified: false,
+      },
+    [profile, currentUser]
+  );
 
-  // Dynamic Expedition ID computed from user ID
-  const expeditionId = `TRK-${(activeProfile.id || '8848').slice(-6).toUpperCase()}`;
+  // Dynamic Expedition ID computed from user ID (Brand: LOST -> LS-...)
+  const expeditionId = `LS-${(activeProfile.id || (activeProfile as UserWithMongoId)?._id || '000000').slice(-6).toUpperCase()}`;
+
+  // Real ISO 18004 Scannable QR Matrix encoding Expedition ID + SOS + Profile URL
+  const qrPassPayload = useMemo(() => {
+    const uname = activeProfile.username || 'trekker';
+    const sos = (activeProfile.emergencyContact || '112').replace(/\s+/g, '');
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'https://lost.vn';
+    return `LOST|${expeditionId}|@${uname}|SOS:${sos}|${origin}/#profile-${uname}`;
+  }, [expeditionId, activeProfile.username, activeProfile.emergencyContact]);
+
+  const qrPassSvg = useMemo(() => {
+    const qr = generateQrMatrix(qrPassPayload);
+    return buildQrSvgPath(qr.matrix, 2);
+  }, [qrPassPayload]);
 
   // Is User Verified (via OTP or Google Login)
-  const isVerifiedUser = activeProfile.isEmailVerified !== false || activeProfile.authProvider === 'google';
+  const isVerifiedUser = Boolean(activeProfile.isEmailVerified || activeProfile.authProvider === 'google');
 
   // Filter equipped gear items
   const equippedGearItems = ALL_GEAR_ITEMS.filter((g) => userGear.includes(g.id));
 
-  // Computed Badges
+  // Real computed telemetry combining server profile stats + local check-ins
+  const computedTelemetry = React.useMemo(() => {
+    const checkedDistance = checkedTrails.reduce((sum, t) => sum + (Number(t.distanceKm) || 0), 0);
+    const totalDistanceKm = Math.round(Math.max(profileStats.totalDistanceKm, checkedDistance) * 10) / 10;
+
+    let highestAltitudeM = profileStats.highestAltitudeM;
+    let summitTrailName = profileStats.summitTrailName;
+    for (const t of checkedTrails) {
+      if ((Number(t.maxAltitudeM) || 0) > highestAltitudeM) {
+        highestAltitudeM = Number(t.maxAltitudeM) || 0;
+        summitTrailName = t.name;
+      }
+    }
+
+    const rep = Number(activeProfile.reputationScore) || 0;
+    const completedTrips = Math.max(profileStats.checkinsCount, checkedTrails.length);
+    let rankLabel = 'Trekker Tập Sự';
+    let rankProgress = Math.min(100, Math.round((rep / 50) * 100));
+    if (rep >= 500) {
+      rankLabel = 'Alpine Master';
+      rankProgress = 100;
+    } else if (rep >= 200) {
+      rankLabel = 'Alpine Scout';
+      rankProgress = Math.min(100, Math.round(((rep - 200) / 300) * 100));
+    } else if (rep >= 50) {
+      rankLabel = 'Trail Explorer';
+      rankProgress = Math.min(100, Math.round(((rep - 50) / 150) * 100));
+    }
+
+    return {
+      totalDistanceKm,
+      highestAltitudeM,
+      summitTrailName: summitTrailName || (highestAltitudeM > 0 ? `${highestAltitudeM.toLocaleString('vi-VN')} m` : 'Chưa ghi nhận đỉnh'),
+      completedTrips,
+      rep,
+      rankLabel,
+      rankProgress,
+    };
+  }, [profileStats, checkedTrails, activeProfile.reputationScore]);
+
+  // Computed Badges derived purely from real account state & telemetry
   const computedBadges = React.useMemo(() => {
+    const userBadges = (activeProfile.badges || []).map((b) => b.toLowerCase());
+    const hasFansipan = checkedTrails.some((t) => t.id === 'trail-fansipan' || t.name.toLowerCase().includes('fansipan'));
     return SYSTEM_BADGES.map((b) => {
-      const isUnlocked = Boolean(
-        activeProfile.badges?.some(
-          (ub: string) => ub.toLowerCase().includes(b.name.toLowerCase()) || b.name.toLowerCase().includes(ub.toLowerCase())
-        ) || b.id === 'b-1'
-      );
-      return { ...b, unlocked: isUnlocked };
+      const explicitMatch = userBadges.some((ub) => ub.includes(b.name.toLowerCase()) || b.name.toLowerCase().includes(ub));
+      const dynamicUnlock =
+        (b.id === 'b-1' && Boolean(activeProfile.id)) ||
+        (b.id === 'b-2' && isVerifiedUser) ||
+        (b.id === 'b-3' && hasFansipan) ||
+        (b.id === 'b-4' && computedTelemetry.rep >= 50) ||
+        (b.id === 'b-6' && computedTelemetry.totalDistanceKm >= 100);
+      return { ...b, unlocked: Boolean(explicitMatch || dynamicUnlock) };
     });
-  }, [activeProfile.badges]);
+  }, [activeProfile.badges, activeProfile.id, isVerifiedUser, checkedTrails, computedTelemetry.rep, computedTelemetry.totalDistanceKm]);
   const unlockedBadgesCount = computedBadges.filter((b) => b.unlocked).length;
 
-  // Filter user's own forum posts
+  // Filter user's own forum posts (strict exact match on userId / email / authorName)
   const userOwnPosts = React.useMemo(() => {
-    return userForumPosts.filter((post) => {
-      const p = post as any;
-      if (p.userId && activeProfile.id && String(p.userId) === String(activeProfile.id)) {
-        return true;
-      }
-      if (!p.authorName) return false;
-      const authorClean = p.authorName.toLowerCase();
-      const nameClean = (activeProfile.fullName || activeProfile.name || '').toLowerCase();
-      const userClean = (activeProfile.username || '').toLowerCase();
+    const myId = String(activeProfile.id || (activeProfile as UserWithMongoId)?._id || '').trim();
+    const myEmail = (activeProfile.email || '').toLowerCase().trim();
+    const myFullName = (activeProfile.fullName || activeProfile.name || '').toLowerCase().trim();
+    const myUsername = (activeProfile.username || '').toLowerCase().trim();
 
-      return (
-        (nameClean && authorClean.includes(nameClean)) ||
-        (userClean && authorClean.includes(userClean)) ||
-        (nameClean && nameClean.includes(authorClean)) ||
-        (userClean && userClean.includes(authorClean))
-      );
+    return userForumPosts.filter((post) => {
+      const p = post as ForumThreadExtended;
+      const postUserId = String(typeof p.userId === 'object' ? p.userId?._id || '' : p.userId || '').trim();
+      if (myId && postUserId && postUserId === myId) return true;
+
+      const postEmail = String(p.authorEmail || p.userEmail || '').toLowerCase().trim();
+      if (myEmail && postEmail && postEmail === myEmail) return true;
+
+      if (!postUserId && !postEmail && p.authorName) {
+        const authorClean = String(p.authorName).toLowerCase().trim();
+        return (
+          (Boolean(myFullName) && authorClean === myFullName) ||
+          (Boolean(myUsername) && authorClean === myUsername)
+        );
+      }
+      return false;
     });
   }, [userForumPosts, activeProfile]);
 
+  const hasStoredToken = typeof window !== 'undefined' && Boolean(localStorage.getItem('lost_token'));
+
   if (isLoading && !profile && !currentUser) {
     return <div style={{ padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-dim)' }}>Đang tải thông tin hồ sơ...</div>;
+  }
+
+  if (!profile && !currentUser && !hasStoredToken) {
+    return (
+      <div style={{ maxWidth: 560, margin: '64px auto', padding: '40px 28px', textAlign: 'center', background: 'var(--color-bg-card)', border: '1px solid var(--color-border-strong)', borderRadius: 6, boxShadow: 'var(--shadow-card)' }}>
+        <div className="section-eyebrow" style={{ justifyContent: 'center', marginBottom: 10 }}>
+          Hồ sơ thám hiểm LOST
+        </div>
+        <h2 className="font-editorial" style={{ fontSize: '1.6rem', color: 'var(--color-text-main)', margin: '0 0 10px 0' }}>
+          Đăng Nhập Để Xem Hồ Sơ Cá Nhân
+        </h2>
+        <p style={{ fontSize: '0.88rem', color: 'var(--color-text-muted)', lineHeight: 1.6, margin: '0 auto 22px auto', maxWidth: 440 }}>
+          Lưu trữ Hộ chiếu Đỉnh núi, phân tích biểu đồ cự ly, tủ đồ sinh tồn, nhật ký hành trình và mã QR Active Pass cứu hộ.
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <button type="button" className="btn btn-outline" onClick={onBack}>
+            <ArrowLeft size={15} /> Quay lại trang chủ
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent('lost:open-auth-modal', { detail: { mode: 'login' } }));
+            }}
+          >
+            Đăng nhập ngay
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -804,13 +1937,26 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
       {/* Top Action Bar */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
-        <button className="btn btn-outline" onClick={onBack} style={{ fontSize: '0.86rem', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+        <button type="button" className="btn btn-outline" onClick={onBack} style={{ fontSize: '0.86rem', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
           <ArrowLeft size={16} /> Quay lại trang chủ
         </button>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn btn-outline"
+            onClick={() => {
+              window.history.pushState({}, '', '/passport');
+              window.dispatchEvent(new PopStateEvent('popstate'));
+            }}
+            style={{ fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+          >
+            <Award size={15} color="var(--color-sun)" /> Hộ Chiếu Đỉnh Núi
+          </button>
+
           {onNavigateToContribute && (
             <button
+              type="button"
               className="btn btn-outline"
               onClick={onNavigateToContribute}
               style={{ fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
@@ -820,6 +1966,30 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           )}
 
           <button
+            type="button"
+            className="btn btn-outline"
+            disabled={isLoading}
+            onClick={handleExportProfileCsv}
+            aria-label="Xuất hồ sơ leo núi dạng CSV"
+            title={
+              isLoading
+                ? 'Đang tải dữ liệu hồ sơ...'
+                : 'Tải xuống toàn bộ check-in đỉnh và danh sách cung đã lưu dạng CSV'
+            }
+            style={{
+              fontSize: '0.82rem',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              opacity: isLoading ? 0.6 : 1,
+              cursor: isLoading ? 'wait' : 'pointer',
+            }}
+          >
+            <DownloadIcon size={15} color="var(--color-sky)" /> Xuất Hồ Sơ (CSV)
+          </button>
+
+          <button
+            type="button"
             className="btn btn-outline"
             onClick={() => setShowQrModal(true)}
             style={{ fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
@@ -828,6 +1998,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           </button>
 
           <button
+            type="button"
             className="btn btn-primary"
             onClick={() => {
               setIsEditing(true);
@@ -849,7 +2020,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         onChange={handleCoverFileUpload}
       />
 
-      {/* 1. Unified Hero Profile Cockpit */}
+      {/* 1. Unified Swiss Editorial Expedition Dossier */}
       <div
         className="card"
         style={{
@@ -857,14 +2028,15 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           overflow: 'hidden',
           padding: 0,
           marginBottom: 20,
-          borderRadius: 22,
+          borderRadius: 4,
           border: '1px solid var(--color-border)',
           background: 'var(--color-bg-card)',
-          boxShadow: 'var(--shadow-card)',
         }}
       >
         {/* Scenic Mountain Panorama Cover Banner */}
         <div
+          role="button"
+          tabIndex={0}
           onClick={() => {
             setFullViewImage({
               url: customCoverUrl,
@@ -873,9 +2045,20 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               type: 'cover',
             });
           }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setFullViewImage({
+                url: customCoverUrl,
+                title: 'Ảnh Bìa Cá Nhân',
+                subtitle: `${activeProfile.fullName} (@${activeProfile.username || 'trekker'})`,
+                type: 'cover',
+              });
+            }
+          }}
           title="Nhấn vào ảnh để xem trọn vẹn kích thước đầy đủ"
           style={{
-            height: 155,
+            height: 175,
             position: 'relative',
             overflow: 'hidden',
             background: 'var(--color-bg-card)',
@@ -885,7 +2068,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           <img
             key={customCoverUrl}
             src={customCoverUrl}
-            alt="Profile Cover Banner"
+            alt="Ảnh bìa hồ sơ thám hiểm"
             style={{
               width: '100%',
               height: '100%',
@@ -902,7 +2085,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             style={{
               position: 'absolute',
               inset: 0,
-              background: 'linear-gradient(to bottom, rgba(15, 23, 42, 0.2) 0%, rgba(15, 23, 42, 0.35) 60%, var(--color-bg-card) 100%)',
+              background:
+                'linear-gradient(to bottom, color-mix(in srgb, var(--overlay-bg) 22%, transparent) 0%, color-mix(in srgb, var(--overlay-bg) 44%, transparent) 55%, var(--color-bg-card) 100%)',
               pointerEvents: 'none',
             }}
           />
@@ -914,23 +2098,21 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               top: 12,
               left: 14,
               zIndex: 3,
-              background: 'rgba(15, 23, 42, 0.72)',
+              background: 'var(--overlay-bg)',
               backdropFilter: 'blur(8px)',
-              WebkitBackdropFilter: 'blur(8px)',
-              border: '1px solid rgba(255, 255, 255, 0.2)',
-              color: '#ffffff',
-              padding: '5px 11px',
-              borderRadius: 10,
-              fontSize: '0.74rem',
-              fontWeight: 700,
+              border: '1px solid color-mix(in srgb, var(--color-on-media) 22%, transparent)',
+              color: 'var(--color-on-media)',
+              padding: '4px 10px',
+              borderRadius: 3,
+              fontSize: '0.72rem',
+              fontWeight: 600,
               display: 'inline-flex',
               alignItems: 'center',
               gap: 6,
-              boxShadow: '0 4px 14px rgba(0, 0, 0, 0.35)',
               pointerEvents: 'none',
             }}
           >
-            <Maximize2 size={13} color="var(--color-primary)" /> Nhấn để xem trọn vẹn
+            <Maximize2 size={12} color="var(--color-primary)" /> Xem trọn vẹn
           </div>
 
           {/* Change Cover Button */}
@@ -948,32 +2130,21 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               top: 12,
               right: 14,
               zIndex: 3,
-              background: 'rgba(15, 23, 42, 0.72)',
+              background: 'var(--overlay-bg)',
               backdropFilter: 'blur(8px)',
-              WebkitBackdropFilter: 'blur(8px)',
-              border: '1px solid rgba(255, 255, 255, 0.22)',
-              color: '#ffffff',
-              padding: '6px 13px',
-              borderRadius: 10,
-              fontSize: '0.78rem',
-              fontWeight: 700,
+              border: '1px solid color-mix(in srgb, var(--color-on-media) 24%, transparent)',
+              color: 'var(--color-on-media)',
+              padding: '5px 12px',
+              borderRadius: 3,
+              fontSize: '0.74rem',
+              fontWeight: 600,
               display: 'inline-flex',
               alignItems: 'center',
               gap: 6,
               cursor: 'pointer',
-              boxShadow: '0 4px 14px rgba(0, 0, 0, 0.4)',
-              transition: 'all 0.2s ease',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(16, 185, 129, 0.85)';
-              e.currentTarget.style.borderColor = 'var(--color-primary)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(15, 23, 42, 0.72)';
-              e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.22)';
             }}
           >
-            <Camera size={14} /> Đổi Ảnh Bìa
+            <Camera size={13} /> Đổi Ảnh Bìa
           </button>
         </div>
 
@@ -981,19 +2152,29 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         <div
           style={{
             padding: '0 24px 22px 24px',
-            marginTop: -46,
             position: 'relative',
             display: 'flex',
             alignItems: 'flex-start',
-            justifyContent: 'space-between',
+            gap: 20,
             flexWrap: 'wrap',
-            gap: 18,
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 18, flexWrap: 'wrap', flex: 1, minWidth: 280 }}>
-            {/* Avatar with Status Ring & Upload Trigger */}
-            <div
-              onClick={() => {
+          {/* Avatar overlapping cover bottom cleanly */}
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => {
+              const currentAvatar = activeProfile.avatarUrl || activeProfile.avatar || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
+              setFullViewImage({
+                url: currentAvatar,
+                title: 'Ảnh Đại Diện',
+                subtitle: `${activeProfile.fullName} (@${activeProfile.username || 'trekker'})`,
+                type: 'avatar',
+              });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
                 const currentAvatar = activeProfile.avatarUrl || activeProfile.avatar || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
                 setFullViewImage({
                   url: currentAvatar,
@@ -1001,238 +2182,214 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   subtitle: `${activeProfile.fullName} (@${activeProfile.username || 'trekker'})`,
                   type: 'avatar',
                 });
-              }}
-              title="Nhấn để xem ảnh đại diện trọn vẹn"
-              style={{ position: 'relative', flexShrink: 0, cursor: 'pointer' }}
-            >
-              <img
-                src={activeProfile.avatarUrl || activeProfile.avatar || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
-                alt={activeProfile.fullName}
-                style={{
-                  width: 98,
-                  height: 98,
-                  borderRadius: 22,
-                  objectFit: 'cover',
-                  border: '3px solid var(--color-primary)',
-                  boxShadow: '0 0 20px rgba(74, 222, 128, 0.35)',
-                  background: 'var(--color-bg-main)',
-                  display: 'block',
-                }}
-              />
-              {/* Subtle hover zoom overlay on avatar */}
-              <div
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  borderRadius: 22,
-                  background: 'rgba(0, 0, 0, 0.35)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  opacity: 0,
-                  transition: 'opacity 0.2s ease',
-                  color: '#ffffff',
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
-                onMouseLeave={(e) => (e.currentTarget.style.opacity = '0')}
-              >
-                <Maximize2 size={20} color="#ffffff" />
-              </div>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  fileInputRef.current?.click();
-                }}
-                title="Tải ảnh đại diện mới"
-                style={{
-                  position: 'absolute',
-                  bottom: -4,
-                  right: -4,
-                  zIndex: 2,
-                  width: 30,
-                  height: 30,
-                  borderRadius: '50%',
-                  background: 'var(--color-bg-card)',
-                  border: '1.5px solid var(--color-primary)',
-                  color: 'var(--color-primary)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                  boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
-                }}
-              >
-                <Upload size={13} />
-              </button>
-            </div>
-
-            {/* Profile Details */}
-            <div style={{ flex: 1, minWidth: 240, paddingTop: 46 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-                <h1 style={{ fontSize: '1.35rem', fontWeight: 900, color: 'var(--color-text-main)', margin: 0 }}>
-                  {activeProfile.fullName}
-                </h1>
-                <span style={{ fontSize: '0.84rem', color: 'var(--color-primary)', fontWeight: 700 }}>
-                  @{activeProfile.username || 'trekker'}
-                </span>
-                <span className="badge badge-success" style={{ textTransform: 'uppercase', fontSize: '0.72rem', fontWeight: 800 }}>
-                  {activeProfile.role}
-                </span>
-                {isVerifiedUser ? (
-                  <span className="badge badge-success" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.72rem', padding: '3px 9px' }}>
-                    <ShieldCheck size={13} color="var(--color-primary)" /> VERIFIED TREKKER
-                  </span>
-                ) : (
-                  <span className="badge badge-amber" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.72rem', padding: '3px 9px' }}>
-                    <ShieldAlert size={13} color="var(--color-earth)" /> CHƯA XÁC THỰC EMAIL
-                  </span>
-                )}
-              </div>
-
-              {/* Expedition ID & Contact line */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: '0.8rem', color: 'var(--color-text-muted)', marginBottom: 10 }}>
-                <span style={{ color: 'var(--color-primary)', fontWeight: 700, background: 'rgba(16, 185, 129, 0.12)', padding: '3px 10px', borderRadius: 8, border: '1px solid rgba(16, 185, 129, 0.3)' }}>
-                  ID Thám Hiểm: #{expeditionId}
-                </span>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--color-bg-main)', padding: '3px 10px', borderRadius: 8, border: '1px solid var(--color-border)' }}>
-                  <Mail size={13} color="var(--color-sky)" /> {activeProfile.email}
-                </span>
-                <span
-                  onClick={() => {
-                    setIsEditing(true);
-                    populateForm(activeProfile);
-                  }}
-                  title="Bấm để cập nhật số điện thoại"
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--color-bg-main)', padding: '3px 10px', borderRadius: 8, border: '1px solid var(--color-border)', cursor: 'pointer', transition: 'all 0.2s ease' }}
-                >
-                  <Phone size={13} color="var(--color-primary)" />
-                  <span style={{ color: activeProfile.phone ? 'var(--color-text-main)' : 'var(--color-text-dim)' }}>
-                    {activeProfile.phone || 'Thêm SĐT'}
-                  </span>
-                </span>
-                <span
-                  onClick={() => {
-                    setIsEditing(true);
-                    populateForm(activeProfile);
-                  }}
-                  title="Bấm để thiết lập liên hệ khẩn cấp"
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--color-bg-main)', padding: '3px 10px', borderRadius: 8, border: '1px solid var(--color-border)', cursor: 'pointer', transition: 'all 0.2s ease' }}
-                >
-                  <AlertTriangle size={13} color="var(--color-earth)" />
-                  <span>SOS: <strong style={{ color: activeProfile.emergencyContact ? 'var(--color-earth)' : 'var(--color-text-dim)' }}>{activeProfile.emergencyContact || 'Chưa thiết lập'}</strong></span>
-                </span>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--color-bg-main)', padding: '3px 10px', borderRadius: 8, border: '1px solid var(--color-border)' }}>
-                  <Compass size={13} color="var(--color-sky)" /> {activeProfile.preferredStyle || 'Trekking & Camping'}
-                </span>
-              </div>
-
-              {/* Bio snippet */}
-              <div style={{ fontSize: '0.82rem', color: 'var(--color-text-dim)', lineHeight: 1.5, maxWidth: 650 }}>
-                {activeProfile.bio ? (
-                  <span>"{activeProfile.bio}"</span>
-                ) : (
-                  <span
-                    onClick={() => {
-                      setIsEditing(true);
-                      populateForm(activeProfile);
-                    }}
-                    style={{ cursor: 'pointer', fontStyle: 'italic', color: 'var(--color-text-dim)' }}
-                  >
-                    Chưa cập nhật tiểu sử cá nhân. <span style={{ color: 'var(--color-primary)', textDecoration: 'underline' }}>Bấm vào đây hoặc "Chỉnh sửa hồ sơ" để thêm.</span>
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Header Quick Action Buttons */}
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', paddingTop: 46, alignItems: 'center' }}>
-            <button
-              className="btn btn-primary"
-              onClick={() => {
-                setIsEditing(true);
-                populateForm(activeProfile);
-              }}
+              }
+            }}
+            title="Nhấn để xem ảnh đại diện trọn vẹn"
+            style={{ position: 'relative', flexShrink: 0, cursor: 'pointer', marginTop: -42 }}
+          >
+            <img
+              src={activeProfile.avatarUrl || activeProfile.avatar || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
+              alt={activeProfile.fullName}
               style={{
-                fontSize: '0.84rem',
-                display: 'inline-flex',
+                width: 96,
+                height: 96,
+                borderRadius: 6,
+                objectFit: 'cover',
+                border: '2px solid var(--color-primary)',
+                background: 'var(--color-bg-main)',
+                display: 'block',
+              }}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                borderRadius: 6,
+                background: 'color-mix(in srgb, var(--overlay-bg) 50%, transparent)',
+                display: 'flex',
                 alignItems: 'center',
-                gap: 7,
-                padding: '9px 18px',
-                fontWeight: 'var(--font-weight-extrabold)',
-                boxShadow: '0 0 16px rgba(16, 185, 129, 0.4)',
-                borderRadius: 12,
+                justifyContent: 'center',
+                opacity: 0,
+                transition: 'opacity 0.2s ease',
+                color: 'var(--color-on-media)',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
+              onMouseLeave={(e) => (e.currentTarget.style.opacity = '0')}
+            >
+              <Maximize2 size={18} color="var(--color-on-media)" />
+            </div>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                fileInputRef.current?.click();
+              }}
+              title="Tải ảnh đại diện mới"
+              style={{
+                position: 'absolute',
+                bottom: -5,
+                right: -5,
+                zIndex: 2,
+                width: 28,
+                height: 28,
+                borderRadius: 4,
+                background: 'var(--color-bg-card)',
+                border: '1px solid var(--color-primary)',
+                color: 'var(--color-primary)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
                 cursor: 'pointer',
               }}
             >
-              <Edit3 size={16} /> Chỉnh sửa hồ sơ
+              <Upload size={13} />
             </button>
-            <button
-              className="btn btn-outline"
-              onClick={() => setShowQrModal(true)}
-              style={{ fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 14px', borderRadius: 12 }}
-            >
-              <QrCode size={15} color="var(--color-primary)" /> Mã QR Pass
-            </button>
+          </div>
+
+          {/* Profile Details */}
+          <div style={{ flex: 1, minWidth: 260, paddingTop: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+              <h1 className="font-editorial" style={{ fontSize: '1.65rem', fontWeight: 700, color: 'var(--color-text-main)', margin: 0, lineHeight: 1.15 }}>
+                {activeProfile.fullName}
+              </h1>
+              <span style={{ fontSize: '0.84rem', color: 'var(--color-primary)', fontWeight: 600 }}>
+                @{activeProfile.username || 'trekker'}
+              </span>
+              <span className="badge badge-success" style={{ textTransform: 'uppercase' }}>
+                {activeProfile.role}
+              </span>
+              {isVerifiedUser ? (
+                <span className="badge badge-success">
+                  <ShieldCheck size={12} color="var(--color-primary)" /> VERIFIED TREKKER
+                </span>
+              ) : (
+                <span className="badge badge-warning">
+                  <ShieldAlert size={12} color="var(--color-earth)" /> CHƯA XÁC THỰC EMAIL
+                </span>
+              )}
+            </div>
+
+            {/* Expedition ID & Contact line */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: '0.78rem', color: 'var(--color-text-muted)', marginBottom: 10 }}>
+              <span style={{ color: 'var(--color-primary)', fontWeight: 700, background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)', padding: '3px 9px', borderRadius: 3, border: '1px solid color-mix(in srgb, var(--color-primary) 30%, transparent)', fontVariantNumeric: 'tabular-nums' }}>
+                ID #{expeditionId}
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--color-bg-main)', padding: '3px 9px', borderRadius: 3, border: '1px solid var(--color-border)' }}>
+                <Mail size={12} color="var(--color-sky)" /> {activeProfile.email}
+              </span>
+              <span
+                onClick={() => {
+                  setIsEditing(true);
+                  populateForm(activeProfile);
+                }}
+                title="Bấm để cập nhật số điện thoại"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--color-bg-main)', padding: '3px 9px', borderRadius: 3, border: '1px solid var(--color-border)', cursor: 'pointer' }}
+              >
+                <Phone size={12} color="var(--color-primary)" />
+                <span style={{ color: activeProfile.phone ? 'var(--color-text-main)' : 'var(--color-text-dim)' }}>
+                  {activeProfile.phone || 'Thêm SĐT'}
+                </span>
+              </span>
+              <span
+                onClick={() => {
+                  setIsEditing(true);
+                  populateForm(activeProfile);
+                }}
+                title="Bấm để thiết lập liên hệ khẩn cấp"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--color-bg-main)', padding: '3px 9px', borderRadius: 3, border: '1px solid var(--color-border)', cursor: 'pointer' }}
+              >
+                <AlertTriangle size={12} color="var(--color-earth)" />
+                <span>SOS: <strong style={{ color: activeProfile.emergencyContact ? 'var(--color-earth)' : 'var(--color-text-dim)' }}>{activeProfile.emergencyContact || 'Chưa thiết lập'}</strong></span>
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--color-bg-main)', padding: '3px 9px', borderRadius: 3, border: '1px solid var(--color-border)' }}>
+                <Compass size={12} color="var(--color-sky)" /> {activeProfile.preferredStyle || 'Trekking & Camping'}
+              </span>
+            </div>
+
+            {/* Bio snippet */}
+            <div style={{ fontSize: '0.84rem', color: 'var(--color-text-muted)', lineHeight: 1.55, maxWidth: 680 }}>
+              {activeProfile.bio ? (
+                <span>&ldquo;{activeProfile.bio}&rdquo;</span>
+              ) : (
+                <span
+                  onClick={() => {
+                    setIsEditing(true);
+                    populateForm(activeProfile);
+                  }}
+                  style={{ cursor: 'pointer', color: 'var(--color-text-dim)' }}
+                >
+                  Chưa cập nhật tiểu sử cá nhân. <span style={{ color: 'var(--color-primary)', textDecoration: 'underline' }}>Bấm vào đây để thêm.</span>
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* 2. Telemetry Bento Stats Strip */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 14, marginBottom: 22 }}>
-        <div className="card" style={{ padding: '16px 18px', background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-            <Compass size={18} color="var(--color-primary)" />
-            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)' }}>Tổng Quãng Đường</span>
+      {/* 2. Swiss Hairline Telemetry Strip (100% Real Computed Stats) */}
+      <div className="editorial-stat-strip" style={{ marginBottom: 24 }}>
+        <div className="editorial-stat-cell">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <Compass size={14} color="var(--color-primary)" />
+            <span style={{ fontSize: '0.68rem', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700 }}>Tổng Quãng Đường</span>
           </div>
-          <div style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--color-text-main)' }}>58 km</div>
-          <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-primary)', marginTop: 2 }}>Đã hoàn thành 3 chuyến trek</div>
+          <div className="font-editorial" style={{ fontSize: '1.75rem', fontWeight: 500, color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.05 }}>
+            {computedTelemetry.totalDistanceKm.toLocaleString('vi-VN')} km
+          </div>
+          <div style={{ fontSize: '0.74rem', color: 'var(--color-primary)', marginTop: 3 }}>
+            {computedTelemetry.completedTrips > 0
+              ? `Hoàn thành ${computedTelemetry.completedTrips} cung đường`
+              : 'Chưa có hành trình check-in'}
+          </div>
         </div>
 
-        <div className="card" style={{ padding: '16px 18px', background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-            <Mountain size={18} color="var(--color-sky)" />
-            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)' }}>Đỉnh Cao Nhất</span>
+        <div className="editorial-stat-cell">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <Mountain size={14} color="var(--color-sky)" />
+            <span style={{ fontSize: '0.68rem', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700 }}>Đỉnh Cao Nhất</span>
           </div>
-          <div style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--color-text-main)' }}>3,143 m</div>
-          <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-sky)', marginTop: 2 }}>Đỉnh Fansipan (Lào Cai)</div>
+          <div className="font-editorial" style={{ fontSize: '1.75rem', fontWeight: 500, color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.05 }}>
+            {computedTelemetry.highestAltitudeM > 0
+              ? `${computedTelemetry.highestAltitudeM.toLocaleString('vi-VN')} m`
+              : '0 m'}
+          </div>
+          <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {computedTelemetry.summitTrailName}
+          </div>
         </div>
 
-        <div className="card" style={{ padding: '16px 18px', background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-            <Tent size={18} color="var(--color-earth)" />
-            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)' }}>Số Đêm Cắm Trại</span>
+        <div className="editorial-stat-cell">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <Tent size={14} color="var(--color-earth)" />
+            <span style={{ fontSize: '0.68rem', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700 }}>Đóng Góp Cộng Đồng</span>
           </div>
-          <div style={{ fontSize: '1.4rem', fontWeight: 900, color: 'var(--color-text-main)' }}>4 Đêm</div>
-          <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-earth)', marginTop: 2 }}>Basecamp Núi Rừng</div>
+          <div className="font-editorial" style={{ fontSize: '1.75rem', fontWeight: 500, color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.05 }}>
+            {userOwnPosts.length + userContributions.length} Bài
+          </div>
+          <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', marginTop: 3 }}>
+            {userOwnPosts.length} diễn đàn · {userContributions.length} cung đường
+          </div>
         </div>
 
-        <div className="card" style={{ padding: '16px 18px', background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-            <Award size={18} color="var(--color-primary)" />
-            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)' }}>Cấp Độ Sinh Tồn</span>
+        <div className="editorial-stat-cell">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <Award size={14} color="var(--color-primary)" />
+            <span style={{ fontSize: '0.68rem', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700 }}>Cấp Độ ({computedTelemetry.rep} PTS)</span>
           </div>
-          <div style={{ fontSize: '1.1rem', fontWeight: 900, color: 'var(--color-primary)' }}>Alpine Master</div>
-          <div style={{ width: '100%', background: 'var(--color-bg-main)', height: 6, borderRadius: 4, marginTop: 8, overflow: 'hidden' }}>
-            <div style={{ width: '75%', background: 'linear-gradient(90deg, #16a34a, var(--color-primary))', height: '100%' }} />
+          <div className="font-editorial" style={{ fontSize: '1.35rem', fontWeight: 500, color: 'var(--color-primary)', lineHeight: 1.2 }}>{computedTelemetry.rankLabel}</div>
+          <div style={{ width: '100%', background: 'var(--color-bg-main)', height: 5, borderRadius: 2, marginTop: 8, overflow: 'hidden', border: '1px solid var(--color-border)' }}>
+            <div style={{ width: `${computedTelemetry.rankProgress}%`, background: 'var(--color-primary)', height: '100%' }} />
           </div>
         </div>
       </div>
 
-      {/* 3. Tab Navigation Bar */}
-      <div
-        style={{
-          display: 'flex',
-          gap: 6,
-          marginBottom: 20,
-          overflowX: 'auto',
-          paddingBottom: 4,
-          borderBottom: '1px solid var(--color-border)',
-        }}
-      >
+      {/* 3. Editorial Tab Navigation Bar with Liquid Glider */}
+      <div ref={profileTabTrackRef} className="editorial-tabs-bar has-glider">
+        <span aria-hidden="true" className="lost-glider-tab" style={profileTabIndicatorStyle} />
         {[
           { id: 'overview', label: 'Chiến Tích & Tổng Quan', Icon: Mountain, count: checkedTrails.length },
+          { id: 'analytics', label: 'Phân Tích & Nhật Ký', Icon: BarChart3, count: rawCheckins.length || checkedTrails.length },
+          { id: 'saved', label: 'Đã Lưu & Xếp Hạng', Icon: Award, count: savedTrails.length },
           { id: 'contributions', label: 'Cung Đường Đóng Góp', Icon: Compass, count: userContributions.length },
           { id: 'forum', label: 'Bài Viết Diễn Đàn', Icon: MessageSquare, count: userOwnPosts.length },
           { id: 'gear', label: 'Tủ Đồ Sinh Tồn', Icon: Package, count: equippedGearItems.length },
@@ -1243,36 +2400,22 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             <button
               key={tab.id}
               type="button"
-              onClick={() => setActiveTab(tab.id as any)}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 7,
-                padding: '9px 16px',
-                borderRadius: '10px 10px 0 0',
-                fontSize: '0.84rem',
-                fontWeight: 700,
-                cursor: 'pointer',
-                border: 'none',
-                borderBottom: isActive ? '3px solid var(--color-primary)' : '3px solid transparent',
-                background: isActive ? 'rgba(74, 222, 128, 0.08)' : 'transparent',
-                color: isActive ? 'var(--color-primary)' : 'var(--color-text-muted)',
-                transition: 'all 0.15s ease',
-                whiteSpace: 'nowrap',
-              }}
+              data-glider-active={isActive ? 'true' : undefined}
+              onClick={() => setActiveTab(tab.id as ProfileTabId)}
+              className={`editorial-tab-btn${isActive ? ' active' : ''}`}
             >
-              <TabIcon size={15} color={isActive ? 'var(--color-primary)' : 'currentColor'} />
+              <TabIcon size={14} color={isActive ? 'var(--color-primary)' : 'currentColor'} />
               <span>{tab.label}</span>
               {tab.count !== undefined && (
                 <span
                   style={{
-                    fontSize: '0.7rem',
-                    fontWeight: 800,
+                    fontSize: '0.68rem',
+                    fontWeight: 700,
                     padding: '1px 6px',
-                    borderRadius: 10,
-                    background: isActive ? 'var(--color-primary)' : 'var(--color-bg-main)',
-                    color: isActive ? '#04131b' : 'var(--color-text-dim)',
-                    border: isActive ? 'none' : '1px solid var(--color-border)',
+                    borderRadius: 3,
+                    background: isActive ? 'var(--color-primary)' : 'var(--color-surface-elevated)',
+                    color: isActive ? 'var(--color-on-primary)' : 'var(--color-text-dim)',
+                    fontVariantNumeric: 'tabular-nums',
                   }}
                 >
                   {tab.count}
@@ -1283,963 +2426,986 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         })}
       </div>
 
-      {/* 4. Tab Panels */}
-      {/* Panel 1: Overview & Summits */}
-      {activeTab === 'overview' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 20, animation: 'fadeIn 0.25s ease' }}>
-          {/* Left: Conquered Trails List */}
-          <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-              <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <MapPin size={18} color="var(--color-primary)" /> Cung Đường Đã Chinh Phục ({checkedTrails.length})
-              </h3>
-              <button
-                className="btn btn-outline"
-                onClick={() => setShowCheckInModal(true)}
-                style={{ fontSize: 'var(--font-size-xs)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 6 }}
-              >
-                <MapPin size={13} color="var(--color-primary)" /> + Check-in Cung Mới
-              </button>
-            </div>
+      {/* 4. Tab Panels (Unified Cinematic Scene Transition on Every Tab Switch) */}
+      <div key={activeTab} className="tab-content-slide">
+        {/* Panel: Analytics & Trek Logbook */}
+        {activeTab === 'analytics' && (
+          <ProfileAnalyticsPanel
+            trails={allAvailableTrails}
+            checkins={rawCheckins.length > 0 ? rawCheckins : checkedTrails}
+            currentUser={activeProfile}
+            onSelectTrail={onSelectTrail}
+            onShowToast={onShowToast}
+          />
+        )}
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {checkedTrails.map((t, idx) => {
-                const theme = TRAIL_CARD_THEMES[idx % TRAIL_CARD_THEMES.length];
-                return (
-                  <div
-                    key={t.id}
-                    onClick={() => setSelectedTrailPassport(t)}
-                    style={{
-                      background: 'var(--color-bg-main)',
-                      border: `1px solid ${theme.border}`,
-                      borderRadius: 14,
-                      padding: '14px 16px',
-                      cursor: 'pointer',
-                      transition: 'all 0.2s ease',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      gap: 12,
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.borderColor = theme.color;
-                      e.currentTarget.style.transform = 'translateY(-2px)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.borderColor = theme.border;
-                      e.currentTarget.style.transform = 'translateY(0)';
-                    }}
-                  >
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)', fontSize: '0.88rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {t.name}
-                      </div>
-                      <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-                        {t.province} ({t.region}) • {t.distanceKm} km
-                      </div>
-                    </div>
-                    <span style={{ fontSize: '0.72rem', color: theme.color, background: 'var(--color-bg-card)', padding: '3px 9px', borderRadius: 8, border: `1px solid ${theme.border}`, whiteSpace: 'nowrap', fontWeight: 'var(--font-weight-bold)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                      <Check size={12} color={theme.color} /> {theme.tag}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Right: Badges & Gear Quick Look */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-            {/* System Badges */}
-            <div className="card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
+        {/* Panel 1: Overview & Summits */}
+        {activeTab === 'overview' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(300px, 100%), 1fr))', gap: 20, animation: 'fadeIn 0.25s ease' }}>
+            {/* Left: Conquered Trails List */}
+            <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
                 <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Award size={18} color="var(--color-primary)" /> Huy Hiệu Danh Dự ({unlockedBadgesCount}/{computedBadges.length})
-                </h3>
-                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)' }}>Bấm xem chi tiết</span>
-              </div>
-
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                {computedBadges.map((badge) => (
-                  <div
-                    key={badge.id}
-                    onClick={() => setSelectedBadge(badge)}
-                    style={{
-                      background: badge.unlocked ? badge.bg : 'var(--color-bg-main)',
-                      border: badge.unlocked ? `1px solid ${badge.border}` : '1px dashed var(--color-border)',
-                      borderRadius: 12,
-                      padding: '7px 14px',
-                      cursor: 'pointer',
-                      transition: 'all 0.2s ease',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 7,
-                      opacity: badge.unlocked ? 1 : 0.6,
-                      boxShadow: badge.unlocked ? badge.glow : 'none',
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.transform = 'translateY(-2px)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.transform = 'translateY(0)')}
-                  >
-                    {badge.unlocked ? (
-                      <CheckCircle2 size={15} color={badge.color} />
-                    ) : (
-                      <Lock size={13} color="var(--color-text-dim)" />
-                    )}
-                    <span style={{ fontSize: '0.78rem', fontWeight: 700, color: badge.unlocked ? badge.color : 'var(--color-text-dim)' }}>
-                      {badge.name}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Survival Gear Quick Snapshot */}
-            <div className="card">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
-                <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Package size={18} color="var(--color-sky)" /> Trang Bị Sinh Tồn ({equippedGearItems.length})
+                  <MapPin size={18} color="var(--color-primary)" /> Cung Đường Đã Chinh Phục ({checkedTrails.length})
                 </h3>
                 <button
+                  type="button"
                   className="btn btn-outline"
-                  onClick={() => setActiveTab('gear')}
-                  style={{ fontSize: 'var(--font-size-xs)', padding: '4px 10px' }}
+                  onClick={() => setShowCheckInModal(true)}
+                  style={{ fontSize: 'var(--font-size-xs)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 6 }}
                 >
-                  Xem tủ đồ ➔
+                  <MapPin size={13} color="var(--color-primary)" /> + Check-in Cung Mới
                 </button>
               </div>
 
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {equippedGearItems.map((item) => (
-                  <span
-                    key={item.id}
-                    style={{
-                      background: 'var(--color-bg-main)',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: 8,
-                      padding: '5px 10px',
-                      fontSize: '0.76rem',
-                      color: 'var(--color-text-main)',
-                      fontWeight: 600,
-                    }}
-                  >
-                    {item.name}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            {/* Personal Explorer Profile & Safety Dossier Card */}
-            <div className="card" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
-                <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <User size={18} color="var(--color-primary)" /> Thông Tin Cá Nhân & An Toàn Thực Địa
-                </h3>
-                <button
-                  className="btn btn-outline"
-                  onClick={() => {
-                    setIsEditing(true);
-                    populateForm(activeProfile);
-                  }}
-                  style={{ fontSize: 'var(--font-size-xs)', padding: '5px 12px', display: 'flex', alignItems: 'center', gap: 6 }}
-                >
-                  <Edit3 size={13} color="var(--color-primary)" /> Chỉnh Sửa Thông Tin
-                </button>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, fontSize: 'var(--font-size-xs)' }}>
-                <div style={{ background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--color-border)' }}>
-                  <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Họ và tên</div>
-                  <div style={{ fontWeight: 700, color: 'var(--color-text-main)', fontSize: '0.86rem' }}>{activeProfile.fullName}</div>
-                </div>
-
-                <div style={{ background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--color-border)' }}>
-                  <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Email liên lạc</div>
-                  <div style={{ fontWeight: 700, color: 'var(--color-sky)', fontSize: '0.86rem' }}>{activeProfile.email}</div>
-                </div>
-
-                <div style={{ background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--color-border)' }}>
-                  <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Số điện thoại cá nhân</div>
-                  <div style={{ fontWeight: 700, color: activeProfile.phone ? 'var(--color-primary)' : 'var(--color-text-dim)', fontSize: '0.86rem' }}>
-                    {activeProfile.phone || 'Chưa cập nhật'}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {checkedTrails.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '24px 16px', color: 'var(--color-text-muted)', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)', fontSize: 'var(--font-size-xs)', lineHeight: 1.6 }}>
+                    Chưa có cung đường check-in nào. Bấm <strong>"+ Check-in Cung Mới"</strong> để lưu lại các cung đường bạn đã thực sự chinh phục.
                   </div>
-                </div>
-
-                <div style={{ background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--color-border)' }}>
-                  <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Liên hệ khẩn cấp (SOS)</div>
-                  <div style={{ fontWeight: 700, color: activeProfile.emergencyContact ? 'var(--color-earth)' : 'var(--color-text-dim)', fontSize: '0.86rem' }}>
-                    {activeProfile.emergencyContact || 'Chưa thiết lập'}
-                  </div>
-                </div>
-
-                <div style={{ background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--color-border)', gridColumn: '1 / -1' }}>
-                  <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Giới thiệu bản thân (Bio)</div>
-                  <div style={{ color: activeProfile.bio ? 'var(--color-text-main)' : 'var(--color-text-dim)', fontStyle: activeProfile.bio ? 'normal' : 'italic', lineHeight: 1.5 }}>
-                    {activeProfile.bio || 'Chưa cập nhật tiểu sử cá nhân. Hãy thêm thông điệp và kinh nghiệm của bạn.'}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Panel 2: Contributed Trails */}
-      {activeTab === 'contributions' && (
-        <div className="card" style={{ animation: 'fadeIn 0.25s ease' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
-            <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Compass size={18} color="var(--color-primary)" /> Lịch Sử Đóng Góp Cung Đường Trekking Mới ({userContributions.length})
-            </h3>
-            <button
-              className="btn btn-primary"
-              onClick={() => { if (onNavigateToContribute) onNavigateToContribute(); }}
-              style={{ padding: '6px 14px', fontSize: '0.78rem' }}
-            >
-              + Đóng Góp Cung Đường Mới
-            </button>
-          </div>
-
-          {userContributions.length > 0 ? (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
-              {userContributions.map((contrib) => (
-                <div
-                  key={contrib.id}
-                  style={{
-                    background: 'var(--color-bg-main)',
-                    border: '1px solid var(--color-border)',
-                    borderRadius: 14,
-                    overflow: 'hidden',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
-                  }}
-                >
-                  <div style={{ height: 120, position: 'relative', overflow: 'hidden', background: '#000' }}>
-                    <img
-                      src={contrib.coverImage || 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=800&q=80'}
-                      alt={contrib.name}
-                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                    />
-                    <div style={{ position: 'absolute', top: 8, right: 8 }}>
-                      <span style={{ background: contrib.status === 'approved' ? 'rgba(16, 185, 129, 0.9)' : 'rgba(245, 158, 11, 0.9)', color: '#fff', fontSize: '0.7rem', fontWeight: 800, padding: '3px 8px', borderRadius: 6, backdropFilter: 'blur(4px)' }}>
-                        {contrib.status === 'approved' ? 'Đã Duyệt & Công Khai' : 'Chờ BQT Duyệt (+20 PTS)'}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div style={{ padding: 14, flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                    <div>
-                      <h4 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 4px 0' }}>
-                        {contrib.name}
-                      </h4>
-                      <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginBottom: 8 }}>
-                        Vị trí: {contrib.province}, {contrib.district} ({contrib.region})
-                      </div>
-                      <div style={{ display: 'flex', gap: 12, fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-                        <span>Chiều dài: {contrib.distanceKm} km</span>
-                        <span>Độ cao nâng: +{contrib.elevationGainM}m</span>
-                      </div>
-                    </div>
-
-                    <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span>Ngày gửi: {contrib.createdAt}</span>
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        <button
-                          type="button"
-                          className="btn btn-outline"
-                          onClick={() => handleEditContribution(contrib)}
-                          style={{ padding: '3px 8px', fontSize: '0.72rem', borderRadius: 6 }}
-                        >
-                          Chỉnh sửa
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-outline"
-                          onClick={() => handleDeleteContribution(contrib.id, contrib.name)}
-                          style={{ padding: '3px 8px', fontSize: '0.72rem', borderRadius: 6, color: 'var(--color-error)', borderColor: 'rgba(239, 68, 68, 0.4)' }}
-                        >
-                          Xóa
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={{ textAlign: 'center', padding: '24px 16px', color: 'var(--color-text-muted)', fontStyle: 'italic', background: 'var(--color-bg-main)', borderRadius: 12, border: '1px dashed var(--color-border)', fontSize: 'var(--font-size-sm)' }}>
-              Bạn chưa có bài đóng góp cung đường mới nào. Hãy bấm <strong>"+ Đóng Góp Cung Đường Mới"</strong> để chia sẻ kinh nghiệm và nhận +20 điểm uy tín!
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Panel 4: Forum Posts */}
-      {activeTab === 'forum' && (
-        <div className="card" style={{ animation: 'fadeIn 0.25s ease' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
-            <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-              <MessageSquare size={18} color="var(--color-sky)" /> Lịch Sử Bài Viết & Đóng Góp Diễn Đàn ({userOwnPosts.length})
-            </h3>
-          </div>
-
-          {userOwnPosts.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {userOwnPosts.map((post) => (
-                <div
-                  key={post.id}
-                  onClick={() => setSelectedThreadForModal(post)}
-                  style={{
-                    background: 'var(--color-bg-main)',
-                    border: '1px solid var(--color-border)',
-                    borderRadius: 14,
-                    padding: 16,
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    flexWrap: 'wrap',
-                    gap: 12,
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease',
-                    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.borderColor = 'var(--color-primary)';
-                    e.currentTarget.style.transform = 'translateY(-2px)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = 'var(--color-border)';
-                    e.currentTarget.style.transform = 'translateY(0)';
-                  }}
-                >
-                  <div style={{ flex: 1, minWidth: 260 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                      <span className={post.category === 'Cảnh Báo' ? 'badge badge-error' : 'badge badge-success'}>
-                        {post.category}
-                      </span>
-                      <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-dim)' }}>{post.createdAt}</span>
-                      <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-primary)', textDecoration: 'underline', marginLeft: 'auto' }}>Bấm để xem chi tiết & bình luận ➔</span>
-                    </div>
-                    <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 'var(--font-weight-bold)', color: 'var(--color-text-main)' }}>{post.title}</div>
-                  </div>
-
-                  <div style={{ display: 'flex', gap: 16, fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)' }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><ThumbsUp size={15} color="var(--color-primary)" /> {post.upvotes}</span>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><MessageSquare size={15} color="var(--color-sky)" /> {post.repliesCount !== undefined ? post.repliesCount : (post as any).replies || 0} phản hồi</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={{ textAlign: 'center', padding: '24px 16px', color: 'var(--color-text-muted)', fontStyle: 'italic', background: 'var(--color-bg-main)', borderRadius: 12, border: '1px dashed var(--color-border)', fontSize: 'var(--font-size-sm)' }}>
-              Tài khoản này chưa tạo bài viết hoặc bài đóng góp diễn đàn nào. Hãy đăng bài đầu tiên để nhận +10 điểm uy tín!
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Panel 5: Gear Locker */}
-      {activeTab === 'gear' && (
-        <div className="card" style={{ animation: 'fadeIn 0.25s ease' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
-            <div>
-              <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Package size={18} color="var(--color-primary)" /> Quản Lý Tủ Đồ Thiết Bị Sinh Tồn ({userGear.length}/{ALL_GEAR_ITEMS.length})
-              </h3>
-              <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', marginTop: 3 }}>
-                Bấm trực tiếp vào từng món trang bị để kích hoạt hoặc hủy kích hoạt trong balô dã ngoại
-              </div>
-            </div>
-
-            <button
-              className="btn btn-outline"
-              onClick={() => setShowGearModal(true)}
-              style={{ fontSize: 'var(--font-size-xs)', padding: '6px 14px', display: 'flex', alignItems: 'center', gap: 6 }}
-            >
-              <Edit3 size={14} /> Mở cửa sổ quản lý tủ đồ
-            </button>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
-            {ALL_GEAR_ITEMS.map((item) => {
-              const isOwned = userGear.includes(item.id);
-              return (
-                <div
-                  key={item.id}
-                  onClick={() => handleToggleGear(item.id)}
-                  style={{
-                    background: isOwned ? 'rgba(22, 163, 74, 0.12)' : 'var(--color-bg-main)',
-                    border: isOwned ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)',
-                    borderRadius: 14,
-                    padding: '14px 16px',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: 12,
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!isOwned) e.currentTarget.style.borderColor = 'var(--color-primary)';
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!isOwned) e.currentTarget.style.borderColor = 'var(--color-border)';
-                  }}
-                >
-                  <div style={{ flex: 1 }}>
-                    <span style={{ fontSize: '0.68rem', color: isOwned ? 'var(--color-primary)' : 'var(--color-text-dim)', textTransform: 'uppercase', fontWeight: 700 }}>
-                      {item.category}
-                    </span>
-                    <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 'var(--font-weight-bold)', color: isOwned ? 'var(--color-text-main)' : 'var(--color-text-muted)', marginTop: 2 }}>
-                      {item.name}
-                    </div>
-                  </div>
-                  {isOwned ? (
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.75rem', color: 'var(--color-primary)', fontWeight: 700 }}>
-                      <CheckCircle2 size={16} color="var(--color-primary)" /> Đã trang bị
-                    </span>
-                  ) : (
-                    <span style={{ fontSize: '0.75rem', color: 'var(--color-text-dim)' }}>
-                      + Trang bị
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* QR Active Pass Detail Modal */}
-      {showQrModal && (
-        <div className="modal-overlay" onClick={() => setShowQrModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <QrCode size={20} /> Mã Thông Hành QR Active Pass
-              </h3>
-              <button onClick={() => setShowQrModal(false)} style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
-                <X size={20} />
-              </button>
-            </div>
-
-            <div style={{ background: '#ffffff', padding: 16, borderRadius: 16, textAlign: 'center', margin: '0 auto 16px auto', width: 180, height: 180, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '4px solid var(--color-primary)' }}>
-              <QrCode size={140} color="#04131b" />
-            </div>
-
-            <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', lineHeight: 'var(--line-height-normal)', textAlign: 'center', marginBottom: 16 }}>
-              Mã QR mã hóa ID thám hiểm <strong style={{ color: 'var(--color-primary)' }}>#{expeditionId}</strong> dành cho Đội Cứu Hộ SOS và Cán bộ Trạm Kiểm Lâm quét xác minh danh tính khi tham gia các tuyến trek.
-            </div>
-
-            <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 12, padding: 12, fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <div>Trạng Thái: <strong style={{ color: 'var(--color-primary)' }}>{isVerifiedUser ? 'Đã Xác Thực' : 'Chưa Kích Hoạt OTP'}</strong></div>
-              <div>Liên Hệ Khẩn Cấp: <strong style={{ color: 'var(--color-text-main)' }}>{activeProfile.emergencyContact || 'Chưa thiết lập'}</strong></div>
-              <div>Thời Gian Tạo: <strong style={{ color: 'var(--color-sky)' }}>{new Date().toLocaleDateString('vi-VN')}</strong></div>
-            </div>
-
-            <button className="btn btn-outline" onClick={() => setShowQrModal(false)} style={{ width: '100%', marginTop: 16 }}>
-              Đóng Cửa Sổ
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* BADGE DETAIL EXPLANATION MODAL */}
-      {selectedBadge && (
-        <div className="modal-overlay" onClick={() => setSelectedBadge(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 480, border: `1.5px solid ${selectedBadge.color}` }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ fontSize: 'var(--font-size-base)', color: selectedBadge.color, fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Award size={20} /> Chi Tiết Huy Hiệu Danh Dự
-              </h3>
-              <button onClick={() => setSelectedBadge(null)} style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
-                <X size={20} />
-              </button>
-            </div>
-
-            <div style={{ background: 'var(--color-bg-main)', borderRadius: 16, padding: 20, textAlign: 'center', border: `1px solid ${selectedBadge.border}`, marginBottom: 16 }}>
-              <div style={{ display: 'inline-block', padding: '10px 20px', borderRadius: 20, border: `1px solid ${selectedBadge.color}`, background: 'var(--color-bg-card)' }}>
-                <span style={{ fontSize: 'var(--font-size-base)', fontWeight: 'var(--font-weight-extrabold)', color: selectedBadge.color }}>
-                  {selectedBadge.name}
-                </span>
-              </div>
-
-              <div style={{ marginTop: 12, display: 'flex', justifyContent: 'center', gap: 10 }}>
-                <span className={selectedBadge.unlocked ? 'badge badge-success' : 'badge badge-amber'} style={{ borderColor: selectedBadge.color, color: selectedBadge.color }}>
-                  {selectedBadge.unlocked ? 'Đã Mở Khóa' : 'Chưa Mở Khóa'}
-                </span>
-                <span className="badge badge-amber" style={{ borderColor: selectedBadge.color }}>Độ Hiếm: {selectedBadge.rarity}</span>
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', lineHeight: 'var(--line-height-relaxed)' }}>
-              <div>
-                <strong style={{ color: selectedBadge.color }}>Nguồn gốc & Ý nghĩa: </strong>
-                <span style={{ color: 'var(--color-text-main)' }}>{selectedBadge.description}</span>
-              </div>
-              <div>
-                <strong style={{ color: 'var(--color-sky)' }}>Điều kiện mở khóa: </strong>
-                <span style={{ color: 'var(--color-text-main)' }}>{selectedBadge.requirement}</span>
-              </div>
-              {selectedBadge.unlockedAt && (
-                <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-dim)', marginTop: 4 }}>
-                  Ngày đạt được: {selectedBadge.unlockedAt}
-                </div>
-              )}
-            </div>
-
-            <button className="btn btn-primary" onClick={() => setSelectedBadge(null)} style={{ width: '100%', marginTop: 20 }}>
-              Đã Hiểu
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* CONQUERED TRAIL PASSPORT DETAIL MODAL */}
-      {selectedTrailPassport && (
-        <div className="modal-overlay" onClick={() => setSelectedTrailPassport(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520, border: '1.5px solid var(--color-primary)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <MapPin size={20} /> Chứng Nhận Chinh Phục Cung Đường
-              </h3>
-              <button onClick={() => setSelectedTrailPassport(null)} style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
-                <X size={20} />
-              </button>
-            </div>
-
-            <div style={{ background: 'var(--color-bg-main)', borderRadius: 16, padding: 20, border: '1px dashed var(--color-primary)', textAlign: 'center', marginBottom: 18 }}>
-              <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', textTransform: 'uppercase', letterSpacing: 2 }}>
-                OFFICIAL EXPEDITION CHECK-IN PASSPORT
-              </div>
-              <div style={{ fontSize: 'var(--font-size-lg)', fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)', marginTop: 4 }}>
-                {selectedTrailPassport.name}
-              </div>
-              <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', marginTop: 2 }}>
-                {selectedTrailPassport.province} ({selectedTrailPassport.region})
-              </div>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 18 }}>
-              <div style={{ background: 'var(--color-bg-main)', padding: 12, borderRadius: 12, border: '1px solid var(--color-border)' }}>
-                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', display: 'block' }}>Chiều Dài Cung Đường</span>
-                <strong style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)' }}>{selectedTrailPassport.distanceKm} km</strong>
-              </div>
-
-              <div style={{ background: 'var(--color-bg-main)', padding: 12, borderRadius: 12, border: '1px solid var(--color-border)' }}>
-                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', display: 'block' }}>Độ Khó Địa Hình</span>
-                <strong style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)' }}>Trung Bình</strong>
-              </div>
-            </div>
-
-            <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', lineHeight: 'var(--line-height-normal)', marginBottom: 20 }}>
-              Dữ liệu được ghi nhận tự động qua hệ thống **GPS Trekking Log** và quét mã QR Check-in tại Trạm Kiểm Lâm cửa rừng.
-            </div>
-
-            <div style={{ display: 'flex', gap: 12 }}>
-              <button className="btn btn-outline" onClick={() => setSelectedTrailPassport(null)} style={{ flex: 1 }}>
-                Đóng
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={() => {
-                  const trailToNav = selectedTrailPassport;
-                  setSelectedTrailPassport(null);
-                  onSelectTrail(trailToNav);
-                }}
-                style={{ flex: 1 }}
-              >
-                Mở Bản Đồ 3D Cung Đường
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* CUSTOM CONFIRM DELETE CONTRIBUTION MODAL */}
-      {deletingContribution && (
-        <div className="modal-overlay" onClick={() => setDeletingContribution(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420, border: '1.5px solid var(--color-error)' }}>
-            <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-error)', fontWeight: 'var(--font-weight-extrabold)', margin: '0 0 12px 0' }}>
-              Xác nhận xóa bài đóng góp
-            </h3>
-
-            <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-main)', lineHeight: 1.5, marginBottom: 20 }}>
-              Bạn có chắc chắn muốn xóa bài đóng góp cung đường <strong style={{ color: 'var(--color-primary)' }}>"{deletingContribution.name}"</strong> không? Thao tác này sẽ gỡ bài viết khỏi hệ thống và không thể hoàn tác.
-            </p>
-
-            <div style={{ display: 'flex', gap: 12 }}>
-              <button
-                className="btn btn-outline"
-                onClick={() => setDeletingContribution(null)}
-                style={{ flex: 1, justifyContent: 'center' }}
-              >
-                Hủy bỏ
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={confirmDeleteContribution}
-                style={{ flex: 1, justifyContent: 'center', background: 'var(--color-error)', borderColor: 'var(--color-error)', color: '#ffffff' }}
-              >
-                Xác nhận xóa
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* CHECK-IN NEW TRAIL MODAL */}
-      {showCheckInModal && (
-        <div className="modal-overlay" onClick={() => setShowCheckInModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 540 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <MapPin size={20} /> Chọn Cung Đường Vừa Chinh Phục
-              </h3>
-              <button onClick={() => setShowCheckInModal(false)} style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
-                <X size={20} />
-              </button>
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 360, overflowY: 'auto', paddingRight: 4 }}>
-              {allAvailableTrails.map((trail) => {
-                const isAlreadyChecked = checkedTrails.some((t) => t.id === trail.id);
-                return (
-                  <div
-                    key={trail.id}
-                    onClick={() => !isAlreadyChecked && handleAddCheckInTrail(trail)}
-                    style={{
-                      background: isAlreadyChecked ? 'rgba(22, 163, 74, 0.12)' : 'var(--color-bg-main)',
-                      border: isAlreadyChecked ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
-                      borderRadius: 12,
-                      padding: 14,
-                      cursor: isAlreadyChecked ? 'default' : 'pointer',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)', fontSize: 'var(--font-size-sm)' }}>{trail.name}</div>
-                      <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', marginTop: 2 }}>{trail.province} ({trail.distanceKm} km)</div>
-                    </div>
-                    {isAlreadyChecked ? (
-                      <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-bold)' }}>Đã Check-in</span>
-                    ) : (
-                      <button className="btn btn-outline" style={{ fontSize: 'var(--font-size-xs)', padding: '4px 10px' }}>
-                        + Thêm Check-in
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* EDIT PROFILE MODAL */}
-      {isEditing && (
-        <div className="modal-overlay" onClick={() => setIsEditing(false)}>
-          <div
-            className="modal-content"
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              maxWidth: 720,
-              display: 'flex',
-              flexDirection: 'column',
-              overflow: 'hidden',
-            }}
-          >
-            {/* Modal Fixed Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, paddingBottom: 12, borderBottom: '1px solid var(--color-border)' }}>
-              <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <User size={20} /> Điền & Cập Nhật Thông Tin Cá Nhân
-              </h3>
-              <button type="button" onClick={() => setIsEditing(false)} style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
-                <X size={22} />
-              </button>
-            </div>
-
-            {/* Modal Inner Scrollable Body */}
-            <form
-              onSubmit={handleSaveProfile}
-              style={{
-                overflowY: 'auto',
-                maxHeight: 'calc(90vh - 100px)',
-                paddingRight: 10,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 20,
-              }}
-            >
-              {fieldErrors.general && (
-                <div style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid var(--color-error)', borderRadius: 12, padding: '10px 14px', color: 'var(--color-error)', fontSize: 'var(--font-size-xs)', fontWeight: 'var(--font-weight-bold)' }}>
-                  {fieldErrors.general}
-                </div>
-              )}
-
-              {/* PERFECT 2-COLUMN SYMMETRICAL INPUT GRID */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 18 }}>
-                {/* Immutable Username Input */}
-                <div className="form-group">
-                  <label className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', gap: 6, margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
-                    <Lock size={14} color="var(--color-text-dim)" /> Tên tài khoản (Cố định)
-                  </label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    value={editUsername}
-                    disabled
-                    style={{ background: 'var(--color-bg-main)', color: 'var(--color-text-dim)', cursor: 'not-allowed', border: '1px solid var(--color-border)' }}
-                  />
-                </div>
-
-                {/* Full Name Input */}
-                <div className="form-group">
-                  <label className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
-                    Họ và tên đầy đủ
-                  </label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    style={{
-                      borderColor: fieldErrors.fullName ? 'var(--color-error)' : undefined,
-                      boxShadow: fieldErrors.fullName ? '0 0 12px rgba(239, 68, 68, 0.35)' : undefined,
-                    }}
-                    value={editFullName}
-                    onChange={(e) => {
-                      setEditFullName(e.target.value);
-                      setFieldErrors((prev) => ({ ...prev, fullName: '' }));
-                    }}
-                    required
-                  />
-                  {fieldErrors.fullName && (
-                    <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error)', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <AlertTriangle size={14} color="var(--color-error)" style={{ flexShrink: 0 }} />
-                      <span>{fieldErrors.fullName}</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Phone Number Input */}
-                <div className="form-group">
-                  <label className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
-                    Số điện thoại cá nhân (chuẩn VN)
-                  </label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="0912 345 678"
-                    style={{
-                      borderColor: fieldErrors.phone ? 'var(--color-error)' : undefined,
-                      boxShadow: fieldErrors.phone ? '0 0 12px rgba(239, 68, 68, 0.35)' : undefined,
-                    }}
-                    value={editPhone}
-                    onChange={(e) => {
-                      setEditPhone(e.target.value);
-                      setFieldErrors((prev) => ({ ...prev, phone: '' }));
-                    }}
-                  />
-                  {fieldErrors.phone && (
-                    <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error)', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <AlertTriangle size={14} color="var(--color-error)" style={{ flexShrink: 0 }} />
-                      <span>{fieldErrors.phone}</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Emergency Contact Input */}
-                <div className="form-group">
-                  <label className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
-                    Số điện thoại khẩn cấp (SOS Contact)
-                  </label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="0988 776 655 (Người thân)"
-                    style={{
-                      borderColor: fieldErrors.emergencyContact ? 'var(--color-error)' : undefined,
-                      boxShadow: fieldErrors.emergencyContact ? '0 0 12px rgba(239, 68, 68, 0.35)' : undefined,
-                    }}
-                    value={editEmergency}
-                    onChange={(e) => {
-                      setEditEmergency(e.target.value);
-                      setFieldErrors((prev) => ({ ...prev, emergencyContact: '' }));
-                    }}
-                  />
-                  {fieldErrors.emergencyContact && (
-                    <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error)', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <AlertTriangle size={14} color="var(--color-error)" style={{ flexShrink: 0 }} />
-                      <span>{fieldErrors.emergencyContact}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* CLEAN VISUAL CARD SELECTOR FOR PHONG CÁCH TREKKING */}
-              <div className="form-group">
-                <label className="form-label" style={{ marginBottom: 10, display: 'block' }}>
-                  Phong cách Trekking yêu thích (Bấm chọn phong cách của bạn)
-                </label>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
-                  {TREKKING_STYLE_OPTIONS.map((style) => {
-                    const isSelected = editStyle === style.id;
+                ) : (
+                  checkedTrails.map((t, idx) => {
+                    const theme = TRAIL_CARD_THEMES[idx % TRAIL_CARD_THEMES.length];
                     return (
                       <div
-                        key={style.id}
-                        onClick={() => setEditStyle(style.id)}
+                        key={t.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setSelectedTrailPassport(t)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setSelectedTrailPassport(t);
+                          }
+                        }}
                         style={{
-                          background: isSelected ? 'rgba(22, 163, 74, 0.12)' : 'var(--color-bg-main)',
-                          border: isSelected ? '2px solid var(--color-primary)' : '1px solid var(--color-border)',
-                          borderRadius: 14,
+                          background: 'var(--color-bg-main)',
+                          border: `1px solid ${theme.border}`,
+                          borderRadius: 4,
                           padding: '14px 16px',
                           cursor: 'pointer',
-                          transition: 'all 0.25s ease',
+                          transition: 'all 0.2s ease',
                           display: 'flex',
-                          alignItems: 'center',
                           justifyContent: 'space-between',
-                          boxShadow: isSelected ? '0 0 18px rgba(22, 163, 74, 0.25)' : 'none',
+                          alignItems: 'center',
+                          gap: 12,
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.borderColor = theme.color;
+                          e.currentTarget.style.transform = 'translateY(-2px)';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = theme.border;
+                          e.currentTarget.style.transform = 'translateY(0)';
                         }}
                       >
-                        <div>
-                          <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 'var(--font-weight-extrabold)', color: isSelected ? 'var(--color-primary)' : 'var(--color-text-main)' }}>
-                            {style.title}
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)', fontSize: '0.88rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {t.name}
                           </div>
-                          <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', marginTop: 2 }}>
-                            {style.sub}
+                          <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
+                            {t.province} ({t.region}) · {t.distanceKm} km
                           </div>
                         </div>
-                        {isSelected && <CheckCircle2 size={18} color="var(--color-primary)" style={{ flexShrink: 0 }} />}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                          {verifiedCheckinIds.includes(String(t.id)) && (
+                            <span style={{ fontSize: '0.68rem', color: 'var(--color-primary)', background: 'color-mix(in srgb, var(--color-primary) 14%, transparent)', padding: '3px 7px', borderRadius: 4, border: '1px solid color-mix(in srgb, var(--color-primary) 40%, transparent)', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                              <ShieldCheck size={11} color="var(--color-primary)" /> GPS
+                            </span>
+                          )}
+                          <span style={{ fontSize: '0.72rem', color: theme.color, background: 'var(--color-bg-card)', padding: '3px 9px', borderRadius: 4, border: `1px solid ${theme.border}`, whiteSpace: 'nowrap', fontWeight: 'var(--font-weight-bold)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <Check size={12} color={theme.color} /> {t.maxAltitudeM ? `${t.maxAltitudeM.toLocaleString('vi-VN')}m` : t.region}
+                          </span>
+                        </div>
                       </div>
                     );
-                  })}
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* Right: Badges & Gear Quick Look */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+              {/* System Badges */}
+              <div className="card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
+                  <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Award size={18} color="var(--color-primary)" /> Huy Hiệu Danh Dự ({unlockedBadgesCount}/{computedBadges.length})
+                  </h3>
+                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)' }}>Bấm xem chi tiết</span>
+                </div>
+
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  {computedBadges.map((badge) => (
+                    <div
+                      key={badge.id}
+                      onClick={() => setSelectedBadge(badge)}
+                      style={{
+                        background: badge.unlocked ? badge.bg : 'var(--color-bg-main)',
+                        border: badge.unlocked ? `1px solid ${badge.border}` : '1px dashed var(--color-border)',
+                        borderRadius: 4,
+                        padding: '7px 14px',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 7,
+                        opacity: badge.unlocked ? 1 : 0.6,
+                        boxShadow: badge.unlocked ? badge.glow : 'none',
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.transform = 'translateY(-2px)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.transform = 'translateY(0)')}
+                    >
+                      {badge.unlocked ? (
+                        <CheckCircle2 size={15} color={badge.color} />
+                      ) : (
+                        <Lock size={13} color="var(--color-text-dim)" />
+                      )}
+                      <span style={{ fontSize: '0.78rem', fontWeight: 700, color: badge.unlocked ? badge.color : 'var(--color-text-dim)' }}>
+                        {badge.name}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               </div>
 
-              {/* Avatar Upload from PC & Link URL Input */}
-              <div className="form-group">
-                <label className="form-label" style={{ marginBottom: 10, display: 'block' }}>
-                  Ảnh Đại Diện (Avatar)
-                </label>
-                <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <img
-                    src={editAvatarUrl || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
-                    alt="Preview"
-                    style={{ width: 52, height: 52, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--color-primary)', flexShrink: 0 }}
-                  />
-
-                  <input
-                    type="file"
-                    ref={fileInputRef}
-                    accept="image/*"
-                    style={{ display: 'none' }}
-                    onChange={handleFileUpload}
-                  />
-
+              {/* Survival Gear Quick Snapshot */}
+              <div className="card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+                  <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Package size={18} color="var(--color-sky)" /> Trang Bị Sinh Tồn ({equippedGearItems.length})
+                  </h3>
                   <button
                     type="button"
                     className="btn btn-outline"
-                    onClick={() => fileInputRef.current?.click()}
-                    style={{ fontSize: 'var(--font-size-xs)', flexShrink: 0 }}
+                    onClick={() => setActiveTab('gear')}
+                    style={{ fontSize: 'var(--font-size-xs)', padding: '4px 10px' }}
                   >
-                    <Upload size={15} /> Chọn ảnh từ máy tính
+                    Xem tủ đồ
                   </button>
+                </div>
 
-                  <div style={{ flex: 1, minWidth: 240 }}>
-                    <input
-                      type="text"
-                      className="form-input"
-                      placeholder="Hoặc dán đường dẫn ảnh URL (https://...)"
-                      value={editAvatarUrl}
-                      onChange={(e) => {
-                        setEditAvatarUrl(e.target.value);
-                        setFieldErrors((prev) => ({ ...prev, avatarUrl: '' }));
-                      }}
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {equippedGearItems.map((item) => (
+                    <span
+                      key={item.id}
                       style={{
-                        fontSize: 'var(--font-size-xs)',
-                        borderColor: fieldErrors.avatarUrl ? '#ef4444' : undefined,
+                        background: 'var(--color-bg-main)',
+                        border: '1px solid var(--color-border)',
+                        borderRadius: 8,
+                        padding: '5px 10px',
+                        fontSize: '0.76rem',
+                        color: 'var(--color-text-main)',
+                        fontWeight: 600,
                       }}
-                    />
+                    >
+                      {item.name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Personal Explorer Profile & Safety Dossier Card */}
+              <div className="card" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
+                  <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <User size={18} color="var(--color-primary)" /> Thông Tin Cá Nhân & An Toàn Thực Địa
+                  </h3>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={() => {
+                      setIsEditing(true);
+                      populateForm(activeProfile);
+                    }}
+                    style={{ fontSize: 'var(--font-size-xs)', padding: '5px 12px', display: 'flex', alignItems: 'center', gap: 6 }}
+                  >
+                    <Edit3 size={13} color="var(--color-primary)" /> Chỉnh Sửa Thông Tin
+                  </button>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, fontSize: 'var(--font-size-xs)' }}>
+                  <div style={{ background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
+                    <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Họ và tên</div>
+                    <div style={{ fontWeight: 700, color: 'var(--color-text-main)', fontSize: '0.86rem' }}>{activeProfile.fullName}</div>
+                  </div>
+
+                  <div style={{ background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
+                    <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Email liên lạc</div>
+                    <div style={{ fontWeight: 700, color: 'var(--color-sky)', fontSize: '0.86rem' }}>{activeProfile.email}</div>
+                  </div>
+
+                  <div style={{ background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
+                    <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Số điện thoại cá nhân</div>
+                    <div style={{ fontWeight: 700, color: activeProfile.phone ? 'var(--color-primary)' : 'var(--color-text-dim)', fontSize: '0.86rem' }}>
+                      {activeProfile.phone || 'Chưa cập nhật'}
+                    </div>
+                  </div>
+
+                  <div style={{ background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
+                    <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Liên hệ khẩn cấp (SOS)</div>
+                    <div style={{ fontWeight: 700, color: activeProfile.emergencyContact ? 'var(--color-earth)' : 'var(--color-text-dim)', fontSize: '0.86rem' }}>
+                      {activeProfile.emergencyContact || 'Chưa thiết lập'}
+                    </div>
+                  </div>
+
+                  <div style={{ background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 4, border: '1px solid var(--color-border)', gridColumn: '1 / -1' }}>
+                    <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Giới thiệu bản thân (Bio)</div>
+                    <div style={{ color: activeProfile.bio ? 'var(--color-text-main)' : 'var(--color-text-dim)', fontStyle: activeProfile.bio ? 'normal' : 'italic', lineHeight: 1.5 }}>
+                      {activeProfile.bio || 'Chưa cập nhật tiểu sử cá nhân. Hãy thêm thông điệp và kinh nghiệm của bạn.'}
+                    </div>
                   </div>
                 </div>
-                {fieldErrors.avatarUrl && (
-                  <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error)', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <AlertTriangle size={14} color="var(--color-error)" style={{ flexShrink: 0 }} />
-                    <span>{fieldErrors.avatarUrl}</span>
-                  </div>
-                )}
               </div>
-
-              {/* Bio Textarea */}
-              <div className="form-group">
-                <label className="form-label" style={{ marginBottom: 8, display: 'block' }}>
-                  Giới thiệu bản thân (Bio)
-                </label>
-                <textarea
-                  className="form-textarea"
-                  rows={3}
-                  placeholder="Chia sẻ kinh nghiệm leo núi, các cung đường đã qua hoặc thông điệp của bạn..."
-                  style={{
-                    borderColor: fieldErrors.bio ? 'var(--color-error)' : undefined,
-                    boxShadow: fieldErrors.bio ? '0 0 12px rgba(239, 68, 68, 0.35)' : undefined,
-                  }}
-                  value={editBio}
-                  onChange={(e) => {
-                    setEditBio(e.target.value);
-                    setFieldErrors((prev) => ({ ...prev, bio: '' }));
-                  }}
-                />
-                {fieldErrors.bio && (
-                  <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error)', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <AlertTriangle size={14} color="var(--color-error)" style={{ flexShrink: 0 }} />
-                    <span>{fieldErrors.bio}</span>
-                  </div>
-                )}
-              </div>
-
-              <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end', marginTop: 10 }}>
-                <button type="button" className="btn btn-outline" onClick={() => setIsEditing(false)}>
-                  Hủy
-                </button>
-                <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                  <Save size={16} /> {isSaving ? 'Đang lưu...' : 'Lưu Thay Đổi Thông Tin'}
-                </button>
-              </div>
-            </form>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* GEAR LOCKER MANAGER MODAL */}
-      {showGearModal && (
-        <div className="modal-overlay" onClick={() => setShowGearModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 620 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <div>
-                <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Package size={20} /> Quản Lý Tủ Đồ Thiết Bị Sinh Tồn
-                </h3>
-                <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', marginTop: 4 }}>
-                  Tích chọn các trang bị dã ngoại bạn đang sở hữu ({userGear.length}/{ALL_GEAR_ITEMS.length})
-                </div>
-              </div>
-              <button onClick={() => setShowGearModal(false)} style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
-                <X size={20} />
+        {/* Panel 2: Contributed Trails */}
+        {activeTab === 'contributions' && (
+          <div className="card" style={{ animation: 'fadeIn 0.25s ease' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+              <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Compass size={18} color="var(--color-primary)" /> Lịch Sử Đóng Góp Cung Đường Trekking Mới ({userContributions.length})
+              </h3>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => { if (onNavigateToContribute) onNavigateToContribute(); }}
+                style={{ padding: '6px 14px', fontSize: '0.78rem' }}
+              >
+                + Đóng Góp Cung Đường Mới
               </button>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12, maxHeight: 380, overflowY: 'auto', paddingRight: 4 }}>
+            {userContributions.length > 0 ? (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))', gap: 14 }}>
+                {userContributions.map((contrib) => (
+                  <div
+                    key={contrib.id || contrib._id}
+                    style={{
+                      background: 'var(--color-bg-main)',
+                      border: '1px solid var(--color-border)',
+                      borderRadius: 6,
+                      overflow: 'hidden',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      boxShadow: 'var(--shadow-card)',
+                    }}
+                  >
+                    <div style={{ height: 120, position: 'relative', overflow: 'hidden', background: 'var(--color-surface-elevated)' }}>
+                      <img
+                        src={contrib.coverImage || DEFAULT_VIETNAM_TRAIL_COVER}
+                        alt={contrib.name}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                        onError={(e) => {
+                          (e.currentTarget as HTMLImageElement).src = DEFAULT_VIETNAM_TRAIL_COVER;
+                        }}
+                      />
+                      <div style={{ position: 'absolute', top: 8, right: 8 }}>
+                        <span
+                          style={{
+                            background:
+                              contrib.status === 'approved'
+                                ? 'var(--color-primary)'
+                                : contrib.status === 'rejected'
+                                  ? 'var(--color-error)'
+                                  : 'var(--color-sun)',
+                            color:
+                              contrib.status === 'rejected'
+                                ? 'var(--color-on-danger)'
+                                : 'var(--color-on-primary)',
+                            fontSize: '0.7rem',
+                            fontWeight: 800,
+                            padding: '3px 8px',
+                            borderRadius: 4,
+                          }}
+                        >
+                          {contrib.status === 'approved'
+                            ? 'Đã Duyệt & Công Khai'
+                            : contrib.status === 'rejected'
+                              ? 'Đã Từ Chối'
+                              : 'Chờ BQT Duyệt'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div style={{ padding: 14, flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                      <div>
+                        <h4 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 4px 0' }}>
+                          {contrib.name}
+                        </h4>
+                        <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginBottom: 8 }}>
+                          Vị trí: {contrib.province}, {contrib.district} ({contrib.region})
+                        </div>
+                        <div style={{ display: 'flex', gap: 12, fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
+                          <span>Chiều dài: {contrib.distanceKm} km</span>
+                          <span>Độ cao nâng: +{contrib.elevationGainM}m</span>
+                        </div>
+                      </div>
+
+                      <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span>Ngày gửi: {formatShortDate(contrib.createdAt)}</span>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button
+                            type="button"
+                            className="btn btn-outline"
+                            onClick={() => handleEditContribution(contrib)}
+                            style={{ padding: '3px 8px', fontSize: '0.72rem', borderRadius: 4 }}
+                          >
+                            Chỉnh sửa
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-outline"
+                            onClick={() => handleDeleteContribution(contrib.id || contrib._id || '', contrib.name || '')}
+                            style={{ padding: '3px 8px', fontSize: '0.72rem', borderRadius: 4, color: 'var(--color-error-text, var(--color-error))', borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)' }}
+                          >
+                            Xóa
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ textAlign: 'center', padding: '24px 16px', color: 'var(--color-text-muted)', fontStyle: 'italic', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)', fontSize: 'var(--font-size-sm)' }}>
+                Bạn chưa có bài đóng góp cung đường mới nào. Hãy bấm <strong>"+ Đóng Góp Cung Đường Mới"</strong> để chia sẻ kinh nghiệm và nhận +50 điểm uy tín!
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Panel 4: Forum Posts */}
+        {activeTab === 'forum' && (
+          <div className="card" style={{ animation: 'fadeIn 0.25s ease' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+              <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <MessageSquare size={18} color="var(--color-sky)" /> Lịch Sử Bài Viết & Đóng Góp Diễn Đàn ({userOwnPosts.length})
+              </h3>
+            </div>
+
+            {userOwnPosts.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {userOwnPosts.map((post) => (
+                  <div
+                    key={post.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setSelectedThreadForModal(post)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSelectedThreadForModal(post);
+                      }
+                    }}
+                    style={{
+                      background: 'var(--color-bg-main)',
+                      border: '1px solid var(--color-border)',
+                      borderRadius: 4,
+                      padding: 16,
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      gap: 12,
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor = 'var(--color-primary)';
+                      e.currentTarget.style.transform = 'translateY(-2px)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = 'var(--color-border)';
+                      e.currentTarget.style.transform = 'translateY(0)';
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 260 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                        <span className={post.category === 'Cảnh Báo' ? 'badge badge-error' : 'badge badge-success'}>
+                          {post.category}
+                        </span>
+                        <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-dim)' }}>{formatShortDate(post.createdAt)}</span>
+                        <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-primary)', textDecoration: 'underline', marginLeft: 'auto' }}>Xem chi tiết & bình luận</span>
+                      </div>
+                      <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 'var(--font-weight-bold)', color: 'var(--color-text-main)' }}>{post.title}</div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 16, fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)' }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><ThumbsUp size={15} color="var(--color-primary)" /> {post.upvotes}</span>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><MessageSquare size={15} color="var(--color-sky)" /> {post.repliesCount !== undefined ? post.repliesCount : (post as ForumThreadExtended).replies || 0} phản hồi</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ textAlign: 'center', padding: '24px 16px', color: 'var(--color-text-muted)', fontStyle: 'italic', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)', fontSize: 'var(--font-size-sm)' }}>
+                Tài khoản này chưa tạo bài viết hoặc bài đóng góp diễn đàn nào. Hãy đăng bài đầu tiên để nhận +10 điểm uy tín!
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Panel 2: Cloud Wishlist, Activity Timeline & Top Summit Leaderboard */}
+        {activeTab === 'saved' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(300px, 100%), 1fr))', gap: 20, animation: 'fadeIn 0.25s ease' }}>
+            {/* Saved Trails (Cloud Wishlist + Collections & Notes) */}
+            <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <MapPin size={18} color="var(--color-primary)" /> Cung Đường Đã Lưu ({savedTrails.length})
+                </h3>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <Folder size={13} color="var(--color-primary)" /> Bộ sưu tập &amp; lịch dự kiến
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={isLoading}
+                    onClick={handleExportProfileCsv}
+                    style={{
+                      padding: '4px 9px',
+                      fontSize: '0.72rem',
+                      borderRadius: 4,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 5,
+                      opacity: isLoading ? 0.6 : 1,
+                      cursor: isLoading ? 'wait' : 'pointer',
+                    }}
+                  >
+                    <DownloadIcon size={12} color="var(--color-sky)" /> Xuất CSV
+                  </button>
+                </div>
+              </div>
+
+              {/* Collection Filter Chips (WAI-ARIA Tablist) */}
+              {savedTrails.length > 0 && (() => {
+                const folderCounts: Record<'all' | SavedCollectionName, number> = {
+                  all: savedTrails.length,
+                  'Muốn đi': 0,
+                  'Sắp đi': 0,
+                  'Đã chinh phục': 0,
+                  'Mục tiêu năm': 0,
+                };
+                savedTrails.forEach((item) => {
+                  const trailObj = item.trailId && typeof item.trailId === 'object' ? item.trailId : null;
+                  const tid = String(trailObj?.id || trailObj?._id || item.trailId || '');
+                  const meta = resolveSavedItemMeta(item, tid);
+                  folderCounts[meta.collectionName] += 1;
+                });
+                const tabs: Array<{ id: 'all' | SavedCollectionName; label: string }> = [
+                  { id: 'all', label: 'Tất cả' },
+                  ...SAVED_COLLECTION_FOLDERS.map((folder) => ({ id: folder, label: folder })),
+                ];
+                return (
+                  <div role="tablist" aria-label="Bộ lọc bộ sưu tập cung đường đã lưu" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {tabs.map((tab, tabIdx) => {
+                      const isActive = savedCollectionFilter === tab.id;
+                      return (
+                        <button
+                          key={tab.id}
+                          id={`lost-saved-tab-${tab.id}`}
+                          ref={(el) => {
+                            savedTabRefs.current[tab.id] = el;
+                          }}
+                          type="button"
+                          role="tab"
+                          aria-selected={isActive}
+                          aria-controls="lost-saved-trails-tabpanel"
+                          tabIndex={isActive ? 0 : -1}
+                          onClick={() => setSavedCollectionFilter(tab.id)}
+                          onKeyDown={(e) => {
+                            let nextIdx: number | null = null;
+                            if (e.key === 'ArrowRight') nextIdx = (tabIdx + 1) % tabs.length;
+                            else if (e.key === 'ArrowLeft') nextIdx = (tabIdx - 1 + tabs.length) % tabs.length;
+                            else if (e.key === 'Home') nextIdx = 0;
+                            else if (e.key === 'End') nextIdx = tabs.length - 1;
+                            if (nextIdx !== null) {
+                              e.preventDefault();
+                              const targetTab = tabs[nextIdx];
+                              setSavedCollectionFilter(targetTab.id);
+                              savedTabRefs.current[targetTab.id]?.focus();
+                            }
+                          }}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            padding: '5px 10px',
+                            borderRadius: 4,
+                            fontSize: '0.74rem',
+                            fontWeight: isActive ? 800 : 600,
+                            cursor: 'pointer',
+                            border: isActive
+                              ? '1px solid var(--color-primary)'
+                              : '1px solid var(--color-border)',
+                            background: isActive
+                              ? 'color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-card))'
+                              : 'var(--color-bg-main)',
+                            color: isActive ? 'var(--color-text-main)' : 'var(--color-text-muted)',
+                            fontVariantNumeric: 'tabular-nums',
+                          }}
+                        >
+                          <span>{tab.label}</span>
+                          <span
+                            style={{
+                              fontSize: '0.68rem',
+                              padding: '1px 5px',
+                              borderRadius: 3,
+                              background: isActive
+                                ? 'var(--color-primary)'
+                                : 'var(--color-surface-elevated)',
+                              color: isActive ? 'var(--color-on-primary)' : 'var(--color-text-dim)',
+                              fontWeight: 800,
+                            }}
+                          >
+                            {folderCounts[tab.id]}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+
+              <div
+                id="lost-saved-trails-tabpanel"
+                role="tabpanel"
+                aria-labelledby={savedTrails.length > 0 ? `lost-saved-tab-${savedCollectionFilter}` : undefined}
+              >
+                {savedTrails.length === 0 ? (
+                  <div style={{ padding: 20, textAlign: 'center', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)', color: 'var(--color-text-muted)', fontSize: '0.82rem' }}>
+                    Chưa có cung đường nào trong danh sách lưu đám mây. Hãy mở một cung đường và bấm &ldquo;Lưu Cung Đường&rdquo; hoặc &ldquo;Tải Gói Offline&rdquo;.
+                  </div>
+                ) : (() => {
+                  const visibleSavedTrails = savedTrails.filter((item) => {
+                    if (savedCollectionFilter === 'all') return true;
+                    const trailObj = item.trailId && typeof item.trailId === 'object' ? item.trailId : null;
+                    const tid = String(trailObj?.id || trailObj?._id || item.trailId || '');
+                    return resolveSavedItemMeta(item, tid).collectionName === savedCollectionFilter;
+                  });
+
+                  if (visibleSavedTrails.length === 0) {
+                    return (
+                      <div style={{ padding: 18, textAlign: 'center', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)', color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
+                        Chưa có cung đường nào trong thư mục &ldquo;{savedCollectionFilter}&rdquo;. Chọn bộ sưu tập ở từng cung đường trong tab &ldquo;Tất cả&rdquo; để phân loại.
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {visibleSavedTrails.map((item, idx) => {
+                        const trailObj = item.trailId && typeof item.trailId === 'object' ? item.trailId : null;
+                        const tId = String(trailObj?.id || trailObj?._id || (typeof item.trailId === 'string' ? item.trailId : '') || '');
+                        const matchedFull = allAvailableTrails.find((t) => String(t.id) === tId || String((t as TrailWithMongoId)._id) === tId);
+                        const tName = trailObj?.name || matchedFull?.name || tId;
+                        const meta = resolveSavedItemMeta(item, tId);
+                        const isEditingNote = editingSavedId === tId;
+                        const isSavingThis = savingSavedMetaIds.has(tId);
+                        const isRemovingThis = removingSavedIds.has(tId);
+                        const isConfirmingRemove = confirmRemoveSavedId === tId;
+                        const requiresConfirmRemove = Boolean(meta.personalNote || meta.plannedMonth);
+                        const maxAlt = Number(trailObj?.maxAltitudeM || matchedFull?.maxAltitudeM || 0);
+
+                        return (
+                          <div
+                            key={item._id || tId || idx}
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 10,
+                              padding: '12px 14px',
+                              borderRadius: 4,
+                              background: 'var(--color-bg-main)',
+                              border: isEditingNote
+                                ? '1px solid var(--color-primary)'
+                                : '1px solid var(--color-border)',
+                            }}
+                          >
+                            {/* Header row */}
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
+                              <div style={{ minWidth: 0, flex: 1 }}>
+                                <div style={{ fontWeight: 800, fontSize: '0.86rem', color: 'var(--color-text-main)', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                  <span>{tName}</span>
+                                  {item.savedOffline && (
+                                    <span className="badge badge-success" style={{ fontSize: '0.66rem', padding: '1px 6px' }}>Offline</span>
+                                  )}
+                                  <span
+                                    className="badge badge-cloud"
+                                    style={{ fontSize: '0.66rem', padding: '1px 6px', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                                  >
+                                    <Folder size={10} /> {meta.collectionName}
+                                  </span>
+                                  {meta.plannedMonth && (
+                                    <span
+                                      className="badge badge-sky"
+                                      style={{ fontSize: '0.66rem', padding: '1px 6px', display: 'inline-flex', alignItems: 'center', gap: 4, fontVariantNumeric: 'tabular-nums' }}
+                                    >
+                                      <CalendarIcon size={10} /> Tháng {meta.plannedMonth}
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', marginTop: 3, fontVariantNumeric: 'tabular-nums' }}>
+                                  {(trailObj?.province || matchedFull?.province || 'Việt Nam')} · {(trailObj?.distanceKm || matchedFull?.distanceKm || 0)} km
+                                  {maxAlt > 0 ? ` · Đỉnh ${maxAlt.toLocaleString('vi-VN')}m` : ''}
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
+                                {matchedFull && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-outline"
+                                    disabled={isRemovingThis}
+                                    onClick={() => onSelectTrail(matchedFull)}
+                                    style={{ padding: '4px 10px', fontSize: '0.74rem' }}
+                                  >
+                                    Mở Cung
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className="btn btn-outline"
+                                  disabled={isRemovingThis}
+                                  onClick={() => {
+                                    setConfirmRemoveSavedId(null);
+                                    if (isEditingNote) {
+                                      setEditingSavedId(null);
+                                    } else {
+                                      setEditingSavedId(tId);
+                                      setSavedNoteDraft(meta.personalNote);
+                                    }
+                                  }}
+                                  style={{ padding: '4px 8px', fontSize: '0.74rem', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                                >
+                                  <Edit3 size={12} /> {meta.personalNote ? 'Sửa Ghi Chú' : 'Ghi Chú'}
+                                </button>
+                                {isConfirmingRemove ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className="btn btn-outline"
+                                      disabled={isRemovingThis}
+                                      onClick={() => void handleRemoveSavedTrail(tId, tName)}
+                                      style={{
+                                        padding: '4px 8px',
+                                        fontSize: '0.74rem',
+                                        fontWeight: 800,
+                                        color: 'var(--color-error-text, var(--color-error))',
+                                        borderColor: 'var(--color-error)',
+                                        background: 'color-mix(in srgb, var(--color-error) 10%, var(--color-bg-card))',
+                                      }}
+                                    >
+                                      {isRemovingThis ? 'Đang bỏ...' : 'Xác nhận bỏ'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="btn btn-outline"
+                                      disabled={isRemovingThis}
+                                      onClick={() => setConfirmRemoveSavedId(null)}
+                                      style={{ padding: '4px 8px', fontSize: '0.74rem' }}
+                                    >
+                                      Hủy
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="btn btn-outline"
+                                    disabled={isRemovingThis}
+                                    onClick={() => {
+                                      if (requiresConfirmRemove) {
+                                        setConfirmRemoveSavedId(tId);
+                                      } else {
+                                        void handleRemoveSavedTrail(tId, tName);
+                                      }
+                                    }}
+                                    style={{
+                                      padding: '4px 8px',
+                                      fontSize: '0.74rem',
+                                      color: 'var(--color-error-text, var(--color-error))',
+                                      borderColor: 'color-mix(in srgb, var(--color-error) 35%, transparent)',
+                                    }}
+                                  >
+                                    {isRemovingThis ? 'Đang bỏ...' : 'Bỏ'}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Inline Collection & Planned-Month Pickers */}
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+                              <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-text-dim)' }}>
+                                <span>Thư mục bộ sưu tập</span>
+                                <select
+                                  aria-label={`Bộ sưu tập cho ${tName}`}
+                                  value={meta.collectionName}
+                                  disabled={isSavingThis}
+                                  onChange={(e) => {
+                                    const nextCol = normalizeSavedCollection(e.target.value);
+                                    void handleUpdateSavedTrailMeta(tId, tName, { collectionName: nextCol });
+                                  }}
+                                  className="form-input"
+                                  style={{ padding: '5px 8px', fontSize: '0.75rem', borderRadius: 4, width: '100%' }}
+                                >
+                                  {SAVED_COLLECTION_FOLDERS.map((folder) => (
+                                    <option key={folder} value={folder}>
+                                      {folder}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+
+                              <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-text-dim)' }}>
+                                <span>Tháng dự kiến khởi hành</span>
+                                <select
+                                  aria-label={`Tháng dự kiến cho ${tName}`}
+                                  value={meta.plannedMonth !== null ? String(meta.plannedMonth) : ''}
+                                  disabled={isSavingThis}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    const nextMonth = val ? Number(val) : null;
+                                    void handleUpdateSavedTrailMeta(tId, tName, { plannedMonth: nextMonth });
+                                  }}
+                                  className="form-input"
+                                  style={{ padding: '5px 8px', fontSize: '0.75rem', borderRadius: 4, width: '100%', fontVariantNumeric: 'tabular-nums' }}
+                                >
+                                  <option value="">Chưa chốt tháng</option>
+                                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((m) => (
+                                    <option key={m} value={String(m)}>
+                                      Tháng {m}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            </div>
+
+                            {/* Personal Note Readout */}
+                            {!isEditingNote && meta.personalNote && (
+                              <div
+                                style={{
+                                  padding: '8px 10px',
+                                  borderRadius: 4,
+                                  background: 'var(--color-bg-card)',
+                                  border: '1px solid var(--color-border)',
+                                  fontSize: '0.76rem',
+                                  color: 'var(--color-text-muted)',
+                                  lineHeight: 1.5,
+                                  whiteSpace: 'pre-wrap',
+                                }}
+                              >
+                                <span style={{ fontWeight: 800, color: 'var(--color-text-main)', marginRight: 6 }}>Ghi chú:</span>
+                                {meta.personalNote}
+                              </div>
+                            )}
+
+                            {/* Inline Personal Note Editor */}
+                            {isEditingNote && (
+                              <div
+                                style={{
+                                  padding: 10,
+                                  borderRadius: 4,
+                                  background: 'var(--color-bg-card)',
+                                  border: '1px solid var(--color-border-strong)',
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: 8,
+                                }}
+                              >
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.72rem' }}>
+                                  <span style={{ fontWeight: 700, color: 'var(--color-text-main)' }}>
+                                    Ghi chú kế hoạch cá nhân
+                                  </span>
+                                  <span style={{ color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
+                                    {savedNoteDraft.length}/500
+                                  </span>
+                                </div>
+                                <textarea
+                                  aria-label={`Ghi chú cá nhân cho ${tName}`}
+                                  className="form-textarea"
+                                  rows={2}
+                                  maxLength={500}
+                                  placeholder="VD: Đặt xe giường nằm tối thứ 6, thuê porter bản địa, canh mùa hoa đỗ quyên..."
+                                  value={savedNoteDraft}
+                                  onChange={(e) => setSavedNoteDraft(e.target.value)}
+                                  style={{ width: '100%', padding: '6px 9px', fontSize: '0.78rem', borderRadius: 4 }}
+                                />
+                                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                                  <button
+                                    type="button"
+                                    className="btn btn-outline"
+                                    disabled={isSavingThis}
+                                    onClick={() => setEditingSavedId(null)}
+                                    style={{ padding: '4px 10px', fontSize: '0.74rem' }}
+                                  >
+                                    Hủy
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-primary"
+                                    disabled={isSavingThis}
+                                    onClick={() => void handleUpdateSavedTrailMeta(tId, tName, { personalNote: savedNoteDraft })}
+                                    style={{ padding: '4px 12px', fontSize: '0.74rem', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                                  >
+                                    <Save size={12} /> {isSavingThis ? 'Đang lưu...' : 'Lưu Ghi Chú'}
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Recent Activity Timeline */}
+              <div style={{ marginTop: 8, paddingTop: 14, borderTop: '1px solid var(--color-border)' }}>
+                <h4 style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 10px 0' }}>
+                  Nhật Ký Hoạt Động Gần Đây ({activities.length})
+                </h4>
+                {activities.length === 0 ? (
+                  <div style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)' }}>Chưa có hoạt động nào được ghi nhận.</div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 240, overflowY: 'auto' }}>
+                    {activities.map((act, idx) => (
+                      <div key={act._id || idx} style={{ padding: '8px 10px', borderRadius: 4, background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', fontSize: '0.76rem' }}>
+                        <div style={{ fontWeight: 700, color: 'var(--color-text-main)' }}>{act.content}</div>
+                        <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', marginTop: 2 }}>
+                          {act.createdAt ? new Date(act.createdAt).toLocaleString('vi-VN') : ''}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Top Summit Conquerors Leaderboard */}
+            <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Award size={18} color="var(--color-earth)" /> Bảng Xếp Hạng Chinh Phục Đỉnh
+              </h3>
+              <p style={{ margin: 0, fontSize: '0.76rem', color: 'var(--color-text-muted)' }}>
+                Thống kê thực tế từ hệ thống Check-in GPS &amp; Nhật ký đỉnh đã xác thực trên LOST.
+              </p>
+              {leaderboard.length === 0 ? (
+                <div style={{ padding: 20, textAlign: 'center', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)', color: 'var(--color-text-muted)', fontSize: '0.82rem' }}>
+                  Chưa có lượt check-in nào trên bảng xếp hạng. Hãy là người đầu tiên chinh phục và check-in đỉnh!
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {leaderboard.map((row) => (
+                    <div
+                      key={row.userId}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 10,
+                        padding: '10px 12px',
+                        borderRadius: 4,
+                        background: row.rank <= 3 ? 'color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-main))' : 'var(--color-bg-main)',
+                        border: row.rank === 1 ? '1.5px solid var(--color-earth)' : '1px solid var(--color-border)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                        <span
+                          style={{
+                            width: 26,
+                            height: 26,
+                            borderRadius: '50%',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontWeight: 900,
+                            fontSize: '0.76rem',
+                            background: row.rank === 1 ? 'var(--color-earth)' : row.rank === 2 ? 'var(--color-sky)' : 'var(--color-bg-card)',
+                            color: row.rank <= 2 ? 'var(--color-on-primary)' : 'var(--color-text-main)',
+                            border: '1px solid var(--color-border)',
+                            flexShrink: 0,
+                          }}
+                        >
+                          #{row.rank}
+                        </span>
+                        <img
+                          src={row.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(row.fullName || 'Trekker')}&background=10b981&color=fff`}
+                          alt={row.fullName}
+                          style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
+                        />
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 800, fontSize: '0.84rem', color: 'var(--color-text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {row.fullName}
+                          </div>
+                          <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>
+                            {row.totalDistanceKm} km • Đỉnh cao nhất {Number(row.highestAltitudeM || 0).toLocaleString('vi-VN')}m
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                        <div style={{ fontWeight: 900, fontSize: '0.86rem', color: 'var(--color-primary)' }}>
+                          {row.summitsCount} đỉnh
+                        </div>
+                        <div style={{ fontSize: '0.68rem', color: 'var(--color-sky)', fontWeight: 700 }}>
+                          {row.verifiedCount} GPS xác thực
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Panel 5: Gear Locker */}
+        {activeTab === 'gear' && (
+          <div className="card" style={{ animation: 'fadeIn 0.25s ease' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+              <div>
+                <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Package size={18} color="var(--color-primary)" /> Quản Lý Tủ Đồ Thiết Bị Sinh Tồn ({userGear.length}/{ALL_GEAR_ITEMS.length})
+                </h3>
+                <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', marginTop: 3 }}>
+                  Bấm trực tiếp vào từng món trang bị để kích hoạt hoặc hủy kích hoạt trong balo dã ngoại
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => setShowGearModal(true)}
+                style={{ fontSize: 'var(--font-size-xs)', padding: '6px 14px', display: 'flex', alignItems: 'center', gap: 6 }}
+              >
+                <Edit3 size={14} /> Mở cửa sổ quản lý tủ đồ
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(260px, 100%), 1fr))', gap: 12 }}>
               {ALL_GEAR_ITEMS.map((item) => {
                 const isOwned = userGear.includes(item.id);
                 return (
                   <div
                     key={item.id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => handleToggleGear(item.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleToggleGear(item.id);
+                      }
+                    }}
                     style={{
-                      background: isOwned ? 'rgba(22, 163, 74, 0.12)' : 'var(--color-bg-main)',
-                      border: isOwned ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
-                      borderRadius: 12,
-                      padding: '12px 14px',
+                      background: isOwned ? 'color-mix(in srgb, var(--color-primary) 12%, transparent)' : 'var(--color-bg-main)',
+                      border: isOwned ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)',
+                      borderRadius: 4,
+                      padding: '14px 16px',
                       cursor: 'pointer',
                       transition: 'all 0.2s ease',
                       display: 'flex',
@@ -2247,25 +3413,736 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                       justifyContent: 'space-between',
                       gap: 12,
                     }}
+                    onMouseEnter={(e) => {
+                      if (!isOwned) e.currentTarget.style.borderColor = 'var(--color-primary)';
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isOwned) e.currentTarget.style.borderColor = 'var(--color-border)';
+                    }}
                   >
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 'var(--font-size-xs)', fontWeight: 'var(--font-weight-bold)', color: isOwned ? 'var(--color-text-main)' : 'var(--color-text-muted)' }}>{item.name}</div>
-                      <div style={{ fontSize: 'var(--font-size-xs)', color: isOwned ? 'var(--color-primary)' : 'var(--color-text-dim)', marginTop: 2 }}>
-                        {isOwned ? 'Đã sở hữu' : '+ Bấm để chọn'}
+                      <span style={{ fontSize: '0.68rem', color: isOwned ? 'var(--color-primary)' : 'var(--color-text-dim)', textTransform: 'uppercase', fontWeight: 700 }}>
+                        {item.category}
+                      </span>
+                      <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 'var(--font-weight-bold)', color: isOwned ? 'var(--color-text-main)' : 'var(--color-text-muted)', marginTop: 2 }}>
+                        {item.name}
                       </div>
                     </div>
-                    {isOwned && <CheckCircle2 size={16} color="var(--color-primary)" style={{ flexShrink: 0 }} />}
+                    {isOwned ? (
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.75rem', color: 'var(--color-primary)', fontWeight: 700 }}>
+                        <CheckCircle2 size={16} color="var(--color-primary)" /> Đã trang bị
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: '0.75rem', color: 'var(--color-text-dim)' }}>
+                        + Trang bị
+                      </span>
+                    )}
                   </div>
                 );
               })}
             </div>
-
-            <button className="btn btn-primary" onClick={() => setShowGearModal(false)} style={{ width: '100%', marginTop: 20 }}>
-              Đã Xong - Lưu Trang Bị Đã Chọn
-            </button>
           </div>
-        </div>
-      )}
+        )}
+      </div>
+
+      {/* QR Active Pass Detail Modal (Real ISO 18004 Scannable SVG QR) */}
+      {showQrModal &&
+        createPortal(
+          <div className="modal-overlay" onClick={() => setShowQrModal(false)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
+            <div ref={qrModalRef} tabIndex={-1} className="modal-content" role="dialog" aria-modal="true" aria-label="Mã thông hành QR Active Pass" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <QrCode size={20} /> Mã Thông Hành QR Active Pass
+                </h3>
+                <button type="button" onClick={() => setShowQrModal(false)} aria-label="Đóng" style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div
+                style={{
+                  background: 'var(--color-on-media)',
+                  padding: 14,
+                  borderRadius: 6,
+                  textAlign: 'center',
+                  margin: '0 auto 16px auto',
+                  width: 204,
+                  height: 204,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  border: '2px solid var(--color-primary)',
+                }}
+              >
+                <svg
+                  width="176"
+                  height="176"
+                  viewBox={`0 0 ${qrPassSvg.viewBoxSize} ${qrPassSvg.viewBoxSize}`}
+                  shapeRendering="crispEdges"
+                  role="img"
+                  aria-label={`Mã QR Active Pass ${expeditionId}`}
+                >
+                  <rect width={qrPassSvg.viewBoxSize} height={qrPassSvg.viewBoxSize} fill="var(--color-on-media)" />
+                  <path
+                    d={qrPassSvg.pathD}
+                    fill={isLightTheme ? 'var(--color-text-main)' : 'var(--color-bg-main)'}
+                  />
+                </svg>
+              </div>
+
+              <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', lineHeight: 'var(--line-height-normal)', textAlign: 'center', marginBottom: 16 }}>
+                Mã QR chuẩn ISO mã hóa ID thám hiểm <strong style={{ color: 'var(--color-primary)' }}>#{expeditionId}</strong> dành cho Đội Cứu Hộ SOS và Cán bộ Trạm Kiểm Lâm quét trực tiếp bằng camera.
+              </div>
+
+              <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: 12, fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div>Trạng Thái: <strong style={{ color: 'var(--color-primary)' }}>{isVerifiedUser ? 'Đã Xác Thực' : 'Chưa Kích Hoạt OTP'}</strong></div>
+                <div>Liên Hệ Khẩn Cấp: <strong style={{ color: 'var(--color-text-main)' }}>{activeProfile.emergencyContact || 'Chưa thiết lập'}</strong></div>
+                <div>Thời Gian Tạo: <strong style={{ color: 'var(--color-sky)' }}>{new Date().toLocaleDateString('vi-VN')}</strong></div>
+              </div>
+
+              <button type="button" className="btn btn-outline" onClick={() => setShowQrModal(false)} style={{ width: '100%', marginTop: 16 }}>
+                Đóng Cửa Sổ
+              </button>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* BADGE DETAIL EXPLANATION MODAL */}
+      {selectedBadge &&
+        createPortal(
+          <div className="modal-overlay" onClick={() => setSelectedBadge(null)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
+            <div ref={badgeModalRef} tabIndex={-1} className="modal-content" role="dialog" aria-modal="true" aria-label="Chi tiết huy hiệu danh dự" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 480, border: `1px solid ${selectedBadge.color}` }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <h3 style={{ fontSize: 'var(--font-size-base)', color: selectedBadge.color, fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Award size={20} /> Chi Tiết Huy Hiệu Danh Dự
+                </h3>
+                <button type="button" onClick={() => setSelectedBadge(null)} aria-label="Đóng" style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div style={{ background: 'var(--color-bg-main)', borderRadius: 4, padding: 20, textAlign: 'center', border: `1px solid ${selectedBadge.border}`, marginBottom: 16 }}>
+                <div style={{ display: 'inline-block', padding: '8px 18px', borderRadius: 4, border: `1px solid ${selectedBadge.color}`, background: 'var(--color-bg-card)' }}>
+                  <span style={{ fontSize: 'var(--font-size-base)', fontWeight: 'var(--font-weight-extrabold)', color: selectedBadge.color }}>
+                    {selectedBadge.name}
+                  </span>
+                </div>
+
+                <div style={{ marginTop: 12, display: 'flex', justifyContent: 'center', gap: 10 }}>
+                  <span className={selectedBadge.unlocked ? 'badge badge-success' : 'badge badge-sun'}>
+                    {selectedBadge.unlocked ? 'Đã Mở Khóa' : 'Chưa Mở Khóa'}
+                  </span>
+                  <span className="badge badge-cloud">Độ Hiếm: {selectedBadge.rarity}</span>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', lineHeight: 'var(--line-height-relaxed)' }}>
+                <div>
+                  <strong style={{ color: selectedBadge.color }}>Nguồn gốc &amp; Ý nghĩa: </strong>
+                  <span style={{ color: 'var(--color-text-main)' }}>{selectedBadge.description}</span>
+                </div>
+                <div>
+                  <strong style={{ color: 'var(--color-sky)' }}>Điều kiện mở khóa: </strong>
+                  <span style={{ color: 'var(--color-text-main)' }}>{selectedBadge.requirement}</span>
+                </div>
+                {selectedBadge.unlockedAt && (
+                  <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-dim)', marginTop: 4 }}>
+                    Ngày đạt được: {selectedBadge.unlockedAt}
+                  </div>
+                )}
+              </div>
+
+              <button type="button" className="btn btn-primary" onClick={() => setSelectedBadge(null)} style={{ width: '100%', marginTop: 20 }}>
+                Đã Hiểu
+              </button>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* CONQUERED TRAIL PASSPORT DETAIL MODAL */}
+      {selectedTrailPassport &&
+        createPortal(
+          <div className="modal-overlay" onClick={() => setSelectedTrailPassport(null)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
+            <div ref={passportModalRef} tabIndex={-1} className="modal-content" role="dialog" aria-modal="true" aria-label="Chứng nhận chinh phục cung đường" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520, border: '1px solid var(--color-primary)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <MapPin size={20} /> Chứng Nhận Chinh Phục Cung Đường
+                </h3>
+                <button type="button" onClick={() => setSelectedTrailPassport(null)} aria-label="Đóng" style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div style={{ background: 'var(--color-bg-main)', borderRadius: 4, padding: 20, border: '1px dashed var(--color-primary)', textAlign: 'center', marginBottom: 18 }}>
+                <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', textTransform: 'uppercase', letterSpacing: 2 }}>
+                  OFFICIAL EXPEDITION CHECK-IN PASSPORT
+                </div>
+                <div style={{ fontSize: 'var(--font-size-lg)', fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)', marginTop: 4 }}>
+                  {selectedTrailPassport.name}
+                </div>
+                <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', marginTop: 2 }}>
+                  {selectedTrailPassport.province} ({selectedTrailPassport.region})
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(180px, 100%), 1fr))', gap: 12, marginBottom: 18 }}>
+                <div style={{ background: 'var(--color-bg-main)', padding: 12, borderRadius: 4, border: '1px solid var(--color-border)' }}>
+                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', display: 'block' }}>Chiều Dài Cung Đường</span>
+                  <strong style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)' }}>{selectedTrailPassport.distanceKm} km</strong>
+                </div>
+
+                <div style={{ background: 'var(--color-bg-main)', padding: 12, borderRadius: 4, border: '1px solid var(--color-border)' }}>
+                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', display: 'block' }}>Độ Khó Địa Hình</span>
+                  <strong style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)' }}>
+                    {getDifficultyText(selectedTrailPassport.difficultyLevel)}
+                  </strong>
+                </div>
+              </div>
+
+              <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', lineHeight: 'var(--line-height-normal)', marginBottom: 20 }}>
+                Dữ liệu được ghi nhận qua hệ thống <strong>GPS Trekking Log</strong> và kiểm chứng thông tin tuyến đường.
+              </div>
+
+              <div style={{ display: 'flex', gap: 12 }}>
+                <button type="button" className="btn btn-outline" onClick={() => setSelectedTrailPassport(null)} style={{ flex: 1 }}>
+                  Đóng
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => {
+                    const trailToNav = selectedTrailPassport;
+                    setSelectedTrailPassport(null);
+                    onSelectTrail(trailToNav);
+                  }}
+                  style={{ flex: 1 }}
+                >
+                  Mở Bản Đồ 3D Cung Đường
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* CUSTOM CONFIRM DELETE CONTRIBUTION MODAL */}
+      {deletingContribution &&
+        createPortal(
+          <div className="modal-overlay" onClick={() => setDeletingContribution(null)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
+            <div ref={deleteContribModalRef} tabIndex={-1} className="modal-content" role="alertdialog" aria-modal="true" aria-label="Xác nhận xóa bài đóng góp" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420, border: '1.5px solid var(--color-error)' }}>
+              <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-error-text, var(--color-error))', fontWeight: 'var(--font-weight-extrabold)', margin: '0 0 12px 0' }}>
+                Xác nhận xóa bài đóng góp
+              </h3>
+
+              <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-main)', lineHeight: 1.5, marginBottom: 20 }}>
+                Bạn có chắc chắn muốn xóa bài đóng góp cung đường <strong style={{ color: 'var(--color-primary)' }}>"{deletingContribution.name}"</strong> không? Thao tác này sẽ gỡ bài viết khỏi hệ thống và không thể hoàn tác.
+              </p>
+
+              <div style={{ display: 'flex', gap: 12 }}>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={() => setDeletingContribution(null)}
+                  style={{ flex: 1, justifyContent: 'center' }}
+                >
+                  Hủy bỏ
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  onClick={confirmDeleteContribution}
+                  style={{ flex: 1, justifyContent: 'center' }}
+                >
+                  Xác nhận xóa
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* CHECK-IN NEW TRAIL MODAL */}
+      {showCheckInModal &&
+        createPortal(
+          <div className="modal-overlay" onClick={() => !isSubmittingCheckin && setShowCheckInModal(false)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
+            <div ref={checkInModalRef} tabIndex={-1} className="modal-content" role="dialog" aria-modal="true" aria-label="Chọn cung đường vừa chinh phục" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 540 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <MapPin size={20} /> Chọn Cung Đường Vừa Chinh Phục
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => !isSubmittingCheckin && setShowCheckInModal(false)}
+                  disabled={isSubmittingCheckin}
+                  aria-label="Đóng"
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--color-text-muted)',
+                    cursor: isSubmittingCheckin ? 'not-allowed' : 'pointer',
+                    opacity: isSubmittingCheckin ? 0.5 : 1,
+                  }}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, padding: '10px 12px', borderRadius: 4, background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', marginBottom: 12 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>
+                  <span>Thời gian hoàn thành (giờ):</span>
+                  <input
+                    type="number"
+                    min={0.5}
+                    max={240}
+                    step={0.5}
+                    value={checkinHours}
+                    onChange={(e) => setCheckinHours(e.target.value)}
+                    className="form-input"
+                    style={{ width: 68, padding: '4px 8px', fontSize: '0.8rem' }}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className={`btn ${checkinCoords ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={handleCaptureCheckinGps}
+                  disabled={isCapturingCheckinGps}
+                  style={{ fontSize: '0.74rem', padding: '5px 10px' }}
+                >
+                  <ShieldCheck size={13} />
+                  <span>
+                    {isCapturingCheckinGps
+                      ? 'Đang lấy GPS...'
+                      : checkinCoords
+                        ? `GPS Đã Gắn (${checkinCoords.lat.toFixed(3)}, ${checkinCoords.lng.toFixed(3)})`
+                        : 'Đính Kèm GPS Xác Thực Đỉnh'}
+                  </span>
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 340, overflowY: 'auto', paddingRight: 4 }}>
+                {allAvailableTrails.map((trail) => {
+                  const isAlreadyChecked = checkedTrails.some((t) => t.id === trail.id);
+                  if (isAlreadyChecked) {
+                    return (
+                      <div
+                        key={trail.id}
+                        style={{
+                          background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
+                          border: '1px solid var(--color-primary)',
+                          borderRadius: 4,
+                          padding: 14,
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          gap: 10,
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)', fontSize: 'var(--font-size-sm)' }}>{trail.name}</div>
+                          <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', marginTop: 2 }}>{trail.province} ({trail.distanceKm} km)</div>
+                        </div>
+                        <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-bold)', flexShrink: 0 }}>
+                          Đã Check-in
+                        </span>
+                      </div>
+                    );
+                  }
+                  return (
+                    <button
+                      key={trail.id}
+                      type="button"
+                      disabled={isSubmittingCheckin}
+                      onClick={() => !isSubmittingCheckin && void handleAddCheckInTrail(trail)}
+                      style={{
+                        width: '100%',
+                        textAlign: 'left',
+                        fontFamily: 'var(--font-family)',
+                        background: 'var(--color-bg-main)',
+                        border: '1px solid var(--color-border)',
+                        borderRadius: 4,
+                        padding: 14,
+                        cursor: isSubmittingCheckin ? 'not-allowed' : 'pointer',
+                        opacity: isSubmittingCheckin ? 0.65 : 1,
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: 10,
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)', fontSize: 'var(--font-size-sm)' }}>{trail.name}</div>
+                        <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', marginTop: 2 }}>{trail.province} ({trail.distanceKm} km)</div>
+                      </div>
+                      <span
+                        style={{
+                          fontSize: 'var(--font-size-xs)',
+                          fontWeight: 700,
+                          padding: '4px 10px',
+                          borderRadius: 4,
+                          border: '1px solid var(--color-border-strong)',
+                          background: 'var(--color-bg-card)',
+                          color: 'var(--color-text-main)',
+                          flexShrink: 0,
+                        }}
+                      >
+                        {isSubmittingCheckin ? 'Đang lưu...' : '+ Check-in'}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* EDIT PROFILE MODAL */}
+      {isEditing &&
+        createPortal(
+          <div className="modal-overlay" onClick={() => !isSaving && setIsEditing(false)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
+            <div
+              ref={editProfileModalRef}
+              tabIndex={-1}
+              className="modal-content"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Chỉnh sửa hồ sơ cá nhân"
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                maxWidth: 720,
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden',
+              }}
+            >
+              {/* Modal Fixed Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, paddingBottom: 12, borderBottom: '1px solid var(--color-border)' }}>
+                <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <User size={20} /> Điền & Cập Nhật Thông Tin Cá Nhân
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => !isSaving && setIsEditing(false)}
+                  disabled={isSaving}
+                  aria-label="Đóng"
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--color-text-muted)',
+                    cursor: isSaving ? 'not-allowed' : 'pointer',
+                    opacity: isSaving ? 0.5 : 1,
+                  }}
+                >
+                  <X size={22} />
+                </button>
+              </div>
+
+              {/* Modal Inner Scrollable Body */}
+              <form
+                onSubmit={handleSaveProfile}
+                style={{
+                  overflowY: 'auto',
+                  maxHeight: 'calc(90vh - 100px)',
+                  paddingRight: 10,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 20,
+                }}
+              >
+                {fieldErrors.general && (
+                  <div style={{ background: 'color-mix(in srgb, var(--color-error) 14%, transparent)', border: '1px solid var(--color-error)', borderRadius: 4, padding: '10px 14px', color: 'var(--color-error-text, var(--color-error))', fontSize: 'var(--font-size-xs)', fontWeight: 'var(--font-weight-bold)' }}>
+                    {fieldErrors.general}
+                  </div>
+                )}
+
+                {/* RESPONSIVE 2-COLUMN INPUT GRID */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
+                  {/* Immutable Username Input */}
+                  <div className="form-group">
+                    <label className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', gap: 6, margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
+                      <Lock size={14} color="var(--color-text-dim)" /> Tên tài khoản (Cố định)
+                    </label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={editUsername}
+                      disabled
+                      style={{ background: 'var(--color-bg-main)', color: 'var(--color-text-dim)', cursor: 'not-allowed', border: '1px solid var(--color-border)' }}
+                    />
+                  </div>
+
+                  {/* Full Name Input */}
+                  <div className="form-group">
+                    <label className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
+                      Họ và tên đầy đủ
+                    </label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      style={{
+                        borderColor: fieldErrors.fullName ? 'var(--color-error)' : undefined,
+                      }}
+                      value={editFullName}
+                      onChange={(e) => {
+                        setEditFullName(e.target.value);
+                        setFieldErrors((prev) => ({ ...prev, fullName: '' }));
+                      }}
+                      required
+                    />
+                    {fieldErrors.fullName && (
+                      <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error-text, var(--color-error))', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <AlertTriangle size={14} color="var(--color-error-text, var(--color-error))" style={{ flexShrink: 0 }} />
+                        <span>{fieldErrors.fullName}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Phone Number Input */}
+                  <div className="form-group">
+                    <label className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
+                      Số điện thoại cá nhân (chuẩn VN)
+                    </label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      placeholder="0912 345 678"
+                      style={{
+                        borderColor: fieldErrors.phone ? 'var(--color-error)' : undefined,
+                      }}
+                      value={editPhone}
+                      onChange={(e) => {
+                        setEditPhone(e.target.value);
+                        setFieldErrors((prev) => ({ ...prev, phone: '' }));
+                      }}
+                    />
+                    {fieldErrors.phone && (
+                      <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error-text, var(--color-error))', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <AlertTriangle size={14} color="var(--color-error-text, var(--color-error))" style={{ flexShrink: 0 }} />
+                        <span>{fieldErrors.phone}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Emergency Contact Input */}
+                  <div className="form-group">
+                    <label className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
+                      Số điện thoại khẩn cấp (SOS Contact)
+                    </label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      placeholder="0988 776 655 (Người thân)"
+                      style={{
+                        borderColor: fieldErrors.emergencyContact ? 'var(--color-error)' : undefined,
+                      }}
+                      value={editEmergency}
+                      onChange={(e) => {
+                        setEditEmergency(e.target.value);
+                        setFieldErrors((prev) => ({ ...prev, emergencyContact: '' }));
+                      }}
+                    />
+                    {fieldErrors.emergencyContact && (
+                      <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error-text, var(--color-error))', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <AlertTriangle size={14} color="var(--color-error-text, var(--color-error))" style={{ flexShrink: 0 }} />
+                        <span>{fieldErrors.emergencyContact}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* CLEAN VISUAL CARD SELECTOR FOR PHONG CÁCH TREKKING */}
+                <div className="form-group">
+                  <label className="form-label" style={{ marginBottom: 10, display: 'block' }}>
+                    Phong cách Trekking yêu thích (Bấm chọn phong cách của bạn)
+                  </label>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+                    {TREKKING_STYLE_OPTIONS.map((style) => {
+                      const isSelected = editStyle === style.id;
+                      return (
+                        <div
+                          key={style.id}
+                          onClick={() => setEditStyle(style.id)}
+                          style={{
+                            background: isSelected ? 'color-mix(in srgb, var(--color-primary) 10%, var(--color-bg-main))' : 'var(--color-bg-main)',
+                            border: isSelected ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)',
+                            borderRadius: 4,
+                            padding: '12px 14px',
+                            cursor: 'pointer',
+                            transition: 'border-color 0.18s ease, background-color 0.18s ease',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                          }}
+                        >
+                          <div>
+                            <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 'var(--font-weight-extrabold)', color: isSelected ? 'var(--color-primary)' : 'var(--color-text-main)' }}>
+                              {style.title}
+                            </div>
+                            <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', marginTop: 2 }}>
+                              {style.sub}
+                            </div>
+                          </div>
+                          {isSelected && <CheckCircle2 size={18} color="var(--color-primary)" style={{ flexShrink: 0 }} />}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Avatar Upload from PC & Link URL Input */}
+                <div className="form-group">
+                  <label className="form-label" style={{ marginBottom: 10, display: 'block' }}>
+                    Ảnh Đại Diện (Avatar)
+                  </label>
+                  <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <img
+                      src={editAvatarUrl || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
+                      alt="Preview"
+                      style={{ width: 52, height: 52, borderRadius: 4, objectFit: 'cover', border: '1.5px solid var(--color-primary)', flexShrink: 0 }}
+                    />
+
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      onClick={() => fileInputRef.current?.click()}
+                      style={{ fontSize: 'var(--font-size-xs)', flexShrink: 0 }}
+                    >
+                      <Upload size={15} /> Chọn ảnh từ máy tính
+                    </button>
+
+                    <div style={{ flex: 1, minWidth: 240 }}>
+                      <input
+                        type="text"
+                        className="form-input"
+                        placeholder="Hoặc dán đường dẫn ảnh URL (https://...)"
+                        value={editAvatarUrl}
+                        onChange={(e) => {
+                          setEditAvatarUrl(e.target.value);
+                          setFieldErrors((prev) => ({ ...prev, avatarUrl: '' }));
+                        }}
+                        style={{
+                          fontSize: 'var(--font-size-xs)',
+                          borderColor: fieldErrors.avatarUrl ? 'var(--color-error)' : undefined,
+                        }}
+                      />
+                    </div>
+                  </div>
+                  {fieldErrors.avatarUrl && (
+                    <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error-text, var(--color-error))', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <AlertTriangle size={14} color="var(--color-error-text, var(--color-error))" style={{ flexShrink: 0 }} />
+                      <span>{fieldErrors.avatarUrl}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Bio Textarea */}
+                <div className="form-group">
+                  <label className="form-label" style={{ marginBottom: 8, display: 'block' }}>
+                    Giới thiệu bản thân (Bio)
+                  </label>
+                  <textarea
+                    className="form-textarea"
+                    rows={3}
+                    placeholder="Chia sẻ kinh nghiệm leo núi, các cung đường đã qua hoặc thông điệp của bạn..."
+                    style={{
+                      borderColor: fieldErrors.bio ? 'var(--color-error)' : undefined,
+                    }}
+                    value={editBio}
+                    onChange={(e) => {
+                      setEditBio(e.target.value);
+                      setFieldErrors((prev) => ({ ...prev, bio: '' }));
+                    }}
+                  />
+                  {fieldErrors.bio && (
+                    <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error-text, var(--color-error))', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <AlertTriangle size={14} color="var(--color-error-text, var(--color-error))" style={{ flexShrink: 0 }} />
+                      <span>{fieldErrors.bio}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end', marginTop: 10 }}>
+                  <button type="button" className="btn btn-outline" onClick={() => !isSaving && setIsEditing(false)} disabled={isSaving}>
+                    Hủy
+                  </button>
+                  <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                    <Save size={16} /> {isSaving ? 'Đang lưu...' : 'Lưu Thay Đổi Thông Tin'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* GEAR LOCKER MANAGER MODAL */}
+      {showGearModal &&
+        createPortal(
+          <div className="modal-overlay" onClick={() => setShowGearModal(false)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
+            <div ref={gearModalRef} tabIndex={-1} className="modal-content" role="dialog" aria-modal="true" aria-label="Quản lý tủ đồ thiết bị sinh tồn" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 620 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <div>
+                  <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Package size={20} /> Quản Lý Tủ Đồ Thiết Bị Sinh Tồn
+                  </h3>
+                  <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', marginTop: 4 }}>
+                    Tích chọn các trang bị dã ngoại bạn đang sở hữu ({userGear.length}/{ALL_GEAR_ITEMS.length})
+                  </div>
+                </div>
+                <button type="button" onClick={() => setShowGearModal(false)} aria-label="Đóng" style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12, maxHeight: 380, overflowY: 'auto', paddingRight: 4 }}>
+                {ALL_GEAR_ITEMS.map((item) => {
+                  const isOwned = userGear.includes(item.id);
+                  return (
+                    <div
+                      key={item.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => handleToggleGear(item.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          void handleToggleGear(item.id);
+                        }
+                      }}
+                      style={{
+                        background: isOwned ? 'color-mix(in srgb, var(--color-primary) 12%, transparent)' : 'var(--color-bg-main)',
+                        border: isOwned ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+                        borderRadius: 4,
+                        padding: '12px 14px',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 12,
+                      }}
+                    >
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 'var(--font-size-xs)', fontWeight: 'var(--font-weight-bold)', color: isOwned ? 'var(--color-text-main)' : 'var(--color-text-muted)' }}>{item.name}</div>
+                        <div style={{ fontSize: 'var(--font-size-xs)', color: isOwned ? 'var(--color-primary)' : 'var(--color-text-dim)', marginTop: 2 }}>
+                          {isOwned ? 'Đã sở hữu' : '+ Bấm để chọn'}
+                        </div>
+                      </div>
+                      {isOwned && <CheckCircle2 size={16} color="var(--color-primary)" style={{ flexShrink: 0 }} />}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <button type="button" className="btn btn-primary" onClick={() => setShowGearModal(false)} style={{ width: '100%', marginTop: 20 }}>
+                Đã Xong - Lưu Trang Bị Đã Chọn
+              </button>
+            </div>
+          </div>,
+          document.body
+        )}
 
 
 
@@ -2306,7 +4183,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           onClose={() => setSelectedAuthorForModal(null)}
           onStartChat={(targetUserId) => {
             if (targetUserId) {
-              localStorage.setItem('trekmap_target_chat_user', targetUserId);
+              localStorage.setItem('lost_target_chat_user', targetUserId);
             }
             window.location.hash = '#messages';
           }}
@@ -2315,17 +4192,22 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
       {/* CUSTOM COVER PHOTO MODAL */}
       {showCoverModal && createPortal(
-        <div className="modal-overlay" onClick={() => setShowCoverModal(false)} style={{ zIndex: 99999999 }}>
+        <div className="modal-overlay" onClick={() => setShowCoverModal(false)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
           <div
+            ref={coverModalRef}
+            tabIndex={-1}
             className="modal-content"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Tùy chỉnh ảnh bìa trang cá nhân"
             onClick={(e) => e.stopPropagation()}
             style={{
               maxWidth: 680,
               padding: '24px 28px',
-              border: '1px solid var(--color-border-glow)',
-              borderRadius: 20,
+              border: '1px solid var(--color-border-strong)',
+              borderRadius: 6,
               background: 'var(--color-bg-card)',
-              boxShadow: '0 20px 50px rgba(0, 0, 0, 0.5)',
+              boxShadow: 'var(--shadow-3d)',
             }}
           >
             {/* Modal Header */}
@@ -2355,18 +4237,18 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               <div
                 style={{
                   height: 140,
-                  borderRadius: 14,
+                  borderRadius: 4,
                   overflow: 'hidden',
                   position: 'relative',
                   background: 'var(--color-bg-card)',
                   border: '2px solid var(--color-primary)',
-                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.25)',
+                  boxShadow: 'var(--shadow-card)',
                 }}
               >
                 <img
                   key={previewCover}
                   src={previewCover}
-                  alt="Cover Preview"
+                  alt="Xem trước ảnh bìa"
                   style={{
                     width: '100%',
                     height: '100%',
@@ -2382,7 +4264,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   style={{
                     position: 'absolute',
                     inset: 0,
-                    background: 'linear-gradient(to bottom, rgba(0,0,0,0.1) 0%, rgba(15,23,42,0.85) 100%)',
+                    background:
+                      'linear-gradient(to bottom, color-mix(in srgb, var(--overlay-bg) 16%, transparent) 0%, var(--overlay-bg) 100%)',
                     display: 'flex',
                     alignItems: 'flex-end',
                     padding: '14px 18px',
@@ -2390,7 +4273,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <div style={{ width: 44, height: 44, borderRadius: 12, border: '2px solid var(--color-primary)', overflow: 'hidden', flexShrink: 0 }}>
+                    <div style={{ width: 44, height: 44, borderRadius: 4, border: '2px solid var(--color-primary)', overflow: 'hidden', flexShrink: 0 }}>
                       <img
                         src={activeProfile.avatarUrl || activeProfile.avatar || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
                         alt={activeProfile.fullName}
@@ -2398,8 +4281,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                       />
                     </div>
                     <div>
-                      <div style={{ fontWeight: 800, color: '#ffffff', fontSize: '0.92rem' }}>{activeProfile.fullName}</div>
-                      <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.7)' }}>@{activeProfile.username || 'trekker'} • {activeProfile.role}</div>
+                      <div style={{ fontWeight: 800, color: 'var(--color-on-media)', fontSize: '0.92rem' }}>{activeProfile.fullName}</div>
+                      <div style={{ fontSize: '0.72rem', color: 'color-mix(in srgb, var(--color-on-media) 78%, transparent)' }}>@{activeProfile.username || 'trekker'} • {activeProfile.role}</div>
                     </div>
                   </div>
                 </div>
@@ -2415,7 +4298,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 type="button"
                 className="btn btn-outline"
                 onClick={() => coverFileInputRef.current?.click()}
-                style={{ width: '100%', padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 'var(--font-size-sm)', borderRadius: 12 }}
+                style={{ width: '100%', padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 'var(--font-size-sm)', borderRadius: 4 }}
               >
                 <Upload size={16} color="var(--color-primary)" /> Chọn Tệp Ảnh Từ Máy Tính (PNG, JPG, WebP - Tối đa 8MB)
               </button>
@@ -2444,12 +4327,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                       style={{
                         position: 'relative',
                         height: 76,
-                        borderRadius: 12,
+                        borderRadius: 4,
                         overflow: 'hidden',
                         cursor: 'pointer',
-                        border: isSelected ? '2.5px solid var(--color-primary)' : '1px solid var(--color-border)',
-                        boxShadow: isSelected ? '0 0 14px rgba(74, 222, 128, 0.4)' : 'none',
-                        transition: 'all 0.2s ease',
+                        border: isSelected ? '2px solid var(--color-primary)' : '1px solid var(--color-border)',
+                        transition: 'border-color 0.18s ease',
                       }}
                       onMouseEnter={(e) => {
                         if (!isSelected) e.currentTarget.style.borderColor = 'var(--color-primary)';
@@ -2467,14 +4349,15 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                         style={{
                           position: 'absolute',
                           inset: 0,
-                          background: 'linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.2) 60%, transparent 100%)',
+                          background:
+                            'linear-gradient(to top, var(--overlay-bg) 0%, color-mix(in srgb, var(--overlay-bg) 32%, transparent) 60%, transparent 100%)',
                           display: 'flex',
                           flexDirection: 'column',
                           justifyContent: 'flex-end',
                           padding: '6px 8px',
                         }}
                       >
-                        <div style={{ fontSize: '0.74rem', fontWeight: 800, color: '#ffffff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <div style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-on-media)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {preset.name}
                         </div>
                         <div style={{ fontSize: '0.64rem', color: 'var(--color-primary)' }}>
@@ -2482,7 +4365,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                         </div>
                       </div>
                       {isSelected && (
-                        <div style={{ position: 'absolute', top: 5, right: 5, background: 'var(--color-primary)', borderRadius: '50%', width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#000' }}>
+                        <div style={{ position: 'absolute', top: 5, right: 5, background: 'var(--color-primary)', borderRadius: 3, width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--color-on-primary)' }}>
                           <Check size={12} />
                         </div>
                       )}
@@ -2501,7 +4384,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 <input
                   type="url"
                   className="form-input"
-                  placeholder="Dán link ảnh https://images.unsplash.com/..."
+                  placeholder="Dán link ảnh thực địa https://res.cloudinary.com/..."
                   value={customCoverInput}
                   onChange={(e) => {
                     const val = e.target.value;
@@ -2569,12 +4452,17 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       {/* 3. Full-Screen Photo Lightbox Modal */}
       {fullViewImage && createPortal(
         <div
+          ref={lightboxModalRef}
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Xem toàn màn hình ${fullViewImage.title}`}
           onClick={() => setFullViewImage(null)}
           style={{
             position: 'fixed',
             inset: 0,
-            zIndex: 999999,
-            background: 'rgba(3, 7, 18, 0.92)',
+            zIndex: 'var(--z-lightbox, 4000)' as unknown as number,
+            background: 'var(--overlay-bg)',
             backdropFilter: 'blur(16px)',
             WebkitBackdropFilter: 'blur(16px)',
             display: 'flex',
@@ -2596,10 +4484,9 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               justifyContent: 'space-between',
               marginBottom: 14,
               padding: '10px 16px',
-              borderRadius: 14,
-              background: 'rgba(15, 23, 42, 0.85)',
-              border: '1px solid var(--color-border)',
-              backdropFilter: 'blur(12px)',
+              borderRadius: 6,
+              background: 'var(--overlay-bg)',
+              border: '1px solid color-mix(in srgb, var(--color-on-media) 18%, transparent)',
               flexWrap: 'wrap',
               gap: 10,
             }}
@@ -2609,8 +4496,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 style={{
                   width: 36,
                   height: 36,
-                  borderRadius: 10,
-                  background: 'rgba(16, 185, 129, 0.15)',
+                  borderRadius: 4,
+                  background: 'color-mix(in srgb, var(--color-primary) 16%, transparent)',
                   border: '1px solid var(--color-primary)',
                   display: 'flex',
                   alignItems: 'center',
@@ -2621,11 +4508,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 {fullViewImage.type === 'cover' ? <Camera size={18} /> : <User size={18} />}
               </div>
               <div>
-                <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#ffffff' }}>
+                <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-on-media)' }}>
                   {fullViewImage.title}
                 </div>
                 {fullViewImage.subtitle && (
-                  <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)' }}>
+                  <div style={{ fontSize: '0.74rem', color: 'color-mix(in srgb, var(--color-on-media) 78%, transparent)' }}>
                     {fullViewImage.subtitle}
                   </div>
                 )}
@@ -2643,7 +4530,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     setCustomCoverInput('');
                     setShowCoverModal(true);
                   }}
-                  style={{ fontSize: '0.76rem', padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ffffff', borderColor: 'rgba(255,255,255,0.25)' }}
+                  style={{ fontSize: '0.76rem', padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--color-on-media)', borderColor: 'color-mix(in srgb, var(--color-on-media) 28%, transparent)' }}
                 >
                   <Camera size={14} color="var(--color-primary)" /> Đổi Ảnh Bìa
                 </button>
@@ -2656,7 +4543,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     setFullViewImage(null);
                     fileInputRef.current?.click();
                   }}
-                  style={{ fontSize: '0.76rem', padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ffffff', borderColor: 'rgba(255,255,255,0.25)' }}
+                  style={{ fontSize: '0.76rem', padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--color-on-media)', borderColor: 'color-mix(in srgb, var(--color-on-media) 28%, transparent)' }}
                 >
                   <Upload size={14} color="var(--color-primary)" /> Đổi Ảnh Đại Diện
                 </button>
@@ -2667,7 +4554,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   target="_blank"
                   rel="noopener noreferrer"
                   className="btn btn-outline"
-                  style={{ fontSize: '0.76rem', padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6, color: '#ffffff', borderColor: 'rgba(255,255,255,0.25)', textDecoration: 'none' }}
+                  style={{ fontSize: '0.76rem', padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--color-on-media)', borderColor: 'color-mix(in srgb, var(--color-on-media) 28%, transparent)', textDecoration: 'none' }}
                   title="Mở ảnh gốc trong tab mới"
                 >
                   <ExternalLink size={14} /> Mở Ảnh Gốc
@@ -2680,10 +4567,10 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 style={{
                   width: 36,
                   height: 36,
-                  borderRadius: 10,
-                  background: 'rgba(255, 255, 255, 0.08)',
-                  border: '1px solid rgba(255, 255, 255, 0.2)',
-                  color: '#ffffff',
+                  borderRadius: 4,
+                  background: 'color-mix(in srgb, var(--color-on-media) 10%, transparent)',
+                  border: '1px solid color-mix(in srgb, var(--color-on-media) 24%, transparent)',
+                  color: 'var(--color-on-media)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -2691,12 +4578,12 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   transition: 'all 0.2s ease',
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.background = 'rgba(239, 68, 68, 0.85)';
-                  e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 1)';
+                  e.currentTarget.style.background = 'var(--color-error)';
+                  e.currentTarget.style.borderColor = 'var(--color-error)';
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)';
-                  e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+                  e.currentTarget.style.background = 'color-mix(in srgb, var(--color-on-media) 10%, transparent)';
+                  e.currentTarget.style.borderColor = 'color-mix(in srgb, var(--color-on-media) 24%, transparent)';
                 }}
               >
                 <X size={18} />
@@ -2714,11 +4601,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               alignItems: 'center',
               justifyContent: 'center',
               position: 'relative',
-              borderRadius: 18,
+              borderRadius: 6,
               overflow: 'hidden',
-              boxShadow: '0 25px 65px rgba(0, 0, 0, 0.85)',
-              border: '1px solid rgba(255, 255, 255, 0.15)',
-              background: '#090d16',
+              boxShadow: 'var(--shadow-3d)',
+              border: '1px solid color-mix(in srgb, var(--color-on-media) 18%, transparent)',
+              background: 'var(--color-bg-main)',
             }}
           >
             <img
@@ -2729,7 +4616,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 maxHeight: 'calc(86vh - 80px)',
                 objectFit: 'contain',
                 display: 'block',
-                borderRadius: 18,
+                borderRadius: 6,
               }}
             />
           </div>
@@ -2739,7 +4626,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             style={{
               marginTop: 12,
               fontSize: '0.74rem',
-              color: 'rgba(255, 255, 255, 0.65)',
+              color: 'color-mix(in srgb, var(--color-on-media) 72%, transparent)',
               display: 'flex',
               alignItems: 'center',
               gap: 8,

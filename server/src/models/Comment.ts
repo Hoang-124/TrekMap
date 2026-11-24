@@ -1,4 +1,4 @@
-import { Schema, model, Document } from 'mongoose';
+import { Schema, model, Document, Types } from 'mongoose';
 
 export interface ICommentReactions {
   like: number;
@@ -14,39 +14,39 @@ export interface ICommentReactions {
 
 export interface IComment extends Document {
   threadId: string;
-  parentId?: string; // If present, points to parent comment _id for nested replies
+  parentId?: string | null;
   authorName: string;
   authorAvatar: string;
   authorBadge?: string;
-  userId?: Schema.Types.ObjectId;
+  userId?: Types.ObjectId;
   content: string;
   reactions: ICommentReactions;
-  userReactionsMap?: Record<string, string>;
+  userReactionsMap?: Map<string, string>;
   createdAt: Date;
   updatedAt: Date;
 }
 
 const commentSchema = new Schema<IComment>(
   {
-    threadId: { type: String, required: true, index: true },
+    threadId: { type: String, required: true },
     parentId: { type: String, default: null, index: true },
     authorName: { type: String, required: true },
     authorAvatar: { type: String, required: true },
     authorBadge: { type: String, default: 'Verified Trekker' },
-    userId: { type: Schema.Types.ObjectId, ref: 'User' },
+    userId: { type: Schema.Types.ObjectId, ref: 'User', index: true },
     content: { type: String, required: true },
     reactions: {
-      like: { type: Number, default: 0 },
-      love: { type: Number, default: 0 },
-      haha: { type: Number, default: 0 },
-      wow: { type: Number, default: 0 },
-      buon: { type: Number, default: 0 },
-      huhu: { type: Number, default: 0 },
-      sad: { type: Number, default: 0 },
-      angry: { type: Number, default: 0 },
-      dislike: { type: Number, default: 0 },
+      like: { type: Number, default: 0, min: 0 },
+      love: { type: Number, default: 0, min: 0 },
+      haha: { type: Number, default: 0, min: 0 },
+      wow: { type: Number, default: 0, min: 0 },
+      buon: { type: Number, default: 0, min: 0 },
+      huhu: { type: Number, default: 0, min: 0 },
+      sad: { type: Number, default: 0, min: 0 },
+      angry: { type: Number, default: 0, min: 0 },
+      dislike: { type: Number, default: 0, min: 0 },
     },
-    userReactionsMap: { type: Map, of: String, default: {} },
+    userReactionsMap: { type: Map, of: String, default: () => new Map() },
   },
   { timestamps: true }
 );

@@ -1,43 +1,122 @@
 import { Response } from 'express';
-import { AuthRequest } from '../middleware/auth.middleware';
-import { TrailConditionModel } from '../models/TrailCondition';
-import { UserModel } from '../models/User';
+import mongoose from 'mongoose';
+import { AuthRequest } from '../middleware/auth.middleware.js';
+import { TrailConditionModel } from '../models/TrailCondition.js';
+import { UserModel } from '../models/User.js';
 import { awardReputationPoints } from '../utils/reputation.js';
+import { sanitizeInput, isSafeHttpUrl } from '../utils/validation.js';
+import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
+import { isValidObjectId, resolveTrailByIdOrSlug } from '../utils/resolveTrail.js';
+import { recordAuditLog } from '../utils/audit.js';
+import { invalidateCache } from '../middleware/cache.middleware.js';
 
-// POST /api/trail-conditions - Submit a condition update for a trail
+const VALID_CONDITIONS = new Set(['safe', 'caution', 'dangerous', 'closed']);
+const REP_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6 hours per trail before earning another +10 rep
+
+function formatConditionForViewer(doc: any, viewerId?: string) {
+  const { upvotedUsers, ...rest } = doc;
+  const hasUpvoted = Boolean(
+    viewerId &&
+      Array.isArray(upvotedUsers) &&
+      upvotedUsers.some((uid: any) => String(uid) === String(viewerId))
+  );
+  return {
+    ...rest,
+    hasUpvoted,
+  };
+}
+
+// POST /api/trail-conditions - Submit a condition update for a real trail
 export const createTrailCondition = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
-    if (!userId) {
+    if (!userId || !isValidObjectId(userId)) {
       return res.status(401).json({ success: false, message: 'Bạn cần đăng nhập để báo cáo tình trạng đường.' });
     }
-
-    const { trailId, condition, description, section, weatherNote, photos } = req.body;
-    if (!trailId || !condition || !description) {
-      return res.status(400).json({ success: false, message: 'Vui lòng cung cấp đầy đủ thông tin bắt buộc.' });
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
     }
 
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // Expiration in 7 days
+    const { trailId, condition, description, section, weatherNote, photos } = req.body || {};
+    if (
+      !trailId ||
+      typeof condition !== 'string' ||
+      !VALID_CONDITIONS.has(condition) ||
+      typeof description !== 'string' ||
+      !description.trim()
+    ) {
+      return res.status(400).json({ success: false, message: 'Vui lòng cung cấp đầy đủ tình trạng đường hợp lệ và mô tả.' });
+    }
 
-    const newCondition = await TrailConditionModel.create({
-      userId: userId as any,
-      trailId: trailId as any,
-      condition,
-      description,
-      section: section || 'Toàn tuyến',
-      weatherNote: weatherNote || '',
-      photos: photos || [],
+    const cleanDesc = sanitizeInput(description).slice(0, 1500);
+    if (!cleanDesc.trim()) {
+      return res.status(400).json({ success: false, message: 'Mô tả tình trạng đường không hợp lệ.' });
+    }
+    if (containsProfanity(cleanDesc)) {
+      const matched = getProfanityMatch(cleanDesc);
+      return res.status(400).json({
+        success: false,
+        message: `Báo cáo chứa từ ngữ vi phạm quy chuẩn cộng đồng ("${matched}").`,
+      });
+    }
+
+    const resolvedTrail = await resolveTrailByIdOrSlug(String(trailId));
+    if (!resolvedTrail) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường này trong hệ thống.' });
+    }
+
+    const userObjId = new mongoose.Types.ObjectId(userId);
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const cleanSection = sanitizeInput(String(section || 'Toàn tuyến')).slice(0, 120);
+    const cleanWeather = sanitizeInput(String(weatherNote || '')).slice(0, 300);
+    const safePhotos = Array.isArray(photos) ? photos.filter((u: unknown) => isSafeHttpUrl(u)).slice(0, 6) : [];
+
+    // Check if user already posted recently on this trail (prevent infinite +10 rep farming)
+    const recentByUser = await TrailConditionModel.exists({
+      userId: userObjId,
+      trailId: resolvedTrail._id,
+      createdAt: { $gte: new Date(Date.now() - REP_COOLDOWN_MS) },
+    });
+
+    const userDoc = await UserModel.findById(userObjId).select('fullName avatarUrl reputationScore').lean();
+
+    const created = await TrailConditionModel.create({
+      userId: userObjId,
+      trailId: resolvedTrail._id,
+      condition: condition as 'safe' | 'caution' | 'dangerous' | 'closed',
+      description: cleanDesc,
+      section: cleanSection,
+      weatherNote: cleanWeather,
+      photos: safePhotos,
       expiresAt,
       isActive: true,
     });
 
-    // Reward reputation via centralized engine (+10 for trail safety contribution)
-    await awardReputationPoints(userId, 10, 'Cập nhật tình trạng thực địa cung đường').catch(() => {});
+    let pointsAwarded = 0;
+    if (!recentByUser) {
+      const rep = await awardReputationPoints(userId, 10, 'Cập nhật tình trạng thực địa cung đường').catch(() => null);
+      if (rep) pointsAwarded = 10;
+    }
+
+    const savedCondition = formatConditionForViewer(
+      {
+        ...created.toObject(),
+        userId: {
+          _id: userObjId,
+          fullName: userDoc?.fullName || 'Trekker Thực Địa',
+          avatarUrl: userDoc?.avatarUrl || '',
+          reputationScore: (userDoc?.reputationScore ?? 50) + pointsAwarded,
+        },
+      },
+      userId
+    );
 
     return res.status(201).json({
       success: true,
-      message: 'Cảm ơn bạn đã cập nhật tình trạng thực địa! Bạn nhận được +10 điểm uy tín.',
-      data: newCondition,
+      message: pointsAwarded
+        ? 'Cảm ơn bạn đã cập nhật tình trạng thực địa! Bạn nhận được +10 điểm uy tín.'
+        : 'Cảm ơn bạn đã cập nhật tình trạng thực địa!',
+      data: savedCondition,
     });
   } catch (err) {
     console.error('[Create Trail Condition Error]:', err);
@@ -45,52 +124,123 @@ export const createTrailCondition = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// GET /api/trail-conditions/trail/:trailId - Get active condition updates for a trail
+// GET /api/trail-conditions/trail/:trailId - Get active condition updates (strips upvotedUsers, adds hasUpvoted)
 export const getTrailConditions = async (req: AuthRequest, res: Response) => {
   try {
-    const { trailId } = req.params;
+    const rawTrailId = String(req.params.trailId || '').trim();
+    if (!rawTrailId || mongoose.connection.readyState !== 1) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const candidateIds: any[] = [rawTrailId];
+    if (isValidObjectId(rawTrailId)) {
+      candidateIds.push(new mongoose.Types.ObjectId(rawTrailId));
+    }
+
+    const matchedTrail = await resolveTrailByIdOrSlug(rawTrailId);
+    if (matchedTrail) {
+      candidateIds.push(matchedTrail._id, String(matchedTrail._id));
+      if (matchedTrail.id) candidateIds.push(matchedTrail.id);
+    }
+
     const conditions = await TrailConditionModel.find({
-      trailId: trailId as any,
+      trailId: { $in: candidateIds },
       isActive: true,
       expiresAt: { $gt: new Date() },
     })
       .populate('userId', 'fullName avatarUrl reputationScore')
       .sort({ createdAt: -1 })
-      .limit(10);
+      .limit(20)
+      .lean();
 
-    return res.json({ success: true, data: conditions });
+    const viewerId = req.user?.userId;
+    return res.json({
+      success: true,
+      data: conditions.map((c) => formatConditionForViewer(c, viewerId)),
+    });
   } catch (err) {
     console.error('[Get Trail Conditions Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi khi tải tình trạng đường.' });
   }
 };
 
-// POST /api/trail-conditions/:id/upvote - Confirm/upvote a condition report
+// POST /api/trail-conditions/:id/upvote - Atomic upvote deduplicated per userId
 export const upvoteTrailCondition = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
-    if (!userId) {
+    if (!userId || !isValidObjectId(userId)) {
       return res.status(401).json({ success: false, message: 'Bạn cần đăng nhập để xác nhận.' });
     }
-
-    const { id } = req.params;
-    const condition = await TrailConditionModel.findById(id);
-    if (!condition) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy báo cáo.' });
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
     }
 
-    const hasUpvoted = condition.upvotedUsers.some((u) => u.toString() === userId.toString());
-    if (hasUpvoted) {
+    const id = String(req.params.id || '');
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: 'Mã báo cáo không hợp lệ.' });
+    }
+
+    const userObjId = new mongoose.Types.ObjectId(userId);
+    const updated = await TrailConditionModel.findOneAndUpdate(
+      { _id: id, upvotedUsers: { $ne: userObjId } },
+      { $addToSet: { upvotedUsers: userObjId }, $inc: { upvotes: 1 } },
+      { new: true }
+    );
+    if (updated) {
+      return res.json({ success: true, message: 'Đã xác nhận thành công!', upvotes: updated.upvotes, hasUpvoted: true });
+    }
+
+    const exists = await TrailConditionModel.exists({ _id: id });
+    if (exists) {
       return res.status(400).json({ success: false, message: 'Bạn đã xác nhận báo cáo này rồi.' });
     }
-
-    condition.upvotedUsers.push(userId as any);
-    condition.upvotes += 1;
-    await condition.save();
-
-    return res.json({ success: true, message: 'Đã xác nhận thành công!', upvotes: condition.upvotes });
+    return res.status(404).json({ success: false, message: 'Không tìm thấy báo cáo.' });
   } catch (err) {
     console.error('[Upvote Condition Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi khi xác nhận báo cáo.' });
+  }
+};
+
+// DELETE /api/trail-conditions/:conditionId & DELETE /api/trails/:id/conditions/:conditionId
+export const deleteTrailCondition = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    const isStaff = req.user?.role === 'admin' || req.user?.role === 'moderator';
+    const conditionId = String(req.params.conditionId || req.params.id || '').trim();
+    const scopedTrailParam = req.params.conditionId && req.params.id ? String(req.params.id).trim() : '';
+
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    if (!isValidObjectId(conditionId)) {
+      return res.status(400).json({ success: false, message: 'Mã báo cáo không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const cond = await TrailConditionModel.findById(conditionId).select('userId trailId').lean();
+    if (!cond) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy báo cáo.' });
+    }
+
+    if (scopedTrailParam) {
+      const trail = await resolveTrailByIdOrSlug(scopedTrailParam);
+      if (trail && String(cond.trailId) !== String(trail._id) && String(cond.trailId) !== String(trail.id)) {
+        return res.status(404).json({ success: false, message: 'Báo cáo không thuộc cung đường này.' });
+      }
+    }
+
+    if (!isStaff && String(cond.userId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền xóa báo cáo này.' });
+    }
+
+    await TrailConditionModel.deleteOne({ _id: conditionId });
+    invalidateCache('/api/trails');
+    await recordAuditLog(req, 'DELETE_TRAIL_CONDITION', 'trail_conditions', `Xóa báo cáo tình trạng đường ${conditionId}`);
+    return res.json({ success: true, message: 'Đã xóa báo cáo tình trạng đường.' });
+  } catch (err) {
+    console.error('[Delete Trail Condition Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi xóa báo cáo.' });
   }
 };

@@ -1,5 +1,15 @@
 export type Region = 'Miền Bắc' | 'Miền Trung' | 'Miền Nam';
 
+export type HubViewId =
+  | 'passport'
+  | 'almanac'
+  | 'planner'
+  | 'toolkit'
+  | 'directory'
+  | 'training'
+  | 'gear'
+  | 'radar';
+
 export interface Waypoint {
   id: string;
   name: string;
@@ -28,11 +38,24 @@ export interface Review {
 
 export interface Guide {
   id: string;
+  _id?: string;
+  slug?: string;
   name: string;
   phone: string;
   avatarUrl?: string;
   region: string;
+  roleType?: 'guide' | 'porter' | 'both' | string;
+  provinces?: string[];
+  trailSlugs?: string[];
   priceNote: string;
+  basePricePerDayVnd?: number;
+  maxGroupSize?: number;
+  specialties?: string[];
+  languages?: string[];
+  certifications?: string[];
+  experienceYears?: number;
+  bio?: string;
+  isActive?: boolean;
   rating: number;
   reviewCount?: number;
   verified: boolean;
@@ -202,6 +225,9 @@ export interface Conversation {
   _id: string;
   participants: ConversationParticipant[];
   otherParticipant?: ConversationParticipant;
+  isGroup?: boolean;
+  groupName?: string;
+  tripPlanId?: string;
   lastMessage?: {
     content: string;
     sender: ConversationParticipant | string;
@@ -290,7 +316,7 @@ export interface NotificationItem {
   title: string;
   message: string;
   link: string;
-  relatedId?: any;
+  relatedId?: string | Record<string, unknown> | null;
   isRead: boolean;
   createdAt: string;
   updatedAt?: string;

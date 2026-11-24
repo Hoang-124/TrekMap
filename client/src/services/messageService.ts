@@ -73,9 +73,12 @@ export async function sendMessage(
       return { success: true, data: json.data };
     }
     return { success: false, error: json.message || 'Không thể gửi tin nhắn' };
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('Send message error:', err);
-    return { success: false, error: err?.message || 'Lỗi mạng khi gửi tin nhắn' };
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Lỗi mạng khi gửi tin nhắn',
+    };
   }
 }
 

@@ -4,22 +4,43 @@
 <head>
   <meta charset="UTF-8" />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="manifest" href="/manifest.json" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0c0f0d" />
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f3ee" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="LOST" />
   <meta name="description"
-    content="TrekMap - Nền tảng bản đồ trekking 3D, dữ liệu đường đi GPX thực tế và đài vô tuyến cộng đồng Việt Nam" />
-  <title>TrekMap - Bản Đồ Trekking & Đài Vô Tuyến Cộng Đồng Việt Nam</title>
+    content="LOST — Bản đồ địa hình 3D DEM, 36 cung trekking thực địa, 28 trạm Kiểm lâm &amp; VQG xác thực, dữ liệu GPX, gói bản đồ Offline và cứu hộ khẩn cấp 24/7 tại Việt Nam." />
+  <meta property="og:type" content="website" />
+  <meta property="og:locale" content="vi_VN" />
+  <meta property="og:site_name" content="LOST" />
+  <meta property="og:title" content="LOST — Nền Tảng Bản Đồ 3D &amp; Trekking Thực Địa Việt Nam" />
+  <meta property="og:description"
+    content="36 cung trekking DEM thực địa, 28 trạm Kiểm lâm &amp; VQG xác thực, phân tích khí hậu ERA5 3 năm, gói bản đồ Offline và cứu hộ SOS 24/7." />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="LOST — Bản Đồ 3D &amp; Trekking Thực Địa Việt Nam" />
+  <meta name="twitter:description"
+    content="36 cung trekking DEM thực địa, 28 trạm Kiểm lâm &amp; VQG xác thực, gói bản đồ Offline và bộ sinh tồn SOS 2G." />
+  <title>LOST — Nền Tảng Bản Đồ 3D &amp; Địa Điểm Trekking Thực Địa Việt Nam</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400;1,600&family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:ital,wght@0,400..800;1,400..800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script>
     (function () {
-      const savedTheme = localStorage.getItem('theme');
-      if (savedTheme) {
-        document.documentElement.setAttribute('data-theme', savedTheme);
-      } else {
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'dark');
+      try {
+        var savedTheme = localStorage.getItem('theme');
+        if (savedTheme === 'dark' || savedTheme === 'light') {
+          document.documentElement.setAttribute('data-theme', savedTheme);
+        } else {
+          var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
+        }
+      } catch (_err) {
+        document.documentElement.setAttribute('data-theme', 'dark');
       }
     })();
   </script>

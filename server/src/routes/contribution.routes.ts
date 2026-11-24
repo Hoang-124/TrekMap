@@ -5,12 +5,12 @@ import {
   updateContribution,
   deleteContribution,
 } from '../controllers/contribution.controller.js';
-import { authMiddleware } from '../middleware/auth.middleware.js';
+import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.middleware.js';
 
 const router = Router();
 
-// Public READ routes
-router.get('/contributions', getContributions);
+// Public / Role-aware READ route
+router.get('/contributions', optionalAuthMiddleware as any, getContributions as any);
 
 // Protected WRITE routes (Require Authentication)
 router.post('/contributions', authMiddleware as any, createContribution as any);

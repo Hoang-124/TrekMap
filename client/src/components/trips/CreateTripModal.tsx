@@ -1,16 +1,80 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { IconUsers, IconX } from '../common/SvgIcons.js';
+import { mockTrails } from '../../data/seedData.js';
+import { getApiHeaders } from '../../utils/sessionHeaders.js';
+import { isTopmostFocusTrap, useFocusTrap } from '../../hooks/useFocusTrap.js';
+import type { Trail } from '../../types.js';
+
+export interface TripBudgetDraft {
+  trailId?: string;
+  budgetNote?: string;
+}
 
 interface CreateTripModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: () => void;
+  initialDraft?: TripBudgetDraft | null;
 }
 
-export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClose, onSuccess }) => {
+type TrailWithMongoId = Trail & { _id?: string };
+
+function parseDraftBudgetFields(
+  draft: TripBudgetDraft,
+  trailsList: Trail[]
+): {
+  trailId: string;
+  trailName: string;
+  difficultyLevel: number;
+  title: string;
+  estimatedCost: string;
+  maxMembers: number;
+  description: string;
+} {
+  const note = String(draft.budgetNote || '').trim();
+  const matched = draft.trailId
+    ? trailsList.find((t) => t.id === draft.trailId || (t as TrailWithMongoId)._id === draft.trailId)
+    : undefined;
+
+  const perPersonMatch = note.match(/BINH QUAN MOI NGUOI:\s*([^\n\r]+)/i);
+  const totalMatch = note.match(/TONG CA DOAN:\s*([^\n\r]+)/i);
+  const groupMatch = note.match(/Quy mo:\s*(\d+)/i);
+
+  const parsedCost = perPersonMatch
+    ? `${perPersonMatch[1].trim()} / người`
+    : totalMatch
+      ? `Tổng đoàn ${totalMatch[1].trim()}`
+      : 'Chia đều chi phí thực tế';
+
+  const parsedMembers = groupMatch
+    ? Math.max(2, Math.min(30, Number(groupMatch[1]) || 6))
+    : 6;
+
+  return {
+    trailId: matched ? (matched.id || (matched as TrailWithMongoId)._id || '') : '',
+    trailName: matched?.name || '',
+    difficultyLevel: matched?.difficultyLevel || 3,
+    title: matched ? `Ghép đoàn chinh phục ${matched.name}` : 'Chuyến trekking ghép đoàn mới',
+    estimatedCost: parsedCost,
+    maxMembers: parsedMembers,
+    description: note,
+  };
+}
+
+export const CreateTripModal: React.FC<CreateTripModalProps> = ({
+  isOpen,
+  onClose,
+  onSuccess,
+  initialDraft,
+}) => {
+  const [trails, setTrails] = useState<Trail[]>(mockTrails);
+  const [hasLoadedTrails, setHasLoadedTrails] = useState(false);
+
   const [title, setTitle] = useState('');
-  const [trailName, setTrailName] = useState('');
+  const [selectedTrailId, setSelectedTrailId] = useState('');
+  const [customTrailName, setCustomTrailName] = useState('');
+  const [difficultyLevel, setDifficultyLevel] = useState(3);
   const [description, setDescription] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -19,61 +83,216 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
   const [estimatedCost, setEstimatedCost] = useState('Chia đều chi phí thực tế');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  const loadingRef = useRef(false);
+  const isMountedRef = useRef(true);
+  const submitAbortRef = useRef<AbortController | null>(null);
+  const trailsRef = useRef<Trail[]>(trails);
+  const hydratedDraftRef = useRef<TripBudgetDraft | null>(null);
+
+  useEffect(() => {
+    trailsRef.current = trails;
+  }, [trails]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      submitAbortRef.current?.abort();
+    };
+  }, []);
+
+  useFocusTrap(isOpen, dialogRef, { initialFocusRef: titleInputRef });
+
+  // Hydrate form from Cost Estimator -> Trip Budget handoff ONCE per open session/draft (never clobbered by /api/trails)
+  useEffect(() => {
+    if (!isOpen) {
+      hydratedDraftRef.current = null;
+      return;
+    }
+    if (!initialDraft || hydratedDraftRef.current === initialDraft) return;
+    hydratedDraftRef.current = initialDraft;
+    const rafId = window.requestAnimationFrame(() => {
+      const parsed = parseDraftBudgetFields(initialDraft, trailsRef.current);
+      setSelectedTrailId(parsed.trailId);
+      setCustomTrailName(parsed.trailName);
+      setDifficultyLevel(parsed.difficultyLevel);
+      setTitle(parsed.title);
+      setEstimatedCost(parsed.estimatedCost);
+      setMaxMembers(parsed.maxMembers);
+      setDescription(parsed.description);
+      setError('');
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [isOpen, initialDraft]);
+
+  const resetForm = useCallback(() => {
+    setTitle('');
+    setSelectedTrailId('');
+    setCustomTrailName('');
+    setDifficultyLevel(3);
+    setDescription('');
+    setStartDate('');
+    setEndDate('');
+    setMaxMembers(6);
+    setMeetingPoint('');
+    setEstimatedCost('Chia đều chi phí thực tế');
+    setError('');
+  }, []);
+
+  const handleClose = useCallback(() => {
+    if (loadingRef.current) return;
+    resetForm();
+    onClose();
+  }, [onClose, resetForm]);
+
+  // Fetch real trails list only when opened
+  useEffect(() => {
+    if (!isOpen || hasLoadedTrails) return;
+    let active = true;
+    fetch('/api/trails')
+      .then((res) => res.json())
+      .then((json) => {
+        if (active && json?.success && Array.isArray(json.data) && json.data.length > 0) {
+          setTrails(json.data);
+          setHasLoadedTrails(true);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [isOpen, hasLoadedTrails]);
+
+  // Escape key close (strict LIFO via topmost focus trap + IME guard)
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      if (e.key === 'Escape') {
+        if (!isTopmostFocusTrap(dialogRef.current)) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (loadingRef.current) return;
+        handleClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, handleClose]);
 
   if (!isOpen) return null;
 
+  const handleStartDateChange = (val: string) => {
+    setStartDate(val);
+    if (endDate && val && endDate < val) {
+      setEndDate(val);
+    }
+    if (error) setError('');
+  };
+
+  const handleTrailSelect = (val: string) => {
+    setSelectedTrailId(val);
+    const chosen = trails.find((t) => (t.id || (t as TrailWithMongoId)._id) === val);
+    if (chosen) {
+      setCustomTrailName(chosen.name);
+      if (chosen.difficultyLevel) {
+        setDifficultyLevel(chosen.difficultyLevel);
+      }
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loadingRef.current) return;
     setError('');
+
+    const token = localStorage.getItem('lost_token');
+    if (!token) {
+      setError('Bạn cần đăng nhập để tạo chuyến đi ghép đoàn.');
+      window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
+      return;
+    }
+
+    if (!startDate || !endDate) {
+      setError('Vui lòng chọn đầy đủ ngày khởi hành và ngày kết thúc.');
+      return;
+    }
+
+    if (endDate < startDate) {
+      setError('Ngày kết thúc phải lớn hơn hoặc bằng ngày khởi hành.');
+      return;
+    }
+
+    loadingRef.current = true;
     setLoading(true);
+    submitAbortRef.current?.abort();
+    const controller = new AbortController();
+    submitAbortRef.current = controller;
 
     try {
-      const token = localStorage.getItem('trekmap_token');
-      if (!token) {
-        setError('Bạn cần đăng nhập để tạo chuyến đi ghép đoàn.');
-        setLoading(false);
-        return;
-      }
+      const chosen = selectedTrailId
+        ? trails.find((t) => (t.id || (t as TrailWithMongoId)._id) === selectedTrailId)
+        : null;
+      const resolvedTrailId = chosen ? ((chosen as TrailWithMongoId)._id || chosen.id) : undefined;
+      const resolvedTrailName = chosen ? chosen.name : customTrailName.trim();
 
       const res = await fetch('/api/trips', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        signal: controller.signal,
         body: JSON.stringify({
-          title,
-          trailName,
-          description,
+          title: title.trim(),
+          trailId: resolvedTrailId,
+          trailName: resolvedTrailName,
+          difficultyLevel,
+          description: description.trim(),
           startDate,
           endDate,
           maxMembers,
-          meetingPoint,
-          estimatedCost,
+          meetingPoint: meetingPoint.trim(),
+          estimatedCost: estimatedCost.trim(),
         }),
       });
 
       const data = await res.json();
-      setLoading(false);
+      if (controller.signal.aborted || !isMountedRef.current) return;
 
-      if (data.success) {
+      if (res.ok && data.success) {
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: {
+              message: data.message || 'Mở chuyến ghép đoàn thành công! Bạn là trưởng đoàn.',
+              type: 'success',
+            },
+          })
+        );
+        loadingRef.current = false;
+        setLoading(false);
+        resetForm();
         onSuccess();
         onClose();
       } else {
         setError(data.message || 'Không thể mở chuyến ghép đoàn.');
       }
-    } catch (err) {
-      setLoading(false);
+    } catch {
+      if (controller.signal.aborted || !isMountedRef.current) return;
       setError('Lỗi kết nối máy chủ khi tạo chuyến.');
+    } finally {
+      loadingRef.current = false;
+      if (!controller.signal.aborted && isMountedRef.current) {
+        setLoading(false);
+      }
     }
   };
 
   const inputStyle: React.CSSProperties = {
     width: '100%',
-    padding: '9px 14px',
+    padding: '9px 12px',
     background: 'var(--color-bg-main)',
     border: '1px solid var(--color-border)',
-    borderRadius: 12,
+    borderRadius: 4,
     fontSize: '0.84rem',
     color: 'var(--color-text-main)',
     outline: 'none',
@@ -83,7 +302,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
 
   const labelStyle: React.CSSProperties = {
     display: 'block',
-    fontSize: '0.76rem',
+    fontSize: '0.74rem',
     fontWeight: 700,
     color: 'var(--color-text-muted)',
     marginBottom: 6,
@@ -94,35 +313,39 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
   return createPortal(
     <div
       className="modal-overlay"
-      onClick={onClose}
+      onClick={handleClose}
       style={{
         position: 'fixed',
         inset: 0,
-        width: '100vw',
-        height: '100vh',
-        background: 'rgba(3, 8, 14, 0.86)',
-        backdropFilter: 'blur(16px)',
-        WebkitBackdropFilter: 'blur(16px)',
-        zIndex: 99999999,
+        background: 'var(--overlay-bg)',
+        backdropFilter: 'blur(12px)',
+        WebkitBackdropFilter: 'blur(12px)',
+        zIndex: 'var(--z-modal, 3000)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: '32px 16px',
+        padding: '24px 16px',
         boxSizing: 'border-box',
       }}
     >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Mở chuyến ghép đoàn mới"
         className="modal-content"
         onClick={(e) => e.stopPropagation()}
         style={{
-          maxWidth: 580,
+          maxWidth: 600,
           width: '94%',
           padding: 0,
-          borderRadius: 24,
+          borderRadius: 6,
           background: 'var(--color-bg-card)',
-          border: '1.5px solid var(--color-primary)',
-          boxShadow: '0 25px 60px rgba(0, 0, 0, 0.6), 0 0 25px rgba(16, 185, 129, 0.2)',
+          border: '1px solid var(--color-border-strong)',
+          boxShadow: 'var(--shadow-3d)',
           overflow: 'hidden',
+          outline: 'none',
         }}
       >
         {/* Header */}
@@ -131,7 +354,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            padding: '18px 24px',
+            padding: '16px 22px',
             borderBottom: '1px solid var(--color-border)',
             background: 'var(--color-bg-main)',
           }}
@@ -139,23 +362,23 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div
               style={{
-                width: 36,
-                height: 36,
-                borderRadius: 10,
-                background: 'rgba(16, 185, 129, 0.15)',
-                border: '1px solid var(--color-border-glow)',
+                width: 34,
+                height: 34,
+                borderRadius: 4,
+                background: 'var(--color-surface-elevated)',
+                border: '1px solid var(--color-border-strong)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
               }}
             >
-              <IconUsers size={20} color="var(--color-primary)" />
+              <IconUsers size={18} color="var(--color-primary)" />
             </div>
             <div>
-              <div style={{ fontSize: '0.7rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-                KẾ HOẠCH ĐỒNG HÀNH
+              <div style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-primary)', textTransform: 'uppercase', letterSpacing: '0.12em' }}>
+                Kế hoạch đồng hành
               </div>
-              <h3 style={{ margin: 0, fontSize: '1.12rem', fontWeight: 900, color: 'var(--color-text-main)' }}>
+              <h3 className="font-editorial" style={{ margin: 0, fontSize: '1.3rem', fontWeight: 600, color: 'var(--color-text-main)' }}>
                 Mở Chuyến Ghép Đoàn Mới
               </h3>
             </div>
@@ -163,18 +386,20 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
 
           <button
             type="button"
-            onClick={onClose}
-            title="Đóng"
+            disabled={loading}
+            onClick={handleClose}
+            title="Đóng (Esc)"
             aria-label="Đóng"
             style={{
               background: 'none',
               border: 'none',
               color: 'var(--color-text-muted)',
-              cursor: 'pointer',
+              cursor: loading ? 'not-allowed' : 'pointer',
+              opacity: loading ? 0.5 : 1,
               display: 'flex',
               alignItems: 'center',
               padding: 6,
-              borderRadius: 8,
+              borderRadius: 4,
             }}
           >
             <IconX size={20} />
@@ -182,16 +407,16 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: 16, maxHeight: '78vh', overflowY: 'auto' }}>
+        <form onSubmit={handleSubmit} style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: 14, maxHeight: '78vh', overflowY: 'auto' }}>
           {error && (
             <div
               style={{
-                padding: '12px 16px',
-                background: 'rgba(239, 68, 68, 0.1)',
-                border: '1px solid rgba(239, 68, 68, 0.3)',
-                color: 'var(--color-error)',
+                padding: '10px 14px',
+                background: 'var(--banner-danger-bg)',
+                border: '1px solid var(--banner-danger-border)',
+                color: 'var(--banner-danger-text)',
                 fontSize: '0.8rem',
-                borderRadius: 12,
+                borderRadius: 4,
                 fontWeight: 600,
               }}
             >
@@ -202,23 +427,74 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
           <div>
             <label style={labelStyle}>Tên chuyến đi / Tiêu đề hành trình *</label>
             <input
+              ref={titleInputRef}
               type="text"
               required
-              placeholder="VD: Chinh phục Tà Xùa cuối tuần săn mây T10"
+              placeholder="VD: Chinh phục Tà Xùa cuối tuần săn mây T11"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               style={inputStyle}
             />
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
             <div>
-              <label style={labelStyle}>Cung đường mục tiêu</label>
+              <label style={labelStyle}>Chọn cung đường thực tế</label>
+              <select
+                value={selectedTrailId}
+                onChange={(e) => handleTrailSelect(e.target.value)}
+                style={inputStyle}
+              >
+                <option value="">-- Tự nhập tên cung bên cạnh --</option>
+                {trails.map((t) => {
+                  const tid = t.id || (t as Trail & { _id?: string })._id || '';
+                  return (
+                    <option key={tid} value={tid}>
+                      {t.name} ({t.province})
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+
+            <div>
+              <label style={labelStyle}>Tên cung mục tiêu</label>
               <input
                 type="text"
                 placeholder="VD: Fansipan, Tà Xùa, Lảo Thẩn..."
-                value={trailName}
-                onChange={(e) => setTrailName(e.target.value)}
+                value={customTrailName}
+                onChange={(e) => {
+                  setCustomTrailName(e.target.value);
+                  if (selectedTrailId) setSelectedTrailId('');
+                }}
+                style={inputStyle}
+              />
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+            <div>
+              <label style={labelStyle}>Ngày khởi hành *</label>
+              <input
+                type="date"
+                required
+                value={startDate}
+                onChange={(e) => handleStartDateChange(e.target.value)}
+                style={inputStyle}
+              />
+            </div>
+
+            <div>
+              <label style={labelStyle}>Ngày kết thúc *</label>
+              <input
+                type="date"
+                required
+                min={startDate || undefined}
+                value={endDate}
+                onChange={(e) => {
+                  setEndDate(e.target.value);
+                  if (error) setError('');
+                }}
                 style={inputStyle}
               />
             </div>
@@ -231,33 +507,24 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
                 max={25}
                 required
                 value={maxMembers}
-                onChange={(e) => setMaxMembers(Number(e.target.value))}
-                style={inputStyle}
-              />
-            </div>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
-            <div>
-              <label style={labelStyle}>Ngày khởi hành *</label>
-              <input
-                type="date"
-                required
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
+                onChange={(e) => setMaxMembers(Math.max(2, Math.min(25, Number(e.target.value) || 2)))}
                 style={inputStyle}
               />
             </div>
 
             <div>
-              <label style={labelStyle}>Ngày kết thúc *</label>
-              <input
-                type="date"
-                required
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
+              <label style={labelStyle}>Độ khó dự kiến (1-5)</label>
+              <select
+                value={difficultyLevel}
+                onChange={(e) => setDifficultyLevel(Number(e.target.value))}
                 style={inputStyle}
-              />
+              >
+                <option value={1}>Cấp 1 — Nhẹ nhàng</option>
+                <option value={2}>Cấp 2 — Dễ</option>
+                <option value={3}>Cấp 3 — Trung bình</option>
+                <option value={4}>Cấp 4 — Thử thách</option>
+                <option value={5}>Cấp 5 — Khắc nghiệt</option>
+              </select>
             </div>
           </div>
 
@@ -265,7 +532,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
             <label style={labelStyle}>Điểm hẹn tập trung</label>
             <input
               type="text"
-              placeholder="VD: Cổng trường ĐH Giao Thông Vận Tải, Hà Nội"
+              placeholder="VD: Bến xe Mỹ Đình, Hà Nội hoặc Quảng trường Sa Pa"
               value={meetingPoint}
               onChange={(e) => setMeetingPoint(e.target.value)}
               style={inputStyle}
@@ -284,22 +551,23 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
           </div>
 
           <div>
-            <label style={labelStyle}>Mô tả kế hoạch & Yêu cầu thể lực</label>
+            <label style={labelStyle}>Mô tả kế hoạch &amp; Yêu cầu thể lực</label>
             <textarea
               rows={3}
-              placeholder="Chi tiết kinh nghiệm cần có, đồ đạc mang theo, phương thức liên lạc Zalo..."
+              placeholder="Chi tiết kinh nghiệm cần có, đồ đạc mang theo, lộ trình di chuyển..."
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               style={{ ...inputStyle, resize: 'vertical' }}
             />
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 8, borderTop: '1px solid var(--color-border)' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 10, borderTop: '1px solid var(--color-border)' }}>
             <button
               type="button"
-              onClick={onClose}
+              disabled={loading}
+              onClick={handleClose}
               className="btn btn-outline"
-              style={{ borderRadius: 12, padding: '9px 18px', fontSize: '0.84rem', fontWeight: 700 }}
+              style={{ borderRadius: 4, padding: '8px 18px', fontSize: '0.84rem', fontWeight: 700 }}
             >
               Hủy
             </button>
@@ -307,7 +575,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({ isOpen, onClos
               type="submit"
               disabled={loading}
               className="btn btn-primary"
-              style={{ borderRadius: 12, padding: '9px 22px', fontSize: '0.84rem', fontWeight: 800 }}
+              style={{ borderRadius: 4, padding: '8px 22px', fontSize: '0.84rem', fontWeight: 800 }}
             >
               {loading ? 'Đang tạo chuyến...' : 'Đăng Mở Chuyến'}
             </button>

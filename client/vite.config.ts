@@ -1,5 +1,5 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -10,21 +10,51 @@ export default defineConfig({
         target: 'http://127.0.0.1:5000',
         changeOrigin: true,
       },
+      '/socket.io': {
+        target: 'http://127.0.0.1:5000',
+        ws: true,
+        changeOrigin: true,
+      },
     },
   },
   build: {
-    rollupOptions: {
+    target: 'es2022',
+    cssCodeSplit: true,
+    // Vite 8 / Rolldown native codeSplitting groups: keeps heavy vendor engines cached & out of initial load
+    // while preserving automatic per-route React.lazy chunks for all 8 Flagship Hubs, AI Suite & Live GPS modals.
+    rolldownOptions: {
       output: {
-        manualChunks(id: string) {
-          if (id.includes('leaflet') || id.includes('react-leaflet')) {
-            return 'vendor-leaflet';
-          }
-          if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) {
-            return 'vendor-react';
-          }
+        codeSplitting: {
+          groups: [
+            {
+              name: 'vendor-maplibre',
+              test: /[\\/]node_modules[\\/]maplibre-gl[\\/]/,
+              priority: 40,
+            },
+            {
+              name: 'vendor-leaflet',
+              test: /[\\/]node_modules[\\/](leaflet|react-leaflet|@react-leaflet|leaflet\.markercluster|react-leaflet-cluster)[\\/]/,
+              priority: 35,
+            },
+            {
+              name: 'vendor-socket',
+              test: /[\\/]node_modules[\\/](socket\.io-client|engine\.io-client|@socket\.io)[\\/]/,
+              priority: 30,
+            },
+            {
+              name: 'vendor-react',
+              test: /[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+              priority: 25,
+            },
+            {
+              name: 'data-vietnam-catalog',
+              test: /[\\/]src[\\/]data[\\/](seedData|vietnamDirectory)\.ts$/,
+              priority: 20,
+            },
+          ],
         },
       },
     },
-    chunkSizeWarningLimit: 600,
+    chunkSizeWarningLimit: 650,
   },
-})
+});

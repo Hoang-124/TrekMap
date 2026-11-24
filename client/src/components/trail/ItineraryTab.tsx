@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import type { Trail, ItineraryStep } from '../../types.js';
 import { createExpeditionItinerary } from '../../services/api.js';
 
@@ -7,12 +7,16 @@ interface ItineraryTabProps {
 }
 
 export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
-  const storageKey = `trekmap_itinerary_${trail.id}`;
+  const storageKey = `lost_itinerary_${trail.id}`;
 
   const [title, setTitle] = useState(() => {
     const saved = localStorage.getItem(storageKey);
     if (saved) {
-      try { return JSON.parse(saved).title || `Hành trình thám hiểm ${trail.name}`; } catch (e) {}
+      try {
+        return JSON.parse(saved).title || `Hành trình thám hiểm ${trail.name}`;
+      } catch {
+        // ignore corrupted cache
+      }
     }
     return `Hành trình thám hiểm ${trail.name}`;
   });
@@ -20,7 +24,11 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
   const [startDate, setStartDate] = useState(() => {
     const saved = localStorage.getItem(storageKey);
     if (saved) {
-      try { return JSON.parse(saved).startDate || new Date().toISOString().split('T')[0]; } catch (e) {}
+      try {
+        return JSON.parse(saved).startDate || new Date().toISOString().split('T')[0];
+      } catch {
+        // ignore corrupted cache
+      }
     }
     return new Date().toISOString().split('T')[0];
   });
@@ -28,7 +36,11 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
   const [memberCount, setMemberCount] = useState<number>(() => {
     const saved = localStorage.getItem(storageKey);
     if (saved) {
-      try { return JSON.parse(saved).memberCount || 4; } catch (e) {}
+      try {
+        return JSON.parse(saved).memberCount || 4;
+      } catch {
+        // ignore corrupted cache
+      }
     }
     return 4;
   });
@@ -37,8 +49,8 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
   const [copied, setCopied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  const defaultSteps = (): ItineraryStep[] => {
-    const steps: ItineraryStep[] = [
+  const defaultSteps = useCallback((): ItineraryStep[] => {
+    const baseSteps: ItineraryStep[] = [
       { day: 1, time: '05:00', title: 'Tập trung & Di chuyển', description: 'Tập trung tại điểm hẹn, kiểm tra balo, di chuyển bằng xe đến chân núi.', locationNote: 'Chân núi / Cửa rừng' },
       { day: 1, time: '08:30', title: 'Bắt đầu trekking', description: 'Gặp Hướng dẫn viên/Porter, làm thủ tục với Kiểm lâm (nếu có) và bắt đầu hành trình.', locationNote: trail.province },
       { day: 1, time: '12:00', title: 'Nghỉ trưa & Ăn nhẹ', description: 'Dừng chân tại suối/trạm nghỉ, bổ sung năng lượng và nước ngọt.', locationNote: 'Trạm nghỉ giữa đường' },
@@ -46,16 +58,22 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
     ];
 
     if (trail.durationDays >= 2) {
-      steps.push(
+      baseSteps.push(
         { day: 2, time: '04:30', title: 'Thức dậy & Săn mây', description: 'Đón bình minh, thưởng thức cà phê/trà nóng và đón biển mây cuồn cuộn.', locationNote: 'Điểm săn mây' },
         { day: 2, time: '06:30', title: 'Chinh phục cột mốc / Đỉnh núi', description: `Chạm tay vào đỉnh ${trail.name} (${trail.maxAltitudeM}m), chụp ảnh lưu niệm cùng nhóm.`, locationNote: `Đỉnh ${trail.name}` },
         { day: 2, time: '09:00', title: 'Thu dọn lều & Hạ sơn', description: 'Dọn sạch rác (LNT policy), kiểm tra đủ quân số và bắt đầu đường về.', locationNote: 'Đường xuống núi' },
-        { day: 2, time: '14:30', title: 'Về điểm xuất phát & Kết thúc', description: 'Về đến chân núi, tắm rửa, thưởng thức lẩu thắng cố/đặc sản địa phương và chia tay.', locationNote: 'Chân núi' }
+        { day: 2, time: '14:30', title: 'Về điểm xuất phát & Kết thúc', description: 'Về đến chân núi, tắm rửa, thưởng thức đặc sản địa phương và chia tay.', locationNote: 'Chân núi' }
       );
     }
 
-    return steps;
-  };
+    if (trail.durationDays >= 3) {
+      baseSteps.push(
+        { day: 3, time: '07:00', title: 'Hoàn tất chặng về & Tổng kết', description: 'Di chuyển nốt chặng cuối ra cửa rừng, báo bình an về trạm Kiểm lâm và lên xe về lại trung tâm.', locationNote: trail.province }
+      );
+    }
+
+    return baseSteps;
+  }, [trail.name, trail.province, trail.hasCampsite, trail.durationDays, trail.maxAltitudeM]);
 
   const [steps, setSteps] = useState<ItineraryStep[]>(() => {
     const saved = localStorage.getItem(storageKey);
@@ -65,23 +83,88 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
         if (Array.isArray(parsed.steps) && parsed.steps.length > 0) {
           return parsed.steps;
         }
-      } catch (e) {}
+      } catch {
+        // ignore corrupted cache
+      }
     }
     return defaultSteps();
   });
 
   // Auto-save itinerary to localStorage on changes
   useEffect(() => {
-    localStorage.setItem(
-      storageKey,
-      JSON.stringify({
-        title,
-        startDate,
-        memberCount,
-        steps,
-      })
-    );
+    try {
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify({
+          title,
+          startDate,
+          memberCount,
+          steps,
+        })
+      );
+    } catch {
+      // ignore storage quota errors
+    }
   }, [storageKey, title, startDate, memberCount, steps]);
+
+  // Listen for AI 1-click Apply live updates (`lost:itinerary-updated`)
+  useEffect(() => {
+    const handleAiItineraryUpdate = (evt: Event) => {
+      const detail = (evt as CustomEvent)?.detail;
+      if (detail?.trailId && String(detail.trailId) !== String(trail.id)) {
+        return;
+      }
+
+      const src = detail?.itinerary || detail;
+      if (src?.title && typeof src.title === 'string') {
+        setTitle(src.title);
+      }
+
+      const incomingRaw = Array.isArray(src?.steps)
+        ? src.steps
+        : Array.isArray(src?.timelineSteps)
+        ? src.timelineSteps
+        : null;
+
+      if (incomingRaw && incomingRaw.length > 0) {
+        const mapped: ItineraryStep[] = incomingRaw.map((rawItem: unknown, idx: number) => {
+          const s = (rawItem && typeof rawItem === 'object' ? rawItem : {}) as Record<string, unknown>;
+          return {
+            day: Math.max(1, Math.min(7, Number(s.day) || 1)),
+            time: String(s.time || '07:00'),
+            title: String(s.title || s.activity || `Chặng ${idx + 1}`),
+            description: String(s.description || s.notes || ''),
+            locationNote: String(s.locationNote || s.location || trail.province),
+          };
+        });
+        setSteps(mapped);
+        return;
+      }
+
+      try {
+        const saved = localStorage.getItem(storageKey);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed.title) setTitle(parsed.title);
+          if (Array.isArray(parsed.steps) && parsed.steps.length > 0) {
+            setSteps(parsed.steps);
+          }
+        }
+      } catch {
+        // ignore storage errors
+      }
+    };
+
+    window.addEventListener('lost:itinerary-updated', handleAiItineraryUpdate);
+    return () => window.removeEventListener('lost:itinerary-updated', handleAiItineraryUpdate);
+  }, [trail.id, trail.province, storageKey]);
+
+  const maxDayOptions = Math.max(
+    7,
+    Math.min(14, Number(trail.durationDays) || 3),
+    ...steps.map((s) => Number(s.day) || 1)
+  );
+  const dayOptions = Array.from({ length: maxDayOptions }, (_, i) => i + 1);
 
   const handleAddStep = () => {
     const lastStep = steps[steps.length - 1];
@@ -101,7 +184,11 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
     setSteps(steps.filter((_, i) => i !== index));
   };
 
-  const handleUpdateStep = (index: number, field: keyof ItineraryStep, value: any) => {
+  const handleUpdateStep = <K extends keyof ItineraryStep>(
+    index: number,
+    field: K,
+    value: ItineraryStep[K]
+  ) => {
     const updated = [...steps];
     updated[index] = { ...updated[index], [field]: value };
     setSteps(updated);
@@ -109,16 +196,25 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
 
   const handleSaveItinerary = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (!localStorage.getItem('lost_token')) {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: { message: 'Vui lòng đăng nhập để lưu lịch trình lên đám mây và tạo link chia sẻ.', type: 'info' },
+        })
+      );
+      window.dispatchEvent(new CustomEvent('lost:open-auth-modal', { detail: { mode: 'login' } }));
+      return;
+    }
+
     setSubmitting(true);
 
     const effectiveStartDate = startDate || new Date().toISOString().split('T')[0];
     const payload = {
       trailId: trail.id,
-      trailName: trail.name,
       title: title || `Kế Hoạch Khám Phá ${trail.name}`,
       startDate: effectiveStartDate,
       memberCount: memberCount || 4,
-      steps,
       timelineSteps: steps.map((s) => ({
         day: s.day,
         time: s.time,
@@ -128,153 +224,174 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
       })),
     };
 
-    const res = await createExpeditionItinerary(payload);
-    setSubmitting(false);
-
-    if (res && res.shareUrl) {
-      setShareUrl(res.shareUrl);
-    } else {
-      const mockToken = `itinerary-${Date.now()}`;
-      try {
-        const cached = JSON.parse(localStorage.getItem('trekmap_local_itineraries') || '{}');
-        cached[mockToken] = { ...payload, shareToken: mockToken };
-        localStorage.setItem('trekmap_local_itineraries', JSON.stringify(cached));
-      } catch (err) {}
-      setShareUrl(`${window.location.origin}/#itinerary/${mockToken}`);
+    try {
+      const res = await createExpeditionItinerary(payload);
+      if (res && res.shareUrl) {
+        setShareUrl(res.shareUrl);
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: 'Đã lưu lịch trình và tạo liên kết chia sẻ thành công!', type: 'success' },
+          })
+        );
+      }
+    } catch (err: unknown) {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: {
+            message: err instanceof Error ? err.message : 'Vui lòng đăng nhập để lưu và chia sẻ lịch trình.',
+            type: 'error',
+          },
+        })
+      );
+    } finally {
+      setSubmitting(false);
     }
   };
 
   const handleCopyLink = () => {
-    if (shareUrl) {
-      navigator.clipboard.writeText(shareUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
+    if (!shareUrl) return;
+    navigator.clipboard
+      .writeText(shareUrl)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      })
+      .catch(() => {
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: 'Trình duyệt không cho phép sao chép tự động. Vui lòng chọn và copy link thủ công.', type: 'info' },
+          })
+        );
+      });
   };
 
-  // P2-13: HTML5 Canvas Card Export
+  // HTML5 Canvas Card Export (dynamic height — zero step truncation, available pre-save)
   const handleExportCanvasImage = () => {
+    const rowHeight = 76;
+    const headerHeight = 195;
+    const footerHeight = 72;
+    const computedHeight = Math.max(760, headerHeight + steps.length * rowHeight + footerHeight);
+
     const canvas = document.createElement('canvas');
     canvas.width = 800;
-    canvas.height = 900;
+    canvas.height = computedHeight;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Background Gradient
-    const grad = ctx.createLinearGradient(0, 0, 0, 900);
-    grad.addColorStop(0, '#0b1726');
-    grad.addColorStop(1, '#050c14');
+    const grad = ctx.createLinearGradient(0, 0, 0, computedHeight);
+    grad.addColorStop(0, '#0c0f0d');
+    grad.addColorStop(1, '#141916');
     ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, 800, 900);
+    ctx.fillRect(0, 0, 800, computedHeight);
 
-    // Header Title
-    ctx.fillStyle = '#0ed7b5';
-    ctx.font = 'bold 28px sans-serif';
-    ctx.fillText('TREKMAP - LỊCH TRÌNH LEO NÚI', 50, 60);
+    const canvasFont = "'Plus Jakarta Sans', 'Inter', 'Be Vietnam Pro', sans-serif";
 
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 24px sans-serif';
-    ctx.fillText(title, 50, 105);
+    ctx.fillStyle = '#52b788';
+    ctx.font = `bold 24px ${canvasFont}`;
+    ctx.fillText('LOST — LỊCH TRÌNH THÁM HIỂM', 48, 58);
 
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '16px sans-serif';
-    ctx.fillText(`Cung đường: ${trail.name} (${trail.maxAltitudeM}m) • Khởi hành: ${startDate} • Thành viên: ${memberCount} người`, 50, 140);
+    ctx.fillStyle = '#f4f3ee';
+    ctx.font = `bold 21px ${canvasFont}`;
+    ctx.fillText(title.slice(0, 56), 48, 100);
 
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+    ctx.fillStyle = '#a8b0aa';
+    ctx.font = `15px ${canvasFont}`;
+    ctx.fillText(
+      `Cung đường: ${trail.name} (${trail.maxAltitudeM}m) · Khởi hành: ${startDate} · Đoàn: ${memberCount} người`,
+      48,
+      134
+    );
+
+    ctx.strokeStyle = 'rgba(244, 243, 238, 0.16)';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(50, 160);
-    ctx.lineTo(750, 160);
+    ctx.moveTo(48, 156);
+    ctx.lineTo(752, 156);
     ctx.stroke();
 
-    // Timeline Steps
-    let yPos = 200;
+    let yPos = 196;
     steps.forEach((s) => {
-      if (yPos > 800) return;
-
-      // Circle node
-      ctx.fillStyle = '#0ed7b5';
+      ctx.fillStyle = '#52b788';
       ctx.beginPath();
-      ctx.arc(60, yPos - 6, 8, 0, Math.PI * 2);
+      ctx.arc(58, yPos - 6, 6, 0, Math.PI * 2);
       ctx.fill();
 
-      // Time & Day Badge
-      ctx.fillStyle = '#f59e0b';
-      ctx.font = 'bold 16px sans-serif';
-      ctx.fillText(`[Ngày ${s.day} - ${s.time}]`, 85, yPos);
+      ctx.fillStyle = '#d4a348';
+      ctx.font = `bold 15px ${canvasFont}`;
+      ctx.fillText(`[Ngày ${s.day} · ${s.time}]`, 80, yPos);
 
-      // Step Title
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 17px sans-serif';
-      ctx.fillText(s.title, 240, yPos);
+      ctx.fillStyle = '#f4f3ee';
+      ctx.font = `bold 16px ${canvasFont}`;
+      ctx.fillText((s.title || '').slice(0, 44), 232, yPos);
 
-      // Description
-      ctx.fillStyle = '#cbd5e1';
-      ctx.font = '14px sans-serif';
-      const desc = s.description.length > 65 ? s.description.substring(0, 65) + '...' : s.description;
-      ctx.fillText(desc, 85, yPos + 26);
+      ctx.fillStyle = '#a8b0aa';
+      ctx.font = `14px ${canvasFont}`;
+      const desc = s.description.length > 74 ? `${s.description.substring(0, 74)}...` : s.description;
+      ctx.fillText(desc, 80, yPos + 25);
 
-      yPos += 70;
+      yPos += rowHeight;
     });
 
-    // Footer
-    ctx.fillStyle = '#38bdf8';
-    ctx.font = 'bold 15px sans-serif';
-    ctx.fillText('TrekMap Vietnam - Trợ Lý Thám Hiểm Bản Đồ Số 1', 50, 860);
+    ctx.fillStyle = '#6fa8c7';
+    ctx.font = `bold 14px ${canvasFont}`;
+    ctx.fillText('LOST Vietnam · Bản Đồ Địa Hình & Cứu Hộ Quốc Gia 112 / 114', 48, computedHeight - 28);
 
-    // Download Image
     const dataUrl = canvas.toDataURL('image/png');
     const link = document.createElement('a');
-    link.download = `Lich_Trinh_${trail.id}.png`;
+    link.download = `Lich_Trinh_${trail.id}_LOST.png`;
     link.href = dataUrl;
+    document.body.appendChild(link);
     link.click();
+    document.body.removeChild(link);
   };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 24 }}>
-      {/* Left Column: Interactive Timeline Stepper (P2-12) */}
+    <div className="detail-split-grid">
+      {/* Left Column: Interactive Timeline Stepper */}
       <div>
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <div>
-              <h3 style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 4 }}>
-                Lịch trình thời gian chi tiết (Timeline Stepper)
+              <div className="section-eyebrow" style={{ marginBottom: 6 }}>Lộ trình hành quân</div>
+              <h3 className="font-editorial" style={{ fontSize: '1.45rem', fontWeight: 500, color: 'var(--color-text-main)', marginBottom: 4 }}>
+                Lịch trình thời gian chi tiết
               </h3>
               <p style={{ fontSize: '0.82rem', color: 'var(--color-text-dim)' }}>
-                Tự do chỉnh sửa mốc thời gian, thêm hoặc xóa hoạt động của đoàn thám hiểm.
+                Tùy chỉnh mốc thời gian (hỗ trợ đến {maxDayOptions} ngày), thêm hoặc xóa chặng di chuyển của đoàn thám hiểm.
               </p>
             </div>
           </div>
 
-          <div style={{ position: 'relative', paddingLeft: 24 }}>
-            <div style={{ position: 'absolute', left: 8, top: 10, bottom: 10, width: 2, background: 'var(--color-border)' }} />
+          <div style={{ position: 'relative', paddingLeft: 22 }}>
+            <div style={{ position: 'absolute', left: 7, top: 10, bottom: 10, width: 1, background: 'var(--color-border-strong)' }} />
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               {steps.map((step, idx) => (
-                <div key={idx} style={{ position: 'relative', background: 'var(--color-bg-main)', padding: 14, borderRadius: 12, border: '1px solid var(--color-border)' }}>
+                <div key={idx} style={{ position: 'relative', background: 'var(--color-bg-main)', padding: 14, borderRadius: 4, border: '1px solid var(--color-border)' }}>
                   <div
                     style={{
                       position: 'absolute',
-                      left: -24,
-                      top: 18,
-                      width: 16,
-                      height: 16,
-                      borderRadius: '50%',
+                      left: -19,
+                      top: 20,
+                      width: 9,
+                      height: 9,
+                      borderRadius: 2,
                       background: 'var(--color-primary)',
-                      border: '3px solid #071319',
                     }}
                   />
 
-                  <div style={{ display: 'grid', gridTemplateColumns: '80px 100px 1fr 60px', gap: 10, alignItems: 'center', marginBottom: 8 }}>
+                  {/* Responsive Step Controls Row */}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}>
                     <select
                       className="form-select"
                       value={step.day}
                       onChange={(e) => handleUpdateStep(idx, 'day', Number(e.target.value))}
-                      style={{ fontSize: '0.8rem', padding: '4px 6px' }}
+                      aria-label="Chọn ngày"
+                      style={{ flex: '0 0 92px', fontSize: '0.8rem', padding: '5px 8px' }}
                     >
-                      <option value={1}>Ngày 1</option>
-                      <option value={2}>Ngày 2</option>
-                      <option value={3}>Ngày 3</option>
+                      {dayOptions.map((d) => (
+                        <option key={d} value={d}>Ngày {d}</option>
+                      ))}
                     </select>
 
                     <input
@@ -282,7 +399,8 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
                       className="form-input"
                       value={step.time}
                       onChange={(e) => handleUpdateStep(idx, 'time', e.target.value)}
-                      style={{ fontSize: '0.8rem', padding: '4px 6px', textAlign: 'center' }}
+                      aria-label="Giờ thực hiện"
+                      style={{ flex: '0 0 84px', fontSize: '0.8rem', padding: '5px 8px', textAlign: 'center' }}
                     />
 
                     <input
@@ -290,12 +408,24 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
                       className="form-input"
                       value={step.title}
                       onChange={(e) => handleUpdateStep(idx, 'title', e.target.value)}
-                      style={{ fontSize: '0.85rem', fontWeight: 700, padding: '4px 8px' }}
+                      aria-label="Tiêu đề chặng"
+                      style={{ flex: '1 1 180px', fontSize: '0.85rem', fontWeight: 700, padding: '5px 8px' }}
                     />
 
                     <button
+                      type="button"
                       onClick={() => handleRemoveStep(idx)}
-                      style={{ background: 'transparent', border: '1px solid var(--color-error)', borderRadius: 6, color: 'var(--color-error)', cursor: 'pointer', fontSize: '0.75rem', padding: '2px 6px' }}
+                      style={{
+                        flex: '0 0 auto',
+                        background: 'transparent',
+                        border: '1px solid var(--color-error)',
+                        borderRadius: 4,
+                        color: 'var(--color-error-text, var(--color-error))',
+                        cursor: 'pointer',
+                        fontSize: '0.75rem',
+                        fontWeight: 700,
+                        padding: '5px 10px',
+                      }}
                     >
                       Xóa
                     </button>
@@ -306,16 +436,18 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
                     rows={2}
                     value={step.description}
                     onChange={(e) => handleUpdateStep(idx, 'description', e.target.value)}
-                    style={{ fontSize: '0.82rem', padding: '6px 8px' }}
+                    aria-label="Mô tả chặng"
+                    style={{ fontSize: '0.82rem', padding: '6px 8px', width: '100%' }}
                   />
                 </div>
               ))}
             </div>
 
             <button
+              type="button"
               className="btn btn-outline"
               onClick={handleAddStep}
-              style={{ marginTop: 16, width: '100%', justifyContent: 'center', borderStyle: 'dashed' }}
+              style={{ marginTop: 16, width: '100%', justifyContent: 'center', borderStyle: 'dashed', borderRadius: 4 }}
             >
               + Thêm mốc thời gian mới
             </button>
@@ -325,8 +457,9 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
 
       {/* Right Column: Form Settings & Zalo Share Export */}
       <div>
-        <div className="card" style={{ position: 'sticky', top: 20 }}>
-          <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 16 }}>
+        <div className="card" style={{ position: 'sticky', top: 84 }}>
+          <div className="section-eyebrow" style={{ marginBottom: 6 }}>Xuất bản lịch trình</div>
+          <h3 className="font-editorial" style={{ fontSize: '1.35rem', fontWeight: 500, color: 'var(--color-text-main)', marginBottom: 16 }}>
             Thông Tin Lịch Trình Đoàn
           </h3>
 
@@ -357,6 +490,8 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
               <label className="form-label">Số lượng thành viên (người):</label>
               <input
                 type="number"
+                min={1}
+                max={100}
                 className="form-input"
                 value={memberCount}
                 onChange={(e) => setMemberCount(Math.max(1, Number(e.target.value)))}
@@ -368,17 +503,29 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
               type="submit"
               className="btn btn-primary"
               disabled={submitting}
-              style={{ width: '100%', justifyContent: 'center', marginBottom: 16 }}
+              style={{ width: '100%', justifyContent: 'center', marginBottom: 10, borderRadius: 4 }}
             >
               {submitting ? 'Đang lưu...' : 'Lưu Lịch Trình & Tạo Link Chia Sẻ'}
             </button>
+
+            <button
+              type="button"
+              className="btn btn-earth"
+              onClick={handleExportCanvasImage}
+              disabled={steps.length === 0}
+              style={{ width: '100%', justifyContent: 'center', fontSize: '0.84rem', marginBottom: 14, borderRadius: 4 }}
+            >
+              Xuất Card Ảnh Gửi Nhóm Zalo (PNG)
+            </button>
           </form>
 
-          {/* P2-13: Share Link & Zalo Export Card */}
+          {/* Share Link Box */}
           {shareUrl && (
-            <div style={{ background: 'var(--color-bg-main)', padding: 14, borderRadius: 12, border: '1px solid var(--color-primary)' }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-dim)', marginBottom: 6 }}>LINK CHIA SẺ TRỰC TIẾP:</div>
-              <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+            <div style={{ background: 'var(--color-bg-main)', padding: 14, borderRadius: 6, border: '1px solid var(--color-primary)' }}>
+              <div style={{ fontSize: '0.76rem', color: 'var(--color-text-dim)', fontWeight: 700, marginBottom: 6 }}>
+                LINK CHIA SẺ TRỰC TIẾP:
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
                 <input
                   type="text"
                   readOnly
@@ -387,24 +534,22 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
                     flex: 1,
                     background: 'var(--color-bg-card)',
                     border: '1px solid var(--color-border)',
-                    borderRadius: 6,
+                    borderRadius: 4,
                     color: 'var(--color-primary)',
                     fontSize: '0.78rem',
-                    padding: '4px 8px',
+                    padding: '5px 8px',
+                    minWidth: 0,
                   }}
                 />
-                <button className="btn btn-outline" onClick={handleCopyLink} style={{ padding: '4px 10px' }}>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={handleCopyLink}
+                  style={{ padding: '5px 10px', borderRadius: 4, flexShrink: 0 }}
+                >
                   {copied ? 'Đã copy' : 'Copy Link'}
                 </button>
               </div>
-
-              <button
-                className="btn btn-sun"
-                onClick={handleExportCanvasImage}
-                style={{ width: '100%', justifyContent: 'center', fontSize: '0.85rem' }}
-              >
-                Xuất Card Ảnh Gửi Nhóm Zalo
-              </button>
             </div>
           )}
         </div>

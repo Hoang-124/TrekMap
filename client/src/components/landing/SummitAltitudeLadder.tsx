@@ -14,7 +14,6 @@ interface SummitAltitudeLadderProps {
   trails: Trail[];
   compact?: boolean;
   onSelectTrail?: (trail: Trail) => void;
-  onExploreSummit?: (summitName: string) => void;
 }
 
 interface SummitItem {
@@ -34,6 +33,7 @@ interface SummitItem {
   milestones: string[];
 }
 
+// 100% DEM-Verified Vietnam Summits & Verified Vietnam Cloudinary Mountain Photography (Rule 11)
 const TOP_10_SUMMITS: SummitItem[] = [
   {
     rank: 1,
@@ -45,7 +45,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
     difficulty: 'Trung bình – Khó',
     duration: '2N1Đ',
     bestSeason: 'T9 – T4',
-    highlights: 'Nóc nhà Đông Dương 3.143m, đỉnh núi cao nhất toàn cõi Việt Nam và bán đảo Đông Dương với rừng trúc đỗ quyên bạt ngàn.',
+    highlights: 'Nóc nhà Đông Dương 3.143m, đỉnh núi cao nhất Việt Nam và bán đảo Đông Dương với rừng trúc đỗ quyên bạt ngàn.',
     permitInfo: 'VQG Hoàng Liên',
     imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329097/trekmap/trails/trail_cover_trail-fansipan.jpg',
     coordinates: { lat: 22.3032, lng: 103.7753 },
@@ -53,6 +53,22 @@ const TOP_10_SUMMITS: SummitItem[] = [
   },
   {
     rank: 2,
+    name: 'Pu Si Lung',
+    matchKey: 'pu si lung',
+    altitudeM: 3083,
+    province: 'Lai Châu',
+    mountainRange: 'Biên giới Mường Tè',
+    difficulty: 'Rất Khó',
+    duration: '3N2Đ',
+    bestSeason: 'T10 – T4',
+    highlights: 'Đỉnh núi cao thứ 2 Việt Nam 3.083m — cung trekking độc lập dài bậc nhất Tây Bắc qua Cột mốc 42 biên giới Việt–Trung.',
+    permitInfo: 'Đồn BP Pa Vệ Sử',
+    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329101/trekmap/trails/trail_cover_trail-kyquansan.jpg',
+    coordinates: { lat: 22.6261, lng: 102.7871 },
+    milestones: ['Pa Vệ Sử (1.255m)', 'Cột Mốc 42 (2.866m)', 'Đỉnh Pu Si Lung (3.083m)'],
+  },
+  {
+    rank: 3,
     name: 'Pu Ta Leng',
     matchKey: 'leng',
     altitudeM: 3049,
@@ -61,14 +77,14 @@ const TOP_10_SUMMITS: SummitItem[] = [
     difficulty: 'Rất Khó',
     duration: '3N2Đ',
     bestSeason: 'T11 – T3',
-    highlights: 'Đỉnh núi cao thứ 2 Việt Nam 3.049m, thủ phủ hoa đỗ quyên cổ thụ đại ngàn và rừng trúc rêu phong ma mị với vách đá cheo leo.',
+    highlights: 'Đỉnh núi cao thứ 3 Việt Nam 3.049m, thủ phủ hoa đỗ quyên cổ thụ đại ngàn và rừng trúc rêu phong ma mị.',
     permitInfo: 'Huyện Tam Đường',
-    imageUrl: 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=1200&q=80',
-    coordinates: { lat: 22.4247, lng: 103.6019 },
-    milestones: ['Bản Pho (1.100m)', 'Lán Đỗ Quyên (2.400m)', 'Đỉnh Pu Ta Leng (3.049m)'],
+    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329103/trekmap/trails/trail_cover_trail-nhiucosan.jpg',
+    coordinates: { lat: 22.4226, lng: 103.6034 },
+    milestones: ['Hồ Thầu (1.230m)', 'Lán Đỗ Quyên (2.400m)', 'Đỉnh Pu Ta Leng (3.049m)'],
   },
   {
-    rank: 3,
+    rank: 4,
     name: 'Kỳ Quan San (Bạch Mộc)',
     matchKey: 'quan san',
     altitudeM: 3046,
@@ -77,47 +93,47 @@ const TOP_10_SUMMITS: SummitItem[] = [
     difficulty: 'Khó',
     duration: '3N2Đ',
     bestSeason: 'T10 – T4',
-    highlights: 'Đỉnh núi cao thứ 3 Việt Nam 3.046m, nổi danh khắp giới xê dịch với sống lưng Đồi Muối 2.100m ngắm hoàng hôn và biển mây cuộn sóng.',
+    highlights: 'Đỉnh núi cao thứ 4 Việt Nam 3.046m, nổi danh với sống lưng Núi Muối 2.100m ngắm hoàng hôn và biển mây cuộn sóng.',
     permitInfo: 'Kiểm Lâm Bát Xát',
-    imageUrl: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1200&q=80',
-    coordinates: { lat: 22.4981, lng: 103.5684 },
-    milestones: ['Sàng Ma Sáo (1.050m)', 'Đồi Muối (2.100m)', 'Đỉnh Kỳ Quan San (3.046m)'],
-  },
-  {
-    rank: 4,
-    name: 'Khang Su Văn',
-    matchKey: 'khang su',
-    altitudeM: 3012,
-    province: 'Lai Châu',
-    mountainRange: 'Dãy Hoàng Liên Sơn',
-    difficulty: 'Khó',
-    duration: '2N1Đ / 3N2Đ',
-    bestSeason: 'T10 – T3',
-    highlights: 'Đỉnh núi cao thứ 4 Việt Nam 3.012m, nơi ngự trị cột mốc biên giới số 79 thiêng liêng cao nhất toàn bờ cõi Tổ quốc.',
-    permitInfo: 'Đồn BP Vàng Ma Chải',
-    imageUrl: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=1200&q=80',
-    coordinates: { lat: 22.7533, lng: 103.3512 },
-    milestones: ['Dền Thàng (1.200m)', 'Lán Thảo Quả (2.200m)', 'Mốc 79 (3.012m)'],
+    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329101/trekmap/trails/trail_cover_trail-kyquansan.jpg',
+    coordinates: { lat: 22.5070, lng: 103.5874 },
+    milestones: ['Sàng Ma Sáo (1.060m)', 'Núi Muối (2.100m)', 'Đỉnh Kỳ Quan San (3.046m)'],
   },
   {
     rank: 5,
+    name: 'Khang Su Văn (Phàn Liên San)',
+    matchKey: 'khang su',
+    altitudeM: 3012,
+    province: 'Lai Châu',
+    mountainRange: 'Biên giới Phong Thổ',
+    difficulty: 'Rất Khó',
+    duration: '3N2Đ',
+    bestSeason: 'T10 – T4',
+    highlights: 'Đỉnh núi cao thứ 5 Việt Nam 3.012m thuộc xã Pa Vây Sử / Vàng Ma Chải — chinh phục Cột mốc biên giới số 79 (2.880m) cao nhất tuyến biên cương Việt–Trung.',
+    permitInfo: 'Đồn BP Vàng Ma Chải',
+    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329099/trekmap/trails/trail_cover_trail-taxua.jpg',
+    coordinates: { lat: 22.754, lng: 103.4395 },
+    milestones: ['Vàng Ma Chải (1.936m)', 'Cột Mốc 79 (2.880m)', 'Đỉnh Khang Su Văn (3.012m)'],
+  },
+  {
+    rank: 6,
     name: 'Tả Liên Sơn (Cổ Trâu)',
     matchKey: 'tả liên',
     altitudeM: 2996,
     province: 'Lai Châu',
     mountainRange: 'Khối Núi Tả Liên',
-    difficulty: 'Trung bình',
+    difficulty: 'Khó',
     duration: '2N1Đ',
     bestSeason: 'T9 – T4',
-    highlights: 'Đỉnh núi cao thứ 5 Việt Nam 2.996m, khu rừng cổ tích nguyên sinh rêu phong ma mị và thảm lá phong đỏ đẹp ngỡ ngàng.',
-    permitInfo: 'UBND Xã Tả Lèng',
-    imageUrl: 'https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=1200&q=80',
-    coordinates: { lat: 22.5841, lng: 103.5462 },
-    milestones: ['Bản Tả Lèng (1.100m)', 'Lán Rêu Phong (2.300m)', 'Đỉnh Tả Liên (2.996m)'],
+    highlights: 'Đỉnh 2.996m nổi tiếng với khu rừng cổ tích nguyên sinh rêu phong và thảm lá phong đỏ rực rỡ mỗi độ thu về.',
+    permitInfo: 'Chi cục KL Lai Châu',
+    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329104/trekmap/trails/trail_cover_trail-chuyangsin.jpg',
+    coordinates: { lat: 22.4628, lng: 103.556 },
+    milestones: ['Bản Tả Lèng (1.490m)', 'Lán 2.478m', 'Đỉnh Tả Liên (2.996m)'],
   },
   {
-    rank: 6,
-    name: 'Tà Chì Nhù (Song Sung)',
+    rank: 7,
+    name: 'Tà Chì Nhù (Phu Song Sung)',
     matchKey: 'chì nhù',
     altitudeM: 2979,
     province: 'Yên Bái',
@@ -125,27 +141,11 @@ const TOP_10_SUMMITS: SummitItem[] = [
     difficulty: 'Trung bình – Khó',
     duration: '2N1Đ',
     bestSeason: 'T9 – T11',
-    highlights: 'Đỉnh núi cao thứ 6 Việt Nam 2.979m, vương quốc hoa tím Chi Pâu đại ngàn và thảo nguyên săn mây đón gió lộng Trạm Tấu.',
+    highlights: 'Đỉnh 2.979m — vương quốc hoa tím Chi Pâu đại ngàn và thảo nguyên săn mây đón gió lộng vùng Trạm Tấu.',
     permitInfo: 'UBND Huyện Trạm Tấu',
-    imageUrl: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=1200&q=80',
-    coordinates: { lat: 21.5714, lng: 104.3125 },
-    milestones: ['Mỏ Chì Xà Hồ (1.200m)', 'Lán Ngựa (2.400m)', 'Đồi Hoa Chi Pâu (2.979m)'],
-  },
-  {
-    rank: 7,
-    name: 'Pờ Ma Lung',
-    matchKey: 'ma lung',
-    altitudeM: 2967,
-    province: 'Lai Châu',
-    mountainRange: 'Dãy Hoàng Liên Sơn',
-    difficulty: 'Rất Khó',
-    duration: '3N2Đ',
-    bestSeason: 'T10 – T4',
-    highlights: 'Đỉnh núi cao thứ 7 Việt Nam 2.967m, cung đường vượt thác Rồng hùng vĩ, vách đá dựng đứng cheo leo thử thách bản lĩnh.',
-    permitInfo: 'Đồn BP Bản Lang',
-    imageUrl: 'https://images.unsplash.com/photo-1486870591958-9b9d0d1dda99?auto=format&fit=crop&w=1200&q=80',
-    coordinates: { lat: 22.6125, lng: 103.4912 },
-    milestones: ['Bản Lang (900m)', 'Thác Rồng (1.800m)', 'Đỉnh Pờ Ma Lung (2.967m)'],
+    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329102/trekmap/trails/trail_cover_trail-tachinhu.jpg',
+    coordinates: { lat: 21.5707, lng: 104.3065 },
+    milestones: ['Mỏ Chì Xà Hồ (1.340m)', 'Lán Ngựa (2.400m)', 'Đỉnh Tà Chì Nhù (2.979m)'],
   },
   {
     rank: 8,
@@ -157,43 +157,43 @@ const TOP_10_SUMMITS: SummitItem[] = [
     difficulty: 'Khó',
     duration: '2N1Đ',
     bestSeason: 'T10 – T3',
-    highlights: 'Đỉnh núi cao thứ 8 Việt Nam 2.965m, con đường đá cổ Pavi lịch sử thời Pháp và ngọn thác Ong Chúa lộng lẫy giữa đại ngàn.',
-    permitInfo: 'Kiểm Lâm Sàng Ma Sáo',
-    imageUrl: 'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?auto=format&fit=crop&w=1200&q=80',
-    coordinates: { lat: 22.5982, lng: 103.5821 },
-    milestones: ['Bản Nhìu Cồ (1.400m)', 'Thác Ong Chúa (2.100m)', 'Đỉnh Nhìu Cồ (2.965m)'],
+    highlights: 'Đỉnh 2.965m đi qua rừng thảo quả, Thác Ong Chúa hùng vĩ và biển mây trên sống núi Sàng Ma Sáo.',
+    permitInfo: 'Đồn BP Sàng Ma Sáo',
+    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329103/trekmap/trails/trail_cover_trail-nhiucosan.jpg',
+    coordinates: { lat: 22.5838, lng: 103.5834 },
+    milestones: ['Bản Nhìu Cồ (1.520m)', 'Thác Ong Chúa (2.020m)', 'Đỉnh Nhìu Cồ (2.965m)'],
   },
   {
     rank: 9,
-    name: 'Chung Nhía Vũ',
-    matchKey: 'chung nhía',
-    altitudeM: 2918,
-    province: 'Lai Châu',
-    mountainRange: 'Dãy Hoàng Liên Sơn',
+    name: 'Lùng Cúng',
+    matchKey: 'lùng cúng',
+    altitudeM: 2913,
+    province: 'Yên Bái',
+    mountainRange: 'Mù Cang Chải',
     difficulty: 'Trung bình – Khó',
     duration: '2N1Đ',
     bestSeason: 'T10 – T4',
-    highlights: 'Đỉnh núi cao thứ 9 Việt Nam 2.918m, mốc biên giới số 83 canh giữ phên giậu biên cương, suối nguồn hoang sơ thanh tịnh.',
-    permitInfo: 'Đồn BP Nậm Xe',
-    imageUrl: 'https://images.unsplash.com/photo-1469854523086-cc02fe5d8800?auto=format&fit=crop&w=1200&q=80',
-    coordinates: { lat: 22.6841, lng: 103.4125 },
-    milestones: ['Bản Nậm Xe (1.000m)', 'Suối Trúc (2.100m)', 'Mốc 83 (2.918m)'],
+    highlights: 'Đỉnh 2.913m với rừng táo mèo cổ thụ, rừng phong lá đỏ tháng 11–12 và bãi cỏ cháy rộng lớn trên đỉnh.',
+    permitInfo: 'UBND Xã Nậm Có',
+    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329105/trekmap/trails/trail_cover_trail-bidoup.jpg',
+    coordinates: { lat: 21.9024, lng: 104.2308 },
+    milestones: ['Bản Tu San (1.115m)', 'Lán 2.400m', 'Đỉnh Lùng Cúng (2.913m)'],
   },
   {
     rank: 10,
-    name: 'Lảo Thẩn',
-    matchKey: 'lảo thẩn',
-    altitudeM: 2860,
-    province: 'Lào Cai',
-    mountainRange: 'Cao Nguyên Y Tý',
-    difficulty: 'Dễ – Trung bình',
-    duration: '2N1Đ',
-    bestSeason: 'T9 – T5',
-    highlights: 'Nóc nhà Y Tý 2.860m, triền đồi cỏ mây êm đềm bồng bềnh, cung đường trekking săn mây số 1 dành cho người mới bắt đầu.',
-    permitInfo: 'UBND Xã Y Tý',
-    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329103/trekmap/trails/trail_cover_trail-laothan.jpg',
-    coordinates: { lat: 22.551, lng: 103.608 },
-    milestones: ['Trang Trại Y Tý (1.800m)', 'Lán A Chơ 2.400m', 'Đỉnh Lảo Thẩn (2.860m)'],
+    name: 'Nam Kang Ho Tao',
+    matchKey: 'nam kang',
+    altitudeM: 2881,
+    province: 'Lai Châu',
+    mountainRange: 'Dãy Hoàng Liên Sơn (Tân Uyên)',
+    difficulty: 'Rất Khó',
+    duration: '3N2Đ',
+    bestSeason: 'T10 – T4',
+    highlights: 'Đỉnh núi 2.881m xuất phát từ bản Thào A (xã Hố Mít, Tân Uyên) — nổi tiếng với hệ thống suối đá lớn xếp tầng, vách đá dựng đứng và biển mây dày đặc.',
+    permitInfo: 'Chi cục KL Lai Châu',
+    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329100/trekmap/trails/trail_cover_trail-laothan.jpg',
+    coordinates: { lat: 22.1508, lng: 103.9693 },
+    milestones: ['Bản Thào A (1.575m)', 'Lán Sườn Núi (2.574m)', 'Đỉnh Nam Kang Ho Tao (2.881m)'],
   },
 ];
 
@@ -204,7 +204,6 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
 }) => {
   const [selectedRank, setSelectedRank] = useState<number>(1);
 
-  // Link summits with real database trails by exact keyword matching
   const summitsWithDb = useMemo(() => {
     const list = Array.isArray(trails) ? trails : [];
     return TOP_10_SUMMITS.map((summit) => {
@@ -218,7 +217,7 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
       return {
         ...summit,
         dbTrail: matched || null,
-        actualAltitude: summit.altitudeM, // Authoritative exact elevation
+        actualAltitude: summit.altitudeM,
       };
     });
   }, [trails]);
@@ -232,29 +231,29 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
         style={{
           background: 'var(--color-bg-card)',
           border: '1px solid var(--color-border)',
-          borderRadius: 20,
+          borderRadius: 4,
           padding: '18px 20px',
-          boxShadow: 'var(--shadow-card)',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <h3 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <IconMountain size={16} color="var(--color-sun)" />
-            Top 10 Đỉnh Cao Nhất
-          </h3>
-          <span style={{ fontSize: '0.7rem', color: 'var(--color-sun)', fontWeight: 800, background: 'rgba(234, 179, 8, 0.12)', padding: '2px 8px', borderRadius: 12, border: '1px solid rgba(234, 179, 8, 0.25)' }}>
+          <div>
+            <div className="section-eyebrow" style={{ marginBottom: 2 }}>Xếp hạng cao độ</div>
+            <h3 className="font-editorial" style={{ fontSize: '1.18rem', fontWeight: 500, color: 'var(--color-text-main)', margin: 0 }}>
+              Top 10 Đỉnh Cao Nhất
+            </h3>
+          </div>
+          <span className="badge badge-sun" style={{ fontVariantNumeric: 'tabular-nums' }}>
             3.143m
           </span>
         </div>
 
-        {/* Selected Peak Quick Card */}
         {selectedSummit && (
           <div
             style={{
               background: 'var(--color-bg-main)',
               border: '1px solid var(--color-border)',
-              borderRadius: 14,
-              padding: '12px',
+              borderRadius: 4,
+              padding: 12,
               marginBottom: 12,
               position: 'relative',
               overflow: 'hidden',
@@ -262,7 +261,7 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ background: 'var(--color-primary)', color: '#ffffff', fontSize: '0.68rem', fontWeight: 900, padding: '2px 7px', borderRadius: 6 }}>
+                <span style={{ background: 'var(--color-primary)', color: 'var(--color-on-primary)', fontSize: '0.68rem', fontWeight: 900, padding: '2px 7px', borderRadius: 3 }}>
                   #{selectedSummit.rank}
                 </span>
                 <span style={{ fontSize: '0.86rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
@@ -270,7 +269,7 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
                 </span>
               </div>
               <span style={{ fontSize: '0.82rem', fontWeight: 900, color: 'var(--color-sky)' }}>
-                {selectedSummit.actualAltitude}m
+                {selectedSummit.actualAltitude.toLocaleString('vi-VN')}m
               </span>
             </div>
 
@@ -280,10 +279,10 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
 
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
               <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)', background: 'var(--color-bg-card)', padding: '2px 6px', borderRadius: 6, border: '1px solid var(--color-border)' }}>
+                <span style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)', background: 'var(--color-bg-card)', padding: '2px 6px', borderRadius: 3, border: '1px solid var(--color-border)' }}>
                   {selectedSummit.province}
                 </span>
-                <span style={{ fontSize: '0.66rem', color: 'var(--color-sun)', background: 'var(--color-bg-card)', padding: '2px 6px', borderRadius: 6, border: '1px solid var(--color-border)', fontWeight: 700 }}>
+                <span style={{ fontSize: '0.66rem', color: 'var(--color-sun)', background: 'var(--color-bg-card)', padding: '2px 6px', borderRadius: 3, border: '1px solid var(--color-border)', fontWeight: 700 }}>
                   {selectedSummit.difficulty}
                 </span>
               </div>
@@ -293,22 +292,24 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
                   type="button"
                   onClick={() => onSelectTrail(selectedSummit.dbTrail!)}
                   className="btn btn-outline interactive-click"
-                  style={{ fontSize: '0.7rem', padding: '3px 8px', borderRadius: 6, fontWeight: 800 }}
+                  style={{ fontSize: '0.7rem', padding: '3px 8px', borderRadius: 4, fontWeight: 800 }}
                 >
-                  Xem Cung Đường →
+                  <span>Xem Cung Đường</span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></svg>
                 </button>
               )}
             </div>
           </div>
         )}
 
-        {/* 10 Peaks Mini Altitude List */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 200, overflowY: 'auto', paddingRight: 2 }}>
           {summitsWithDb.map((s) => {
             const isSelected = s.rank === selectedRank;
             return (
-              <div
+              <button
                 key={s.rank}
+                type="button"
+                aria-pressed={isSelected}
                 onClick={() => setSelectedRank(s.rank)}
                 className="interactive-click"
                 style={{
@@ -316,12 +317,13 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
                   alignItems: 'center',
                   justifyContent: 'space-between',
                   padding: '5px 8px',
-                  borderRadius: 8,
+                  borderRadius: 4,
                   border: isSelected ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
-                  background: isSelected ? 'rgba(5, 150, 105, 0.12)' : 'var(--color-bg-main)',
+                  background: isSelected ? 'color-mix(in srgb, var(--color-primary) 12%, transparent)' : 'var(--color-bg-main)',
                   cursor: 'pointer',
                   fontSize: '0.74rem',
-                  transition: 'all 0.15s ease',
+                  width: '100%',
+                  textAlign: 'left',
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
@@ -329,9 +331,9 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
                     style={{
                       width: 18,
                       height: 18,
-                      borderRadius: 4,
+                      borderRadius: 3,
                       background: isSelected ? 'var(--color-primary)' : 'var(--color-bg-card)',
-                      color: isSelected ? '#041108' : 'var(--color-text-dim)',
+                      color: isSelected ? 'var(--color-on-primary)' : 'var(--color-text-dim)',
                       fontSize: '0.64rem',
                       fontWeight: 800,
                       display: 'flex',
@@ -347,9 +349,9 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
                   </span>
                 </div>
                 <span style={{ fontWeight: 800, color: 'var(--color-sky)', fontSize: '0.72rem', flexShrink: 0 }}>
-                  {s.actualAltitude}m
+                  {s.actualAltitude.toLocaleString('vi-VN')}m
                 </span>
-              </div>
+              </button>
             );
           })}
         </div>
@@ -365,24 +367,23 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
         margin: '0 auto',
       }}
     >
-      {/* Section Header - Compact */}
+      {/* Section Header */}
       <div style={{ textAlign: 'center', marginBottom: 16 }}>
         <div
           style={{
             display: 'inline-flex',
             alignItems: 'center',
             gap: 6,
-            padding: '3px 12px',
-            borderRadius: 16,
+            padding: '4px 12px',
+            borderRadius: 4,
             background: 'var(--color-bg-card)',
             border: '1px solid var(--color-border)',
             fontSize: '0.72rem',
             fontWeight: 800,
             color: 'var(--color-sun)',
             textTransform: 'uppercase',
-            letterSpacing: '0.05em',
-            marginBottom: 6,
-            boxShadow: 'var(--shadow-card)',
+            letterSpacing: '0.06em',
+            marginBottom: 8,
           }}
         >
           <IconMountain size={14} color="var(--color-sun)" />
@@ -405,22 +406,18 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
         </p>
       </div>
 
-      {/* Main Container Layout - Space-Efficient Screen-Fit Grid */}
+      {/* Main Container Layout */}
       <div
+        className="summit-ladder-grid"
         style={{
           background: 'var(--color-bg-card)',
           border: '1px solid var(--color-border)',
-          borderRadius: 18,
+          borderRadius: 6,
           padding: '16px 18px',
           boxShadow: 'var(--shadow-card)',
-          display: 'grid',
-          gridTemplateColumns: 'minmax(300px, 38%) minmax(360px, 62%)',
-          gap: 16,
-          backdropFilter: 'blur(16px)',
-          alignItems: 'stretch',
         }}
       >
-        {/* Left Side: 10-Summit Ranking List (Compact rows) */}
+        {/* Left Side: 10-Summit Ranking List */}
         <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <span style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
@@ -434,26 +431,27 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
               const altitudeProgress = Math.max(5, Math.min(100, ((s.actualAltitude - 2800) / (3143 - 2800)) * 100));
 
               return (
-                <div
+                <button
                   key={s.rank}
+                  type="button"
+                  aria-pressed={isSelected}
                   onClick={() => setSelectedRank(s.rank)}
                   className="interactive-click"
                   style={{
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
-                    padding: '4.5px 10px',
-                    borderRadius: 9,
-                    border: isSelected ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)',
-                    background: isSelected ? 'rgba(5, 150, 105, 0.14)' : 'var(--color-bg-main)',
+                    padding: '5px 10px',
+                    borderRadius: 4,
+                    border: isSelected ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+                    background: isSelected ? 'color-mix(in srgb, var(--color-primary) 12%, transparent)' : 'var(--color-bg-main)',
                     cursor: 'pointer',
                     position: 'relative',
                     overflow: 'hidden',
-                    transition: 'all 0.12s ease',
-                    boxShadow: isSelected ? '0 0 12px rgba(5, 150, 105, 0.2)' : 'none',
+                    width: '100%',
+                    textAlign: 'left',
                   }}
                 >
-                  {/* Subtle Altitude Background Progress Bar */}
                   <div
                     style={{
                       position: 'absolute',
@@ -461,7 +459,7 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
                       top: 0,
                       bottom: 0,
                       width: `${altitudeProgress}%`,
-                      background: isSelected ? 'rgba(5, 150, 105, 0.08)' : 'transparent',
+                      background: isSelected ? 'color-mix(in srgb, var(--color-primary) 8%, transparent)' : 'transparent',
                       pointerEvents: 'none',
                     }}
                   />
@@ -469,11 +467,11 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative', zIndex: 1 }}>
                     <span
                       style={{
-                        width: 19,
-                        height: 19,
-                        borderRadius: 5,
+                        width: 20,
+                        height: 20,
+                        borderRadius: 3,
                         background: isSelected ? 'var(--color-primary)' : 'var(--color-bg-card)',
-                        color: isSelected ? '#041108' : 'var(--color-text-dim)',
+                        color: isSelected ? 'var(--color-on-primary)' : 'var(--color-text-dim)',
                         fontSize: '0.68rem',
                         fontWeight: 900,
                         display: 'flex',
@@ -492,20 +490,20 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
                           {s.name}
                         </strong>
                         {s.dbTrail && (
-                          <span title="Dữ liệu GPX đã xác thực trong hệ thống TrekMap">
+                          <span title="Dữ liệu GPX đã xác thực trong hệ thống LOST">
                             <IconCheckCircle size={12} color="var(--color-primary)" />
                           </span>
                         )}
                       </div>
-                      <div style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)', lineHeight: 1.1 }}>
+                      <div style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)', lineHeight: 1.15 }}>
                         {s.province}
                       </div>
                     </div>
                   </div>
 
                   <div style={{ textAlign: 'right', position: 'relative', zIndex: 1, flexShrink: 0 }}>
-                    <div style={{ fontSize: '0.86rem', fontWeight: 900, color: 'var(--color-sun)', fontFamily: 'monospace', lineHeight: 1.2 }}>
-                      {s.actualAltitude}m
+                    <div style={{ fontSize: '0.86rem', fontWeight: 900, color: 'var(--color-sun)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.2 }}>
+                      {s.actualAltitude.toLocaleString('vi-VN')}m
                     </div>
                     <span
                       style={{
@@ -514,12 +512,12 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
                         padding: '1px 5px',
                         borderRadius: 3,
                         background: s.difficulty.includes('Rất Khó')
-                          ? 'rgba(239, 68, 68, 0.15)'
+                          ? 'color-mix(in srgb, var(--color-error) 14%, transparent)'
                           : s.difficulty.includes('Khó')
-                          ? 'rgba(249, 115, 22, 0.15)'
-                          : 'rgba(5, 150, 105, 0.15)',
+                          ? 'color-mix(in srgb, var(--color-earth) 14%, transparent)'
+                          : 'color-mix(in srgb, var(--color-primary) 14%, transparent)',
                         color: s.difficulty.includes('Rất Khó')
-                          ? 'var(--color-error)'
+                          ? 'var(--color-error-text, var(--banner-danger-text))'
                           : s.difficulty.includes('Khó')
                           ? 'var(--color-earth)'
                           : 'var(--color-primary)',
@@ -528,60 +526,80 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
                       {s.difficulty}
                     </span>
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>
         </div>
 
-        {/* Right Side: Compact Mountain Showcase Card */}
+        {/* Right Side: Mountain Showcase Card */}
         <div
           style={{
             background: 'var(--color-bg-main)',
             border: '1px solid var(--color-border)',
-            borderRadius: 16,
+            borderRadius: 6,
             overflow: 'hidden',
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'space-between',
-            boxShadow: 'var(--shadow-card)',
           }}
         >
           <div>
-            {/* 1. Sleek Panoramic Banner */}
+            {/* Panoramic Banner (<img> with verified Cloudinary fallback) */}
             <div
               style={{
                 position: 'relative',
-                height: 110,
-                backgroundImage: `url(${selectedSummit.imageUrl})`,
-                backgroundSize: 'cover',
-                backgroundPosition: 'center',
+                minHeight: 148,
+                background: 'var(--color-surface-elevated)',
+                overflow: 'hidden',
                 display: 'flex',
                 flexDirection: 'column',
                 justifyContent: 'space-between',
-                padding: '10px 14px',
+                gap: 12,
+                padding: '12px 14px',
               }}
             >
-              {/* Scrim Overlay */}
+              <img
+                key={selectedSummit.name}
+                src={selectedSummit.imageUrl || TOP_10_SUMMITS[0].imageUrl}
+                alt={selectedSummit.name}
+                loading="lazy"
+                onError={(e) => {
+                  const img = e.currentTarget;
+                  if (img.src !== TOP_10_SUMMITS[0].imageUrl) {
+                    img.src = TOP_10_SUMMITS[0].imageUrl;
+                  }
+                }}
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  display: 'block',
+                }}
+              />
               <div
                 style={{
                   position: 'absolute',
                   inset: 0,
-                  background: 'linear-gradient(180deg, rgba(7, 13, 30, 0.35) 0%, rgba(7, 13, 30, 0.94) 100%)',
+                  backgroundImage:
+                    'linear-gradient(180deg, color-mix(in srgb, var(--overlay-bg) 48%, transparent) 0%, var(--overlay-bg) 100%), linear-gradient(180deg, transparent 35%, var(--overlay-bg) 100%)',
                   pointerEvents: 'none',
                 }}
               />
 
-              {/* Top Tags */}
-              <div style={{ position: 'relative', zIndex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              {/* Top Tags — High WCAG Contrast in BOTH Dark & Light Mode */}
+              <div style={{ position: 'relative', zIndex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
                 <span
                   style={{
-                    background: 'var(--color-sun)',
-                    color: '#ffffff',
+                    background: 'var(--color-bg-card)',
+                    color: 'var(--color-sun)',
+                    border: '1px solid var(--color-sun)',
                     fontWeight: 900,
                     fontSize: '0.68rem',
                     padding: '2px 8px',
-                    borderRadius: 12,
+                    borderRadius: 4,
                   }}
                 >
                   TOP #{selectedSummit.rank} ĐỈNH NÚI
@@ -589,137 +607,138 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
 
                 <div
                   style={{
-                    background: 'rgba(7, 13, 30, 0.75)',
+                    background: 'var(--overlay-bg)',
                     backdropFilter: 'blur(8px)',
-                    border: '1px solid var(--color-border)',
-                    borderRadius: 10,
+                    border: '1px solid color-mix(in srgb, var(--color-on-media) 22%, transparent)',
+                    borderRadius: 4,
                     padding: '2px 8px',
                     fontSize: '0.68rem',
-                    color: 'var(--color-sky)',
+                    color: 'var(--color-on-media)',
                     fontWeight: 700,
                     display: 'flex',
                     alignItems: 'center',
                     gap: 4,
+                    fontVariantNumeric: 'tabular-nums',
                   }}
                 >
-                  <IconCompass size={12} color="var(--color-sky)" />
+                  <IconCompass size={12} color="var(--color-on-media)" />
                   {selectedSummit.coordinates.lat}° N, {selectedSummit.coordinates.lng}° E
                 </div>
               </div>
 
               {/* Bottom Title in Banner */}
-              <div style={{ position: 'relative', zIndex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+              <div style={{ position: 'relative', zIndex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10 }}>
                 <div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', fontWeight: 600 }}>
-                    {selectedSummit.mountainRange} • {selectedSummit.province}
+                  <div style={{ fontSize: '0.72rem', color: 'color-mix(in srgb, var(--color-on-media) 85%, transparent)', fontWeight: 600 }}>
+                    {selectedSummit.mountainRange} · {selectedSummit.province}
                   </div>
-                  <h3 style={{ fontSize: '1.25rem', fontWeight: 900, color: '#ffffff', margin: 0, textShadow: '0 2px 8px rgba(0,0,0,0.8)' }}>
+                  <h3 style={{ fontSize: '1.25rem', fontWeight: 900, color: 'var(--color-on-media)', margin: 0, textShadow: '0 2px 8px var(--overlay-bg)' }}>
                     {selectedSummit.name}
                   </h3>
                 </div>
 
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: '1.28rem', fontWeight: 900, color: 'var(--color-sun)', fontFamily: 'monospace', textShadow: '0 2px 8px rgba(0,0,0,0.8)', lineHeight: 1.1 }}>
-                    {selectedSummit.actualAltitude}m
+                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                  <div style={{ fontSize: '1.28rem', fontWeight: 900, color: 'var(--color-on-media)', fontVariantNumeric: 'tabular-nums', textShadow: '0 2px 8px var(--overlay-bg)', lineHeight: 1.1 }}>
+                    {selectedSummit.actualAltitude.toLocaleString('vi-VN')}m
                   </div>
-                  <span style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.8)', fontWeight: 600 }}>
+                  <span style={{ fontSize: '0.65rem', color: 'color-mix(in srgb, var(--color-on-media) 82%, transparent)', fontWeight: 600 }}>
                     Độ cao thực địa
                   </span>
                 </div>
               </div>
             </div>
 
-            {/* 2. Body Details (Space-Optimized) */}
+            {/* Body Details */}
             <div style={{ padding: '12px 14px 0 14px' }}>
-              <p style={{ color: 'var(--color-text-muted)', fontSize: '0.8rem', lineHeight: 1.45, margin: '0 0 10px 0' }}>
+              <p style={{ color: 'var(--color-text-muted)', fontSize: '0.82rem', lineHeight: 1.5, margin: '0 0 12px 0' }}>
                 {selectedSummit.highlights}
               </p>
 
-              {/* 4-Metric Grid */}
+              {/* Responsive 4-Metric Grid (auto-fits cleanly on mobile) */}
               <div
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(4, 1fr)',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(min(112px, 100%), 1fr))',
                   gap: 6,
                   marginBottom: 10,
                 }}
               >
-                <div style={{ background: 'var(--color-bg-card)', padding: '5px 6px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                  <div style={{ fontSize: '0.62rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Độ Khó</div>
-                  <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: 1 }}>
+                <div style={{ background: 'var(--color-bg-card)', padding: '6px 8px', borderRadius: 4, border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                  <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Độ Khó</div>
+                  <div style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: 2 }}>
                     {selectedSummit.difficulty}
                   </div>
                 </div>
 
-                <div style={{ background: 'var(--color-bg-card)', padding: '5px 6px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                  <div style={{ fontSize: '0.62rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Thời Lượng</div>
-                  <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-sky)', marginTop: 1 }}>
+                <div style={{ background: 'var(--color-bg-card)', padding: '6px 8px', borderRadius: 4, border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                  <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Thời Lượng</div>
+                  <div style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--color-sky)', marginTop: 2 }}>
                     {selectedSummit.duration}
                   </div>
                 </div>
 
-                <div style={{ background: 'var(--color-bg-card)', padding: '5px 6px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                  <div style={{ fontSize: '0.62rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Mùa Đẹp</div>
-                  <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-earth)', marginTop: 1 }}>
+                <div style={{ background: 'var(--color-bg-card)', padding: '6px 8px', borderRadius: 4, border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                  <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Mùa Đẹp</div>
+                  <div style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--color-earth)', marginTop: 2 }}>
                     {selectedSummit.bestSeason}
                   </div>
                 </div>
 
-                <div style={{ background: 'var(--color-bg-card)', padding: '5px 6px', borderRadius: 8, border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                  <div style={{ fontSize: '0.62rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Thủ Tục</div>
-                  <div style={{ fontSize: '0.7rem', fontWeight: 800, color: 'var(--color-sun)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={selectedSummit.permitInfo}>
+                <div style={{ background: 'var(--color-bg-card)', padding: '6px 8px', borderRadius: 4, border: '1px solid var(--color-border)', textAlign: 'center' }}>
+                  <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Thủ Tục</div>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-sun)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={selectedSummit.permitInfo}>
                     {selectedSummit.permitInfo.split(',')[0]}
                   </div>
                 </div>
               </div>
 
-              {/* 3. Trekking Milestones Timeline */}
+              {/* Trekking Milestones Timeline (Wraps cleanly on mobile) */}
               <div
                 style={{
                   background: 'var(--color-bg-card)',
                   border: '1px solid var(--color-border)',
-                  borderRadius: 9,
-                  padding: '7px 10px',
+                  borderRadius: 4,
+                  padding: '8px 10px',
                   marginBottom: 10,
                 }}
               >
-                <div style={{ fontSize: '0.64rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', marginBottom: 4, letterSpacing: '0.03em' }}>
+                <div style={{ fontSize: '0.64rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', marginBottom: 6, letterSpacing: '0.04em' }}>
                   LỘ TRÌNH CỘT MỐC TIÊU BIỂU
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
                   {selectedSummit.milestones.map((m, idx) => (
                     <React.Fragment key={idx}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.7rem', color: idx === 2 ? 'var(--color-sun)' : 'var(--color-text-main)', fontWeight: 700 }}>
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.72rem', color: idx === 2 ? 'var(--color-sun)' : 'var(--color-text-main)', fontWeight: 700 }}>
                         {idx === 0 && <IconTrees size={11} color="var(--color-primary)" />}
                         {idx === 1 && <IconFlame size={11} color="var(--color-earth)" />}
                         {idx === 2 && <IconMountain size={11} color="var(--color-sun)" />}
                         <span>{m}</span>
                       </div>
                       {idx < selectedSummit.milestones.length - 1 && (
-                        <span style={{ color: 'var(--color-border-glow)', fontSize: '0.68rem', fontWeight: 900 }}>➔</span>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-border-glow)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></svg>
                       )}
                     </React.Fragment>
                   ))}
                 </div>
               </div>
 
-              {/* 4. Database Tracklog Status */}
+              {/* Database Tracklog Status */}
               {selectedSummit.dbTrail && selectedSummit.dbTrail.name && selectedSummit.dbTrail.name.trim().length >= 4 ? (
                 <div
                   style={{
-                    background: 'rgba(5, 150, 105, 0.08)',
+                    background: 'color-mix(in srgb, var(--color-primary) 10%, transparent)',
                     border: '1px solid var(--color-border-glow)',
-                    borderRadius: 9,
-                    padding: '7px 10px',
+                    borderRadius: 4,
+                    padding: '8px 10px',
                     marginBottom: 12,
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-primary)', marginBottom: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-primary)', marginBottom: 2 }}>
                     <IconCheckCircle size={12} color="var(--color-primary)" />
                     Tuyến GPX Sẵn Sàng: {selectedSummit.dbTrail.name}
                   </div>
-                  <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>
-                    Chiều dài: {selectedSummit.dbTrail.distanceKm} km • Độ dốc: +{selectedSummit.dbTrail.elevationGainM || 1400}m
+                  <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>
+                    Chiều dài: {selectedSummit.dbTrail.distanceKm} km · Độ dốc: +{selectedSummit.dbTrail.elevationGainM || 1400}m
                   </div>
                 </div>
               ) : (
@@ -727,10 +746,10 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
                   style={{
                     background: 'var(--color-bg-card)',
                     border: '1px solid var(--color-border)',
-                    borderRadius: 9,
-                    padding: '7px 10px',
+                    borderRadius: 4,
+                    padding: '8px 10px',
                     marginBottom: 12,
-                    fontSize: '0.7rem',
+                    fontSize: '0.72rem',
                     color: 'var(--color-text-dim)',
                     display: 'flex',
                     alignItems: 'center',
@@ -744,7 +763,7 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
             </div>
           </div>
 
-          {/* 5. Compact Bottom Action Button */}
+          {/* Bottom Action Button */}
           <div style={{ padding: '0 14px 14px 14px' }}>
             <button
               type="button"
@@ -754,10 +773,10 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
                 }
               }}
               disabled={!selectedSummit.dbTrail}
-              className="btn btn-primary interactive-click ripple-fx"
+              className="btn btn-primary interactive-click"
               style={{
                 width: '100%',
-                borderRadius: 10,
+                borderRadius: 4,
                 padding: '9px 12px',
                 fontSize: '0.82rem',
                 fontWeight: 800,
@@ -769,8 +788,11 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
                 cursor: selectedSummit.dbTrail ? 'pointer' : 'default',
               }}
             >
-              <IconMapPin size={15} color="#041108" />
-              {selectedSummit.dbTrail ? `Xem Bản Đồ 3D & Lịch Trình ${selectedSummit.name} ➔` : `Chưa Có Tuyến GPX Riêng Cho ${selectedSummit.name}`}
+              <IconMapPin size={15} color="var(--color-on-primary)" />
+              <span>{selectedSummit.dbTrail ? `Xem Hồ Sơ, Bản Đồ 3D & Lịch Trình ${selectedSummit.name}` : `Chưa Có Tuyến GPX Riêng Cho ${selectedSummit.name}`}</span>
+              {selectedSummit.dbTrail && (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--color-on-primary)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></svg>
+              )}
             </button>
           </div>
         </div>

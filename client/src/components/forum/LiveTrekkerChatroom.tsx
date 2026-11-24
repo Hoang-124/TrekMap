@@ -6,14 +6,16 @@ import {
   IconQuote,
   IconClock,
   IconX,
+  IconAlertTriangle,
 } from '../common/SvgIcons.js';
 import { useSocket } from '../../hooks/useSocket.js';
+import type { UserProfile } from '../../types.js';
 
 export interface CommunityChatMessage {
   id: string;
   senderId?: string;
   senderName: string;
-  senderAvatar: string;
+  senderAvatar?: string;
   senderBadge?: string;
   nameColor?: string;
   quote?: { author: string; text: string };
@@ -23,7 +25,7 @@ export interface CommunityChatMessage {
 }
 
 interface LiveTrekkerChatroomProps {
-  currentUser?: any;
+  currentUser?: (UserProfile & { _id?: string; avatar?: string }) | null;
   onRequireLogin?: (actionName: string) => void;
 }
 
@@ -34,11 +36,21 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
   const [onlineCount, setOnlineCount] = useState<number>(1);
   const [isSending, setIsSending] = useState(false);
   const [cooldown, setCooldown] = useState<number>(0);
+  const [chatErrorMsg, setChatErrorMsg] = useState<string>('');
+  const { socket } = useSocket();
+  const [socketConnState, setSocketConnState] = useState<{ sock: typeof socket; connected: boolean } | null>(null);
+
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const notificationAudioRef = useRef<HTMLAudioElement | null>(null);
   const sentMessageIds = useRef<Set<string>>(new Set());
-  const { socket } = useSocket();
+  const currentUserRef = useRef(currentUser);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
+
+  const currentUserId = String(currentUser?._id || currentUser?.id || '');
 
   // Preload notification sound
   useEffect(() => {
@@ -46,8 +58,8 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
       notificationAudioRef.current = new Audio('/audio/notification.mp3');
       notificationAudioRef.current.volume = 0.75;
       notificationAudioRef.current.load();
-    } catch (e) {
-      console.warn('Could not initialize audio object', e);
+    } catch {
+      // ignore audio init restrictions
     }
   }, []);
 
@@ -65,10 +77,6 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
       if (notificationAudioRef.current) {
         notificationAudioRef.current.currentTime = 0;
         notificationAudioRef.current.play().catch(() => {});
-      } else {
-        const audio = new Audio('/audio/notification.mp3');
-        audio.volume = 0.75;
-        audio.play().catch(() => {});
       }
     } catch {}
   };
@@ -99,34 +107,38 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
     fetchChatHistory();
   }, []);
 
-  // Socket.io Real-time Event Wiring
+  // Stabilized Socket.io room join effect (depends ONLY on socket & primitive currentUserId)
   useEffect(() => {
     if (!socket) return;
 
-    // Join public community room
-    socket.emit('joinCommunityChat');
+    const handleConnect = () => {
+      setSocketConnState({ sock: socket, connected: true });
+      setChatErrorMsg('');
+      socket.emit('joinCommunityChat');
+    };
+
+    const handleDisconnect = () => {
+      setSocketConnState({ sock: socket, connected: false });
+    };
+
+    if (socket.connected) {
+      socket.emit('joinCommunityChat');
+    }
 
     const handleNewMessage = (msg: CommunityChatMessage) => {
-      let activeUserId = currentUser?._id || currentUser?.id;
-      if (!activeUserId) {
-        try {
-          const stored = JSON.parse(localStorage.getItem('trekmap_user') || 'null');
-          activeUserId = stored?._id || stored?.id;
-        } catch {}
-      }
+      const activeUser = currentUserRef.current;
+      const activeUid = String(activeUser?._id || activeUser?.id || '');
       const isFromMe = Boolean(
         sentMessageIds.current.has(msg.id) ||
-        (activeUserId && msg.senderId && String(msg.senderId) === String(activeUserId)) ||
-        (currentUser?.fullName && msg.senderName === currentUser.fullName)
+          (activeUid && msg.senderId && String(msg.senderId) === activeUid) ||
+          (activeUser?.fullName && msg.senderName === activeUser.fullName)
       );
 
-      // Only play notification sound if message is from another trekker
       if (!isFromMe) {
         playIncomingNotificationSound();
       }
 
       setMessages((prev) => {
-        // Prevent duplicate messages by id
         if (prev.some((m) => m.id === msg.id)) return prev;
         return [...prev, msg];
       });
@@ -137,47 +149,83 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
       setOnlineCount(Math.max(1, count || 1));
     };
 
+    const handleChatError = (payload: unknown) => {
+      const errObj = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
+      const msg =
+        typeof payload === 'string'
+          ? payload
+          : (typeof errObj?.message === 'string' && errObj.message) ||
+            (typeof errObj?.error === 'string' && errObj.error) ||
+            'Tin nhắn không được chấp nhận bởi máy chủ.';
+      setChatErrorMsg(msg);
+      setCooldown(0);
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: { message: msg, type: 'error' },
+        })
+      );
+    };
+
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
     socket.on('communityOnlineCount', handleOnlineCount);
     socket.on('newCommunityMessage', handleNewMessage);
+    socket.on('chatError', handleChatError);
 
     return () => {
       socket.emit('leaveCommunityChat');
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
       socket.off('communityOnlineCount', handleOnlineCount);
       socket.off('newCommunityMessage', handleNewMessage);
+      socket.off('chatError', handleChatError);
     };
-  }, [socket, currentUser]);
+  }, [socket, currentUserId]);
 
   useEffect(() => {
     scrollToBottom();
   }, [messages.length]);
 
+  const isOnlineReady = Boolean(
+    socket && (socketConnState?.sock === socket ? socketConnState.connected : socket.connected)
+  );
+
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputText.trim() || cooldown > 0) return;
 
-    const token = localStorage.getItem('trekmap_token');
+    const token = localStorage.getItem('lost_token');
     if (!currentUser && !token) {
       if (onRequireLogin) onRequireLogin('gửi tin nhắn trò chuyện cộng đồng');
+      else window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
       return;
     }
 
+    if (!socket || !socket.connected) {
+      const offlineMsg = 'Phòng chat trực tuyến đang ngoại tuyến. Vui lòng chờ kết nối lại trước khi gửi tin.';
+      setChatErrorMsg(offlineMsg);
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: { message: offlineMsg, type: 'error' },
+        })
+      );
+      return;
+    }
+
+    setChatErrorMsg('');
     setIsSending(true);
     setTimeout(() => setIsSending(false), 300);
-
-    // Start 10-second cooldown timer
     setCooldown(10);
 
     const senderName = currentUser?.fullName || 'Trekker';
-    const senderAvatar =
-      currentUser?.avatarUrl ||
-      'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=100&q=80';
+    const senderAvatar = currentUser?.avatarUrl || currentUser?.avatar || '';
 
     const msgData: CommunityChatMessage = {
       id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      senderId: currentUser?._id || currentUser?.id,
+      senderId: currentUserId || undefined,
       senderName,
       senderAvatar,
-      senderBadge: currentUser?.role === 'admin' ? 'BQT TrekMap' : 'Trekker',
+      senderBadge: currentUser?.role === 'admin' ? 'BQT LOST' : 'Trekker',
       nameColor: currentUser?.role === 'admin' ? 'var(--color-sky)' : 'var(--color-primary)',
       quote: quoteMessage || undefined,
       text: inputText.trim(),
@@ -185,14 +233,8 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
       time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
     };
 
-    // Track own message ID so socket broadcast doesn't re-trigger notification sound
     sentMessageIds.current.add(msgData.id);
-
-    if (socket) {
-      socket.emit('sendCommunityChatMessage', msgData);
-    } else {
-      setMessages((prev) => [...prev, msgData]);
-    }
+    socket.emit('sendCommunityChatMessage', msgData);
 
     setInputText('');
     setQuoteMessage(null);
@@ -202,7 +244,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
     if (!dateStr) return 'Vừa xong';
     try {
       const d = new Date(dateStr);
-      if (isNaN(d.getTime())) return dateStr;
+      if (Number.isNaN(d.getTime())) return dateStr;
       return d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
     } catch {
       return 'Vừa xong';
@@ -215,9 +257,9 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
       style={{
         background: 'var(--color-bg-card)',
         border: '1px solid var(--color-border)',
-        borderRadius: 20,
+        borderRadius: 4,
         overflow: 'hidden',
-        boxShadow: 'var(--shadow-card)',
+        padding: 0,
         display: 'flex',
         flexDirection: 'column',
         height: 540,
@@ -232,61 +274,98 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          gap: 10,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <div
             style={{
               width: 32,
               height: 32,
-              borderRadius: '50%',
-              background: 'rgba(5, 150, 105, 0.15)',
+              borderRadius: 4,
+              background: 'var(--color-surface-elevated)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              border: '1px solid var(--color-primary)',
+              border: '1px solid var(--color-border-strong)',
             }}
           >
-            <IconMessageSquare size={16} color="var(--color-primary)" />
+            <IconMessageSquare size={15} color="var(--color-primary)" />
           </div>
           <div>
-            <div style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)', lineHeight: 1.2 }}>
+            <div className="font-editorial" style={{ fontSize: '1.12rem', fontWeight: 500, color: 'var(--color-text-main)', lineHeight: 1.15 }}>
               Phòng Chat Thực Địa 24/7
             </div>
-            <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', marginTop: 2 }}>
-              Trao đổi lộ trình & tình hình thời tiết
+            <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', marginTop: 2 }}>
+              Trao đổi lộ trình &amp; tình hình thời tiết
             </div>
           </div>
         </div>
 
-        {/* Live Online Badge */}
+        {/* Live Online / Offline Status Badge */}
         <div
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 5,
-            padding: '4px 10px',
-            borderRadius: 14,
-            background: 'rgba(5, 150, 105, 0.12)',
-            border: '1px solid rgba(5, 150, 105, 0.3)',
-            fontSize: '0.7rem',
-            fontWeight: 800,
-            color: 'var(--color-primary)',
-          }}
+          className={`badge ${isOnlineReady ? 'badge-success' : 'badge-error'}`}
+          style={{ fontVariantNumeric: 'tabular-nums' }}
         >
           <span
             style={{
-              width: 7,
-              height: 7,
+              width: 6,
+              height: 6,
               borderRadius: '50%',
-              background: 'var(--color-primary)',
-              boxShadow: '0 0 8px var(--color-primary)',
-              animation: 'pulse 1.8s infinite',
+              background: isOnlineReady ? 'var(--color-primary)' : 'var(--color-error)',
             }}
           />
-          <span>{onlineCount} Trực tuyến</span>
+          <span>{isOnlineReady ? `${onlineCount} Trực tuyến` : 'Ngoại tuyến'}</span>
         </div>
       </div>
+
+      {/* Honest Offline Notice Banner */}
+      {!isOnlineReady && (
+        <div
+          style={{
+            padding: '8px 14px',
+            background: 'color-mix(in srgb, var(--color-earth) 12%, transparent)',
+            borderBottom: '1px solid color-mix(in srgb, var(--color-earth) 35%, transparent)',
+            color: 'var(--color-earth)',
+            fontSize: '0.74rem',
+            fontWeight: 700,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}
+        >
+          <IconAlertTriangle size={14} color="var(--color-earth)" style={{ flexShrink: 0 }} />
+          <span>Phòng chat thời gian thực đang mất kết nối máy chủ. Bạn vẫn xem được lịch sử gần nhất; hệ thống sẽ tự nối lại khi có mạng.</span>
+        </div>
+      )}
+
+      {/* Server Chat Error Inline Banner */}
+      {chatErrorMsg && (
+        <div
+          style={{
+            padding: '8px 14px',
+            background: 'var(--banner-danger-bg)',
+            borderBottom: '1px solid var(--banner-danger-border)',
+            color: 'var(--banner-danger-text)',
+            fontSize: '0.74rem',
+            fontWeight: 700,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+          }}
+        >
+          <span>{chatErrorMsg}</span>
+          <button
+            type="button"
+            onClick={() => setChatErrorMsg('')}
+            aria-label="Đóng thông báo lỗi"
+            style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', padding: 2 }}
+          >
+            <IconX size={13} />
+          </button>
+        </div>
+      )}
 
       {/* Message List Area */}
       <div
@@ -309,17 +388,9 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
           </div>
         ) : (
           messages.map((msg) => {
-            let activeUserId = currentUser?._id || currentUser?.id;
-            if (!activeUserId) {
-              try {
-                const stored = JSON.parse(localStorage.getItem('trekmap_user') || 'null');
-                activeUserId = stored?._id || stored?.id;
-              } catch {}
-            }
-
             const isMe = Boolean(
-              (activeUserId && msg.senderId && String(msg.senderId) === String(activeUserId)) ||
-              (currentUser?.fullName && msg.senderName === currentUser.fullName)
+              (currentUserId && msg.senderId && String(msg.senderId) === currentUserId) ||
+                (currentUser?.fullName && msg.senderName === currentUser.fullName)
             );
             const hasValidQuote = Boolean(msg.quote && msg.quote.author && msg.quote.text && msg.quote.text.trim());
 
@@ -334,16 +405,15 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                   padding: '4px 6px',
                   alignSelf: isMe ? 'flex-end' : 'flex-start',
                   maxWidth: '85%',
-                  transition: 'background 0.15s ease',
                   position: 'relative',
                 }}
                 className="chat-message-row chat-message-pop"
               >
-                {/* Avatar with fallback */}
                 {msg.senderAvatar && msg.senderAvatar.startsWith('http') ? (
                   <img
                     src={msg.senderAvatar}
                     alt={msg.senderName}
+                    referrerPolicy="no-referrer"
                     style={{
                       width: 32,
                       height: 32,
@@ -361,7 +431,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                       height: 32,
                       borderRadius: '50%',
                       background: isMe ? 'var(--color-primary)' : 'var(--color-sky)',
-                      color: isMe ? '#041108' : '#ffffff',
+                      color: 'var(--color-on-primary)',
                       fontWeight: 800,
                       fontSize: '0.8rem',
                       display: 'flex',
@@ -377,8 +447,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                 )}
 
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start', maxWidth: '100%' }}>
-                  {/* Sender Name & Badge & Time & Reply Button */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, flexDirection: isMe ? 'row-reverse' : 'row' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, flexDirection: isMe ? 'row-reverse' : 'row', flexWrap: 'wrap' }}>
                     <span style={{ fontSize: '0.78rem', fontWeight: 800, color: isMe ? 'var(--color-primary)' : (msg.nameColor || 'var(--color-text-main)') }}>
                       {isMe ? 'Bạn' : msg.senderName}
                     </span>
@@ -388,8 +457,8 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                           fontSize: '0.6rem',
                           fontWeight: 700,
                           padding: '1px 5px',
-                          borderRadius: 6,
-                          background: isMe ? 'rgba(5, 150, 105, 0.15)' : 'var(--color-bg-card)',
+                          borderRadius: 4,
+                          background: isMe ? 'color-mix(in srgb, var(--color-primary) 15%, transparent)' : 'var(--color-bg-card)',
                           border: '1px solid var(--color-border)',
                           color: isMe ? 'var(--color-primary)' : 'var(--color-text-dim)',
                         }}
@@ -401,7 +470,6 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                       {msg.time || formatMessageTime(msg.createdAt)}
                     </span>
 
-                    {/* Quick Reply Button */}
                     <button
                       type="button"
                       title="Trả lời tin nhắn này"
@@ -412,7 +480,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                       style={{
                         background: 'var(--color-bg-card)',
                         border: '1px solid var(--color-border)',
-                        borderRadius: 6,
+                        borderRadius: 4,
                         color: 'var(--color-text-muted)',
                         cursor: 'pointer',
                         padding: '2px 5px',
@@ -422,45 +490,34 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                         gap: 3,
                         fontWeight: 700,
                       }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.color = 'var(--color-primary)';
-                        e.currentTarget.style.borderColor = 'var(--color-primary)';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.color = 'var(--color-text-muted)';
-                        e.currentTarget.style.borderColor = 'var(--color-border)';
-                      }}
                     >
                       <IconQuote size={10} />
                       <span>Trả lời</span>
                     </button>
                   </div>
 
-                  {/* Message Bubble with Embedded Quote */}
+                  {/* Message Bubble */}
                   <div
-                    className={isMe ? 'chat-bubble-glow' : ''}
                     style={{
-                      background: isMe ? 'rgba(5, 150, 105, 0.12)' : 'var(--color-bg-card)',
-                      border: isMe ? '1px solid rgba(5, 150, 105, 0.35)' : '1px solid var(--color-border)',
-                      borderRadius: isMe ? '16px 4px 16px 16px' : '4px 16px 16px 16px',
-                      padding: '8px 14px',
+                      background: isMe ? 'color-mix(in srgb, var(--color-primary) 12%, transparent)' : 'var(--color-bg-card)',
+                      border: isMe ? '1px solid color-mix(in srgb, var(--color-primary) 35%, transparent)' : '1px solid var(--color-border)',
+                      borderRadius: 6,
+                      padding: '8px 13px',
                       fontSize: '0.84rem',
                       color: 'var(--color-text-main)',
                       lineHeight: 1.5,
                       display: 'inline-block',
                       maxWidth: '100%',
                       boxShadow: 'var(--shadow-card)',
-                      transition: 'all 0.2s ease',
                     }}
                   >
-                    {/* Quoted Message Header (Only if valid) */}
                     {hasValidQuote && msg.quote && (
                       <div
                         style={{
-                          background: 'rgba(0, 0, 0, 0.05)',
+                          background: 'var(--color-surface-elevated)',
                           borderLeft: '3px solid var(--color-primary)',
                           padding: '4px 8px',
-                          borderRadius: '0 6px 6px 0',
+                          borderRadius: 4,
                           fontSize: '0.72rem',
                           color: 'var(--color-text-muted)',
                           marginBottom: 6,
@@ -504,13 +561,12 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
           <button
             type="button"
             onClick={() => setQuoteMessage(null)}
+            aria-label="Hủy trích dẫn"
             style={{
               background: 'none',
               border: 'none',
               color: 'var(--color-text-dim)',
-              fontSize: '0.8rem',
               cursor: 'pointer',
-              fontWeight: 800,
               padding: '0 4px',
             }}
           >
@@ -535,22 +591,26 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
           ref={inputRef}
           type="text"
           className="form-input"
-          placeholder={quoteMessage ? `Nhập câu trả lời cho @${quoteMessage.author}...` : 'Nhập tin nhắn thực địa...'}
+          disabled={!isOnlineReady}
+          placeholder={
+            !isOnlineReady
+              ? 'Đang chờ kết nối lại phòng chat...'
+              : quoteMessage
+                ? `Nhập câu trả lời cho @${quoteMessage.author}...`
+                : 'Nhập tin nhắn thực địa...'
+          }
           value={inputText}
           onChange={(e) => setInputText(e.target.value)}
           style={{
             flex: 1,
-            padding: '9px 14px',
+            padding: '9px 12px',
             fontSize: '0.84rem',
-            borderRadius: 12,
+            borderRadius: 4,
             background: 'var(--color-bg-main)',
             border: quoteMessage ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)',
-            boxShadow: quoteMessage ? '0 0 10px rgba(5, 150, 105, 0.25)' : 'none',
-            transition: 'all 0.2s ease',
           }}
         />
 
-        {/* 10-Second Cooldown Countdown Timer Indicator */}
         {cooldown > 0 && (
           <div
             title={`Vui lòng chờ ${cooldown}s để gửi tin nhắn tiếp theo`}
@@ -559,13 +619,12 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
               alignItems: 'center',
               gap: 4,
               padding: '6px 10px',
-              borderRadius: 10,
-              background: 'rgba(234, 179, 8, 0.12)',
-              border: '1px solid rgba(234, 179, 8, 0.35)',
+              borderRadius: 4,
+              background: 'color-mix(in srgb, var(--color-sun) 12%, transparent)',
+              border: '1px solid color-mix(in srgb, var(--color-sun) 35%, transparent)',
               color: 'var(--color-sun)',
               fontSize: '0.74rem',
               fontWeight: 800,
-              animation: 'pulse 1.5s infinite',
               flexShrink: 0,
             }}
           >
@@ -576,32 +635,21 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
 
         <button
           type="submit"
-          disabled={!inputText.trim() || cooldown > 0}
-          title={cooldown > 0 ? `Vui lòng chờ ${cooldown}s để gửi tiếp` : 'Gửi tin nhắn'}
-          className="btn btn-primary interactive-click ripple-fx"
+          disabled={!isOnlineReady || !inputText.trim() || cooldown > 0}
+          title={!isOnlineReady ? 'Đang ngoại tuyến' : cooldown > 0 ? `Vui lòng chờ ${cooldown}s để gửi tiếp` : 'Gửi tin nhắn'}
+          className="btn btn-primary interactive-click"
           style={{
             padding: '8px 14px',
-            borderRadius: 12,
+            borderRadius: 4,
             display: 'inline-flex',
             alignItems: 'center',
             justifyContent: 'center',
-            opacity: inputText.trim() && cooldown === 0 ? 1 : 0.45,
-            cursor: inputText.trim() && cooldown === 0 ? 'pointer' : 'not-allowed',
-            transform: isSending ? 'scale(0.92)' : 'scale(1)',
-            transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+            opacity: isOnlineReady && inputText.trim() && cooldown === 0 ? 1 : 0.45,
+            cursor: isOnlineReady && inputText.trim() && cooldown === 0 ? 'pointer' : 'not-allowed',
+            transform: isSending ? 'scale(0.94)' : 'scale(1)',
           }}
         >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transform: isSending ? 'translate(3px, -3px) rotate(-15deg)' : 'none',
-              transition: 'transform 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
-            }}
-          >
-            <IconSend size={15} color="#041108" />
-          </div>
+          <IconSend size={15} color="var(--color-on-primary)" />
         </button>
       </form>
     </div>

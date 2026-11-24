@@ -1,11 +1,14 @@
-import { Schema, model, Document } from 'mongoose';
+import { Schema, model, Document, Types } from 'mongoose';
 
 export interface IConversation extends Document {
-  participants: Schema.Types.ObjectId[];
-  participantKey: string; // Composite key like id1_id2 (sorted) to enforce uniqueness
+  participants: Types.ObjectId[];
+  participantKey: string; // Composite key like id1_id2 (sorted) or trip_<tripId> for group chats
+  isGroup: boolean;
+  groupName?: string;
+  tripPlanId?: Types.ObjectId;
   lastMessage?: {
     content: string;
-    sender: Schema.Types.ObjectId;
+    sender: Types.ObjectId;
     createdAt: Date;
   };
   createdAt: Date;
@@ -25,18 +28,35 @@ const conversationSchema = new Schema<IConversation>(
       type: String,
       required: true,
       unique: true,
+    },
+    isGroup: {
+      type: Boolean,
+      default: false,
+    },
+    groupName: {
+      type: String,
+      trim: true,
+      maxlength: 140,
+      default: '',
+    },
+    tripPlanId: {
+      type: Schema.Types.ObjectId,
+      ref: 'TripPlan',
       index: true,
     },
     lastMessage: {
-      content: { type: String },
-      sender: { type: Schema.Types.ObjectId, ref: 'User' },
-      createdAt: { type: Date, default: Date.now },
+      type: {
+        content: { type: String },
+        sender: { type: Schema.Types.ObjectId, ref: 'User' },
+        createdAt: { type: Date },
+      },
+      _id: false,
+      default: undefined,
     },
   },
   { timestamps: true }
 );
 
-conversationSchema.index({ participants: 1 });
-conversationSchema.index({ updatedAt: -1 });
+conversationSchema.index({ participants: 1, updatedAt: -1 });
 
 export const ConversationModel = model<IConversation>('Conversation', conversationSchema);

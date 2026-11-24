@@ -1,6 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import type { UserProfile } from '../../types.js';
+import { getApiHeaders } from '../../utils/sessionHeaders.js';
+import { isTopmostFocusTrap, useFocusTrap } from '../../hooks/useFocusTrap.js';
+import { IconUserPlus, IconUserCheck, IconUsers, IconArrowLeft, IconArrowRight } from '../common/SvgIcons.js';
 
 // Pure SVG Icon Helper
 const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
@@ -89,6 +92,16 @@ interface RealProfilePayload {
   }>;
 }
 
+interface ConnectionUserSummary {
+  _id: string;
+  username?: string;
+  fullName: string;
+  avatarUrl?: string;
+  reputationScore?: number;
+  role?: string;
+  badges?: string[];
+}
+
 interface AuthorProfileModalProps {
   author: AuthorProfileData | null;
   currentUser?: UserProfile | null;
@@ -114,131 +127,378 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
   onClose,
   onStartChat,
 }) => {
-  if (!author) return null;
+  // Navigation stack so clicking a member in Followers/Following inspects their profile seamlessly
+  const [inspectedStack, setInspectedStack] = useState<AuthorProfileData[]>([]);
+  const rootAuthorKey = author ? `${author.userId || author._id || author.id || ''}:${author.name}` : '';
+  const [stackOwnerKey, setStackOwnerKey] = useState<string>(rootAuthorKey);
 
   const [profile, setProfile] = useState<RealProfilePayload | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [followersCount, setFollowersCount] = useState<number>(author.followersCount || 0);
-  const [activeTab, setActiveTab] = useState<'telemetry' | 'badges' | 'dispatches'>('telemetry');
+  const [loadedLookupKey, setLoadedLookupKey] = useState<string | null>(null);
+  const [followersCount, setFollowersCount] = useState<number>(author?.followersCount || 0);
+  const [followingCount, setFollowingCount] = useState<number>(0);
+  const [isFollowing, setIsFollowing] = useState<boolean>(false);
+  const [isTogglingFollow, setIsTogglingFollow] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<'telemetry' | 'badges' | 'dispatches' | 'connections'>('telemetry');
 
-  const cleanName = author.name.replace(/\s*\([^)]*\)/g, '').trim();
-  const lookupKey = author.userId || author._id || author.id || cleanName;
+  // Connections (Followers / Following) tab state
+  const [connectionMode, setConnectionMode] = useState<'followers' | 'following'>('followers');
+  const [connections, setConnections] = useState<ConnectionUserSummary[]>([]);
+  const [loadedConnectionKey, setLoadedConnectionKey] = useState<string | null>(null);
 
-  const isSelf = Boolean(
-    currentUser && (
-      (author.userId && currentUser.id && String(author.userId) === String(currentUser.id)) ||
-      (currentUser.fullName && cleanName.toLowerCase().includes(currentUser.fullName.toLowerCase())) ||
-      (currentUser.username && cleanName.toLowerCase().includes(currentUser.username.toLowerCase())) ||
-      (currentUser.fullName && author.name.toLowerCase().includes(currentUser.fullName.toLowerCase()))
-    )
+  // Reset stack & profile completely whenever modal closes (author=null) or opens for a new root author
+  if (stackOwnerKey !== rootAuthorKey) {
+    setStackOwnerKey(rootAuthorKey);
+    setInspectedStack([]);
+    setProfile(null);
+    setLoadedLookupKey(null);
+    setFollowersCount(author?.followersCount || 0);
+    setFollowingCount(0);
+    setIsFollowing(false);
+    setActiveTab('telemetry');
+    setConnections([]);
+    setLoadedConnectionKey(null);
+  }
+
+  const effectiveStack = stackOwnerKey === rootAuthorKey ? inspectedStack : [];
+  const activeAuthor = effectiveStack.length > 0 ? effectiveStack[effectiveStack.length - 1] : author;
+
+  const cleanName = (activeAuthor?.name || '').replace(/\s*\([^)]*\)/g, '').trim();
+  const lookupKey = activeAuthor?.userId || activeAuthor?._id || activeAuthor?.id || cleanName;
+  const currentUserId = String(currentUser?.id || (currentUser as (UserProfile & { _id?: string }) | null)?._id || '');
+
+  // Clear stale profile/follow/connections immediately when navigating between profiles in stack (push or pop)
+  const [prevLookupKey, setPrevLookupKey] = useState<string>(lookupKey);
+  if (prevLookupKey !== lookupKey) {
+    setPrevLookupKey(lookupKey);
+    setProfile(null);
+    setIsFollowing(false);
+    setConnections([]);
+    setLoadedConnectionKey(null);
+  }
+
+  const loading = Boolean(activeAuthor && lookupKey) && loadedLookupKey !== lookupKey;
+
+  const isSelfByAuthor = Boolean(
+    activeAuthor &&
+      currentUser &&
+      ((activeAuthor.userId && currentUserId && String(activeAuthor.userId) === currentUserId) ||
+        (currentUser.fullName && cleanName.toLowerCase() === currentUser.fullName.toLowerCase()) ||
+        (currentUser.username && cleanName.toLowerCase() === currentUser.username.toLowerCase()))
   );
 
-  // Fetch 100% REAL data from backend
-  useEffect(() => {
-    let isMounted = true;
-    setLoading(true);
+  const isSelf = Boolean(
+    isSelfByAuthor ||
+      (activeAuthor &&
+        currentUser &&
+        profile?._id &&
+        currentUserId &&
+        String(profile._id) === currentUserId)
+  );
 
-    fetch(`/api/users/profile/${encodeURIComponent(lookupKey)}`)
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+
+  useFocusTrap(Boolean(activeAuthor), dialogRef, { initialFocusRef: closeBtnRef });
+
+  // Escape key close handler (strict LIFO via topmost focus trap + IME guard; pops inspected stack first)
+  useEffect(() => {
+    if (!activeAuthor) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      if (e.key === 'Escape') {
+        if (!isTopmostFocusTrap(dialogRef.current)) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (effectiveStack.length > 0) {
+          setInspectedStack((prev) => prev.slice(0, -1));
+          setIsFollowing(false);
+          setActiveTab('telemetry');
+        } else {
+          onClose();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeAuthor, effectiveStack.length, onClose]);
+
+  // Fetch real profile data from backend with AbortController
+  useEffect(() => {
+    if (!activeAuthor || !lookupKey) return;
+    const controller = new AbortController();
+
+    fetch(`/api/users/profile/${encodeURIComponent(lookupKey)}`, {
+      headers: getApiHeaders(),
+      signal: controller.signal,
+    })
       .then((res) => res.json())
       .then((json) => {
-        if (isMounted) {
-          if (json.success && json.data) {
-            setProfile(json.data);
-            setFollowersCount(json.data.stats?.followersCount ?? json.data.followersCount ?? 0);
-          } else {
-            // Fallback to real author object attributes if lookup by identifier fails
-            setProfile({
-              _id: author._id || author.id || author.userId || 'TRK-VERIFIED',
-              username: cleanName.toLowerCase().replace(/\s+/g, '_'),
-              fullName: cleanName,
-              avatarUrl: author.avatar || '',
-              coverUrl: '',
-              role: author.role || 'user',
-              reputationScore: author.reputationScore || (isSelf ? (currentUser?.reputationScore || 100) : 100),
-              badges: author.badges || (isSelf ? (currentUser?.badges || ['Verified Trekker']) : ['Verified Trekker']),
-              preferredStyle: author.preferredStyle || 'Trekking & Camping',
-              stats: {
-                threadsCount: 1,
-                reviewsCount: 0,
-                tripReportsCount: 0,
-                contributionsCount: 0,
-                followersCount: author.followersCount || 0,
-                followingCount: 0,
-                totalDistanceKm: 28,
-                highestAltitudeM: 3143,
-                summitTrailName: 'Fansipan (3,143m)',
-              },
-            });
-          }
-          setLoading(false);
+        if (controller.signal.aborted) return;
+        if (json.success && json.data) {
+          setProfile(json.data);
+          setFollowersCount(json.data.stats?.followersCount ?? json.data.followersCount ?? 0);
+          setFollowingCount(json.data.stats?.followingCount ?? json.data.followingCount ?? 0);
+        } else {
+          setProfile({
+            _id: activeAuthor._id || activeAuthor.id || activeAuthor.userId || 'LS-VERIFIED',
+            username: cleanName.toLowerCase().replace(/\s+/g, '_'),
+            fullName: cleanName,
+            avatarUrl: activeAuthor.avatar || '',
+            coverUrl: '',
+            role: activeAuthor.role || 'user',
+            reputationScore: activeAuthor.reputationScore ?? (isSelfByAuthor ? (currentUser?.reputationScore ?? 0) : 0),
+            badges: activeAuthor.badges || (isSelfByAuthor ? (currentUser?.badges || ['Trekker Mới']) : ['Trekker Mới']),
+            preferredStyle: activeAuthor.preferredStyle || 'Trekking & Camping',
+            stats: {
+              threadsCount: 0,
+              reviewsCount: 0,
+              tripReportsCount: 0,
+              contributionsCount: 0,
+              followersCount: activeAuthor.followersCount || 0,
+              followingCount: 0,
+              totalDistanceKm: 0,
+              highestAltitudeM: 0,
+              summitTrailName: '',
+            },
+          });
+          setFollowersCount(activeAuthor.followersCount || 0);
+          setFollowingCount(0);
         }
       })
       .catch(() => {
-        if (isMounted) setLoading(false);
+        // offline safe or aborted
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoadedLookupKey(lookupKey);
       });
 
-    return () => {
-      isMounted = false;
-    };
-  }, [lookupKey, cleanName, isSelf, currentUser]);
+    return () => controller.abort();
+  }, [activeAuthor, lookupKey, cleanName, isSelfByAuthor, currentUser]);
+
+  // Fetch real follow status when viewing another user's profile while authenticated
+  const targetUserId =
+    profile?._id && profile._id !== 'LS-VERIFIED'
+      ? profile._id
+      : (activeAuthor?.userId || activeAuthor?._id || '');
+
+  useEffect(() => {
+    if (!activeAuthor || isSelf || !targetUserId || !localStorage.getItem('lost_token')) {
+      return;
+    }
+    const controller = new AbortController();
+    fetch(`/api/users/${encodeURIComponent(targetUserId)}/follow-status`, {
+      headers: getApiHeaders(),
+      signal: controller.signal,
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (!controller.signal.aborted && json?.success) {
+          setIsFollowing(Boolean(json.isFollowing));
+        }
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [activeAuthor, isSelf, targetUserId]);
+
+  // Fetch Followers / Following lists when "Kết Nối" tab is active (AbortController)
+  const connectionFetchKey =
+    activeAuthor && activeTab === 'connections' && targetUserId
+      ? `${targetUserId}:${connectionMode}`
+      : null;
+  const loadingConnections = Boolean(connectionFetchKey) && loadedConnectionKey !== connectionFetchKey;
+
+  useEffect(() => {
+    if (!connectionFetchKey || !targetUserId) return;
+    const controller = new AbortController();
+
+    fetch(`/api/users/${encodeURIComponent(targetUserId)}/${connectionMode}?limit=50`, {
+      headers: getApiHeaders(),
+      signal: controller.signal,
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (controller.signal.aborted) return;
+        const rawList: unknown[] = Array.isArray(json?.data)
+          ? json.data
+          : Array.isArray(json?.data?.users)
+            ? json.data.users
+            : Array.isArray(json?.followers)
+              ? json.followers
+              : Array.isArray(json?.following)
+                ? json.following
+                : [];
+        const normalized: ConnectionUserSummary[] = rawList
+          .filter((u: unknown): u is Record<string, unknown> => Boolean(u && typeof u === 'object'))
+          .map((u: Record<string, unknown>) => ({
+            _id: String(u._id || u.id || ''),
+            username: typeof u.username === 'string' ? u.username : undefined,
+            fullName: String(u.fullName || u.name || u.username || 'Trekker LOST'),
+            avatarUrl: typeof u.avatarUrl === 'string' ? u.avatarUrl : undefined,
+            reputationScore: typeof u.reputationScore === 'number' ? u.reputationScore : undefined,
+            role: typeof u.role === 'string' ? u.role : undefined,
+            badges: Array.isArray(u.badges) ? (u.badges as string[]) : undefined,
+          }))
+          .filter((u: ConnectionUserSummary) => Boolean(u._id));
+        setConnections(normalized);
+        if (connectionMode === 'followers' && typeof json?.count === 'number') {
+          setFollowersCount((prev) => Math.max(prev, json.count));
+        } else if (connectionMode === 'following' && typeof json?.count === 'number') {
+          setFollowingCount((prev) => Math.max(prev, json.count));
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setConnections([]);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoadedConnectionKey(connectionFetchKey);
+      });
+
+    return () => controller.abort();
+  }, [connectionFetchKey, targetUserId, connectionMode]);
+
+  if (!activeAuthor) return null;
+
+  const handleOpenConnections = (mode: 'followers' | 'following') => {
+    setConnectionMode(mode);
+    setActiveTab('connections');
+  };
+
+  const handleInspectConnection = (member: ConnectionUserSummary) => {
+    setStackOwnerKey(rootAuthorKey);
+    setInspectedStack((prev) => [
+      ...(stackOwnerKey === rootAuthorKey ? prev : []),
+      {
+        userId: member._id,
+        _id: member._id,
+        name: member.fullName,
+        avatar: member.avatarUrl || '',
+        role: member.role,
+        reputationScore: member.reputationScore,
+        badges: member.badges,
+      },
+    ]);
+    setIsFollowing(false);
+    setActiveTab('telemetry');
+  };
+
+  const handleBackToPreviousProfile = () => {
+    setInspectedStack((prev) => prev.slice(0, -1));
+    setIsFollowing(false);
+    setActiveTab('telemetry');
+  };
+
+  const handleToggleFollow = async () => {
+    if (isTogglingFollow || isSelf) return;
+    const token = localStorage.getItem('lost_token');
+    if (!token) {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: { message: 'Vui lòng đăng nhập để theo dõi thành viên.', type: 'info' },
+        })
+      );
+      window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
+      return;
+    }
+    if (!targetUserId) return;
+
+    setIsTogglingFollow(true);
+    try {
+      const res = await fetch(`/api/users/${encodeURIComponent(targetUserId)}/follow`, {
+        method: 'POST',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+      });
+      const json = await res.json();
+      if (res.ok && json.success) {
+        const nextFollow = Boolean(json.isFollowing);
+        setIsFollowing(nextFollow);
+        setFollowersCount((prev) => Math.max(0, prev + (nextFollow ? 1 : -1)));
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: json.message || (nextFollow ? 'Đã theo dõi thành công!' : 'Đã bỏ theo dõi.'), type: 'success' },
+          })
+        );
+      } else {
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: json.message || 'Không thể cập nhật theo dõi.', type: 'error' },
+          })
+        );
+      }
+    } catch {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: { message: 'Lỗi kết nối máy chủ.', type: 'error' },
+        })
+      );
+    } finally {
+      setIsTogglingFollow(false);
+    }
+  };
 
   const handleShareProfile = () => {
     const shareUrl = `${window.location.origin}/#profile-${encodeURIComponent(profile?.username || cleanName)}`;
     if (navigator.clipboard) {
-      navigator.clipboard.writeText(shareUrl).then(() => {
-        window.dispatchEvent(
-          new CustomEvent('trekmap:show-toast', {
-            detail: { message: `Đã sao chép liên kết hồ sơ của ${cleanName}!`, type: 'success' },
-          })
-        );
-      });
+      navigator.clipboard
+        .writeText(shareUrl)
+        .then(() => {
+          window.dispatchEvent(
+            new CustomEvent('lost:show-toast', {
+              detail: { message: `Đã sao chép liên kết hồ sơ của ${cleanName}!`, type: 'success' },
+            })
+          );
+        })
+        .catch(() => {});
     }
   };
 
   const handleStartMessage = () => {
+    if (isSelf) return;
     onClose();
     const targetId = profile?._id || lookupKey;
     if (targetId) {
-      localStorage.setItem('trekmap_target_chat_user', targetId);
+      localStorage.setItem('lost_target_chat_user', targetId);
     }
     if (onStartChat) {
       onStartChat(targetId, effectiveName);
     } else {
-      window.location.hash = '#messages';
+      window.history.pushState({ view: 'messages' }, '', '/messages');
+      window.dispatchEvent(new PopStateEvent('popstate'));
     }
   };
 
-  // Resolved dynamic fields
-  const effectiveAvatar = isSelf && (currentUser?.avatarUrl || currentUser?.avatar)
-    ? (currentUser.avatarUrl || currentUser.avatar)
-    : (profile?.avatarUrl || author.avatar || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg');
+  const effectiveAvatar =
+    isSelf && (currentUser?.avatarUrl || currentUser?.avatar)
+      ? currentUser.avatarUrl || currentUser.avatar
+      : profile?.avatarUrl || activeAuthor.avatar || '';
 
-  const effectiveName = profile?.fullName || author.name;
+  const effectiveName = profile?.fullName || activeAuthor.name;
   const effectiveUsername = profile?.username || cleanName.toLowerCase().replace(/\s+/g, '_');
   const trekkerId = profile?._id
-    ? `#TRK-${profile._id.slice(-6).toUpperCase()}`
-    : `#TRK-${cleanName.slice(0, 4).toUpperCase()}`;
+    ? `#LS-${profile._id.slice(-6).toUpperCase()}`
+    : `#LS-${cleanName.slice(0, 4).toUpperCase()}`;
 
   const reputationScore = profile?.reputationScore ?? (isSelf ? currentUser?.reputationScore ?? 100 : 100);
-  const badges = profile?.badges || (isSelf ? currentUser?.badges || [] : author.badges || []);
+  const badges = profile?.badges || (isSelf ? currentUser?.badges || [] : activeAuthor.badges || []);
 
-  // Calculate prestige rank
   let rankTier = 'Trekker Thực Địa';
   let rankColor = 'var(--color-primary)';
   if (reputationScore >= 1200) {
     rankTier = 'Master Alpine Guide';
-    rankColor = '#67e8f9'; // neon cyan
+    rankColor = 'var(--color-sky)';
   } else if (reputationScore >= 500) {
     rankTier = 'Trekker Kỳ Cựu';
-    rankColor = '#fbbf24'; // amber
+    rankColor = 'var(--color-sun)';
   } else if (reputationScore >= 200) {
     rankTier = 'Người Khai Phá';
-    rankColor = '#e2e8f0'; // silver
+    rankColor = 'var(--color-text-muted)';
   }
 
-  const roleLabel = profile?.role === 'admin'
-    ? 'QUẢN TRỊ VIÊN TREKMAP'
-    : (profile?.role === 'guide' ? 'HƯỚNG DẪN VIÊN BẢN ĐỊA' : 'TREKKER XÁC MINH');
+  const roleLabel =
+    profile?.role === 'admin'
+      ? 'QUẢN TRỊ VIÊN LOST'
+      : profile?.role === 'guide'
+        ? 'HƯỚNG DẪN VIÊN BẢN ĐỊA'
+        : 'TREKKER XÁC MINH';
 
   return createPortal(
     <div
@@ -247,12 +507,10 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
       style={{
         position: 'fixed',
         inset: 0,
-        width: '100vw',
-        height: '100vh',
-        background: 'rgba(2, 6, 12, 0.86)',
-        backdropFilter: 'blur(20px)',
-        WebkitBackdropFilter: 'blur(20px)',
-        zIndex: 99999999,
+        background: 'var(--overlay-bg)',
+        backdropFilter: 'blur(16px)',
+        WebkitBackdropFilter: 'blur(16px)',
+        zIndex: 'var(--z-modal-nested, 3100)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -261,49 +519,51 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
       }}
     >
       <div
-        className="modal-content card-glass"
+        ref={dialogRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Hồ sơ ${effectiveName}`}
+        className="modal-content"
         onClick={(e) => e.stopPropagation()}
         style={{
           maxWidth: 880,
           width: '100%',
-          overflow: 'hidden',
+          maxHeight: '90vh',
+          overflowY: 'auto',
           position: 'relative',
-          zIndex: 100000000,
           margin: 0,
           padding: 0,
           background: 'var(--color-bg-card)',
-          borderRadius: 22,
-          border: '1px solid var(--color-border)',
-          boxShadow: '0 24px 64px rgba(0, 0, 0, 0.85), 0 0 32px rgba(16, 185, 129, 0.14)',
+          borderRadius: 6,
+          border: '1px solid var(--color-border-strong)',
+          boxShadow: 'var(--shadow-3d)',
           display: 'flex',
           flexDirection: 'column',
+          outline: 'none',
         }}
       >
         {/* TOP COVER BANNER */}
         <div
           style={{
             position: 'relative',
-            height: 90,
+            height: 92,
             width: '100%',
             overflow: 'hidden',
-            borderTopLeftRadius: 21,
-            borderTopRightRadius: 21,
             background: profile?.coverUrl
               ? `url(${profile.coverUrl}) center / cover no-repeat`
-              : 'linear-gradient(135deg, #092019 0%, #031422 50%, #0b1a2f 100%)',
+              : 'var(--color-surface-elevated)',
             flexShrink: 0,
           }}
         >
-          {/* Subtle gradient overlay */}
           <div
             style={{
               position: 'absolute',
               inset: 0,
-              background: 'linear-gradient(180deg, rgba(2, 8, 16, 0.25) 0%, rgba(5, 15, 26, 0.82) 80%, var(--color-bg-card) 100%)',
+              background: 'linear-gradient(180deg, transparent 0%, var(--overlay-bg) 80%, var(--color-bg-card) 100%)',
             }}
           />
 
-          {/* Top Bar Floating Over Cover */}
           <div
             style={{
               position: 'absolute',
@@ -316,25 +576,48 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
               zIndex: 2,
             }}
           >
-            <div
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                background: 'rgba(5, 15, 25, 0.8)',
-                border: '1px solid rgba(255, 255, 255, 0.18)',
-                backdropFilter: 'blur(10px)',
-                padding: '4px 10px',
-                borderRadius: 18,
-                fontSize: '0.68rem',
-                fontWeight: 800,
-                color: 'var(--color-primary)',
-                letterSpacing: '0.04em',
-                textTransform: 'uppercase',
-              }}
-            >
-              <ShieldCheck size={13} color="var(--color-primary)" />
-              {trekkerId} • HỒ SƠ THÁM HIỂM THỰC ĐỊA
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              {effectiveStack.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleBackToPreviousProfile}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    background: 'var(--color-bg-hud)',
+                    border: '1px solid var(--color-border-strong)',
+                    padding: '4px 10px',
+                    borderRadius: 4,
+                    fontSize: '0.7rem',
+                    fontWeight: 700,
+                    color: 'var(--color-text-main)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <IconArrowLeft size={12} />
+                  <span>Quay lại</span>
+                </button>
+              )}
+              <div
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  background: 'var(--color-bg-hud)',
+                  border: '1px solid var(--color-border-strong)',
+                  padding: '4px 10px',
+                  borderRadius: 4,
+                  fontSize: '0.68rem',
+                  fontWeight: 800,
+                  color: 'var(--color-text-main)',
+                  letterSpacing: '0.04em',
+                  textTransform: 'uppercase',
+                }}
+              >
+                <ShieldCheck size={13} color="var(--color-primary)" />
+                {trekkerId} • HỒ SƠ THÁM HIỂM THỰC ĐỊA
+              </div>
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -342,41 +625,40 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                 type="button"
                 onClick={handleShareProfile}
                 title="Sao chép liên kết hồ sơ"
+                aria-label="Sao chép liên kết hồ sơ"
                 style={{
                   width: 30,
                   height: 30,
-                  borderRadius: '50%',
-                  background: 'rgba(5, 15, 25, 0.72)',
-                  border: '1px solid rgba(255, 255, 255, 0.2)',
-                  backdropFilter: 'blur(10px)',
-                  color: '#fff',
+                  borderRadius: 4,
+                  background: 'var(--color-bg-hud)',
+                  border: '1px solid var(--color-border-strong)',
+                  color: 'var(--color-text-main)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   cursor: 'pointer',
-                  transition: 'all 0.15s ease',
                 }}
               >
                 <Share2 size={13} />
               </button>
 
               <button
+                ref={closeBtnRef}
                 type="button"
                 onClick={onClose}
                 title="Đóng (Esc)"
+                aria-label="Đóng (Esc)"
                 style={{
                   width: 30,
                   height: 30,
-                  borderRadius: '50%',
-                  background: 'rgba(5, 15, 25, 0.72)',
-                  border: '1px solid rgba(255, 255, 255, 0.2)',
-                  backdropFilter: 'blur(10px)',
-                  color: '#fff',
+                  borderRadius: 4,
+                  background: 'var(--color-bg-hud)',
+                  border: '1px solid var(--color-border-strong)',
+                  color: 'var(--color-text-main)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   cursor: 'pointer',
-                  transition: 'all 0.15s ease',
                 }}
               >
                 <X size={14} />
@@ -405,13 +687,12 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
               ĐANG ĐỒNG BỘ DỮ LIỆU THỰC ĐỊA...
             </div>
             <div style={{ color: 'var(--color-text-dim)', fontSize: '0.74rem', marginTop: 4 }}>
-              Kết nối hệ thống vệ tinh định vị TrekMap Việt Nam
+              Kết nối hệ thống định vị LOST Việt Nam
             </div>
           </div>
         ) : (
-          /* UNIFIED 1-FRAME BODY WITH FULL-WIDTH IDENTITY HEADER */
           <div style={{ padding: '0 20px 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {/* FULL-WIDTH IDENTITY ROW (NO VERTICAL CLIPPING, NO HORIZONTAL SQUEEZING) */}
+            {/* IDENTITY ROW */}
             <div
               style={{
                 display: 'flex',
@@ -424,27 +705,46 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                 flexWrap: 'wrap',
               }}
             >
-              {/* Avatar + Author Name & Badges */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 14, minWidth: 0, flex: '1 1 400px' }}>
-                {/* Avatar with beacon */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, minWidth: 0, flex: '1 1 360px' }}>
                 <div style={{ position: 'relative', flexShrink: 0 }}>
-                  <img
-                    src={effectiveAvatar}
-                    alt={effectiveName}
-                    referrerPolicy="no-referrer"
-                    style={{
-                      width: 74,
-                      height: 74,
-                      borderRadius: 18,
-                      objectFit: 'cover',
-                      border: '3px solid var(--color-bg-card)',
-                      boxShadow: '0 8px 24px rgba(0,0,0,0.7), 0 0 18px rgba(16, 185, 129, 0.35)',
-                      background: 'var(--color-bg-main)',
-                      display: 'block',
-                    }}
-                  />
+                  {effectiveAvatar ? (
+                    <img
+                      src={effectiveAvatar}
+                      alt={effectiveName}
+                      referrerPolicy="no-referrer"
+                      style={{
+                        width: 74,
+                        height: 74,
+                        borderRadius: 6,
+                        objectFit: 'cover',
+                        border: '3px solid var(--color-bg-card)',
+                        boxShadow: 'var(--shadow-card)',
+                        background: 'var(--color-bg-main)',
+                        display: 'block',
+                      }}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        width: 74,
+                        height: 74,
+                        borderRadius: 6,
+                        border: '3px solid var(--color-bg-card)',
+                        boxShadow: 'var(--shadow-card)',
+                        background: 'color-mix(in srgb, var(--color-primary) 18%, var(--color-bg-main))',
+                        color: 'var(--color-primary)',
+                        fontSize: '1.6rem',
+                        fontWeight: 900,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      {(effectiveName || 'T').charAt(0).toUpperCase()}
+                    </div>
+                  )}
                   <div
-                    title="Đang hoạt động trên hệ thống TrekMap"
+                    title="Đang hoạt động trên hệ thống LOST"
                     style={{
                       position: 'absolute',
                       bottom: -1,
@@ -454,12 +754,10 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                       borderRadius: '50%',
                       background: 'var(--color-primary)',
                       border: '2.5px solid var(--color-bg-card)',
-                      boxShadow: '0 0 8px var(--color-primary)',
                     }}
                   />
                 </div>
 
-                {/* Name, Role & Followers (FULL WIDTH CLEARANCE - NEVER CUT IN HALF) */}
                 <div style={{ minWidth: 0, flex: 1, paddingTop: 34 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <h2
@@ -477,16 +775,16 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                     <span
                       style={{
                         background: profile?.role === 'admin'
-                          ? 'linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.1))'
-                          : 'linear-gradient(135deg, rgba(16, 185, 129, 0.18), rgba(5, 150, 105, 0.08))',
+                          ? 'color-mix(in srgb, var(--color-sun) 15%, transparent)'
+                          : 'color-mix(in srgb, var(--color-primary) 15%, transparent)',
                         border: profile?.role === 'admin'
-                          ? '1px solid rgba(245, 158, 11, 0.4)'
-                          : '1px solid rgba(16, 185, 129, 0.4)',
-                        color: profile?.role === 'admin' ? '#fbbf24' : 'var(--color-primary)',
+                          ? '1px solid color-mix(in srgb, var(--color-sun) 40%, transparent)'
+                          : '1px solid color-mix(in srgb, var(--color-primary) 40%, transparent)',
+                        color: profile?.role === 'admin' ? 'var(--color-sun)' : 'var(--color-primary)',
                         fontSize: '0.62rem',
                         fontWeight: 800,
                         padding: '2px 8px',
-                        borderRadius: 10,
+                        borderRadius: 4,
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: 4,
@@ -498,54 +796,98 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                     </span>
                   </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, fontSize: '0.76rem', color: 'var(--color-text-muted)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, fontSize: '0.76rem', color: 'var(--color-text-muted)', flexWrap: 'wrap' }}>
                     <span style={{ fontWeight: 600 }}>@{effectiveUsername}</span>
                     <span style={{ color: 'var(--color-border)' }}>•</span>
-                    <span style={{ color: 'var(--color-sky)', background: 'rgba(56, 189, 248, 0.1)', border: '1px solid rgba(56, 189, 248, 0.2)', padding: '1px 6px', borderRadius: 8, fontWeight: 700, fontSize: '0.7rem' }}>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenConnections('followers')}
+                      title="Xem danh sách người theo dõi"
+                      style={{
+                        color: 'var(--color-sky)',
+                        background: 'color-mix(in srgb, var(--color-sky) 12%, transparent)',
+                        border: '1px solid color-mix(in srgb, var(--color-sky) 28%, transparent)',
+                        padding: '2px 7px',
+                        borderRadius: 4,
+                        fontWeight: 700,
+                        fontSize: '0.7rem',
+                        cursor: 'pointer',
+                        fontVariantNumeric: 'tabular-nums',
+                      }}
+                    >
                       {followersCount} người theo dõi
-                    </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenConnections('following')}
+                      title="Xem danh sách đang theo dõi"
+                      style={{
+                        color: 'var(--color-primary)',
+                        background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
+                        border: '1px solid color-mix(in srgb, var(--color-primary) 28%, transparent)',
+                        padding: '2px 7px',
+                        borderRadius: 4,
+                        fontWeight: 700,
+                        fontSize: '0.7rem',
+                        cursor: 'pointer',
+                        fontVariantNumeric: 'tabular-nums',
+                      }}
+                    >
+                      {followingCount} đang theo dõi
+                    </button>
                   </div>
                 </div>
               </div>
 
-              {/* ACTION BUTTONS: "NHẮN TIN" & "ĐÓNG" (CLEAN & PROMINENT) */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 34, flexShrink: 0 }}>
-                <button
-                  type="button"
-                  onClick={handleStartMessage}
-                  style={{
-                    background: 'var(--color-primary)',
-                    color: '#041108',
-                    border: 'none',
-                    borderRadius: 11,
-                    padding: '8px 16px',
-                    fontWeight: 800,
-                    fontSize: '0.82rem',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    boxShadow: '0 4px 14px rgba(16, 185, 129, 0.25)',
-                    transition: 'all 0.15s ease',
-                  }}
-                >
-                  <MessageSquare size={14} color="#041108" />
-                  Nhắn Tin
-                </button>
+              {/* ACTION BUTTONS: FOLLOW + NHẮN TIN (HIDDEN ON SELF) + ĐÓNG */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 34, flexShrink: 0, flexWrap: 'wrap' }}>
+                {!isSelf && targetUserId && (
+                  <button
+                    type="button"
+                    className={`btn ${isFollowing ? 'btn-outline' : 'btn-sky'}`}
+                    disabled={isTogglingFollow}
+                    onClick={handleToggleFollow}
+                    style={{
+                      padding: '8px 14px',
+                      fontSize: '0.8rem',
+                      borderRadius: 4,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    {isFollowing ? <IconUserCheck size={14} color="var(--color-primary)" /> : <IconUserPlus size={14} color="currentColor" />}
+                    <span>{isTogglingFollow ? 'Đang cập nhật...' : isFollowing ? 'Đang Theo Dõi' : 'Theo Dõi'}</span>
+                  </button>
+                )}
+
+                {!isSelf && (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleStartMessage}
+                    style={{
+                      padding: '8px 16px',
+                      fontSize: '0.82rem',
+                      borderRadius: 4,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <MessageSquare size={14} color="currentColor" />
+                    Nhắn Tin
+                  </button>
+                )}
 
                 <button
                   type="button"
+                  className="btn btn-outline"
                   onClick={onClose}
                   style={{
-                    background: 'var(--color-bg-main)',
-                    color: 'var(--color-text-main)',
-                    border: '1px solid var(--color-border)',
-                    borderRadius: 11,
                     padding: '8px 15px',
-                    fontWeight: 700,
                     fontSize: '0.8rem',
-                    cursor: 'pointer',
-                    transition: 'all 0.15s ease',
+                    borderRadius: 4,
                   }}
                 >
                   Đóng
@@ -557,20 +899,19 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: '310px 1fr',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(min(290px, 100%), 1fr))',
                 gap: 16,
                 alignItems: 'start',
               }}
             >
-              {/* LEFT COLUMN: PRESTIGE SCORE, RESCUE & GEAR LOCKER */}
+              {/* LEFT COLUMN: PRESTIGE SCORE, GEAR LOCKER & PRIVACY-SAFE RESCUE STRIP */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
-                {/* REPUTATION & TIER CARD */}
                 <div
                   style={{
-                    background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.08) 0%, rgba(14, 165, 233, 0.05) 100%)',
-                    border: '1px solid rgba(16, 185, 129, 0.22)',
-                    borderRadius: 14,
-                    padding: '9px 13px',
+                    background: 'var(--color-bg-main)',
+                    border: '1px solid var(--color-border)',
+                    borderRadius: 4,
+                    padding: '10px 13px',
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
@@ -589,21 +930,20 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                     <span style={{ fontSize: '0.72rem', color: 'var(--color-primary)', fontWeight: 700 }}>PTS</span>
                     <span style={{ marginLeft: 'auto', fontSize: '0.62rem', color: 'var(--color-text-dim)' }}>100% Thực tế</span>
                   </div>
-                  <div style={{ marginTop: 6, height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 99, overflow: 'hidden' }}>
+                  <div style={{ marginTop: 6, height: 4, background: 'var(--color-surface-elevated)', borderRadius: 2, overflow: 'hidden' }}>
                     <div
                       style={{
                         width: `${Math.min(100, Math.max(15, (reputationScore / 1500) * 100))}%`,
                         height: '100%',
-                        background: 'linear-gradient(90deg, var(--color-primary), #38bdf8)',
-                        borderRadius: 99,
+                        background: 'var(--color-primary)',
+                        borderRadius: 2,
                       }}
                     />
                   </div>
                 </div>
 
-                {/* REAL GEAR LOCKER (BALO TRANG BỊ) */}
                 {profile?.gearLocker && profile.gearLocker.length > 0 && (
-                  <div style={{ background: 'var(--color-bg-main)', borderRadius: 12, padding: '8px 12px', border: '1px solid var(--color-border)' }}>
+                  <div style={{ background: 'var(--color-bg-main)', borderRadius: 4, padding: '8px 12px', border: '1px solid var(--color-border)' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.65rem', fontWeight: 800, color: 'var(--color-primary)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                       <Backpack size={12} /> Balo Trang Bị Thực Tế ({profile.gearLocker.length})
                     </div>
@@ -618,7 +958,7 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                             style={{
                               background: 'var(--color-bg-card)',
                               border: '1px solid var(--color-border)',
-                              borderRadius: 8,
+                              borderRadius: 4,
                               padding: '3px 7px',
                               fontSize: '0.68rem',
                               fontWeight: 700,
@@ -637,27 +977,29 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                   </div>
                 )}
 
-                {/* EMERGENCY RESCUE STRIP (COMPACT) */}
+                {/* EMERGENCY RESCUE STRIP — NEVER expose private emergencyContact publicly! */}
                 <div
                   style={{
-                    background: 'rgba(239, 68, 68, 0.08)',
-                    border: '1px solid rgba(239, 68, 68, 0.25)',
-                    borderRadius: 12,
+                    background: 'color-mix(in srgb, var(--color-error) 8%, transparent)',
+                    border: '1px solid color-mix(in srgb, var(--color-error) 28%, transparent)',
+                    borderRadius: 4,
                     padding: '7px 11px',
                     display: 'flex',
                     alignItems: 'center',
                     gap: 8,
                   }}
                 >
-                  <div style={{ width: 24, height: 24, borderRadius: 6, background: 'rgba(239, 68, 68, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    <PhoneCall size={12} color="var(--color-error)" />
+                  <div style={{ width: 24, height: 24, borderRadius: 4, background: 'color-mix(in srgb, var(--color-error) 15%, transparent)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <PhoneCall size={12} color="var(--color-error-text, var(--color-error))" />
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: '0.6rem', color: 'var(--color-text-dim)', textTransform: 'uppercase', fontWeight: 700 }}>
-                      Kênh Cứu Hộ Thực Địa
+                      {isSelf ? 'Liên Hệ Khẩn Cấp Của Bạn (Riêng Tư)' : 'Kênh Cứu Hộ Thực Địa'}
                     </div>
-                    <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-error)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {profile?.emergencyContact || '114 / 115 • Trạm Cứu Hộ 24/7'}
+                    <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-error-text, var(--color-error))', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {isSelf
+                        ? (profile?.emergencyContact || currentUser?.emergencyContact || 'Cứu hộ quốc gia 112 / 114')
+                        : 'Cứu hộ quốc gia 112 / 114'}
                     </div>
                   </div>
                 </div>
@@ -665,19 +1007,20 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
 
               {/* RIGHT COLUMN: TELEMETRY TABS, BADGES & DISPATCHES */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
-                {/* TAB NAVIGATION STRIP */}
                 <div
                   style={{
                     display: 'flex',
                     gap: 6,
                     borderBottom: '1px solid var(--color-border)',
                     paddingBottom: 6,
+                    flexWrap: 'wrap',
                   }}
                 >
                   {[
                     { id: 'telemetry', label: 'Chỉ Số Thực Địa', Icon: Compass },
                     { id: 'badges', label: `Huy Hiệu (${badges.length})`, Icon: Award },
                     { id: 'dispatches', label: `Bài Đóng Góp (${profile?.stats?.threadsCount || 0})`, Icon: MessageSquare },
+                    { id: 'connections', label: `Kết Nối (${followersCount + followingCount})`, Icon: IconUsers },
                   ].map((tab) => {
                     const isActive = activeTab === tab.id;
                     const TabIcon = tab.Icon;
@@ -685,12 +1028,12 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                       <button
                         key={tab.id}
                         type="button"
-                        onClick={() => setActiveTab(tab.id as 'telemetry' | 'badges' | 'dispatches')}
+                        onClick={() => setActiveTab(tab.id as 'telemetry' | 'badges' | 'dispatches' | 'connections')}
                         style={{
                           background: isActive ? 'var(--color-primary)' : 'transparent',
-                          color: isActive ? '#041108' : 'var(--color-text-muted)',
+                          color: isActive ? 'var(--color-on-primary)' : 'var(--color-text-muted)',
                           border: 'none',
-                          borderRadius: 8,
+                          borderRadius: 4,
                           padding: '5px 12px',
                           fontSize: '0.75rem',
                           fontWeight: isActive ? 800 : 600,
@@ -698,70 +1041,45 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                           display: 'flex',
                           alignItems: 'center',
                           gap: 5,
-                          transition: 'all 0.15s ease',
                         }}
                       >
-                        <TabIcon size={13} color={isActive ? '#041108' : 'currentColor'} />
+                        <TabIcon size={13} color="currentColor" />
                         {tab.label}
                       </button>
                     );
                   })}
                 </div>
 
-                {/* TAB CONTENT 1: REAL EXPEDITION TELEMETRY */}
+                {/* TAB 1: TELEMETRY */}
                 {activeTab === 'telemetry' && (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
-                    {/* 1. Đỉnh cao nhất */}
-                    <div
-                      style={{
-                        background: 'var(--color-bg-main)',
-                        borderRadius: 12,
-                        padding: '9px 12px',
-                        border: '1px solid var(--color-border)',
-                      }}
-                    >
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+                    <div style={{ background: 'var(--color-bg-main)', borderRadius: 4, padding: '9px 12px', border: '1px solid var(--color-border)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 5, color: 'var(--color-earth)', fontSize: '0.65rem', fontWeight: 700, marginBottom: 2 }}>
                         <Mountain size={13} />
                         <span>ĐỈNH CAO NHẤT ĐÃ ĐẠT</span>
                       </div>
                       <div style={{ fontSize: '0.92rem', fontWeight: 900, color: 'var(--color-text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {profile?.stats?.summitTrailName || (profile?.stats?.highestAltitudeM ? `${profile.stats.highestAltitudeM.toLocaleString('vi-VN')} m` : 'Fansipan (3,143m)')}
+                        {profile?.stats?.summitTrailName || (profile?.stats?.highestAltitudeM ? `${profile.stats.highestAltitudeM.toLocaleString('vi-VN')} m` : 'Chưa ghi nhận đỉnh')}
                       </div>
                       <div style={{ fontSize: '0.62rem', color: 'var(--color-text-dim)', marginTop: 1, display: 'flex', alignItems: 'center', gap: 3 }}>
-                        <CheckCircle2 size={10} color="var(--color-primary)" /> Xác minh qua tracklog GPS
+                        <CheckCircle2 size={10} color="var(--color-primary)" /> Xác minh qua lịch sử check-in
                       </div>
                     </div>
 
-                    {/* 2. Tổng cự ly */}
-                    <div
-                      style={{
-                        background: 'var(--color-bg-main)',
-                        borderRadius: 12,
-                        padding: '9px 12px',
-                        border: '1px solid var(--color-border)',
-                      }}
-                    >
+                    <div style={{ background: 'var(--color-bg-main)', borderRadius: 4, padding: '9px 12px', border: '1px solid var(--color-border)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 5, color: 'var(--color-sky)', fontSize: '0.65rem', fontWeight: 700, marginBottom: 2 }}>
                         <Footprints size={13} />
                         <span>TỔNG CỰ LY TREKKING</span>
                       </div>
                       <div style={{ fontSize: '0.92rem', fontWeight: 900, color: 'var(--color-text-main)' }}>
-                        {profile?.stats?.totalDistanceKm || 28} <span style={{ fontSize: '0.72rem', color: 'var(--color-sky)', fontWeight: 700 }}>km</span>
+                        {profile?.stats?.totalDistanceKm ?? 0} <span style={{ fontSize: '0.72rem', color: 'var(--color-sky)', fontWeight: 700 }}>km</span>
                       </div>
                       <div style={{ fontSize: '0.62rem', color: 'var(--color-text-dim)', marginTop: 1, display: 'flex', alignItems: 'center', gap: 3 }}>
                         <MapPin size={10} color="var(--color-sky)" /> Cung đường thực địa
                       </div>
                     </div>
 
-                    {/* 3. Hoạt động đóng góp */}
-                    <div
-                      style={{
-                        background: 'var(--color-bg-main)',
-                        borderRadius: 12,
-                        padding: '9px 12px',
-                        border: '1px solid var(--color-border)',
-                      }}
-                    >
+                    <div style={{ background: 'var(--color-bg-main)', borderRadius: 4, padding: '9px 12px', border: '1px solid var(--color-border)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 5, color: 'var(--color-primary)', fontSize: '0.65rem', fontWeight: 700, marginBottom: 2 }}>
                         <MessageSquare size={13} />
                         <span>ĐÓNG GÓP CỘNG ĐỒNG</span>
@@ -774,16 +1092,8 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                       </div>
                     </div>
 
-                    {/* 4. Phong cách trekking */}
-                    <div
-                      style={{
-                        background: 'var(--color-bg-main)',
-                        borderRadius: 12,
-                        padding: '9px 12px',
-                        border: '1px solid var(--color-border)',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, color: '#f59e0b', fontSize: '0.65rem', fontWeight: 700, marginBottom: 2 }}>
+                    <div style={{ background: 'var(--color-bg-main)', borderRadius: 4, padding: '9px 12px', border: '1px solid var(--color-border)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, color: 'var(--color-sun)', fontSize: '0.65rem', fontWeight: 700, marginBottom: 2 }}>
                         <Flame size={13} />
                         <span>PHONG CÁCH CHUYÊN BIỆT</span>
                       </div>
@@ -791,67 +1101,90 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                         {profile?.preferredStyle || 'Trekking & Camping'}
                       </div>
                       <div style={{ fontSize: '0.62rem', color: 'var(--color-text-dim)', marginTop: 1 }}>
-                        Leo núi dã ngoại & cắm trại
+                        Leo núi dã ngoại &amp; cắm trại
                       </div>
                     </div>
                   </div>
                 )}
 
-                {/* TAB CONTENT 2: ALL AUTHENTIC BADGES (COMPACT 2-COLUMN GRID) */}
+                {/* TAB 2: BADGES WITH EMPTY STATE */}
                 {activeTab === 'badges' && (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6, maxHeight: 155, overflowY: 'auto' }}>
-                    {badges.map((bName, idx) => {
-                      const isSummit = bName.toLowerCase().includes('fansipan') || bName.toLowerCase().includes('đỉnh');
-                      const isRescue = bName.toLowerCase().includes('cứu hộ');
-                      const isGuide = bName.toLowerCase().includes('dẫn đường') || bName.toLowerCase().includes('guide');
-                      const isDistance = bName.toLowerCase().includes('bền bỉ');
-                      const isSapa = bName.toLowerCase().includes('sa pa');
-                      const isEco = bName.toLowerCase().includes('môi trường');
+                  badges.length === 0 ? (
+                    <div
+                      style={{
+                        padding: '22px 16px',
+                        textAlign: 'center',
+                        background: 'var(--color-bg-main)',
+                        border: '1px dashed var(--color-border)',
+                        borderRadius: 4,
+                        color: 'var(--color-text-dim)',
+                        fontSize: '0.78rem',
+                      }}
+                    >
+                      <Award size={22} color="var(--color-text-dim)" style={{ margin: '0 auto 6px', display: 'block', opacity: 0.6 }} />
+                      Thành viên này chưa mở khóa huy hiệu thực địa nào.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 6, maxHeight: 165, overflowY: 'auto' }}>
+                      {badges.map((bName, idx) => {
+                        const isSummit = bName.toLowerCase().includes('fansipan') || bName.toLowerCase().includes('đỉnh');
+                        const isRescue = bName.toLowerCase().includes('cứu hộ');
+                        const isGuide = bName.toLowerCase().includes('dẫn đường') || bName.toLowerCase().includes('guide');
+                        const isDistance = bName.toLowerCase().includes('bền bỉ');
+                        const isSapa = bName.toLowerCase().includes('sa pa');
+                        const isEco = bName.toLowerCase().includes('môi trường');
 
-                      const BadgeIcon = isSummit ? Mountain : (isRescue ? FirstAid : (isGuide ? Compass : (isDistance ? Footprints : (isSapa ? MapPin : (isEco ? Sparkles : Award)))));
-                      const badgeAccent = isSummit ? '#fbbf24' : (isRescue ? '#ef4444' : (isGuide ? '#38bdf8' : 'var(--color-primary)'));
+                        const BadgeIcon = isSummit ? Mountain : (isRescue ? FirstAid : (isGuide ? Compass : (isDistance ? Footprints : (isSapa ? MapPin : (isEco ? Sparkles : Award)))));
+                        const badgeAccent = isSummit
+                          ? 'var(--color-sun)'
+                          : isRescue
+                            ? 'var(--color-error-text, var(--color-error))'
+                            : isGuide
+                              ? 'var(--color-sky)'
+                              : 'var(--color-primary)';
 
-                      return (
-                        <div
-                          key={idx}
-                          style={{
-                            background: 'var(--color-bg-main)',
-                            border: `1px solid ${badgeAccent}35`,
-                            borderRadius: 10,
-                            padding: '6px 9px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 7,
-                          }}
-                        >
+                        return (
                           <div
+                            key={idx}
                             style={{
-                              width: 22,
-                              height: 22,
-                              borderRadius: 6,
-                              background: `${badgeAccent}18`,
+                              background: 'var(--color-bg-main)',
+                              border: `1px solid color-mix(in srgb, ${badgeAccent} 35%, transparent)`,
+                              borderRadius: 4,
+                              padding: '6px 9px',
                               display: 'flex',
                               alignItems: 'center',
-                              justifyContent: 'center',
-                              flexShrink: 0,
+                              gap: 7,
                             }}
                           >
-                            <BadgeIcon size={12} color={badgeAccent} />
-                          </div>
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                              {bName}
+                            <div
+                              style={{
+                                width: 22,
+                                height: 22,
+                                borderRadius: 4,
+                                background: `color-mix(in srgb, ${badgeAccent} 18%, transparent)`,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                flexShrink: 0,
+                              }}
+                            >
+                              <BadgeIcon size={12} color={badgeAccent} />
+                            </div>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {bName}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                        );
+                      })}
+                    </div>
+                  )
                 )}
 
-                {/* TAB CONTENT 3: RECENT DISPATCHES */}
+                {/* TAB 3: RECENT DISPATCHES */}
                 {activeTab === 'dispatches' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 155, overflowY: 'auto' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 165, overflowY: 'auto' }}>
                     {profile?.recentThreads && profile.recentThreads.length > 0 ? (
                       profile.recentThreads.map((t) => (
                         <div
@@ -859,7 +1192,7 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                           style={{
                             background: 'var(--color-bg-main)',
                             border: '1px solid var(--color-border)',
-                            borderRadius: 10,
+                            borderRadius: 4,
                             padding: '8px 12px',
                             display: 'flex',
                             alignItems: 'center',
@@ -870,12 +1203,12 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
                             <span
                               style={{
-                                background: t.category === 'Cảnh Báo' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
-                                color: t.category === 'Cảnh Báo' ? 'var(--color-error)' : 'var(--color-primary)',
+                                background: t.category === 'Cảnh Báo' ? 'color-mix(in srgb, var(--color-error) 10%, var(--color-bg-card))' : 'color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-card))',
+                                color: t.category === 'Cảnh Báo' ? 'var(--color-error-text, var(--color-error))' : 'var(--color-primary)',
                                 fontSize: '0.62rem',
                                 fontWeight: 800,
                                 padding: '1px 6px',
-                                borderRadius: 5,
+                                borderRadius: 4,
                                 flexShrink: 0,
                               }}
                             >
@@ -901,6 +1234,170 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                         Chưa có bài viết nào được đăng gần đây.
                       </div>
                     )}
+                  </div>
+                )}
+
+                {/* TAB 4: CONNECTIONS (FOLLOWERS & FOLLOWING) */}
+                {activeTab === 'connections' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    <div
+                      role="tablist"
+                      aria-label="Danh sách kết nối"
+                      style={{
+                        display: 'inline-flex',
+                        background: 'var(--color-bg-main)',
+                        border: '1px solid var(--color-border)',
+                        borderRadius: 4,
+                        padding: 3,
+                        gap: 4,
+                        alignSelf: 'flex-start',
+                      }}
+                    >
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={connectionMode === 'followers'}
+                        onClick={() => setConnectionMode('followers')}
+                        style={{
+                          padding: '4px 10px',
+                          borderRadius: 4,
+                          fontSize: '0.72rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          background: connectionMode === 'followers' ? 'var(--color-sky)' : 'transparent',
+                          color: connectionMode === 'followers' ? 'var(--color-on-primary)' : 'var(--color-text-muted)',
+                        }}
+                      >
+                        Người Theo Dõi ({followersCount})
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={connectionMode === 'following'}
+                        onClick={() => setConnectionMode('following')}
+                        style={{
+                          padding: '4px 10px',
+                          borderRadius: 4,
+                          fontSize: '0.72rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          background: connectionMode === 'following' ? 'var(--color-primary)' : 'transparent',
+                          color: connectionMode === 'following' ? 'var(--color-on-primary)' : 'var(--color-text-muted)',
+                        }}
+                      >
+                        Đang Theo Dõi ({followingCount})
+                      </button>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 200, overflowY: 'auto' }}>
+                      {loadingConnections ? (
+                        [1, 2, 3].map((sk) => (
+                          <div
+                            key={sk}
+                            style={{
+                              background: 'var(--color-bg-main)',
+                              border: '1px solid var(--color-border)',
+                              borderRadius: 4,
+                              padding: '8px 10px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 10,
+                            }}
+                          >
+                            <div style={{ width: 30, height: 30, borderRadius: '50%', background: 'var(--color-surface-elevated)' }} />
+                            <div style={{ flex: 1, height: 14, borderRadius: 4, background: 'var(--color-surface-elevated)' }} />
+                          </div>
+                        ))
+                      ) : connections.length === 0 ? (
+                        <div
+                          style={{
+                            padding: '20px 14px',
+                            textAlign: 'center',
+                            background: 'var(--color-bg-main)',
+                            border: '1px dashed var(--color-border)',
+                            borderRadius: 4,
+                            color: 'var(--color-text-dim)',
+                            fontSize: '0.76rem',
+                          }}
+                        >
+                          {connectionMode === 'followers'
+                            ? 'Chưa có thành viên nào theo dõi hồ sơ này.'
+                            : 'Thành viên này chưa theo dõi hồ sơ nào.'}
+                        </div>
+                      ) : (
+                        connections.map((member) => (
+                          <button
+                            key={member._id}
+                            type="button"
+                            onClick={() => handleInspectConnection(member)}
+                            style={{
+                              background: 'var(--color-bg-main)',
+                              border: '1px solid var(--color-border)',
+                              borderRadius: 4,
+                              padding: '8px 11px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: 10,
+                              cursor: 'pointer',
+                              textAlign: 'left',
+                              width: '100%',
+                            }}
+                          >
+                            <span style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
+                              {member.avatarUrl ? (
+                                <img
+                                  src={member.avatarUrl}
+                                  alt={member.fullName}
+                                  referrerPolicy="no-referrer"
+                                  style={{
+                                    width: 30,
+                                    height: 30,
+                                    borderRadius: '50%',
+                                    objectFit: 'cover',
+                                    border: '1.5px solid var(--color-primary)',
+                                    flexShrink: 0,
+                                  }}
+                                />
+                              ) : (
+                                <span
+                                  style={{
+                                    width: 30,
+                                    height: 30,
+                                    borderRadius: '50%',
+                                    background: 'color-mix(in srgb, var(--color-primary) 16%, transparent)',
+                                    border: '1px solid var(--color-primary)',
+                                    color: 'var(--color-primary)',
+                                    fontSize: '0.76rem',
+                                    fontWeight: 800,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  {member.fullName.charAt(0).toUpperCase()}
+                                </span>
+                              )}
+                              <span style={{ minWidth: 0 }}>
+                                <span style={{ display: 'block', fontSize: '0.8rem', fontWeight: 800, color: 'var(--color-text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {member.fullName}
+                                </span>
+                                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.68rem', color: 'var(--color-text-dim)' }}>
+                                  {member.username && <span>@{member.username}</span>}
+                                  {member.reputationScore !== undefined && (
+                                    <span style={{ color: 'var(--color-primary)', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                                      {member.reputationScore.toLocaleString('vi-VN')} PTS
+                                    </span>
+                                  )}
+                                </span>
+                              </span>
+                            </span>
+                            <IconArrowRight size={13} color="var(--color-text-muted)" />
+                          </button>
+                        ))
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

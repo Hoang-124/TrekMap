@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import { UserModel } from '../models/User.js';
@@ -7,11 +8,19 @@ import { ReviewModel } from '../models/Review.js';
 import { IncidentModel } from '../models/Incident.js';
 import { CommunityMessageModel } from '../models/CommunityMessage.js';
 import { ContributionModel } from '../models/Contribution.js';
-import { GuideModel } from '../models/Guide.js';
 import { NotificationModel } from '../models/Notification.js';
-import { hashPassword, verifyPassword, generateToken, verifyToken } from '../utils/auth.js';
+import { GuideModel } from '../models/Guide.js';
+import { TripPlanModel } from '../models/TripPlan.js';
+import {
+  hashPasswordAsync,
+  verifyPasswordAsync,
+  generateToken,
+  generateRefreshToken,
+  verifyRefreshToken,
+  parseCookieValue,
+} from '../utils/auth.js';
 import { sendResetPasswordEmail, sendAccountActivationEmail } from '../utils/mailer.js';
-import { cloudinary } from '../config/cloudinarySDK.js';
+import { cloudinary, isCloudinaryConfigured } from '../config/cloudinarySDK.js';
 import {
   validateEmail,
   validatePasswordStrength,
@@ -19,70 +28,211 @@ import {
   validateOtpCode,
   sanitizeInput,
   validateUsername,
+  deriveUsernameFromFullName,
   generateUsernameSuggestions,
   validatePhoneNumber,
+  isSafeHttpUrl,
 } from '../utils/validation.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 
-export const inMemoryUsersMap = new Map<string, any>();
+const OTP_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000; // 60 seconds
+const RESET_EMAIL_COOLDOWN_MS = 60 * 1000; // 60 seconds
+const DATA_IMAGE_REGEX = /^data:image\/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=]+)$/;
+const MAX_PROFILE_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_PROFILE_BASE64_CHARS = 7_000_000;
+const DEFAULT_AVATAR_URL =
+  'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
+
+const REFRESH_COOKIE_NAME = 'lost_refresh';
+
+function setRefreshTokenCookie(res: Response, refreshToken: string) {
+  const isProd = process.env.NODE_ENV === 'production';
+  const parts = [
+    `${REFRESH_COOKIE_NAME}=${encodeURIComponent(refreshToken)}`,
+    'HttpOnly',
+    'Path=/api/auth',
+    'SameSite=Lax',
+    `Max-Age=${30 * 24 * 60 * 60}`,
+  ];
+  if (isProd) parts.push('Secure');
+  res.setHeader('Set-Cookie', parts.join('; '));
+}
+
+function clearRefreshTokenCookie(res: Response) {
+  const isProd = process.env.NODE_ENV === 'production';
+  const suffix = isProd ? '; Secure' : '';
+  res.setHeader(
+    'Set-Cookie',
+    `${REFRESH_COOKIE_NAME}=; HttpOnly; Path=/api/auth; SameSite=Lax; Max-Age=0${suffix}`
+  );
+}
+
+function generateSecureOtp(): string {
+  return crypto.randomInt(100000, 1000000).toString();
+}
+
+function generateSecureToken(): string {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function hashTokenValue(raw: string): string {
+  return crypto.createHash('sha256').update(raw).digest('hex');
+}
+
+function timingSafeStringEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function hasValidProfileImageMagicBytes(buf: Buffer): boolean {
+  if (buf.length < 12) return false;
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return true; // PNG
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return true; // JPEG
+  if (
+    buf[0] === 0x52 &&
+    buf[1] === 0x49 &&
+    buf[2] === 0x46 &&
+    buf[3] === 0x46 &&
+    buf[8] === 0x57 &&
+    buf[9] === 0x45 &&
+    buf[10] === 0x42 &&
+    buf[11] === 0x50
+  ) {
+    return true; // WEBP
+  }
+  return false;
+}
+
+function buildFullUserPayload(user: any) {
+  const uid = String(user._id || user.id);
+  return {
+    id: uid,
+    username: user.username || (user.email ? user.email.split('@')[0] : 'trekker'),
+    email: user.email,
+    fullName: user.fullName,
+    avatarUrl: user.avatarUrl || '',
+    coverUrl: user.coverUrl || '',
+    role: user.role || 'user',
+    authProvider: user.authProvider || 'local',
+    isEmailVerified: Boolean(user.isEmailVerified),
+    reputationScore: user.reputationScore ?? 50,
+    badges: user.badges || ['Trekker Mới'],
+    checkedInTrails: user.checkedInTrails || [],
+    savedTrails: user.savedTrails || [],
+    phone: user.phone || '',
+    bio: user.bio || '',
+    emergencyContact: user.emergencyContact || '',
+    preferredStyle: user.preferredStyle || 'Trekking & Camping',
+    gearLocker: user.gearLocker || [],
+    followersCount: user.followersCount ?? 0,
+    followingCount: user.followingCount ?? 0,
+    tripReportsCount: user.tripReportsCount ?? 0,
+    createdAt: user.createdAt || new Date(),
+  };
+}
 
 /**
- * Verifies Google OAuth Token (Access Token or ID Token) against Google's official API
+ * Verifies Google OAuth Token (ID Token or Access Token) against Google's official endpoints.
+ * Enforces `email_verified === true`, strict `aud`/`azp === GOOGLE_CLIENT_ID`, and network timeouts.
  */
-async function verifyGoogleToken(googleToken: string): Promise<{ email: string; name: string; picture: string } | null> {
-  try {
-    // 1. Verify Access Token via Google OAuth2 UserInfo Endpoint
-    const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-      headers: { Authorization: `Bearer ${googleToken}` },
-    });
-    if (res.ok) {
-      const data: any = await res.json();
-      if (data && data.email) {
-        return {
-          email: data.email.toLowerCase().trim(),
-          name: data.name || data.given_name || 'Google Trekker',
-          picture: data.picture || '',
-        };
-      }
+async function verifyGoogleToken(
+  googleToken: string
+): Promise<{ email: string; name: string; picture: string } | null> {
+  const expectedClientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
+  if (!expectedClientId) {
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[Google OAuth Security Error]: GOOGLE_CLIENT_ID must be set in production.');
+      return null;
     }
+    console.warn('[Google OAuth Warning]: GOOGLE_CLIENT_ID is not set; audience pinning disabled in dev mode.');
+  }
 
-    // 2. Fallback: Verify ID Token via Google OAuth2 TokenInfo Endpoint
-    const tokenInfoRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(googleToken)}`);
-    if (tokenInfoRes.ok) {
-      const idData: any = await tokenInfoRes.json();
-      if (idData && idData.email) {
+  try {
+    // 1. Try ID Token verification via tokeninfo (includes `aud` & `email_verified`)
+    const idInfoRes = await fetch(
+      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(googleToken)}`,
+      { signal: AbortSignal.timeout(6000) }
+    );
+    if (idInfoRes.ok) {
+      const idData: any = await idInfoRes.json();
+      const emailVerified = idData.email_verified === true || idData.email_verified === 'true';
+      const audMatches = !expectedClientId || idData.aud === expectedClientId || idData.azp === expectedClientId;
+      if (idData?.email && emailVerified && audMatches) {
         return {
-          email: idData.email.toLowerCase().trim(),
+          email: String(idData.email).toLowerCase().trim(),
           name: idData.name || idData.given_name || 'Google Trekker',
           picture: idData.picture || '',
         };
       }
+      return null;
     }
 
-    return null;
+    // 2. Fallback: Verify Access Token via tokeninfo?access_token=... then fetch userinfo
+    const accessInfoRes = await fetch(
+      `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(googleToken)}`,
+      { signal: AbortSignal.timeout(6000) }
+    );
+    if (!accessInfoRes.ok) return null;
+    const accessInfo: any = await accessInfoRes.json();
+    const audMatches = !expectedClientId || accessInfo.aud === expectedClientId || accessInfo.azp === expectedClientId;
+    if (!audMatches) return null;
+
+    const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${googleToken}` },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!userInfoRes.ok) return null;
+    const userInfo: any = await userInfoRes.json();
+    const emailVerified = userInfo.email_verified === true || userInfo.email_verified === 'true';
+    if (!userInfo?.email || !emailVerified) return null;
+
+    return {
+      email: String(userInfo.email).toLowerCase().trim(),
+      name: userInfo.name || userInfo.given_name || 'Google Trekker',
+      picture: userInfo.picture || '',
+    };
   } catch (err) {
     console.error('[Google OAuth Token Verification Error]:', err);
     return null;
   }
 }
 
+async function isUsernameTaken(username: string, excludeUserId?: string): Promise<boolean> {
+  const escaped = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const query: any = { username: { $regex: new RegExp(`^${escaped}$`, 'i') } };
+  if (excludeUserId && mongoose.Types.ObjectId.isValid(excludeUserId)) {
+    query._id = { $ne: new mongoose.Types.ObjectId(excludeUserId) };
+  }
+  const existing = await UserModel.findOne(query).select('_id').lean();
+  return Boolean(existing);
+}
+
 export const googleAuth = async (req: Request, res: Response) => {
-  const { token: googleToken, accessToken, idToken } = req.body;
+  const { token: googleToken, accessToken, idToken } = req.body || {};
   const tokenToVerify = googleToken || accessToken || idToken;
 
-  if (!tokenToVerify) {
+  if (!tokenToVerify || typeof tokenToVerify !== 'string') {
     return res.status(400).json({
       success: false,
       message: 'Thiếu mã xác thực Google OAuth (Token). Vui lòng đăng nhập lại.',
     });
   }
 
-  // Server-side verification with Google's API to prevent authentication bypass
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({
+      success: false,
+      message: 'Cơ sở dữ liệu tạm thời gián đoạn. Vui lòng thử lại sau.',
+    });
+  }
+
   const googleProfile = await verifyGoogleToken(tokenToVerify);
   if (!googleProfile || !googleProfile.email) {
     return res.status(401).json({
       success: false,
-      message: 'Xác thực tài khoản Google không thành công. Token không hợp lệ hoặc đã hết hạn.',
+      message: 'Xác thực tài khoản Google không thành công. Token không hợp lệ hoặc chưa xác minh email.',
     });
   }
 
@@ -91,110 +241,68 @@ export const googleAuth = async (req: Request, res: Response) => {
   const picture = googleProfile.picture;
 
   try {
-    let user: any = null;
-
-    if (mongoose.connection.readyState === 1) {
-      user = await UserModel.findOne({ email: cleanEmail });
-    }
+    let user = await UserModel.findOne({ email: cleanEmail });
 
     if (!user) {
-      const baseUser = cleanEmail.split('@')[0].replace(/[^a-zA-Z0-9_-]/g, '') || 'google_user';
-      const uniqueUsername = `${baseUser}_${Math.floor(100 + Math.random() * 900)}`;
+      const baseUser = deriveUsernameFromFullName(name, cleanEmail).slice(0, 18);
+      const uniqueUsername = `${baseUser}_${crypto.randomBytes(3).toString('hex')}`;
+      const randomHash = await hashPasswordAsync(crypto.randomBytes(32).toString('hex'));
 
-      if (mongoose.connection.readyState === 1) {
-        user = await UserModel.create({
-          username: uniqueUsername,
-          email: cleanEmail,
-          passwordHash: hashPassword(`google-oauth-pwd-${Date.now()}`),
-          fullName: name || 'Google Trekker',
-          avatarUrl: picture || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg',
-          role: 'user',
-          authProvider: 'google',
-          isEmailVerified: true,
-          reputationScore: 100,
-          badges: ['Google Verified', 'Verified Trekker'],
-        });
-      } else {
-        user = {
-          _id: 'google-temp-id-' + Date.now(),
-          username: uniqueUsername,
-          email: cleanEmail,
-          fullName: name || 'Google Trekker',
-          avatarUrl: picture || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg',
-          role: 'user',
-          reputationScore: 100,
-          badges: ['Google Verified', 'Verified Trekker'],
-        };
-      }
+      user = await UserModel.create({
+        username: uniqueUsername,
+        email: cleanEmail,
+        passwordHash: randomHash,
+        fullName: sanitizeInput(name || 'Google Trekker').slice(0, 60),
+        avatarUrl: picture && isSafeHttpUrl(picture) ? picture : DEFAULT_AVATAR_URL,
+        role: 'user',
+        authProvider: 'google',
+        isEmailVerified: true,
+        tokenVersion: 0,
+        reputationScore: 100,
+        badges: ['Google Verified', 'Verified Trekker'],
+      });
     } else {
-      user.authProvider = 'google';
+      if (user.isBanned) {
+        return res.status(403).json({
+          success: false,
+          isBanned: true,
+          message: 'Tài khoản này đã bị Ban Quản Trị khóa vĩnh viễn do vi phạm quy định hoặc báo động giả.',
+        });
+      }
+
       user.isEmailVerified = true;
       if (!user.username) {
-        const baseUser = cleanEmail.split('@')[0].replace(/[^a-zA-Z0-9_-]/g, '') || 'google_user';
-        user.username = `${baseUser}_${Math.floor(100 + Math.random() * 900)}`;
+        const baseUser = deriveUsernameFromFullName(name, cleanEmail).slice(0, 18);
+        user.username = `${baseUser}_${crypto.randomBytes(3).toString('hex')}`;
       }
-      if (picture) user.avatarUrl = picture;
-      if (name) user.fullName = name;
-
-      if (mongoose.connection.readyState === 1) {
-        await user.save();
+      if (!user.avatarUrl && picture && isSafeHttpUrl(picture)) {
+        user.avatarUrl = picture;
       }
+      await user.save();
     }
 
-    if (user && user.isBanned) {
-      return res.status(403).json({
-        success: false,
-        isBanned: true,
-        message: 'Tài khoản này đã bị Ban Quản Trị khóa vĩnh viễn do vi phạm quy định hoặc báo động giả.',
-      });
-    }
-
-    const userId = (user._id || user.id || 'google-user-id').toString();
-    const token = generateToken(userId, user.email, user.role || 'user');
+    const userId = String(user._id);
+    const token = generateToken(userId, user.email, user.role || 'user', user.tokenVersion || 0);
+    setRefreshTokenCookie(res, generateRefreshToken(userId, user.email, user.role || 'user', user.tokenVersion || 0));
 
     return res.json({
       success: true,
       message: `Xin chào ${user.fullName || name}! Đăng nhập Google thành công.`,
       token,
-      user: {
-        id: userId,
-        username: user.username || cleanEmail.split('@')[0],
-        email: user.email,
-        fullName: user.fullName || name || 'Google Trekker',
-        avatarUrl: user.avatarUrl || picture,
-        coverUrl: user.coverUrl || '',
-        role: user.role || 'user',
-        reputationScore: user.reputationScore || 100,
-        badges: user.badges || ['Google Verified'],
-      },
+      user: buildFullUserPayload(user),
     });
   } catch (err) {
-    const baseUser = cleanEmail.split('@')[0].replace(/[^a-zA-Z0-9_-]/g, '') || 'google_user';
-    const fallbackUserId = 'google-fallback-' + Date.now();
-    const token = generateToken(fallbackUserId, cleanEmail, 'user');
-
-    return res.json({
-      success: true,
-      message: `Xin chào ${name || cleanEmail}! Đăng nhập Google thành công.`,
-      token,
-      user: {
-        id: fallbackUserId,
-        username: baseUser,
-        email: cleanEmail,
-        fullName: name || 'Google Trekker',
-        avatarUrl: picture || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg',
-        coverUrl: '',
-        role: 'user',
-        reputationScore: 100,
-        badges: ['Google Verified', 'Verified Trekker'],
-      },
+    console.error('[Google Auth Error]:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Lỗi máy chủ khi xử lý đăng nhập Google. Vui lòng thử lại sau.',
     });
   }
 };
 
 export const checkUsername = async (req: Request, res: Response) => {
   const username = req.query.username as string;
-  if (!username) {
+  if (!username || typeof username !== 'string') {
     return res.status(400).json({ success: false, message: 'Thiếu tham số username.' });
   }
 
@@ -203,34 +311,49 @@ export const checkUsername = async (req: Request, res: Response) => {
     return res.json({ available: false, message: userRes.message });
   }
 
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ available: false, message: 'Cơ sở dữ liệu tạm thời gián đoạn.' });
+  }
+
   try {
-    const existing = await UserModel.findOne({ username: { $regex: new RegExp(`^${userRes.cleanUsername}$`, 'i') } });
-    if (existing) {
-      const suggestions = await generateUsernameSuggestions(userRes.cleanUsername, async (cand) => {
-        const found = await UserModel.findOne({ username: { $regex: new RegExp(`^${cand}$`, 'i') } });
-        return !!found;
-      });
+    const taken = await isUsernameTaken(userRes.cleanUsername);
+    if (taken) {
+      const suggestions = await generateUsernameSuggestions(userRes.cleanUsername, (cand) => isUsernameTaken(cand));
       return res.json({ available: false, isDuplicate: true, suggestions });
     }
 
     return res.json({ available: true, message: 'Tên tài khoản này có thể sử dụng!' });
-  } catch (err) {
+  } catch {
     return res.status(500).json({ available: false, message: 'Lỗi máy chủ kiểm tra username.' });
   }
 };
 
 export const register = async (req: Request, res: Response) => {
-  const { email, password, fullName, username } = req.body;
+  const { email, password, fullName, username } = req.body || {};
 
   const emailRes = validateEmail(email);
   if (!emailRes.isValid) {
     return res.status(400).json({ success: false, message: emailRes.message });
   }
 
-  const targetUsername = username || fullName;
-  const userValRes = validateUsername(targetUsername);
-  if (!userValRes.isValid) {
-    return res.status(400).json({ success: false, message: userValRes.message });
+  // Validate Vietnamese fullName cleanly (allows Vietnamese diacritics & spaces!)
+  const rawFullName = typeof fullName === 'string' && fullName.trim() ? fullName : typeof username === 'string' ? username : '';
+  const fnRes = validateFullName(rawFullName);
+  if (!fnRes.isValid) {
+    return res.status(400).json({ success: false, message: fnRes.message });
+  }
+
+  // If explicit username provided, validate strictly; otherwise auto-derive ASCII handle from Vietnamese fullName
+  const hasExplicitUsername = typeof username === 'string' && username.trim().length > 0;
+  let cleanUsername = '';
+  if (hasExplicitUsername) {
+    const userValRes = validateUsername(username);
+    if (!userValRes.isValid) {
+      return res.status(400).json({ success: false, message: userValRes.message });
+    }
+    cleanUsername = userValRes.cleanUsername;
+  } else {
+    cleanUsername = deriveUsernameFromFullName(fnRes.cleanName, emailRes.cleanEmail);
   }
 
   const pwdRes = validatePasswordStrength(password);
@@ -239,7 +362,6 @@ export const register = async (req: Request, res: Response) => {
   }
 
   const cleanEmail = emailRes.cleanEmail;
-  const cleanUsername = userValRes.cleanUsername;
 
   if (cleanEmail.endsWith('@gmail.com') || cleanEmail.endsWith('@googlemail.com')) {
     return res.status(400).json({
@@ -249,94 +371,76 @@ export const register = async (req: Request, res: Response) => {
     });
   }
 
-  try {
-    let emailExisting: any = null;
-    try {
-      emailExisting = await UserModel.findOne({ email: cleanEmail });
-    } catch (dbErr) {
-      emailExisting = inMemoryUsersMap.get(cleanEmail);
-    }
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng để tạo tài khoản.' });
+  }
 
+  try {
+    const emailExisting = await UserModel.findOne({ email: cleanEmail }).select('_id isEmailVerified').lean();
     if (emailExisting) {
       if (emailExisting.isEmailVerified === false) {
-        const freshActivationCode = Math.floor(100000 + Math.random() * 900000).toString();
-        emailExisting.activationCode = freshActivationCode;
-        emailExisting.activationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
-        emailExisting.otpFailedAttempts = 0;
-        emailExisting.passwordHash = hashPassword(password);
-        try { await emailExisting.save(); } catch (e) {}
-
-        if (!cleanEmail.endsWith('@example.com')) {
-          sendAccountActivationEmail(cleanEmail, emailExisting.username || emailExisting.fullName, freshActivationCode).catch((err) =>
-            console.error('❌ [Background Email Error]:', err)
-          );
-        }
-
-        return res.status(200).json({
-          success: true,
+        return res.status(409).json({
+          success: false,
           requiresActivation: true,
           isUnverifiedExisting: true,
           email: cleanEmail,
-          message: `Tài khoản (${cleanEmail}) đã được tạo trước đó nhưng CHƯA KÍCH HOẠT! Mã OTP 6 số mới đã được gửi tới email của bạn, vui lòng nhập mã để kích hoạt ngay.`,
+          message: `Email (${cleanEmail}) đã được đăng ký nhưng chưa kích hoạt. Vui lòng dùng tính năng "Gửi lại mã OTP" để kích hoạt tài khoản.`,
         });
       }
 
-      return res.status(400).json({ success: false, message: 'Email này đã được đăng ký và kích hoạt trên TrekMap. Vui lòng bấm "Đăng nhập"!' });
-    }
-
-    const passwordHash = hashPassword(password);
-    const activationToken = Math.random().toString(36).substring(2) + Date.now().toString(36);
-    const activationCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const activationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
-
-    let user: any = null;
-    try {
-      user = await UserModel.create({
-        username: cleanUsername,
-        email: cleanEmail,
-        passwordHash,
-        fullName: cleanUsername,
-        avatarUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg',
-        role: 'user',
-        authProvider: 'local',
-        isEmailVerified: cleanEmail.endsWith('@example.com') ? true : false,
-        activationCode,
-        activationToken,
-        activationExpires,
-        otpFailedAttempts: 0,
-        reputationScore: 50,
-        badges: ['Trekker Mới'],
+      return res.status(409).json({
+        success: false,
+        message: 'Email này đã được đăng ký trên hệ thống. Vui lòng bấm "Đăng nhập"!',
       });
-    } catch (createErr) {
-      const userId = `usr-mem-${Date.now()}`;
-      user = {
-        _id: userId,
-        username: cleanUsername,
-        email: cleanEmail,
-        passwordHash,
-        fullName: cleanUsername,
-        avatarUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg',
-        role: 'user',
-        isEmailVerified: cleanEmail.endsWith('@example.com') ? true : false,
-        reputationScore: 50,
-        badges: ['Trekker Mới'],
-      };
-      inMemoryUsersMap.set(cleanEmail, user);
     }
 
-    if (!cleanEmail.endsWith('@example.com')) {
-      sendAccountActivationEmail(cleanEmail, cleanUsername, activationCode).catch((err) =>
-        console.error('❌ [Background Email Error]:', err)
-      );
+    // Handle username collision cleanly: auto-suffix if auto-derived, or return suggestions if explicitly chosen
+    if (await isUsernameTaken(cleanUsername)) {
+      if (hasExplicitUsername) {
+        const suggestions = await generateUsernameSuggestions(cleanUsername, (cand) => isUsernameTaken(cand));
+        return res.status(409).json({
+          success: false,
+          isDuplicateUsername: true,
+          suggestions,
+          message: `Tên tài khoản "${cleanUsername}" đã có người sử dụng. Vui lòng chọn một gợi ý bên dưới.`,
+        });
+      }
+      cleanUsername = `${cleanUsername.slice(0, 20)}_${crypto.randomBytes(3).toString('hex')}`;
     }
 
-    const userId = (user._id as any).toString();
-    const token = generateToken(userId, user.email, user.role || 'user');
+    const passwordHash = await hashPasswordAsync(password);
+    const rawActivationToken = generateSecureToken();
+    const rawActivationCode = generateSecureOtp();
+    const activationExpires = new Date(Date.now() + OTP_TTL_MS);
+
+    const user = await UserModel.create({
+      username: cleanUsername,
+      email: cleanEmail,
+      passwordHash,
+      fullName: fnRes.cleanName,
+      avatarUrl: DEFAULT_AVATAR_URL,
+      role: 'user',
+      authProvider: 'local',
+      isEmailVerified: false,
+      tokenVersion: 0,
+      activationCode: hashTokenValue(rawActivationCode),
+      activationToken: hashTokenValue(rawActivationToken),
+      activationExpires,
+      otpFailedAttempts: 0,
+      otpLastSentAt: new Date(),
+      reputationScore: 50,
+      badges: ['Trekker Mới'],
+    });
+
+    sendAccountActivationEmail(cleanEmail, fnRes.cleanName, rawActivationCode).catch((err) =>
+      console.error('[Background Email Error]:', err)
+    );
+
+    const userId = String(user._id);
 
     return res.status(201).json({
       success: true,
-      requiresActivation: !user.isEmailVerified,
-      token,
+      requiresActivation: true,
       email: cleanEmail,
       user: {
         id: userId,
@@ -345,17 +449,31 @@ export const register = async (req: Request, res: Response) => {
         fullName: user.fullName,
         role: user.role,
       },
-      message: user.isEmailVerified
-        ? 'Đăng ký tài khoản thử nghiệm thành công!'
-        : `Đăng ký thành công! Vui lòng nhập mã 6 số đã gửi tới email ${cleanEmail} để kích hoạt ngay.`,
+      message: `Đăng ký thành công! Vui lòng nhập mã OTP 6 số đã gửi tới email ${cleanEmail} trong vòng 15 phút để kích hoạt.`,
     });
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.code === 11000) {
+      const dupField = Object.keys(err.keyPattern || {})[0];
+      if (dupField === 'username') {
+        const suggestions = await generateUsernameSuggestions(cleanUsername, (cand) => isUsernameTaken(cand)).catch(
+          () => []
+        );
+        return res.status(409).json({
+          success: false,
+          isDuplicateUsername: true,
+          suggestions,
+          message: 'Tên tài khoản đã tồn tại trên hệ thống. Vui lòng chọn tên khác.',
+        });
+      }
+      return res.status(409).json({ success: false, message: 'Tên tài khoản hoặc Email đã tồn tại trên hệ thống.' });
+    }
+    console.error('[Register Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi cơ sở dữ liệu khi tạo tài khoản.' });
   }
 };
 
 export const verifyCode = async (req: Request, res: Response) => {
-  const { email, code } = req.body;
+  const { email, code } = req.body || {};
 
   const emailRes = validateEmail(email);
   if (!emailRes.isValid) {
@@ -367,35 +485,60 @@ export const verifyCode = async (req: Request, res: Response) => {
     return res.status(400).json({ success: false, message: otpRes.message });
   }
 
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+  }
+
   const cleanEmail = emailRes.cleanEmail;
   const cleanCode = otpRes.cleanCode;
+  const hashedCode = hashTokenValue(cleanCode);
 
   try {
-    const user = await UserModel.findOne({ email: cleanEmail });
+    const user = await UserModel.findOne({ email: cleanEmail }).select('+activationCode +activationToken');
 
     if (!user || !user.activationCode || !user.activationExpires) {
       return res.status(400).json({ success: false, message: 'Tài khoản không tồn tại hoặc mã OTP đã hết hạn.' });
     }
 
     if (user.activationExpires < new Date()) {
-      return res.status(400).json({ success: false, message: 'Mã OTP 6 số đã hết hạn. Vui lòng bấm Đăng ký lại để nhận mã mới.' });
+      return res.status(400).json({
+        success: false,
+        message: 'Mã OTP 6 số đã hết hạn. Vui lòng bấm "Gửi lại mã OTP" để nhận mã mới.',
+      });
     }
 
-    if ((user.otpFailedAttempts || 0) >= 5) {
-      user.activationCode = undefined;
-      user.activationExpires = undefined;
-      user.otpFailedAttempts = 0;
-      await user.save();
+    // Atomically increment attempt counter BEFORE verifying to block parallel OTP brute-force races
+    const attemptDoc = await UserModel.findOneAndUpdate(
+      { _id: user._id, otpFailedAttempts: { $lt: 5 } },
+      { $inc: { otpFailedAttempts: 1 } },
+      { new: true }
+    ).select('otpFailedAttempts');
+
+    if (!attemptDoc) {
+      await UserModel.updateOne(
+        { _id: user._id },
+        { $unset: { activationCode: '', activationExpires: '' }, $set: { otpFailedAttempts: 0 } }
+      );
       return res.status(429).json({
         success: false,
         message: 'Bạn đã nhập sai mã OTP quá 5 lần. Mã đã bị hủy vì lý do bảo mật. Vui lòng yêu cầu cấp lại mã mới.',
       });
     }
 
-    if (user.activationCode !== cleanCode) {
-      user.otpFailedAttempts = (user.otpFailedAttempts || 0) + 1;
-      await user.save();
-      const remaining = 5 - user.otpFailedAttempts;
+    // Support SHA-256 hashed OTP (and legacy 6-digit codes stored before hashing rollout)
+    const isMatch =
+      user.activationCode.length === 64
+        ? timingSafeStringEqual(user.activationCode, hashedCode)
+        : timingSafeStringEqual(user.activationCode, cleanCode);
+
+    if (!isMatch) {
+      const remaining = Math.max(0, 5 - (attemptDoc.otpFailedAttempts || 5));
+      if (remaining === 0) {
+        await UserModel.updateOne(
+          { _id: user._id },
+          { $unset: { activationCode: '', activationExpires: '' }, $set: { otpFailedAttempts: 0 } }
+        );
+      }
       return res.status(400).json({
         success: false,
         message: `Mã xác nhận OTP không chính xác. Bạn còn ${remaining} lần thử trước khi mã bị hủy.`,
@@ -413,144 +556,103 @@ export const verifyCode = async (req: Request, res: Response) => {
     user.otpFailedAttempts = 0;
     await user.save();
 
-    const userId = (user._id as any).toString();
-    const token = generateToken(userId, user.email, user.role || 'user');
+    const userId = String(user._id);
+    const token = generateToken(userId, user.email, user.role || 'user', user.tokenVersion || 0);
+    setRefreshTokenCookie(res, generateRefreshToken(userId, user.email, user.role || 'user', user.tokenVersion || 0));
 
     return res.json({
       success: true,
       message: 'Kích hoạt tài khoản thành công! Bạn nhận được mặc định 50 điểm uy tín!',
       token,
-      user: {
-        id: userId,
-        username: user.username,
-        email: user.email,
-        fullName: user.fullName,
-        avatarUrl: user.avatarUrl,
-        role: user.role,
-        reputationScore: user.reputationScore,
-        badges: user.badges,
-      },
+      user: buildFullUserPayload(user),
     });
   } catch (err) {
+    console.error('[Verify Code Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi xác nhận mã OTP.' });
   }
 };
 
 export const resendOtp = async (req: Request, res: Response) => {
-  const { email } = req.body;
+  const { email } = req.body || {};
 
   const emailRes = validateEmail(email);
   if (!emailRes.isValid) {
     return res.status(400).json({ success: false, message: emailRes.message });
   }
 
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+  }
+
   const cleanEmail = emailRes.cleanEmail;
 
   try {
     const user = await UserModel.findOne({ email: cleanEmail });
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy thông tin tài khoản với email này.' });
+    if (!user || user.isEmailVerified) {
+      return res.json({
+        success: true,
+        email: cleanEmail,
+        message: 'Nếu tài khoản chưa được kích hoạt, mã OTP 6 số mới đã được gửi tới hộp thư của bạn.',
+      });
     }
 
-    if (user.isEmailVerified) {
-      return res.status(400).json({ success: false, message: 'Tài khoản này đã được kích hoạt thành công trước đó. Bạn có thể đăng nhập ngay!' });
+    if (user.otpLastSentAt && Date.now() - user.otpLastSentAt.getTime() < OTP_RESEND_COOLDOWN_MS) {
+      const waitSec = Math.ceil((OTP_RESEND_COOLDOWN_MS - (Date.now() - user.otpLastSentAt.getTime())) / 1000);
+      return res.status(429).json({
+        success: false,
+        message: `Vui lòng đợi ${waitSec} giây trước khi yêu cầu gửi lại mã OTP.`,
+      });
     }
 
-    const newActivationCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const newActivationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
-
-    user.activationCode = newActivationCode;
-    user.activationExpires = newActivationExpires;
+    const newActivationCode = generateSecureOtp();
+    user.activationCode = hashTokenValue(newActivationCode);
+    user.activationExpires = new Date(Date.now() + OTP_TTL_MS);
     user.otpFailedAttempts = 0;
+    user.otpLastSentAt = new Date();
     await user.save();
 
-    sendAccountActivationEmail(cleanEmail, user.username || user.fullName, newActivationCode).catch((err) =>
-      console.error('❌ [Background Resend Email Error]:', err)
+    sendAccountActivationEmail(cleanEmail, user.fullName || user.username, newActivationCode).catch((err) =>
+      console.error('[Background Resend Email Error]:', err)
     );
 
     return res.json({
       success: true,
       email: cleanEmail,
-      message: `Mã OTP 6 số mới đã được gửi tới email ${cleanEmail}. Vui lòng kiểm tra hòm thư!`,
+      message: 'Nếu tài khoản chưa được kích hoạt, mã OTP 6 số mới đã được gửi tới hộp thư của bạn.',
     });
-  } catch (err) {
+  } catch {
     return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi gửi lại mã OTP.' });
   }
 };
 
 export const login = async (req: Request, res: Response) => {
-  const { email, password } = req.body;
+  const { email, password } = req.body || {};
 
-  if (!email || !password) {
-    return res.status(400).json({ success: false, message: 'Vui lòng nhập Email và Mật khẩu.' });
+  if (typeof email !== 'string' || typeof password !== 'string' || !email.trim() || !password) {
+    return res.status(400).json({ success: false, message: 'Vui lòng nhập đầy đủ Email và Mật khẩu.' });
+  }
+
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu tạm thời gián đoạn. Vui lòng thử lại.' });
   }
 
   const cleanEmail = email.toLowerCase().trim();
 
   try {
-    let user: any = null;
-    try {
-      user = await UserModel.findOne({ email: cleanEmail });
-    } catch (findErr) {
-      user = inMemoryUsersMap.get(cleanEmail);
-    }
-
-    if (!user && inMemoryUsersMap.has(cleanEmail)) {
-      user = inMemoryUsersMap.get(cleanEmail);
-    }
-
-    if (!user && cleanEmail === 'hoang@trekmap.vn') {
-      user = {
-        _id: 'usr-admin-001',
-        username: 'hoangtrekker',
-        email: 'hoang@trekmap.vn',
-        passwordHash: hashPassword('admin123'),
-        fullName: 'Hoàng Trekker (Admin)',
-        role: 'admin',
-        authProvider: 'local',
-        isEmailVerified: true,
-        reputationScore: 1250,
-        badges: ['Top Contributor', 'Verified Guide', 'Fansipan Summitter'],
-      };
-      try {
-        await UserModel.create(user);
-      } catch (createErr) {}
-      inMemoryUsersMap.set(cleanEmail, user);
-    }
+    const user = await UserModel.findOne({ email: cleanEmail }).select('+passwordHash');
 
     if (!user) {
-      return res.status(400).json({ success: false, message: 'Email hoặc mật khẩu không chính xác.' });
+      return res.status(401).json({ success: false, message: 'Email hoặc mật khẩu không chính xác.' });
     }
 
+    // Security: never reveal authProvider before credential verification (prevents Google account enumeration)
     if (user.authProvider === 'google') {
-      return res.status(400).json({
-        success: false,
-        message: 'Tài khoản này đã được đăng ký bằng Google. Vui lòng chọn "Đăng nhập nhanh bằng Google"!',
-      });
+      return res.status(401).json({ success: false, message: 'Email hoặc mật khẩu không chính xác.' });
     }
 
-    let isValid = false;
-    try {
-      if (user.passwordHash) {
-        isValid = verifyPassword(password, user.passwordHash);
-      }
-    } catch (pwdErr) {}
-
-    if (!isValid && cleanEmail === 'hoang@trekmap.vn' && (password === 'admin123' || password === '123456')) {
-      isValid = true;
-      user.isEmailVerified = true;
-      if (!user.passwordHash) {
-        user.passwordHash = hashPassword('admin123');
-      }
-      try {
-        if (typeof user.save === 'function') {
-          await user.save();
-        }
-      } catch (saveErr) {}
-    }
-
+    const isValid = Boolean(user.passwordHash && (await verifyPasswordAsync(password, user.passwordHash)));
     if (!isValid) {
-      return res.status(400).json({ success: false, message: 'Mật khẩu không chính xác. Vui lòng thử lại.' });
+      return res.status(401).json({ success: false, message: 'Email hoặc mật khẩu không chính xác.' });
     }
 
     if (user.isBanned) {
@@ -561,32 +663,25 @@ export const login = async (req: Request, res: Response) => {
       });
     }
 
-    if (user.isEmailVerified === false && cleanEmail !== 'hoang@trekmap.vn') {
-      return res.status(400).json({
+    if (user.isEmailVerified === false) {
+      return res.status(403).json({
         success: false,
         isNotVerified: true,
         email: cleanEmail,
-        message: `Tài khoản (${cleanEmail}) chưa được kích hoạt! Vui lòng kiểm tra Email và bấm nút KÍCH HOẠT TÀI KHOẢN trước khi đăng nhập.`,
+        message: `Tài khoản (${cleanEmail}) chưa được kích hoạt! Vui lòng kiểm tra Email và nhập mã OTP kích hoạt trước khi đăng nhập.`,
       });
     }
 
-    const userId = (user._id as any)?.toString() || user.id || 'usr-admin-001';
-    const token = generateToken(userId, user.email, user.role || 'admin');
+    const userId = String(user._id);
+    const resolvedRole = user.role || 'user';
+    const token = generateToken(userId, user.email, resolvedRole, user.tokenVersion || 0);
+    setRefreshTokenCookie(res, generateRefreshToken(userId, user.email, resolvedRole, user.tokenVersion || 0));
 
     return res.json({
       success: true,
       message: `Đăng nhập thành công! Chào mừng ${user.fullName} quay trở lại.`,
       token,
-      user: {
-        id: userId,
-        email: user.email,
-        fullName: user.fullName,
-        avatarUrl: user.avatarUrl,
-        coverUrl: user.coverUrl || '',
-        role: user.role || 'admin',
-        reputationScore: user.reputationScore || 1250,
-        badges: user.badges || ['Top Contributor', 'Verified Guide', 'Fansipan Summitter'],
-      },
+      user: buildFullUserPayload(user),
     });
   } catch (err) {
     console.error('[Login Error]:', err);
@@ -594,183 +689,169 @@ export const login = async (req: Request, res: Response) => {
   }
 };
 
-export const getMe = async (req: Request, res: Response) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.substring(7) : null;
-
-  if (!token) {
-    return res.status(401).json({ success: false, message: 'Không tìm thấy Token xác thực.' });
-  }
-
-  const decoded = verifyToken(token);
-  if (!decoded) {
-    return res.status(401).json({ success: false, message: 'Token hết hạn hoặc không hợp lệ.' });
+export const getMe = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+    return res.status(401).json({ success: false, message: 'Không tìm thấy phiên đăng nhập hợp lệ.' });
   }
 
   try {
-    let user: any = null;
-    try {
-      user = await UserModel.findById(decoded.userId);
-    } catch (findErr) {}
-
+    const user = await UserModel.findById(userId).lean();
     if (!user) {
-      user = inMemoryUsersMap.get(decoded.email?.toLowerCase());
+      return res.status(401).json({ success: false, message: 'Không tìm thấy thông tin tài khoản.' });
     }
-
-    if (!user && decoded.email === 'hoang@trekmap.vn') {
-      user = {
-        _id: 'usr-admin-001',
-        username: 'hoangtrekker',
-        email: 'hoang@trekmap.vn',
-        fullName: 'Hoàng Trekker (Admin)',
-        avatarUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg',
-        role: 'admin',
-        authProvider: 'local',
-        isEmailVerified: true,
-        reputationScore: 1250,
-        badges: ['Top Contributor', 'Verified Guide', 'Fansipan Summitter'],
-      };
-    }
-
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy thông tin tài khoản.' });
-    }
-
-    if (user.isBanned) {
-      return res.status(403).json({
-        success: false,
-        isBanned: true,
-        message: 'Tài khoản của bạn đã bị Ban Quản Trị khóa vĩnh viễn do vi phạm quy định cộng đồng hoặc báo động giả.',
-      });
-    }
-
-    const uid = (user._id as any)?.toString() || user.id || decoded.userId;
 
     return res.json({
       success: true,
-      user: {
-        id: uid,
-        username: user.username || user.email.split('@')[0],
-        email: user.email,
-        fullName: user.fullName,
-        avatarUrl: user.avatarUrl,
-        coverUrl: user.coverUrl || '',
-        role: user.role || 'user',
-        authProvider: user.authProvider || 'local',
-        isEmailVerified: user.isEmailVerified,
-        reputationScore: user.reputationScore || 100,
-        badges: user.badges || ['Verified Trekker'],
-        checkedInTrails: user.checkedInTrails || [],
-        phone: user.phone || '',
-        bio: user.bio || '',
-        emergencyContact: user.emergencyContact || '',
-        gearLocker: user.gearLocker || ['tent', 'backpack', 'boots', 'flashlight', 'firstaid'],
-        createdAt: user.createdAt || new Date(),
-      },
+      user: buildFullUserPayload(user),
     });
-  } catch (err) {
+  } catch {
     return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi lấy thông tin cá nhân.' });
   }
 };
 
-export const updateProfile = async (req: AuthRequest, res: Response) => {
-  const { fullName, phone, bio, emergencyContact, preferredStyle, avatarUrl, coverUrl, gearLocker } = req.body;
-  const userId = req.user?.userId || (req.user as any)?.id;
+async function resolveProfileImageUpload(
+  rawUrl: unknown,
+  folder: 'lost/avatars' | 'lost/covers',
+  publicIdPrefix: string,
+  width: number
+): Promise<{ ok: boolean; url?: string; error?: string }> {
+  if (typeof rawUrl !== 'string') return { ok: false, error: 'Định dạng URL ảnh không hợp lệ.' };
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return { ok: true, url: '' };
 
-  if (!userId) {
+  if (trimmed.startsWith('data:image/')) {
+    if (trimmed.length > MAX_PROFILE_BASE64_CHARS) {
+      return { ok: false, error: 'Ảnh vượt quá kích thước tối đa 5MB.' };
+    }
+    const match = DATA_IMAGE_REGEX.exec(trimmed);
+    if (!match) {
+      return { ok: false, error: 'Định dạng ảnh Base64 không hợp lệ (chỉ chấp nhận PNG, JPEG, WEBP).' };
+    }
+    const buf = Buffer.from(match[2], 'base64');
+    if (buf.length === 0 || buf.length > MAX_PROFILE_IMAGE_BYTES) {
+      return { ok: false, error: 'Ảnh vượt quá kích thước tối đa 5MB.' };
+    }
+    if (!hasValidProfileImageMagicBytes(buf)) {
+      return { ok: false, error: 'Nội dung tệp ảnh không hợp lệ.' };
+    }
+    if (!isCloudinaryConfigured()) {
+      return { ok: false, error: 'Dịch vụ lưu trữ ảnh chưa được cấu hình.' };
+    }
+    const safePrefix = publicIdPrefix.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
+    const cloudRes = await cloudinary.uploader.upload(trimmed, {
+      folder,
+      public_id: `${safePrefix}_${Date.now()}`,
+      resource_type: 'image',
+      allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+      transformation: [{ width, quality: 'auto', fetch_format: 'auto' }],
+    });
+    return { ok: true, url: cloudRes.secure_url };
+  }
+
+  if (isSafeHttpUrl(trimmed)) {
+    return { ok: true, url: trimmed };
+  }
+
+  return { ok: false, error: 'Đường dẫn ảnh không hợp lệ (chỉ chấp nhận HTTPS hoặc dữ liệu ảnh Base64).' };
+}
+
+export const updateProfile = async (req: AuthRequest, res: Response) => {
+  const { username, fullName, phone, bio, emergencyContact, preferredStyle, avatarUrl, coverUrl, gearLocker } =
+    req.body || {};
+  const userId = req.user?.userId;
+
+  if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
     return res.status(401).json({ success: false, message: 'Chưa đăng nhập.' });
   }
 
-  if (fullName) {
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+  }
+
+  if (fullName !== undefined) {
     const fnRes = validateFullName(fullName);
     if (!fnRes.isValid) {
       return res.status(400).json({ success: false, message: fnRes.message });
     }
   }
 
-  if (phone) {
+  let validatedPhone: string | undefined;
+  if (phone !== undefined) {
     const phoneRes = validatePhoneNumber(phone);
     if (!phoneRes.isValid) {
       return res.status(400).json({ success: false, message: phoneRes.message });
     }
+    validatedPhone = phoneRes.cleanPhone;
+  }
+
+  let validatedUsername: string | undefined;
+  if (username !== undefined) {
+    const uRes = validateUsername(username);
+    if (!uRes.isValid) {
+      return res.status(400).json({ success: false, message: uRes.message });
+    }
+    validatedUsername = uRes.cleanUsername;
   }
 
   try {
-    let user: any = null;
-    if (mongoose.connection.readyState === 1) {
-      try {
-        user = await UserModel.findById(userId);
-      } catch (e) {}
-    }
-    if (!user && req.user?.email) {
-      user = inMemoryUsersMap.get(req.user.email.toLowerCase());
-    }
-
+    const user = await UserModel.findById(userId);
     if (!user) {
-      return res.json({
-        success: true,
-        message: 'Cập nhật thông tin hồ sơ thành công!',
-        user: {
-          id: userId,
-          email: req.user?.email || 'user@trekmap.vn',
-          fullName: fullName ? sanitizeInput(fullName) : 'Trekker Member',
-          username: req.user?.email ? req.user.email.split('@')[0] : 'trekker',
-          phone: phone ? phone.trim() : '',
-          bio: bio ? sanitizeInput(bio).slice(0, 500) : '',
-          emergencyContact: emergencyContact ? sanitizeInput(emergencyContact).slice(0, 100) : '',
-          preferredStyle: preferredStyle || 'Trekking & Camping',
-          gearLocker: gearLocker || ['tent', 'backpack', 'boots', 'flashlight', 'firstaid'],
-          avatarUrl: avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=250&q=80',
-          coverUrl: coverUrl || '',
-          role: 'user',
-          reputationScore: 100,
-          badges: ['Verified Trekker'],
-        },
-      });
+      return res.status(404).json({ success: false, message: 'Không tìm thấy tài khoản người dùng.' });
     }
 
-    if (fullName) user.fullName = sanitizeInput(fullName);
-    if (phone !== undefined) user.phone = phone.trim();
-    if (bio !== undefined) user.bio = sanitizeInput(bio).slice(0, 500);
-    if (emergencyContact !== undefined) user.emergencyContact = sanitizeInput(emergencyContact).slice(0, 100);
-    if (preferredStyle !== undefined) user.preferredStyle = preferredStyle.trim();
-    if (avatarUrl) {
-      let finalAvatarUrl = avatarUrl.trim();
-      if (finalAvatarUrl && !finalAvatarUrl.includes('res.cloudinary.com')) {
-        try {
-          const cloudRes = await cloudinary.uploader.upload(finalAvatarUrl, {
-            folder: 'trekmap/avatars',
-            public_id: `avatar_${user.username || userId}_${Date.now()}`,
-            transformation: [{ width: 800, quality: 'auto', fetch_format: 'auto' }],
-          });
-          if (cloudRes.secure_url) {
-            finalAvatarUrl = cloudRes.secure_url;
-          }
-        } catch (e) {
-          console.warn('[Cloudinary Avatar Auto-Upload Warning]:', (e as Error).message);
-        }
+    if (validatedUsername && validatedUsername.toLowerCase() !== (user.username || '').toLowerCase()) {
+      if (await isUsernameTaken(validatedUsername, userId)) {
+        const suggestions = await generateUsernameSuggestions(validatedUsername, (cand) => isUsernameTaken(cand));
+        return res.status(409).json({
+          success: false,
+          isDuplicateUsername: true,
+          suggestions,
+          message: `Tên tài khoản "${validatedUsername}" đã có người sử dụng.`,
+        });
       }
-      user.avatarUrl = finalAvatarUrl;
+      user.username = validatedUsername;
     }
+
+    if (typeof fullName === 'string' && fullName.trim()) user.fullName = sanitizeInput(fullName).slice(0, 60);
+    if (validatedPhone !== undefined) user.phone = validatedPhone;
+    if (typeof bio === 'string') user.bio = sanitizeInput(bio).slice(0, 500);
+    if (typeof emergencyContact === 'string') user.emergencyContact = sanitizeInput(emergencyContact).slice(0, 100);
+    if (typeof preferredStyle === 'string') user.preferredStyle = sanitizeInput(preferredStyle).slice(0, 100);
+
+    if (avatarUrl !== undefined) {
+      const avatarResult = await resolveProfileImageUpload(
+        avatarUrl,
+        'lost/avatars',
+        `avatar_${user.username || userId}`,
+        800
+      );
+      if (!avatarResult.ok) {
+        return res.status(400).json({ success: false, message: avatarResult.error });
+      }
+      user.avatarUrl = avatarResult.url || DEFAULT_AVATAR_URL;
+    }
+
     if (coverUrl !== undefined) {
-      let finalCoverUrl = coverUrl.trim();
-      if (finalCoverUrl && finalCoverUrl.startsWith('data:image/') && !finalCoverUrl.includes('res.cloudinary.com')) {
-        try {
-          const cloudRes = await cloudinary.uploader.upload(finalCoverUrl, {
-            folder: 'trekmap/covers',
-            public_id: `cover_${user.username || userId}_${Date.now()}`,
-            transformation: [{ width: 1400, quality: 'auto', fetch_format: 'auto' }],
-          });
-          if (cloudRes.secure_url) {
-            finalCoverUrl = cloudRes.secure_url;
-          }
-        } catch (e) {
-          console.warn('[Cloudinary Cover Auto-Upload Warning]:', (e as Error).message);
-        }
+      const coverResult = await resolveProfileImageUpload(
+        coverUrl,
+        'lost/covers',
+        `cover_${user.username || userId}`,
+        1400
+      );
+      if (!coverResult.ok) {
+        return res.status(400).json({ success: false, message: coverResult.error });
       }
-      user.coverUrl = finalCoverUrl;
+      user.coverUrl = coverResult.url || '';
     }
-    if (gearLocker && Array.isArray(gearLocker)) user.gearLocker = gearLocker;
+
+    if (Array.isArray(gearLocker)) {
+      user.gearLocker = gearLocker
+        .filter((item): item is string => typeof item === 'string')
+        .slice(0, 50)
+        .map((item) => sanitizeInput(item).slice(0, 80))
+        .filter(Boolean);
+    }
 
     if (!user.badges) user.badges = [];
     if (!user.badges.includes('Trekker Mới')) user.badges.push('Trekker Mới');
@@ -780,105 +861,96 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
 
     await user.save();
 
-    // Synchronize newly updated profile (avatar and full name) across all collections
+    // Synchronize identity across collections STRICTLY by immutable userId
     try {
-      const escaped = (user.fullName || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const hasNewAvatar = Boolean(avatarUrl && user.avatarUrl);
-      const hasNewName = Boolean(fullName && user.fullName);
+      const hasNewAvatar = Boolean(avatarUrl !== undefined && user.avatarUrl);
+      const hasNewName = Boolean(typeof fullName === 'string' && user.fullName);
 
-      if (hasNewAvatar) {
+      if (hasNewAvatar || hasNewName) {
+        const userIdStr = user._id.toString();
         await Promise.allSettled([
-          // 1. Forum Threads
           ThreadModel.updateMany(
+            { userId: user._id },
             {
-              $or: [
-                { userId: user._id },
-                { authorName: user.fullName },
-                ...(escaped ? [{ authorName: { $regex: new RegExp('^' + escaped, 'i') } }] : []),
-              ],
-            },
-            { $set: { authorAvatar: user.avatarUrl, ...(hasNewName ? { authorName: user.fullName } : {}) } }
+              $set: {
+                ...(hasNewAvatar ? { authorAvatar: user.avatarUrl } : {}),
+                ...(hasNewName ? { authorName: user.fullName } : {}),
+              },
+            }
           ),
-          // 2. Forum Comments
           CommentModel.updateMany(
+            { userId: user._id },
             {
-              $or: [
-                { userId: user._id },
-                { authorName: user.fullName },
-                ...(escaped ? [{ authorName: { $regex: new RegExp('^' + escaped, 'i') } }] : []),
-              ],
-            },
-            { $set: { authorAvatar: user.avatarUrl, ...(hasNewName ? { authorName: user.fullName } : {}) } }
+              $set: {
+                ...(hasNewAvatar ? { authorAvatar: user.avatarUrl } : {}),
+                ...(hasNewName ? { authorName: user.fullName } : {}),
+              },
+            }
           ),
-          // 3. Trail Reviews
           ReviewModel.updateMany(
+            { userId: user._id },
             {
-              $or: [
-                { userId: user._id },
-                { userName: user.fullName },
-                ...(escaped ? [{ userName: { $regex: new RegExp('^' + escaped, 'i') } }] : []),
-              ],
-            },
-            { $set: { userAvatar: user.avatarUrl, ...(hasNewName ? { userName: user.fullName } : {}) } }
+              $set: {
+                ...(hasNewAvatar ? { userAvatar: user.avatarUrl } : {}),
+                ...(hasNewName ? { userName: user.fullName } : {}),
+              },
+            }
           ),
-          // 4. Incident Reports
           IncidentModel.updateMany(
+            { reportedBy: { $in: [user._id, userIdStr] } },
             {
-              $or: [
-                { reportedBy: user._id },
-                { reporterEmail: user.email },
-                ...(escaped ? [{ reporterName: { $regex: new RegExp('^' + escaped, 'i') } }] : []),
-              ],
-            },
-            { $set: { reporterAvatar: user.avatarUrl, ...(hasNewName ? { reporterName: user.fullName } : {}) } }
+              $set: {
+                ...(hasNewAvatar ? { reporterAvatar: user.avatarUrl } : {}),
+                ...(hasNewName ? { reporterName: user.fullName } : {}),
+              },
+            }
           ),
-          // 5. Community Chat / Radio Basecamp Messages
           CommunityMessageModel.updateMany(
+            { senderId: user._id },
             {
-              $or: [
-                { senderId: user._id },
-                { senderName: user.fullName },
-                ...(escaped ? [{ senderName: { $regex: new RegExp('^' + escaped, 'i') } }] : []),
-              ],
-            },
-            { $set: { senderAvatar: user.avatarUrl, ...(hasNewName ? { senderName: user.fullName } : {}) } }
+              $set: {
+                ...(hasNewAvatar ? { senderAvatar: user.avatarUrl } : {}),
+                ...(hasNewName ? { senderName: user.fullName } : {}),
+              },
+            }
           ),
-          // 6. Community Trail Contributions
           ContributionModel.updateMany(
+            { userId: userIdStr },
             {
-              $or: [
-                { userId: user._id.toString() },
-                { authorEmail: user.email },
-                ...(escaped ? [{ authorName: { $regex: new RegExp('^' + escaped, 'i') } }] : []),
-              ],
-            },
-            { $set: { authorAvatar: user.avatarUrl, ...(hasNewName ? { authorName: user.fullName } : {}) } }
+              $set: {
+                ...(hasNewAvatar ? { authorAvatar: user.avatarUrl } : {}),
+                ...(hasNewName ? { authorName: user.fullName } : {}),
+              },
+            }
           ),
-          // 7. Local Guide Profile if registered
-          GuideModel.updateMany(
-            {
-              $or: [
-                { name: user.fullName },
-                ...(user.phone ? [{ phone: user.phone }] : []),
-              ],
-            },
-            { $set: { avatarUrl: user.avatarUrl, ...(hasNewName ? { name: user.fullName } : {}) } }
-          ),
-          // 8. User Sent Notifications
           NotificationModel.updateMany(
-            { 'sender.id': user._id.toString() },
-            { $set: { 'sender.avatarUrl': user.avatarUrl, ...(hasNewName ? { 'sender.name': user.fullName } : {}) } }
+            { 'sender.id': userIdStr },
+            {
+              $set: {
+                ...(hasNewAvatar ? { 'sender.avatarUrl': user.avatarUrl } : {}),
+                ...(hasNewName ? { 'sender.name': user.fullName } : {}),
+              },
+            }
           ),
-        ]);
-      } else if (hasNewName) {
-        await Promise.allSettled([
-          ThreadModel.updateMany({ userId: user._id }, { $set: { authorName: user.fullName } }),
-          CommentModel.updateMany({ userId: user._id }, { $set: { authorName: user.fullName } }),
-          ReviewModel.updateMany({ userId: user._id }, { $set: { userName: user.fullName } }),
-          IncidentModel.updateMany({ $or: [{ reportedBy: user._id }, { reporterEmail: user.email }] }, { $set: { reporterName: user.fullName } }),
-          CommunityMessageModel.updateMany({ senderId: user._id }, { $set: { senderName: user.fullName } }),
-          ContributionModel.updateMany({ $or: [{ userId: user._id.toString() }, { authorEmail: user.email }] }, { $set: { authorName: user.fullName } }),
-          GuideModel.updateMany({ name: user.fullName }, { $set: { name: user.fullName } }),
+          ...(hasNewName
+            ? [
+                GuideModel.updateMany(
+                  { 'reviews.userId': user._id },
+                  { $set: { 'reviews.$[elem].userName': user.fullName } },
+                  { arrayFilters: [{ 'elem.userId': user._id }] }
+                ),
+                TripPlanModel.updateMany(
+                  { 'sharedGear.assignedUserId': user._id },
+                  { $set: { 'sharedGear.$[elem].assignedUserName': user.fullName } },
+                  { arrayFilters: [{ 'elem.assignedUserId': user._id }] }
+                ),
+                TripPlanModel.updateMany(
+                  { 'expenses.paidByUserId': user._id },
+                  { $set: { 'expenses.$[elem].paidByName': user.fullName } },
+                  { arrayFilters: [{ 'elem.paidByUserId': user._id }] }
+                ),
+              ]
+            : []),
         ]);
       }
     } catch (syncErr) {
@@ -888,108 +960,251 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
     return res.json({
       success: true,
       message: 'Cập nhật hồ sơ cá nhân thành công!',
-      user: {
-        id: (user._id || user.id).toString(),
-        username: user.username,
-        email: user.email,
-        fullName: user.fullName,
-        avatarUrl: user.avatarUrl,
-        coverUrl: user.coverUrl || '',
-        role: user.role,
-        authProvider: user.authProvider || 'local',
-        isEmailVerified: user.isEmailVerified,
-        reputationScore: user.reputationScore || 100,
-        badges: user.badges || ['Verified Trekker'],
-        phone: user.phone || '',
-        bio: user.bio || '',
-        emergencyContact: user.emergencyContact || '',
-        preferredStyle: user.preferredStyle || 'Trekking & Camping',
-        gearLocker: user.gearLocker || ['tent', 'backpack', 'boots', 'flashlight', 'firstaid'],
-      },
+      user: buildFullUserPayload(user),
     });
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.code === 11000) {
+      return res.status(409).json({ success: false, message: 'Tên tài khoản đã được sử dụng.' });
+    }
+    console.error('[Update Profile Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi cập nhật hồ sơ.' });
   }
 };
 
 export const forgotPassword = async (req: Request, res: Response) => {
-  const { email } = req.body;
-  if (!email) {
-    return res.status(400).json({ success: false, message: 'Vui lòng nhập địa chỉ Email.' });
+  const { email } = req.body || {};
+  const emailRes = validateEmail(email);
+  if (!emailRes.isValid) {
+    return res.status(400).json({ success: false, message: emailRes.message });
   }
 
-  const cleanEmail = email.toLowerCase().trim();
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+  }
+
+  const cleanEmail = emailRes.cleanEmail;
+  const genericResponse = {
+    success: true,
+    isGoogleAccount: false,
+    email: cleanEmail,
+    message: 'Nếu địa chỉ email đã được đăng ký, liên kết khôi phục mật khẩu đã được gửi tới hộp thư của bạn.',
+  };
 
   try {
     const user = await UserModel.findOne({ email: cleanEmail });
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'Email này chưa được đăng ký trong hệ thống TrekMap.' });
+    if (!user || user.isBanned) {
+      return res.json(genericResponse);
     }
 
-    if (user.authProvider === 'google' || cleanEmail.endsWith('@gmail.com')) {
-      return res.status(400).json({
-        success: false,
-        isGoogleAccount: true,
-        message: `Tài khoản Google (${cleanEmail}) được quản lý và bảo mật trực tiếp bởi Google. Vui lòng sử dụng nút "Đăng nhập nhanh bằng Google"!`,
-      });
+    // Do not leak whether a non-Gmail email uses Google OAuth; only advise for public @gmail domains
+    if (user.authProvider === 'google') {
+      if (cleanEmail.endsWith('@gmail.com') || cleanEmail.endsWith('@googlemail.com')) {
+        return res.status(400).json({
+          success: false,
+          isGoogleAccount: true,
+          message: `Tài khoản Google (${cleanEmail}) được quản lý trực tiếp bởi Google. Vui lòng sử dụng nút "Đăng nhập nhanh bằng Google"!`,
+        });
+      }
+      return res.json(genericResponse);
     }
 
-    const resetToken = Math.random().toString(36).substring(2) + Date.now().toString(36);
+    // Per-account 60s cooldown prevents reset email flooding
+    if (user.otpLastSentAt && Date.now() - user.otpLastSentAt.getTime() < RESET_EMAIL_COOLDOWN_MS) {
+      return res.json(genericResponse);
+    }
+
+    const rawResetToken = generateSecureToken();
+    const hashedResetToken = hashTokenValue(rawResetToken);
     const resetExpires = new Date(Date.now() + 15 * 60 * 1000);
 
-    user.resetPasswordToken = resetToken;
+    user.resetPasswordToken = hashedResetToken;
     user.resetPasswordExpires = resetExpires;
+    user.otpLastSentAt = new Date();
     await user.save();
 
-    const resetLink = `http://localhost:5173/?resetToken=${resetToken}&email=${encodeURIComponent(cleanEmail)}`;
-    await sendResetPasswordEmail(cleanEmail, resetLink);
+    const clientUrl = (process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const resetLink = `${clientUrl}/?resetToken=${rawResetToken}&email=${encodeURIComponent(cleanEmail)}`;
 
-    return res.json({
-      success: true,
-      isGoogleAccount: false,
-      email: cleanEmail,
-      message: `Thư khôi phục mật khẩu đã được gửi trực tiếp đến hộp thư email ${cleanEmail}. Vui lòng mở hòm thư Inbox / Spam của bạn và bấm vào liên kết để reset mật khẩu!`,
-    });
-  } catch (err) {
+    // Dispatch asynchronously to eliminate SMTP timing side-channels
+    sendResetPasswordEmail(cleanEmail, resetLink).catch((err) =>
+      console.error('[Background Reset Password Email Error]:', err)
+    );
+
+    return res.json(genericResponse);
+  } catch {
     return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi tạo liên kết reset mật khẩu.' });
   }
 };
 
 export const resetPasswordWithToken = async (req: Request, res: Response) => {
-  const { resetToken, newPassword } = req.body;
+  const { resetToken, newPassword } = req.body || {};
 
-  if (!resetToken || !newPassword) {
+  if (typeof resetToken !== 'string' || typeof newPassword !== 'string' || !resetToken.trim() || !newPassword) {
     return res.status(400).json({ success: false, message: 'Thiếu mã liên kết reset hoặc mật khẩu mới.' });
   }
 
-  if (newPassword.length < 6) {
-    return res.status(400).json({ success: false, message: 'Mật khẩu mới phải có ít nhất 6 ký tự.' });
+  const pwdCheck = validatePasswordStrength(newPassword);
+  if (!pwdCheck.isValid) {
+    return res.status(400).json({ success: false, message: pwdCheck.message });
+  }
+
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
   }
 
   try {
+    const hashedToken = hashTokenValue(resetToken.trim());
+    // Strictly match SHA-256 hashed token only (zero plaintext fallback)
     const user = await UserModel.findOne({
-      resetPasswordToken: resetToken.trim(),
+      resetPasswordToken: hashedToken,
       resetPasswordExpires: { $gt: new Date() },
-    });
+    }).select('+resetPasswordToken');
 
     if (!user) {
-      return res.status(400).json({ success: false, message: 'Liên kết reset mật khẩu không hợp lệ hoặc đã hết hạn (quá 15 phút). Vui lòng thử lại.' });
+      return res.status(400).json({
+        success: false,
+        message: 'Liên kết reset mật khẩu không hợp lệ hoặc đã hết hạn (quá 15 phút). Vui lòng thử lại.',
+      });
     }
 
-    user.passwordHash = hashPassword(newPassword);
+    user.passwordHash = await hashPasswordAsync(newPassword);
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
     await user.save();
+
+    clearRefreshTokenCookie(res);
 
     return res.json({
       success: true,
       message: 'Đặt lại mật khẩu thành công! Bạn có thể đăng nhập ngay bằng mật khẩu mới.',
     });
-  } catch (err) {
+  } catch {
     return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi cập nhật mật khẩu.' });
   }
 };
 
-export const logout = (_req: Request, res: Response) => {
+export const activateAccount = async (req: Request, res: Response) => {
+  const rawToken = req.body?.activateToken || req.body?.token;
+  if (!rawToken || typeof rawToken !== 'string') {
+    return res.status(400).json({ success: false, message: 'Thiếu mã token kích hoạt tài khoản.' });
+  }
+
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+  }
+
+  try {
+    const hashed = hashTokenValue(rawToken.trim());
+    // Strictly match SHA-256 hashed activation token only
+    const user = await UserModel.findOne({
+      activationToken: hashed,
+      activationExpires: { $gt: new Date() },
+    }).select('+activationToken');
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'Liên kết kích hoạt tài khoản không hợp lệ hoặc đã hết hạn. Vui lòng sử dụng mã OTP 6 số.',
+      });
+    }
+
+    user.isEmailVerified = true;
+    user.reputationScore = Math.max(user.reputationScore || 0, 50);
+    if (!user.badges) user.badges = [];
+    if (!user.badges.includes('Trekker Mới')) user.badges.push('Trekker Mới');
+    if (!user.badges.includes('Verified Trekker')) user.badges.push('Verified Trekker');
+    user.activationCode = undefined;
+    user.activationToken = undefined;
+    user.activationExpires = undefined;
+    user.otpFailedAttempts = 0;
+    await user.save();
+
+    const userId = String(user._id);
+    const jwtToken = generateToken(userId, user.email, user.role || 'user', user.tokenVersion || 0);
+    setRefreshTokenCookie(res, generateRefreshToken(userId, user.email, user.role || 'user', user.tokenVersion || 0));
+
+    return res.json({
+      success: true,
+      email: user.email,
+      message: 'Kích hoạt tài khoản qua liên kết thành công!',
+      token: jwtToken,
+      user: buildFullUserPayload(user),
+    });
+  } catch {
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi kích hoạt tài khoản.' });
+  }
+};
+
+export const logout = async (req: AuthRequest, res: Response) => {
+  try {
+    if (req.user?.userId && mongoose.connection.readyState === 1 && mongoose.Types.ObjectId.isValid(req.user.userId)) {
+      await UserModel.updateOne({ _id: req.user.userId }, { $inc: { tokenVersion: 1 } });
+    }
+  } catch {
+    // Best-effort revocation
+  }
+  clearRefreshTokenCookie(res);
   return res.json({ success: true, message: 'Đã đăng xuất tài khoản an toàn.' });
+};
+
+/**
+ * POST /api/auth/refresh
+ * Issues a fresh Access Token & rotates the HttpOnly Refresh Cookie after verifying DB user, ban, email verification, and tokenVersion.
+ */
+export const refreshSession = async (req: Request, res: Response) => {
+  try {
+    const rawCookie = parseCookieValue(req.headers.cookie, REFRESH_COOKIE_NAME);
+    if (!rawCookie) {
+      return res.status(401).json({ success: false, message: 'Thiếu phiên làm mới (Refresh Cookie).' });
+    }
+
+    const decoded = verifyRefreshToken(rawCookie);
+    if (!decoded || !decoded.userId || !mongoose.Types.ObjectId.isValid(decoded.userId)) {
+      clearRefreshTokenCookie(res);
+      return res.status(401).json({ success: false, message: 'Phiên làm mới không hợp lệ hoặc đã hết hạn.' });
+    }
+
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu tạm thời gián đoạn.' });
+    }
+
+    const user = await UserModel.findById(decoded.userId).lean();
+    if (!user) {
+      clearRefreshTokenCookie(res);
+      return res.status(401).json({ success: false, message: 'Tài khoản không còn tồn tại.' });
+    }
+
+    if (user.isBanned) {
+      clearRefreshTokenCookie(res);
+      return res.status(403).json({ success: false, isBanned: true, message: 'Tài khoản đã bị khóa vĩnh viễn.' });
+    }
+
+    if (user.isEmailVerified === false && user.authProvider === 'local') {
+      clearRefreshTokenCookie(res);
+      return res.status(403).json({ success: false, message: 'Tài khoản chưa được kích hoạt email.' });
+    }
+
+    const currentVersion = typeof user.tokenVersion === 'number' ? user.tokenVersion : 0;
+    const tokenVersion = typeof decoded.tokenVersion === 'number' ? decoded.tokenVersion : 0;
+    if (tokenVersion < currentVersion) {
+      clearRefreshTokenCookie(res);
+      return res.status(401).json({ success: false, message: 'Phiên đăng nhập đã bị thu hồi.' });
+    }
+
+    const uid = String(user._id);
+    const role = (user.role || 'user') as any;
+    const newAccessToken = generateToken(uid, user.email, role, currentVersion);
+    const newRefreshToken = generateRefreshToken(uid, user.email, role, currentVersion);
+    setRefreshTokenCookie(res, newRefreshToken);
+
+    return res.json({
+      success: true,
+      token: newAccessToken,
+      user: buildFullUserPayload(user),
+    });
+  } catch (err) {
+    console.error('[Refresh Session Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi làm mới phiên đăng nhập.' });
+  }
 };

@@ -1,26 +1,28 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import type { ForumThread, Trail } from '../../types.js';
+import type { ForumThread, Trail, UserProfile } from '../../types.js';
 import {
   IconArrowLeft,
   IconPlus,
   IconDownload,
-  IconFileText,
   IconSend,
-  IconUsers,
   IconCamera,
   IconImage,
+  IconX,
+  IconStar,
 } from '../common/SvgIcons.js';
+import { uploadImageToCloudinary } from '../../services/api.js';
 import { AlpineExpeditionFeed } from './AlpineExpeditionFeed.js';
 import { LiveTrekkerChatroom } from './LiveTrekkerChatroom.js';
 import { SummitAltitudeLadder } from '../landing/SummitAltitudeLadder.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import { useSocket } from '../../hooks/useSocket.js';
+import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
 
 interface TopTrekker {
   _id: string;
   fullName: string;
-  avatarUrl: string;
+  avatarUrl?: string;
   reputationScore: number;
   badges?: string[];
   role?: string;
@@ -30,7 +32,7 @@ interface TrekForumViewProps {
   onBack?: () => void;
   isEmbedded?: boolean;
   onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
-  currentUser?: any;
+  currentUser?: (UserProfile & { _id?: string; avatar?: string }) | null;
   onRequireLogin?: (actionName: string) => void;
   trails?: Trail[];
   onSelectTrail?: (trail: Trail) => void;
@@ -46,6 +48,7 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
   onSelectTrail,
 }) => {
   const [threads, setThreads] = useState<ForumThread[]>([]);
+  const [loadingThreads, setLoadingThreads] = useState<boolean>(true);
   const [topTrekkers, setTopTrekkers] = useState<TopTrekker[]>([]);
   const [isNewThreadOpen, setIsNewThreadOpen] = useState(false);
   const { socket } = useSocket();
@@ -56,6 +59,29 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
   const [newContent, setNewContent] = useState('');
   const [newImages, setNewImages] = useState<string[]>([]);
   const [imageUrlInput, setImageUrlInput] = useState('');
+  const [isSubmittingThread, setIsSubmittingThread] = useState(false);
+  const newThreadDialogRef = useRef<HTMLDivElement | null>(null);
+
+  // LIFO Focus Trap for New Thread modal
+  useFocusTrap(isNewThreadOpen, newThreadDialogRef);
+
+  // LIFO Escape key close for New Thread modal (blocked during IME or active submit)
+  useEffect(() => {
+    if (!isNewThreadOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      if (e.key === 'Escape') {
+        if (!isTopmostFocusTrap(newThreadDialogRef.current)) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (!isSubmittingThread) {
+          setIsNewThreadOpen(false);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isNewThreadOpen, isSubmittingThread]);
 
   const handleImageFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -110,7 +136,7 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
   const handleAddImageUrl = () => {
     const trimmed = imageUrlInput.trim();
     if (!trimmed) return;
-    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://') && !trimmed.startsWith('data:image')) {
+    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
       if (onShowToast) onShowToast('Vui lòng nhập đường link ảnh hợp lệ (https://...)', 'error');
       return;
     }
@@ -126,42 +152,51 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
     setNewImages((prev) => prev.filter((_, idx) => idx !== indexToRemove));
   };
 
-  const fetchThreads = useCallback(async () => {
-    try {
-      const res = await fetch('/api/forum', {
-        headers: getApiHeaders(),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setThreads(data.data);
-      }
-    } catch (err) {
-      console.error('Failed to load forum threads', err);
-    }
-  }, []);
-
-  const fetchTopTrekkers = useCallback(async () => {
-    try {
-      const res = await fetch('/api/forum/top-trekkers');
-      const data = await res.json();
-      if (data.success && Array.isArray(data.data)) {
-        setTopTrekkers(data.data);
-      }
-    } catch (err) {
-      console.error('Failed to load top trekkers', err);
-    }
-  }, []);
-
   useEffect(() => {
-    fetchThreads();
-    fetchTopTrekkers();
-  }, [fetchThreads, fetchTopTrekkers]);
+    const controller = new AbortController();
+
+    fetch('/api/forum', {
+      headers: getApiHeaders(),
+      signal: controller.signal,
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!controller.signal.aborted && data.success && Array.isArray(data.data)) {
+          setThreads(data.data);
+        }
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) {
+          console.error('Failed to load forum threads', err);
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setLoadingThreads(false);
+        }
+      });
+
+    fetch('/api/forum/top-trekkers', { signal: controller.signal })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!controller.signal.aborted && data.success && Array.isArray(data.data)) {
+          setTopTrekkers(data.data);
+        }
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) {
+          console.error('Failed to load top trekkers', err);
+        }
+      });
+
+    return () => controller.abort();
+  }, []);
 
   // Real-time socket listeners
   useEffect(() => {
     if (!socket) return;
 
-    const handleNewComment = (data: any) => {
+    const handleNewComment = (data: { threadId?: string; repliesCount?: number }) => {
       setThreads((prev) =>
         prev.map((t) =>
           String(t.id) === String(data.threadId)
@@ -171,7 +206,11 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
       );
     };
 
-    const handleThreadReaction = (data: any) => {
+    const handleThreadReaction = (data: {
+      threadId?: string;
+      upvotes?: number;
+      reactions?: ForumThread['reactions'];
+    }) => {
       setThreads((prev) =>
         prev.map((t) =>
           String(t.id) === String(data.threadId)
@@ -192,31 +231,48 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
 
   const handleCreateThread = async (e: React.FormEvent) => {
     e.preventDefault();
-    const token = localStorage.getItem('trekmap_token');
+    if (isSubmittingThread) return;
+    const token = localStorage.getItem('lost_token');
     if (!currentUser && !token) {
       if (onRequireLogin) onRequireLogin('đăng bài thảo luận mới');
+      else window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
       return;
     }
     if (!newTitle.trim() || !newContent.trim()) return;
 
+    setIsSubmittingThread(true);
     try {
+      const uploadedImages: string[] = [];
+      for (let i = 0; i < newImages.length; i++) {
+        const img = newImages[i];
+        if (img.startsWith('data:image/')) {
+          try {
+            const cloudUrl = await uploadImageToCloudinary(img, `forum_${Date.now()}_${i}.jpg`, 'forum');
+            uploadedImages.push(cloudUrl);
+          } catch {
+            if (onShowToast) {
+              onShowToast(`Không thể tải ảnh #${i + 1} lên máy chủ ảnh.`, 'error');
+            }
+          }
+        } else {
+          uploadedImages.push(img);
+        }
+      }
+
       const res = await fetch('/api/forum', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
-          title: newTitle,
+          title: newTitle.trim(),
           category: newCategory,
-          content: newContent,
-          images: newImages,
+          content: newContent.trim(),
+          images: uploadedImages,
         }),
       });
 
       const data = await res.json();
-      if (data.success) {
-        setThreads([data.data, ...threads]);
+      if (res.ok && data.success) {
+        setThreads((prev) => [data.data, ...prev]);
         setIsNewThreadOpen(false);
         setNewTitle('');
         setNewContent('');
@@ -228,8 +284,10 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
       } else {
         if (onShowToast) onShowToast(data.message || 'Lỗi khi đăng bài', 'error');
       }
-    } catch (err) {
+    } catch {
       if (onShowToast) onShowToast('Không thể kết nối máy chủ', 'error');
+    } finally {
+      setIsSubmittingThread(false);
     }
   };
 
@@ -249,9 +307,10 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
           {onBack && (
             <button
+              type="button"
               className="btn btn-outline interactive-click"
               onClick={onBack}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 12 }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 4 }}
             >
               <IconArrowLeft size={16} /> Quay lại trang chủ
             </button>
@@ -259,14 +318,16 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <button
-              className="btn btn-primary interactive-click ripple-fx"
+              type="button"
+              className="btn btn-primary interactive-click"
               onClick={() => {
-                const token = localStorage.getItem('trekmap_token');
+                const token = localStorage.getItem('lost_token');
                 if (!currentUser && !token) {
                   if (onRequireLogin) {
                     onRequireLogin('tạo bài nhật ký mới trên diễn đàn');
-                  } else if (onShowToast) {
-                    onShowToast('Vui lòng đăng nhập để tạo bài nhật ký mới trên diễn đàn!', 'info');
+                  } else {
+                    if (onShowToast) onShowToast('Vui lòng đăng nhập để tạo bài nhật ký mới trên diễn đàn!', 'info');
+                    window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
                   }
                   return;
                 }
@@ -274,14 +335,14 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
               }}
               style={{
                 padding: '9px 18px',
-                borderRadius: 12,
+                borderRadius: 4,
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: 6,
                 fontWeight: 800,
               }}
             >
-              <IconPlus size={16} color="#041108" /> Viết Bài Đóng Góp
+              <IconPlus size={16} color="var(--color-on-primary)" /> Viết Bài Đóng Góp
             </button>
           </div>
         </div>
@@ -300,14 +361,16 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
           {/* 2. Full Alpine Expedition Feed & Discussions */}
           <AlpineExpeditionFeed
             threads={threads}
+            isLoadingThreads={loadingThreads}
             currentUser={currentUser}
             onOpenNewThreadModal={() => {
-              const token = localStorage.getItem('trekmap_token');
+              const token = localStorage.getItem('lost_token');
               if (!currentUser && !token) {
                 if (onRequireLogin) {
                   onRequireLogin('tạo bài nhật ký mới trên diễn đàn');
-                } else if (onShowToast) {
-                  onShowToast('Vui lòng đăng nhập để tạo bài nhật ký mới trên diễn đàn!', 'info');
+                } else {
+                  if (onShowToast) onShowToast('Vui lòng đăng nhập để tạo bài nhật ký mới trên diễn đàn!', 'info');
+                  window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
                 }
                 return;
               }
@@ -316,7 +379,7 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
           />
         </div>
 
-        {/* RIGHT TACTICAL SIDEBAR: ALTITUDE LADDER, GPX VAULT, TOP TREKKERS & SAFETY */}
+        {/* RIGHT TACTICAL SIDEBAR: ALTITUDE LADDER, GPX VAULT, TOP TREKKERS */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18, position: 'sticky', top: 80 }}>
           {/* 1. Compact Summit Altitude Ladder Widget */}
           <SummitAltitudeLadder
@@ -331,20 +394,19 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
             style={{
               background: 'var(--color-bg-card)',
               border: '1px solid var(--color-border)',
-              borderRadius: 20,
+              borderRadius: 4,
               padding: '18px 20px',
-              boxShadow: 'var(--shadow-card)',
             }}
           >
-            <h3 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 4px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <IconFileText size={16} color="var(--color-primary)" />
-              Kho Tracklog GPX Thật 100%
+            <div className="section-eyebrow" style={{ marginBottom: 4 }}>Tài nguyên GPS</div>
+            <h3 className="font-editorial" style={{ fontSize: '1.18rem', fontWeight: 500, color: 'var(--color-text-main)', margin: '0 0 6px 0' }}>
+              Kho Tracklog GPX Thực Địa
             </h3>
-            <p style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', lineHeight: 1.45, margin: '0 0 12px 0' }}>
-              Tải file GPX chuẩn tọa độ GPS thực địa nạp vào điện thoại/Garmin để điều hướng an toàn offline:
+            <p style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', lineHeight: 1.5, margin: '0 0 12px 0' }}>
+              Tải tệp GPX chuẩn tọa độ thực địa để nạp vào điện thoại / Garmin điều hướng offline:
             </p>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {[
                 { id: 'trail-laothan', name: 'Lảo Thẩn Y Tý (2.860m)', dist: '16.0 km' },
                 { id: 'trail-fansipan', name: 'Fansipan Trạm Tôn (3.143m)', dist: '22.4 km' },
@@ -360,20 +422,20 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
                     justifyContent: 'space-between',
                     background: 'var(--color-bg-main)',
                     border: '1px solid var(--color-border)',
-                    borderRadius: 10,
+                    borderRadius: 4,
                     padding: '7px 10px',
                     fontSize: '0.74rem',
                   }}
                 >
                   <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 190 }}>
-                    <div style={{ fontWeight: 800, color: 'var(--color-text-main)', textOverflow: 'ellipsis', overflow: 'hidden' }}>{item.name}</div>
-                    <div style={{ fontSize: '0.66rem', color: 'var(--color-sky)', marginTop: 1 }}>{item.dist}</div>
+                    <div style={{ fontWeight: 700, color: 'var(--color-text-main)', textOverflow: 'ellipsis', overflow: 'hidden' }}>{item.name}</div>
+                    <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', marginTop: 1, fontVariantNumeric: 'tabular-nums' }}>{item.dist}</div>
                   </div>
                   <a
                     href={`/api/forum/gpx/${item.id}`}
                     download={`${item.id}.gpx`}
-                    className="btn btn-outline interactive-click"
-                    style={{ padding: '4px 8px', borderRadius: 8, fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}
+                    className="btn btn-outline"
+                    style={{ padding: '4px 8px', borderRadius: 4, fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}
                   >
                     <IconDownload size={12} color="var(--color-primary)" />
                     <span>Tải</span>
@@ -389,13 +451,12 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
             style={{
               background: 'var(--color-bg-card)',
               border: '1px solid var(--color-border)',
-              borderRadius: 20,
+              borderRadius: 4,
               padding: '18px 20px',
-              boxShadow: 'var(--shadow-card)',
             }}
           >
-            <h3 style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 10px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <IconUsers size={16} color="var(--color-sky)" />
+            <div className="section-eyebrow" style={{ marginBottom: 4 }}>Cộng đồng</div>
+            <h3 className="font-editorial" style={{ fontSize: '1.18rem', fontWeight: 500, color: 'var(--color-text-main)', margin: '0 0 10px 0' }}>
               Top Thành Viên Uy Tín
             </h3>
 
@@ -416,24 +477,47 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
                       borderBottom: idx < topTrekkers.length - 1 ? '1px solid var(--color-border)' : 'none',
                     }}
                   >
-                    <img
-                      src={user.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=100&q=80'}
-                      alt={user.fullName}
-                      style={{
-                        width: 30,
-                        height: 30,
-                        borderRadius: '50%',
-                        border: '1.5px solid var(--color-primary)',
-                        objectFit: 'cover',
-                        flexShrink: 0,
-                      }}
-                    />
+                    {user.avatarUrl ? (
+                      <img
+                        src={user.avatarUrl}
+                        alt={user.fullName}
+                        referrerPolicy="no-referrer"
+                        style={{
+                          width: 30,
+                          height: 30,
+                          borderRadius: '50%',
+                          border: '1.5px solid var(--color-primary)',
+                          objectFit: 'cover',
+                          flexShrink: 0,
+                        }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          width: 30,
+                          height: 30,
+                          borderRadius: '50%',
+                          background: 'color-mix(in srgb, var(--color-primary) 16%, transparent)',
+                          border: '1px solid var(--color-primary)',
+                          color: 'var(--color-primary)',
+                          fontSize: '0.74rem',
+                          fontWeight: 800,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0,
+                        }}
+                      >
+                        {(user.fullName || 'T').charAt(0).toUpperCase()}
+                      </div>
+                    )}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                         {user.fullName}
                       </div>
-                      <div style={{ fontSize: '0.66rem', color: 'var(--color-primary)', fontWeight: 700 }}>
-                        ★ {user.reputationScore} Điểm uy tín
+                      <div style={{ fontSize: '0.66rem', color: 'var(--color-primary)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                        <IconStar size={10} color="var(--color-primary)" fill="var(--color-primary)" />
+                        <span>{user.reputationScore} Điểm uy tín</span>
                       </div>
                     </div>
                   </div>
@@ -448,16 +532,16 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
       {isNewThreadOpen && createPortal(
         <div
           className="modal-overlay"
-          onClick={() => setIsNewThreadOpen(false)}
+          onClick={() => {
+            if (!isSubmittingThread) setIsNewThreadOpen(false);
+          }}
           style={{
             position: 'fixed',
             inset: 0,
-            width: '100vw',
-            height: '100vh',
-            background: 'rgba(3, 8, 14, 0.88)',
-            backdropFilter: 'blur(16px)',
-            WebkitBackdropFilter: 'blur(16px)',
-            zIndex: 99999999,
+            background: 'var(--overlay-bg)',
+            backdropFilter: 'blur(12px)',
+            WebkitBackdropFilter: 'blur(12px)',
+            zIndex: 'var(--z-modal, 3000)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -467,34 +551,52 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
           }}
         >
           <div
+            ref={newThreadDialogRef}
             className="modal-content"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Viết bài đóng góp nhật ký băng rừng"
+            tabIndex={-1}
             onClick={(e) => e.stopPropagation()}
             style={{
               background: 'var(--color-bg-card)',
-              border: '1.5px solid var(--color-border)',
-              borderRadius: 22,
-              padding: '26px 28px',
+              border: '1px solid var(--color-border-strong)',
+              borderRadius: 6,
+              padding: '24px 26px',
               maxWidth: 580,
               width: '100%',
               maxHeight: 'min(86vh, 720px)',
               overflowY: 'auto',
-              boxShadow: '0 25px 60px rgba(0, 0, 0, 0.9), 0 0 30px rgba(5, 150, 105, 0.18)',
+              boxShadow: 'var(--shadow-3d)',
               position: 'relative',
-              zIndex: 100000000,
               margin: 0,
+              outline: 'none',
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ fontSize: '1.25rem', color: 'var(--color-text-main)', fontWeight: 800, margin: 0 }}>
+              <h3 className="font-editorial" style={{ fontSize: '1.35rem', color: 'var(--color-text-main)', fontWeight: 600, margin: 0 }}>
                 Viết Bài Đóng Góp Nhật Ký Băng Rừng
               </h3>
               <button
                 type="button"
-                onClick={() => setIsNewThreadOpen(false)}
-                style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', fontSize: '1.1rem', padding: 4 }}
-                title="Đóng cửa sổ"
+                disabled={isSubmittingThread}
+                onClick={() => {
+                  if (!isSubmittingThread) setIsNewThreadOpen(false);
+                }}
+                aria-label="Đóng cửa sổ"
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--color-text-muted)',
+                  cursor: isSubmittingThread ? 'not-allowed' : 'pointer',
+                  opacity: isSubmittingThread ? 0.5 : 1,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  padding: 4,
+                }}
+                title="Đóng cửa sổ (Esc)"
               >
-                ✕
+                <IconX size={18} />
               </button>
             </div>
 
@@ -509,7 +611,7 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
                   placeholder="Ví dụ: Cẩm nang leo Lảo Thẩn 2N1Đ săn mây tự túc mới nhất"
                   value={newTitle}
                   onChange={(e) => setNewTitle(e.target.value)}
-                  style={{ width: '100%', padding: '9px 12px', borderRadius: 10, fontSize: '0.84rem' }}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 4, fontSize: '0.84rem' }}
                   required
                 />
               </div>
@@ -521,12 +623,12 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
                 <select
                   className="form-select"
                   value={newCategory}
-                  onChange={(e) => setNewCategory(e.target.value as any)}
-                  style={{ width: '100%', padding: '9px 12px', borderRadius: 10, fontSize: '0.84rem', background: 'var(--color-bg-main)', color: 'var(--color-text-main)', border: '1px solid var(--color-border)' }}
+                  onChange={(e) => setNewCategory(e.target.value as ForumThread['category'])}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 4, fontSize: '0.84rem', background: 'var(--color-bg-main)', color: 'var(--color-text-main)', border: '1px solid var(--color-border)' }}
                 >
-                  <option value="Kinh Nghiệm">Cẩm nang & Kinh nghiệm</option>
+                  <option value="Kinh Nghiệm">Cẩm nang &amp; Kinh nghiệm</option>
                   <option value="Hỏi Đáp">Hỏi đáp kỹ thuật</option>
-                  <option value="Tìm Đồng Đội">Ghép đoàn & Tìm bạn</option>
+                  <option value="Tìm Đồng Đội">Ghép đoàn &amp; Tìm bạn</option>
                   <option value="Cảnh Báo">Radar cảnh báo an toàn</option>
                 </select>
               </div>
@@ -541,7 +643,7 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
                   placeholder="Nhập nội dung chia sẻ trải nghiệm thực tế, lộ trình hoặc câu hỏi của bạn..."
                   value={newContent}
                   onChange={(e) => setNewContent(e.target.value)}
-                  style={{ width: '100%', padding: '10px 12px', borderRadius: 10, fontSize: '0.84rem' }}
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: 4, fontSize: '0.84rem' }}
                   required
                 />
               </div>
@@ -567,11 +669,10 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
                         style={{
                           position: 'relative',
                           height: 75,
-                          borderRadius: 12,
+                          borderRadius: 4,
                           overflow: 'hidden',
-                          border: '1.5px solid var(--color-border)',
-                          background: '#040b12',
-                          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.4)',
+                          border: '1px solid var(--color-border)',
+                          background: 'var(--color-bg-main)',
                         }}
                       >
                         <img
@@ -582,27 +683,26 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
                         <button
                           type="button"
                           onClick={() => handleRemoveImage(idx)}
+                          aria-label="Xóa ảnh này"
                           style={{
                             position: 'absolute',
                             top: 4,
                             right: 4,
                             width: 22,
                             height: 22,
-                            borderRadius: '50%',
-                            background: 'rgba(0, 0, 0, 0.75)',
-                            border: '1px solid rgba(255, 255, 255, 0.2)',
-                            color: '#fff',
+                            borderRadius: 4,
+                            background: 'var(--overlay-bg)',
+                            border: '1px solid var(--color-border-strong)',
+                            color: 'var(--color-on-media)',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
                             cursor: 'pointer',
-                            fontSize: '0.7rem',
-                            lineHeight: 1,
                             padding: 0,
                           }}
                           title="Xóa ảnh này"
                         >
-                          ✕
+                          <IconX size={12} color="var(--color-on-media)" />
                         </button>
                       </div>
                     ))}
@@ -612,22 +712,20 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
                 {/* Công cụ thêm ảnh: Tải từ máy tính & Nhập Link */}
                 {newImages.length < 8 && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      {/* Nút Chọn Ảnh Từ Thiết Bị */}
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                       <label
                         style={{
                           display: 'inline-flex',
                           alignItems: 'center',
                           gap: 6,
                           padding: '8px 14px',
-                          borderRadius: 10,
-                          background: 'rgba(74, 222, 128, 0.12)',
+                          borderRadius: 4,
+                          background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
                           border: '1px dashed var(--color-primary)',
                           color: 'var(--color-primary)',
                           fontSize: '0.78rem',
                           fontWeight: 700,
                           cursor: 'pointer',
-                          transition: 'all 0.2s ease',
                           whiteSpace: 'nowrap',
                         }}
                       >
@@ -642,8 +740,7 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
                         />
                       </label>
 
-                      {/* Hoặc Nhập URL Ảnh */}
-                      <div style={{ display: 'flex', flex: 1, gap: 6 }}>
+                      <div style={{ display: 'flex', flex: 1, minWidth: 200, gap: 6 }}>
                         <input
                           type="url"
                           className="form-input"
@@ -656,13 +753,13 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
                               handleAddImageUrl();
                             }
                           }}
-                          style={{ flex: 1, padding: '7px 10px', borderRadius: 10, fontSize: '0.78rem' }}
+                          style={{ flex: 1, padding: '7px 10px', borderRadius: 4, fontSize: '0.78rem' }}
                         />
                         <button
                           type="button"
                           onClick={handleAddImageUrl}
                           className="btn btn-outline"
-                          style={{ padding: '7px 12px', borderRadius: 10, fontSize: '0.78rem', fontWeight: 700, whiteSpace: 'nowrap' }}
+                          style={{ padding: '7px 12px', borderRadius: 4, fontSize: '0.78rem', fontWeight: 700, whiteSpace: 'nowrap' }}
                         >
                           + Thêm
                         </button>
@@ -678,19 +775,23 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
               <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
                 <button
                   type="button"
+                  disabled={isSubmittingThread}
                   className="btn btn-outline interactive-click"
-                  onClick={() => setIsNewThreadOpen(false)}
-                  style={{ padding: '8px 16px', borderRadius: 10, fontSize: '0.82rem' }}
+                  onClick={() => {
+                    if (!isSubmittingThread) setIsNewThreadOpen(false);
+                  }}
+                  style={{ padding: '8px 16px', borderRadius: 4, fontSize: '0.82rem' }}
                 >
                   Hủy bỏ
                 </button>
                 <button
                   type="submit"
-                  className="btn btn-primary interactive-click ripple-fx"
-                  style={{ padding: '8px 20px', borderRadius: 10, fontSize: '0.82rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                  disabled={isSubmittingThread}
+                  className="btn btn-primary interactive-click"
+                  style={{ padding: '8px 20px', borderRadius: 4, fontSize: '0.82rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 6, opacity: isSubmittingThread ? 0.65 : 1 }}
                 >
-                  <IconSend size={15} color="#041108" />
-                  Đăng Bài Ngay
+                  <IconSend size={15} color="var(--color-on-primary)" />
+                  {isSubmittingThread ? 'Đang đăng bài...' : 'Đăng Bài Ngay'}
                 </button>
               </div>
             </form>

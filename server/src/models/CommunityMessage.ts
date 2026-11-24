@@ -12,26 +12,26 @@ export interface ICommunityMessage extends Document {
     text: string;
   };
   createdAt: Date;
+  updatedAt: Date;
 }
 
 const CommunityMessageSchema = new Schema<ICommunityMessage>(
   {
-    senderId: { type: Schema.Types.ObjectId, ref: 'User' },
+    senderId: { type: Schema.Types.ObjectId, ref: 'User', index: true },
     senderName: { type: String, required: true },
     senderAvatar: { type: String, required: true },
     senderBadge: { type: String, default: 'Trekker' },
-    nameColor: { type: String, default: 'var(--color-primary)' },
-    text: { type: String, required: true },
+    nameColor: { type: String, default: '' },
+    text: { type: String, required: true, maxlength: 1000 },
     quote: {
       type: {
-        author: { type: String, required: true },
-        text: { type: String, required: true },
+        author: { type: String, required: true, maxlength: 120 },
+        text: { type: String, required: true, maxlength: 500 },
       },
       _id: false,
       required: false,
       default: undefined,
     },
-    createdAt: { type: Date, default: Date.now },
   },
   {
     timestamps: true,

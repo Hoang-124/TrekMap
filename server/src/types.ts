@@ -25,14 +25,26 @@ export interface Review {
 
 export interface Guide {
   id: string;
+  slug?: string;
   name: string;
   phone: string;
   avatarUrl?: string;
+  roleType?: 'guide' | 'porter' | 'operator';
   region: string;
+  provinces?: string[];
+  trailSlugs?: string[];
   priceNote: string;
+  basePricePerDayVnd?: number;
+  maxGroupSize?: number;
+  specialties?: string[];
+  languages?: string[];
+  certifications?: string[];
+  experienceYears?: number;
+  bio?: string;
   rating: number;
   reviewCount: number;
   verified: boolean;
+  isActive?: boolean;
 }
 
 export type LocalGuide = Guide;
@@ -145,7 +157,7 @@ export interface UserProfile {
   email: string;
   fullName: string;
   avatarUrl: string;
-  role: 'user' | 'guide' | 'admin' | 'trusted';
+  role: 'user' | 'guide' | 'moderator' | 'admin';
   reputationScore: number;
   badges: string[];
   checkedInTrails: string[];

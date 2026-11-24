@@ -1,32 +1,46 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { TrekReactionSvg, type ReactionType } from './TrekReactionSvg.js';
 
 export { TrekReactionSvg };
 export type { ReactionType };
 
-// Backwards compatibility alias for TrekReactionImg -> purely renders pure Vector SVG
-export const TrekReactionImg = ({ name, size = 28, alt: _alt = '' }: { name: string; size?: number; alt?: string }) => (
+// Backwards compatibility alias -> purely renders clean vector SVG
+export const TrekReactionImg = ({ name, size = 18, alt: _alt = '' }: { name: string; size?: number; alt?: string }) => (
   <TrekReactionSvg name={name as ReactionType} size={size} />
 );
 
 export interface ReactionItem {
   id: ReactionType;
   label: string;
-  emoji: string;
   color: string;
   icon: React.ReactNode;
 }
 
-export const REACTION_LIST: ReactionItem[] = [
-  { id: 'like', label: 'Thích', emoji: '👍', color: '#38bdf8', icon: <TrekReactionSvg name="like" size={28} /> },
-  { id: 'love', label: 'Yêu thích', emoji: '❤️', color: '#f43f5e', icon: <TrekReactionSvg name="love" size={28} /> },
-  { id: 'haha', label: 'Haha', emoji: '😆', color: '#fbbf24', icon: <TrekReactionSvg name="haha" size={28} /> },
-  { id: 'wow', label: 'Wow', emoji: '😮', color: '#f59e0b', icon: <TrekReactionSvg name="wow" size={28} /> },
-  { id: 'buon', label: 'Buồn', emoji: '😢', color: '#60a5fa', icon: <TrekReactionSvg name="buon" size={28} /> },
-  { id: 'huhu', label: 'Huhu', emoji: '😭', color: '#38bdf8', icon: <TrekReactionSvg name="huhu" size={28} /> },
-  { id: 'angry', label: 'Phẫn nộ', emoji: '😡', color: '#ef4444', icon: <TrekReactionSvg name="angry" size={28} /> },
-  { id: 'dislike', label: 'Không thích', emoji: '👎', color: '#94a3b8', icon: <TrekReactionSvg name="dislike" size={28} /> },
+const REACTION_LIST: ReactionItem[] = [
+  { id: 'like', label: 'Hữu ích', color: 'var(--color-primary)', icon: <TrekReactionSvg name="like" size={17} color="var(--color-primary)" /> },
+  { id: 'love', label: 'Yêu thích', color: 'var(--color-error)', icon: <TrekReactionSvg name="love" size={17} color="var(--color-error)" /> },
+  { id: 'haha', label: 'Thú vị', color: 'var(--color-sun)', icon: <TrekReactionSvg name="haha" size={17} color="var(--color-sun)" /> },
+  { id: 'wow', label: 'Ấn tượng', color: 'var(--color-sky)', icon: <TrekReactionSvg name="wow" size={17} color="var(--color-sky)" /> },
+  { id: 'buon', label: 'Tiếc nuối', color: 'var(--color-stream)', icon: <TrekReactionSvg name="buon" size={17} color="var(--color-stream)" /> },
+  { id: 'huhu', label: 'Đồng cảm', color: 'var(--color-sky)', icon: <TrekReactionSvg name="huhu" size={17} color="var(--color-sky)" /> },
+  { id: 'angry', label: 'Đáng lo', color: 'var(--color-earth)', icon: <TrekReactionSvg name="angry" size={17} color="var(--color-earth)" /> },
+  { id: 'dislike', label: 'Chưa đồng ý', color: 'var(--color-text-muted)', icon: <TrekReactionSvg name="dislike" size={17} color="var(--color-text-muted)" /> },
 ];
+
+// Normalize legacy 'sad' reaction alias to 'buon' cleanly
+function normalizeReactionId(id: ReactionType | string | undefined): ReactionType {
+  if (!id) return null;
+  if (id === 'sad') return 'buon';
+  return id as ReactionType;
+}
+
+function getSummaryCountForKey(summary: Record<string, number>, key: string): number {
+  const base = Number(summary[key]) || 0;
+  if (key === 'buon') {
+    return base + (Number(summary.sad) || 0);
+  }
+  return base;
+}
 
 interface FacebookReactionPickerProps {
   currentReaction: ReactionType;
@@ -43,11 +57,13 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
 }) => {
   const [showPicker, setShowPicker] = useState(false);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const timeoutRef = useRef<any>(null);
+  const [alignLeft, setAlignLeft] = useState(false);
+  const triggerRef = useRef<HTMLDivElement | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const activeItem = REACTION_LIST.find((r) => r.id === currentReaction);
+  const normalizedCurrent = normalizeReactionId(currentReaction);
+  const activeItem = REACTION_LIST.find((r) => r.id === normalizedCurrent);
 
-  // Calculate Top 3 Most-Reacted Icons (Facebook Style Overlapping Stack)
   const top3Icons = React.useMemo(() => {
     if (!reactionsSummary) {
       if (activeItem) return [activeItem];
@@ -55,10 +71,10 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
     }
     const sorted = REACTION_LIST.filter((item) => {
       const key = item.id as string;
-      return reactionsSummary[key] && reactionsSummary[key] > 0;
+      return getSummaryCountForKey(reactionsSummary, key) > 0;
     }).sort((a, b) => {
-      const countA = reactionsSummary[a.id as string] || 0;
-      const countB = reactionsSummary[b.id as string] || 0;
+      const countA = getSummaryCountForKey(reactionsSummary, a.id as string);
+      const countB = getSummaryCountForKey(reactionsSummary, b.id as string);
       return countB - countA;
     });
 
@@ -67,7 +83,6 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
     return [];
   }, [reactionsSummary, activeItem]);
 
-  // Calculate Total Reaction Count dynamically from reactionsSummary or totalLikes prop
   const computedTotal = React.useMemo(() => {
     if (reactionsSummary && typeof reactionsSummary === 'object') {
       const sum = Object.values(reactionsSummary).reduce((acc, count) => acc + (typeof count === 'number' ? count : 0), 0);
@@ -76,8 +91,12 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
     return totalLikes || 0;
   }, [reactionsSummary, totalLikes]);
 
-  const handleMouseEnter = () => {
+  const openPickerWithBoundsCheck = () => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    if (triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      setAlignLeft(rect.left < 270);
+    }
     setShowPicker(true);
   };
 
@@ -85,173 +104,199 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
     timeoutRef.current = setTimeout(() => {
       setShowPicker(false);
       setHoveredId(null);
-    }, 300);
+    }, 260);
   };
+
+  // Close picker when clicking/tapping outside on touch devices
+  useEffect(() => {
+    if (!showPicker) return;
+    const handleOutside = (e: PointerEvent) => {
+      if (triggerRef.current && !triggerRef.current.contains(e.target as Node)) {
+        setShowPicker(false);
+        setHoveredId(null);
+      }
+    };
+    document.addEventListener('pointerdown', handleOutside);
+    return () => document.removeEventListener('pointerdown', handleOutside);
+  }, [showPicker]);
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, []);
 
   return (
     <div
+      ref={triggerRef}
       style={{ position: 'relative', display: 'inline-block' }}
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
+      onPointerEnter={(e) => {
+        // Ignore synthesized touch hover events so touch taps don't double-toggle!
+        if (e.pointerType === 'mouse') {
+          openPickerWithBoundsCheck();
+        }
+      }}
+      onPointerLeave={(e) => {
+        if (e.pointerType === 'mouse') {
+          handleMouseLeave();
+        }
+      }}
     >
-      {/* Floating Reaction Bar Modal (Anchored to right of button to avoid screen overflow) */}
-      {showPicker && (
-        <div
-          style={{
-            position: 'absolute',
-            bottom: 'calc(100% + 2px)',
-            right: 0,
-            paddingBottom: 10,
-            zIndex: 99999,
-          }}
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={handleMouseLeave}
-        >
-          <div
-            className="reaction-bar-slide"
-            style={{
-              background: 'var(--color-bg-card)',
-              backdropFilter: 'blur(20px)',
-              border: '1.5px solid var(--color-border-glow)',
-              borderRadius: 36,
-              padding: '6px 12px',
-              display: 'flex',
-              gap: 8,
-              boxShadow: '0 16px 40px rgba(0, 0, 0, 0.6), 0 0 20px rgba(5, 150, 105, 0.25)',
-              alignItems: 'center',
-              whiteSpace: 'nowrap',
-              position: 'relative',
-            }}
-          >
-            {REACTION_LIST.map((item) => {
-              const isHovered = hoveredId === item.id;
-              const isSelected = currentReaction === item.id;
-              return (
-                <div key={item.id} style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                  {/* Floating Tooltip Text on Hover */}
-                  {isHovered && (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        bottom: '120%',
-                        background: 'var(--color-bg-main)',
-                        color: item.color,
-                        border: `1px solid ${item.color}`,
-                        borderRadius: 10,
-                        padding: '2px 8px',
-                        fontSize: '0.7rem',
-                        fontWeight: 800,
-                        whiteSpace: 'nowrap',
-                        boxShadow: `0 4px 12px ${item.color}44`,
-                        pointerEvents: 'none',
-                        zIndex: 1000,
-                      }}
-                    >
-                      {item.label}
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onSelectReaction(currentReaction === item.id ? null : item.id);
-                      setShowPicker(false);
-                    }}
-                    title={item.label}
-                    style={{
-                      background: isSelected ? 'rgba(5, 150, 105, 0.25)' : 'var(--color-bg-main)',
-                      border: isSelected ? `2px solid ${item.color}` : '1px solid var(--color-border)',
-                      cursor: 'pointer',
-                      padding: '6px',
-                      borderRadius: '50%',
-                      transition: 'all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.3)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      boxShadow: isSelected ? `0 0 14px ${item.color}` : 'none',
-                    }}
-                    onMouseEnter={(e) => {
-                      setHoveredId(item.id as string);
-                      e.currentTarget.style.transform = 'scale(1.4) translateY(-6px)';
-                      e.currentTarget.style.background = 'var(--color-bg-card)';
-                      e.currentTarget.style.borderColor = item.color;
-                    }}
-                    onMouseLeave={(e) => {
-                      setHoveredId(null);
-                      e.currentTarget.style.transform = 'scale(1) translateY(0)';
-                      e.currentTarget.style.background = isSelected ? 'rgba(5, 150, 105, 0.25)' : 'var(--color-bg-main)';
-                      e.currentTarget.style.borderColor = isSelected ? item.color : 'var(--color-border)';
-                    }}
-                  >
-                    <span>{item.icon}</span>
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Main Trigger Button */}
-      <button
-        type="button"
-        onMouseEnter={handleMouseEnter}
-        onClick={(e) => {
-          e.stopPropagation();
-          setShowPicker(!showPicker);
-        }}
+      {/* Floating Reaction Dock (Silky GPU Enter + Exit + Stagger Wave) */}
+      <div
+        aria-hidden={!showPicker}
+        className={`reaction-dock-shell${showPicker ? ' open' : ''}`}
         style={{
-          background: activeItem ? 'rgba(5, 150, 105, 0.14)' : 'var(--color-bg-main)',
-          border: activeItem ? `1.5px solid ${activeItem.color}` : '1px solid var(--color-border)',
-          borderRadius: 20,
-          padding: '4px 10px',
-          cursor: 'pointer',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          transition: 'all 0.2s ease',
-          boxShadow: activeItem ? `0 0 12px ${activeItem.color}33` : 'none',
+          position: 'absolute',
+          bottom: 'calc(100% + 2px)',
+          ...(alignLeft ? { left: 0 } : { right: 0 }),
+          transformOrigin: alignLeft ? 'bottom left' : 'bottom right',
+          paddingBottom: 6,
+          zIndex: 'var(--z-dropdown, 1100)',
+        }}
+        onPointerEnter={(e) => {
+          if (e.pointerType === 'mouse' && showPicker) openPickerWithBoundsCheck();
+        }}
+        onPointerLeave={(e) => {
+          if (e.pointerType === 'mouse') handleMouseLeave();
         }}
       >
-        {/* Top 3 Overlapping Icons Stack */}
-        {top3Icons.length > 0 ? (
-          <div style={{ display: 'flex', alignItems: 'center' }}>
-            {top3Icons.map((item, idx) => (
+        <div
+          style={{
+            background: 'var(--color-bg-card)',
+            border: '1px solid var(--color-border-strong)',
+            borderRadius: 6,
+            padding: '4px 6px',
+            display: 'flex',
+            gap: 3,
+            boxShadow: 'var(--shadow-3d)',
+            alignItems: 'center',
+            whiteSpace: 'nowrap',
+            position: 'relative',
+          }}
+        >
+          {REACTION_LIST.map((item, idx) => {
+            const isHovered = hoveredId === item.id;
+            const isSelected = normalizedCurrent === item.id;
+            return (
               <div
                 key={item.id}
+                className="reaction-dock-item"
                 style={{
-                  marginLeft: idx > 0 ? -5 : 0,
-                  zIndex: top3Icons.length - idx,
+                  position: 'relative',
                   display: 'flex',
+                  flexDirection: 'column',
                   alignItems: 'center',
-                  justifyContent: 'center',
-                  width: 20,
-                  height: 20,
-                  borderRadius: '50%',
-                  background: 'var(--color-bg-card)',
-                  border: '1px solid var(--color-border)',
-                  overflow: 'hidden',
+                  ['--rx-delay' as string]: `${idx * 18}ms`,
                 }}
               >
-                <TrekReactionSvg name={item.id as string} size={16} />
+                <div
+                  className={`reaction-tooltip-pill${isHovered && showPicker ? ' visible' : ''}`}
+                  style={{
+                    position: 'absolute',
+                    bottom: 'calc(100% + 7px)',
+                    background: 'var(--color-bg-main)',
+                    color: 'var(--color-text-main)',
+                    border: '1px solid var(--color-border-strong)',
+                    borderRadius: 4,
+                    padding: '2px 7px',
+                    fontSize: '0.68rem',
+                    fontWeight: 600,
+                    whiteSpace: 'nowrap',
+                    boxShadow: 'var(--shadow-card)',
+                    zIndex: 10,
+                  }}
+                >
+                  {item.label}
+                </div>
+
+                <button
+                  type="button"
+                  tabIndex={showPicker ? 0 : -1}
+                  className="reaction-item-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectReaction(normalizedCurrent === item.id ? null : item.id);
+                    setShowPicker(false);
+                    setHoveredId(null);
+                  }}
+                  aria-label={item.label}
+                  style={{
+                    width: 30,
+                    height: 30,
+                    background: isSelected
+                      ? `color-mix(in srgb, ${item.color} 15%, transparent)`
+                      : isHovered
+                        ? 'var(--color-surface-elevated)'
+                        : 'transparent',
+                    border: isSelected ? `1px solid ${item.color}` : '1px solid transparent',
+                    cursor: 'pointer',
+                    padding: 0,
+                    borderRadius: 4,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                  onPointerEnter={(e) => {
+                    if (e.pointerType === 'mouse') setHoveredId(item.id as string);
+                  }}
+                  onPointerLeave={(e) => {
+                    if (e.pointerType === 'mouse') setHoveredId(null);
+                  }}
+                >
+                  {item.icon}
+                </button>
               </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Main Trigger Button — Unified 4px Swiss Field Chip */}
+      <button
+        type="button"
+        className="interactive-click"
+        onClick={(e) => {
+          e.stopPropagation();
+          if (!showPicker) openPickerWithBoundsCheck();
+          else setShowPicker(false);
+        }}
+        style={{
+          background: activeItem ? `color-mix(in srgb, ${activeItem.color} 12%, transparent)` : 'var(--color-bg-main)',
+          border: activeItem ? `1px solid color-mix(in srgb, ${activeItem.color} 45%, transparent)` : '1px solid var(--color-border)',
+          borderRadius: 4,
+          padding: '4px 9px',
+          cursor: 'pointer',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 5,
+        }}
+      >
+        {top3Icons.length > 0 ? (
+          <div
+            key={normalizedCurrent || 'summary'}
+            className={normalizedCurrent ? 'reaction-badge-pop' : undefined}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}
+          >
+            {top3Icons.map((item) => (
+              <TrekReactionSvg key={item.id} name={item.id as string} size={14} color={item.color} />
             ))}
           </div>
         ) : (
-          <div style={{ display: 'flex', alignItems: 'center' }}>
-            <TrekReactionSvg name={activeItem ? (activeItem.id as string) : 'like'} size={18} />
-          </div>
+          <TrekReactionSvg
+            name={activeItem ? (activeItem.id as string) : 'like'}
+            size={14}
+            color={activeItem ? activeItem.color : 'var(--color-text-dim)'}
+          />
         )}
 
-        {/* Reaction Count Number */}
         <span
           style={{
-            fontSize: '0.82rem',
-            fontWeight: 800,
+            fontSize: '0.78rem',
+            fontWeight: 700,
             color: activeItem ? activeItem.color : 'var(--color-text-muted)',
-            marginLeft: 1,
             lineHeight: 1,
+            fontVariantNumeric: 'tabular-nums',
           }}
         >
           {computedTotal}

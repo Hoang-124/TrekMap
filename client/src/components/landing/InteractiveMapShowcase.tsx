@@ -1,7 +1,11 @@
-import React, { useMemo } from 'react';
-import type { Trail } from '../../types.js';
+import React, { useMemo, useState } from 'react';
+import type { Trail, Incident } from '../../types.js';
 import { MapView } from '../map/MapView.js';
-import { IconSatellite, IconLightbulb, IconCalendar, IconX } from '../common/SvgIcons.js';
+import { IconLightbulb, IconCalendar, IconX, IconStar } from '../common/SvgIcons.js';
+import { useSlidingIndicator } from '../../hooks/useSlidingIndicator.js';
+
+const VERIFIED_TRAIL_FALLBACK =
+  'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329097/trekmap/trails/trail_cover_trail-fansipan.jpg';
 
 // Pure Vector SVG Components (Rule 12 compliant)
 const Mountain = ({ size = 16, color = 'currentColor' }: { size?: number; color?: string }) => (
@@ -71,7 +75,7 @@ interface InteractiveMapShowcaseProps {
   trails: Trail[];
   selectedTrail: Trail | null;
   onSelectTrail: (trail: Trail) => void;
-  incidents?: any[];
+  incidents?: Incident[];
   selectedRegion?: string;
   onSelectRegion?: (region: string) => void;
   selectedMonth?: number | null;
@@ -81,12 +85,37 @@ interface InteractiveMapShowcaseProps {
 
 const getDifficultyBadge = (difficulty: number) => {
   const diff = Number(difficulty) || 3;
-  if (diff >= 4) return { label: 'Khó', color: '#ef4444', bg: 'rgba(239, 68, 68, 0.15)', border: 'rgba(239, 68, 68, 0.4)' };
-  if (diff === 3) return { label: 'Trung Bình', color: '#ffd600', bg: 'rgba(255, 214, 0, 0.15)', border: 'rgba(255, 214, 0, 0.4)' };
-  return { label: 'Dễ', color: '#10b981', bg: 'rgba(16, 185, 129, 0.15)', border: 'rgba(16, 185, 129, 0.4)' };
+  if (diff >= 4) {
+    return {
+      label: 'Khó',
+      color: 'var(--color-error-text, var(--color-error))',
+      bg: 'color-mix(in srgb, var(--color-error) 16%, transparent)',
+      border: 'color-mix(in srgb, var(--color-error) 42%, transparent)',
+    };
+  }
+  if (diff === 3) {
+    return {
+      label: 'Trung Bình',
+      color: 'var(--color-sun)',
+      bg: 'color-mix(in srgb, var(--color-sun) 16%, transparent)',
+      border: 'color-mix(in srgb, var(--color-sun) 42%, transparent)',
+    };
+  }
+  return {
+    label: 'Dễ',
+    color: 'var(--color-primary)',
+    bg: 'color-mix(in srgb, var(--color-primary) 16%, transparent)',
+    border: 'color-mix(in srgb, var(--color-primary) 42%, transparent)',
+  };
 };
 
-export const InteractiveMapShowcase: React.FC<InteractiveMapShowcaseProps> = ({
+function extractPrimaryDialNumber(phone?: string): string {
+  if (!phone) return '112';
+  const primary = String(phone).split('/')[0] || '';
+  return primary.replace(/[^0-9+]/g, '') || '112';
+}
+
+const InteractiveMapShowcaseBase: React.FC<InteractiveMapShowcaseProps> = ({
   trails,
   selectedTrail,
   onSelectTrail,
@@ -97,7 +126,6 @@ export const InteractiveMapShowcase: React.FC<InteractiveMapShowcaseProps> = ({
   onClearMonthFilter,
   onExploreFullMap,
 }) => {
-  // Region counts for telemetry badges
   const regionCounts = useMemo(() => {
     const counts = {
       All: trails.length,
@@ -113,14 +141,11 @@ export const InteractiveMapShowcase: React.FC<InteractiveMapShowcaseProps> = ({
     return counts;
   }, [trails]);
 
-  // Filter trails based on region and selected month
   const filteredTrails = useMemo(() => {
     return trails.filter((t) => {
-      // 1. Region filter
       if (selectedRegion && selectedRegion !== 'All' && selectedRegion !== 'Tất Cả') {
         if (t.region !== selectedRegion) return false;
       }
-      // 2. Month filter
       if (selectedMonth) {
         if (Array.isArray(t.bestMonths) && t.bestMonths.length > 0) {
           return t.bestMonths.includes(selectedMonth) && (!t.avoidMonths || !t.avoidMonths.includes(selectedMonth));
@@ -131,35 +156,51 @@ export const InteractiveMapShowcase: React.FC<InteractiveMapShowcaseProps> = ({
     });
   }, [trails, selectedRegion, selectedMonth]);
 
-  // Active trail for the Intelligence Card (defaults to selected or first filtered trail)
+  const [focusedTrail, setFocusedTrail] = useState<Trail | null>(null);
+  const normalizedRegionKey = selectedRegion === 'Tất Cả' ? 'All' : selectedRegion || 'All';
+  const { trackRef: regionTrackRef, indicatorStyle: regionIndicatorStyle } =
+    useSlidingIndicator<string>(normalizedRegionKey);
+
   const activeTrail = useMemo(() => {
     if (selectedTrail) return selectedTrail;
-    return filteredTrails.length > 0 ? filteredTrails[0] : (trails.length > 0 ? trails[0] : null);
-  }, [selectedTrail, filteredTrails, trails]);
+    if (focusedTrail && filteredTrails.some((t) => t.id === focusedTrail.id)) {
+      return focusedTrail;
+    }
+    return filteredTrails.length > 0 ? filteredTrails[0] : trails.length > 0 ? trails[0] : null;
+  }, [selectedTrail, focusedTrail, filteredTrails, trails]);
 
   const activeDiff = activeTrail ? getDifficultyBadge(activeTrail.difficultyLevel) : null;
 
-  // Real GPX Download Handler
+  const escapeXml = (str: string) =>
+    String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+
   const handleDownloadGpx = (trail: Trail) => {
     if (!trail.gpxTrack || trail.gpxTrack.length === 0) {
       window.dispatchEvent(
-        new CustomEvent('trekmap:show-toast', {
+        new CustomEvent('lost:show-toast', {
           detail: { message: `Cung đường ${trail.name} đang cập nhật tracklog GPX.`, type: 'info' },
         })
       );
       return;
     }
     const trackPointsXml = trail.gpxTrack
-      .map(([lat, lng]) => `      <trkpt lat="${lat}" lon="${lng}"></trkpt>`)
+      .map(([lat, lng]) => `      <trkpt lat="${Number(lat)}" lon="${Number(lng)}"></trkpt>`)
       .join('\n');
+    const safeName = escapeXml(trail.name);
+    const safeDesc = escapeXml(trail.description || '');
     const gpxXml = `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="TrekMap Vietnam - https://trekmap.vn">
+<gpx version="1.1" creator="LOST Vietnam - https://lost.vn">
   <metadata>
-    <name>${trail.name}</name>
-    <desc>${trail.description || ''}</desc>
+    <name>${safeName}</name>
+    <desc>${safeDesc}</desc>
   </metadata>
   <trk>
-    <name>${trail.name}</name>
+    <name>${safeName}</name>
     <trkseg>
 ${trackPointsXml}
     </trkseg>
@@ -169,13 +210,13 @@ ${trackPointsXml}
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${trail.id || 'tracklog'}_TrekMap.gpx`;
+    link.download = `${trail.id || 'tracklog'}_LOST.gpx`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     window.dispatchEvent(
-      new CustomEvent('trekmap:show-toast', {
+      new CustomEvent('lost:show-toast', {
         detail: { message: `Đã tải xuống file GPX của ${trail.name}!`, type: 'success' },
       })
     );
@@ -189,7 +230,7 @@ ${trackPointsXml}
         margin: '0 auto',
       }}
     >
-      {/* Section Header - Tactical Command Center Style */}
+      {/* Section Header */}
       <div
         style={{
           display: 'flex',
@@ -197,86 +238,43 @@ ${trackPointsXml}
           alignItems: 'flex-end',
           flexWrap: 'wrap',
           gap: 16,
-          marginBottom: 18,
+          marginBottom: 22,
         }}
       >
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-            <div
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                padding: '4px 12px',
-                borderRadius: 20,
-                background: 'rgba(74, 222, 128, 0.12)',
-                border: '1px solid var(--color-border-glow)',
-                fontSize: '0.72rem',
-                fontWeight: 800,
-                color: 'var(--color-primary)',
-                letterSpacing: '0.04em',
-                textTransform: 'uppercase',
-              }}
-            >
-              <span
-                style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: '50%',
-                  background: 'var(--color-primary)',
-                  boxShadow: '0 0 8px var(--color-primary)',
-                  display: 'inline-block',
-                }}
-              />
-              <IconSatellite size={13} color="var(--color-primary)" />
-              <span>GIS Telemetry Việt Nam</span>
-            </div>
-
-            <span
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 5,
-                padding: '4px 10px',
-                borderRadius: 20,
-                background: 'rgba(56, 189, 248, 0.1)',
-                border: '1px solid rgba(56, 189, 248, 0.3)',
-                fontSize: '0.72rem',
-                fontWeight: 700,
-                color: 'var(--color-sky)',
-              }}
-            >
-              WGS84 • Lãnh Thổ Việt Nam 100% Thực Địa
-            </span>
-          </div>
+          <div className="section-eyebrow">01 / Bản đồ thực địa Việt Nam</div>
 
           <h2
+            className="font-editorial"
             style={{
-              fontSize: 'clamp(1.4rem, 2.6vw, 1.95rem)',
-              fontWeight: 900,
+              fontSize: 'clamp(1.75rem, 3.2vw, 2.55rem)',
+              fontWeight: 500,
               color: 'var(--color-text-main)',
               letterSpacing: '-0.025em',
               margin: '0 0 6px 0',
-              lineHeight: 1.25,
+              lineHeight: 1.12,
             }}
           >
-            Bản Đồ Địa Hình & Thẻ Cung Đường Thực Địa
+            Bản đồ địa hình{' '}
+            <span style={{ color: 'var(--color-primary)', fontWeight: 700 }}>
+              &amp; hồ sơ tuyến trek
+            </span>
           </h2>
 
           <p
             style={{
               color: 'var(--color-text-muted)',
-              fontSize: '0.84rem',
-              lineHeight: 1.5,
+              fontSize: '0.88rem',
+              lineHeight: 1.55,
               margin: 0,
-              maxWidth: 760,
+              maxWidth: 660,
             }}
           >
-            Không gian viễn thám GIS độ nét cao giới hạn trong phạm vi lãnh thổ Việt Nam. Đồng bộ 2 chiều: Chọn bất kỳ đỉnh núi nào trên bản đồ hoặc danh sách bên cạnh để xem ngay trắc diện thực tế, trạm kiểm lâm và tải file GPX.
+            Chọn trực tiếp một đỉnh núi trên bản đồ hoặc từ danh sách bên phải để xem trắc diện cao độ, thông tin kiểm lâm và tải tệp GPX.
           </p>
         </div>
 
-        {/* Region Switcher Pills & Fullscreen Action */}
+        {/* Region Switcher */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           {selectedMonth && (
             <div
@@ -284,14 +282,13 @@ ${trackPointsXml}
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: 8,
-                background: 'rgba(74, 222, 128, 0.15)',
+                background: 'var(--color-surface-elevated)',
                 border: '1px solid var(--color-border-glow)',
                 padding: '6px 12px',
-                borderRadius: 20,
+                borderRadius: 4,
                 fontSize: '0.78rem',
-                fontWeight: 700,
+                fontWeight: 600,
                 color: 'var(--color-primary)',
-                boxShadow: '0 0 14px rgba(74, 222, 128, 0.2)',
               }}
             >
               <IconCalendar size={14} color="var(--color-primary)" />
@@ -302,12 +299,11 @@ ${trackPointsXml}
                   onClick={onClearMonthFilter}
                   aria-label="Xóa bộ lọc tháng"
                   style={{
-                    background: 'rgba(255, 255, 255, 0.15)',
+                    background: 'transparent',
                     border: 'none',
                     color: 'var(--color-text-main)',
                     cursor: 'pointer',
                     padding: '2px',
-                    borderRadius: 10,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -322,51 +318,57 @@ ${trackPointsXml}
 
           {onSelectRegion && (
             <div
+              ref={regionTrackRef}
+              className="lost-glider-track"
               style={{
                 display: 'flex',
+                flexWrap: 'wrap',
                 background: 'var(--color-bg-card)',
-                padding: 4,
-                borderRadius: 24,
+                padding: 3,
+                borderRadius: 6,
                 border: '1px solid var(--color-border)',
-                boxShadow: 'var(--shadow-card)',
-                gap: 3,
+                gap: 2,
               }}
             >
+              <span
+                aria-hidden="true"
+                className="lost-glider-pill with-accent"
+                style={regionIndicatorStyle}
+              />
               {(['All', 'Miền Bắc', 'Miền Trung', 'Miền Nam'] as const).map((reg) => {
                 const isSelected = selectedRegion === reg || (reg === 'All' && selectedRegion === 'Tất Cả');
-                const label = reg === 'All' ? 'Tất Cả' : reg;
+                const label = reg === 'All' ? 'Tất cả' : reg;
                 const count = regionCounts[reg] || 0;
 
                 return (
                   <button
                     key={reg}
                     type="button"
+                    data-glider-active={isSelected ? 'true' : undefined}
+                    className="lost-glider-item"
                     onClick={() => onSelectRegion(reg)}
                     style={{
                       display: 'inline-flex',
                       alignItems: 'center',
                       gap: 6,
-                      padding: '6px 14px',
-                      borderRadius: 18,
+                      padding: '6px 12px',
+                      borderRadius: 4,
                       fontSize: '0.78rem',
-                      fontWeight: 700,
+                      fontWeight: isSelected ? 700 : 500,
                       border: 'none',
-                      background: isSelected ? 'var(--color-primary)' : 'transparent',
-                      color: isSelected ? 'var(--color-bg-main)' : 'var(--color-text-dim)',
+                      background: 'transparent',
+                      color: isSelected ? 'var(--color-text-main)' : 'var(--color-text-dim)',
                       cursor: 'pointer',
-                      transition: 'all 0.2s ease',
-                      boxShadow: isSelected ? 'var(--shadow-sprout)' : 'none',
+                      transition: 'color 200ms ease',
                     }}
                   >
                     <span>{label}</span>
                     <span
                       style={{
-                        fontSize: '0.68rem',
-                        fontWeight: 800,
-                        padding: '1px 6px',
-                        borderRadius: 10,
-                        background: isSelected ? 'rgba(0, 0, 0, 0.2)' : 'rgba(255, 255, 255, 0.08)',
-                        color: isSelected ? 'var(--color-bg-main)' : 'var(--color-text-muted)',
+                        fontSize: '0.7rem',
+                        fontWeight: 600,
+                        color: isSelected ? 'var(--color-primary)' : 'var(--color-text-dim)',
+                        fontVariantNumeric: 'tabular-nums',
                       }}
                     >
                       {count}
@@ -383,133 +385,154 @@ ${trackPointsXml}
               onClick={onExploreFullMap}
               className="btn btn-primary"
               style={{
-                borderRadius: 20,
-                padding: '8px 18px',
-                fontSize: '0.82rem',
-                fontWeight: 800,
+                borderRadius: 4,
+                padding: '8px 16px',
+                fontSize: '0.8rem',
+                fontWeight: 700,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
               }}
             >
-              Toàn Màn Hình ➔
+              <span>Toàn màn hình</span>
+              <ArrowRight size={14} />
             </button>
           )}
         </div>
       </div>
 
-      {/* SPLIT SCREEN LAYOUT: 54% MAP VIETNAM + 46% INTERACTIVE TRAIL INTELLIGENCE CONSOLE */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))',
-          gap: 20,
-          alignItems: 'stretch',
-        }}
-      >
-        {/* LEFT COLUMN: Embedded Live Leaflet Map (Firmly bounded to Vietnam) */}
+      {/* SPLIT SCREEN LAYOUT (Matched Height, Zero Overflow or Vertical Clipping) */}
+      <div className="map-showcase-split">
+        {/* LEFT COLUMN: Embedded Live Leaflet Map */}
         <div
           id="gis-map-canvas"
-          className="tactical-gis-frame"
           style={{
-            height: 'min(76vh, 610px)',
-            minHeight: '480px',
-            borderRadius: 24,
+            minHeight: 530,
+            height: '100%',
+            borderRadius: 4,
             overflow: 'hidden',
-            border: '1.5px solid var(--color-border)',
-            boxShadow: '0 24px 64px -12px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(74, 222, 128, 0.15)',
+            border: '1px solid var(--color-border-strong)',
+            boxShadow: 'var(--shadow-card)',
             position: 'relative',
           }}
         >
-          <MapView
-            trails={filteredTrails}
-            allTrails={trails}
-            onSelectRegion={onSelectRegion}
-            selectedTrail={selectedTrail}
-            onSelectTrail={onSelectTrail}
-            incidents={incidents}
-            height="100%"
-          />
+          <div style={{ position: 'absolute', inset: 0 }}>
+            <MapView
+              trails={filteredTrails}
+              allTrails={trails}
+              onSelectRegion={onSelectRegion}
+              selectedTrail={focusedTrail || selectedTrail}
+              onFocusTrail={(t) => setFocusedTrail(t)}
+              onSelectTrail={onSelectTrail}
+              incidents={incidents}
+              height="100%"
+            />
+          </div>
         </div>
 
-        {/* RIGHT COLUMN: Interactive Trail Intelligence Dossier & Quick Trail Selector */}
+        {/* RIGHT COLUMN: Trail Field Dossier (Fits 100% Cleanly in One Frame) */}
         <div
           style={{
-            height: 'min(76vh, 610px)',
-            minHeight: '480px',
-            borderRadius: 24,
+            minHeight: 530,
+            minWidth: 0,
+            borderRadius: 4,
             background: 'var(--color-bg-card)',
-            border: '1.5px solid var(--color-border)',
-            boxShadow: '0 24px 64px -12px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(74, 222, 128, 0.12)',
+            border: '1px solid var(--color-border)',
+            boxShadow: 'var(--shadow-card)',
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
           }}
         >
           {activeTrail ? (
-            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-              {/* Active Trail Hero Image Banner */}
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+              {/* Active Trail Hero Image Banner (<img> with reliable onError fallback) */}
               <div
                 style={{
                   position: 'relative',
-                  height: 160,
+                  height: 152,
                   width: '100%',
-                  background: activeTrail.coverImage
-                    ? `url(${activeTrail.coverImage}) center / cover no-repeat`
-                    : 'linear-gradient(135deg, #0f2d24 0%, #081726 100%)',
+                  background: 'var(--color-surface-elevated)',
                   overflow: 'hidden',
                   flexShrink: 0,
                 }}
               >
-                {/* Dark Gradient Overlay */}
+                <img
+                  key={activeTrail.id}
+                  className="scene-cover-cinematic"
+                  src={activeTrail.coverImage || VERIFIED_TRAIL_FALLBACK}
+                  alt={activeTrail.name}
+                  loading="lazy"
+                  onError={(e) => {
+                    const img = e.currentTarget;
+                    if (img.src !== VERIFIED_TRAIL_FALLBACK) {
+                      img.src = VERIFIED_TRAIL_FALLBACK;
+                    }
+                  }}
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'cover',
+                    display: 'block',
+                  }}
+                />
+                <div key={`veil-${activeTrail.id}`} className="hero-scene-veil" aria-hidden="true" />
                 <div
                   style={{
                     position: 'absolute',
                     inset: 0,
-                    background: 'linear-gradient(180deg, rgba(2, 6, 12, 0.18) 0%, rgba(3, 10, 20, 0.72) 65%, var(--color-bg-card) 100%)',
+                    backgroundImage:
+                      'linear-gradient(180deg, color-mix(in srgb, var(--overlay-bg) 35%, transparent) 0%, var(--overlay-bg) 74%, var(--color-bg-card) 100%), linear-gradient(180deg, transparent 35%, var(--overlay-bg) 82%, var(--color-bg-card) 100%)',
                   }}
                 />
 
-                {/* Floating Badges (Difficulty, Region, Rating) */}
+                {/* Floating Badges */}
                 <div
                   style={{
                     position: 'absolute',
-                    top: 12,
+                    top: 10,
                     left: 14,
                     right: 14,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
+                    flexWrap: 'wrap',
+                    gap: 6,
                     zIndex: 2,
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                     {activeDiff && (
                       <span
                         style={{
-                          background: activeDiff.bg,
+                          background: 'var(--color-bg-card)',
                           border: `1px solid ${activeDiff.border}`,
                           color: activeDiff.color,
                           fontSize: '0.7rem',
                           fontWeight: 800,
                           padding: '3px 8px',
-                          borderRadius: 12,
+                          borderRadius: 4,
                           display: 'inline-flex',
                           alignItems: 'center',
                           gap: 5,
                         }}
                       >
-                        <span style={{ width: 6, height: 6, borderRadius: '50%', background: activeDiff.color, boxShadow: `0 0 6px ${activeDiff.color}` }} />
-                        Cấp {activeTrail.difficultyLevel}/5 • {activeDiff.label}
+                        <span style={{ width: 6, height: 6, borderRadius: '50%', background: activeDiff.color }} />
+                        Cấp {activeTrail.difficultyLevel}/5 · {activeDiff.label}
                       </span>
                     )}
 
                     <span
                       style={{
-                        background: 'rgba(5, 15, 25, 0.75)',
-                        border: '1px solid rgba(255, 255, 255, 0.18)',
+                        background: 'var(--color-bg-glass)',
+                        border: '1px solid var(--color-border-strong)',
                         color: 'var(--color-sky)',
                         fontSize: '0.68rem',
                         fontWeight: 700,
                         padding: '3px 8px',
-                        borderRadius: 12,
+                        borderRadius: 4,
                         backdropFilter: 'blur(8px)',
                       }}
                     >
@@ -519,92 +542,235 @@ ${trackPointsXml}
 
                   <span
                     style={{
-                      background: 'rgba(245, 158, 11, 0.2)',
-                      border: '1px solid rgba(245, 158, 11, 0.45)',
-                      color: '#fbbf24',
+                      background: 'var(--color-bg-glass)',
+                      border: '1px solid color-mix(in srgb, var(--color-sun) 45%, transparent)',
+                      color: 'var(--color-sun)',
                       fontSize: '0.72rem',
                       fontWeight: 800,
                       padding: '3px 9px',
-                      borderRadius: 12,
+                      borderRadius: 4,
                       backdropFilter: 'blur(8px)',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
                     }}
                   >
-                    ★ {activeTrail.rating || 5.0} ({activeTrail.reviewCount || 12} đánh giá)
+                    <IconStar size={12} color="var(--color-sun)" fill="var(--color-sun)" />
+                    {activeTrail.reviewCount && activeTrail.reviewCount > 0 && activeTrail.rating
+                      ? `${Number(activeTrail.rating).toFixed(1)} (${activeTrail.reviewCount})`
+                      : 'Chưa có đánh giá'}
                   </span>
                 </div>
 
-                {/* Trail Title & Administrative Location at Bottom of Cover */}
+                {/* Trail Title & Administrative Location */}
                 <div
+                  key={`title-${activeTrail.id}`}
+                  className="hero-peak-drop-in"
                   style={{
                     position: 'absolute',
                     bottom: 8,
-                    left: 16,
-                    right: 16,
+                    left: 14,
+                    right: 14,
                     zIndex: 2,
                   }}
                 >
                   <h3
                     style={{
-                      fontSize: '1.28rem',
+                      fontSize: '1.16rem',
                       fontWeight: 900,
-                      color: 'var(--color-text-main)',
+                      color: 'var(--color-on-media)',
                       margin: 0,
-                      lineHeight: 1.25,
-                      textShadow: '0 2px 8px rgba(0,0,0,0.8)',
+                      lineHeight: 1.24,
+                      textShadow: '0 2px 10px var(--overlay-bg)',
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
                     }}
                   >
                     {activeTrail.name}
                   </h3>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 3, fontSize: '0.76rem', color: 'var(--color-text-muted)' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 5,
+                      marginTop: 3,
+                      fontSize: '0.75rem',
+                      color: 'color-mix(in srgb, var(--color-on-media) 90%, transparent)',
+                      textShadow: '0 1px 6px var(--overlay-bg)',
+                      minWidth: 0,
+                    }}
+                  >
                     <MapPin size={13} color="var(--color-primary)" />
-                    <span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {activeTrail.hamlet ? `${activeTrail.hamlet}, ` : ''}{activeTrail.district}, {activeTrail.province}
                     </span>
                   </div>
                 </div>
               </div>
 
-              {/* Active Trail Dossier Body */}
-              <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 10, flex: 1, overflowY: 'auto' }}>
-                {/* 4 Telemetry Metrics Grid */}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
-                  <div style={{ background: 'var(--color-bg-main)', borderRadius: 12, padding: '8px 12px', border: '1px solid var(--color-border)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.66rem', color: 'var(--color-earth)', fontWeight: 700, marginBottom: 2 }}>
+              {/* Active Trail Dossier Body (Zero Overflow — Everything Visible in One Frame) */}
+              <div
+                style={{
+                  padding: '12px 14px 14px 14px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 10,
+                  flex: 1,
+                  minWidth: 0,
+                }}
+              >
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                    gap: 8,
+                    fontVariantNumeric: 'tabular-nums',
+                  }}
+                >
+                  <div
+                    style={{
+                      background: 'var(--color-bg-main)',
+                      borderRadius: 4,
+                      padding: '9px 11px',
+                      border: '1px solid var(--color-border)',
+                      minWidth: 0,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 5,
+                        fontSize: '0.66rem',
+                        color: 'var(--color-earth)',
+                        fontWeight: 700,
+                        marginBottom: 3,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
                       <Mountain size={13} color="var(--color-earth)" />
                       <span>ĐỈNH CAO NHẤT</span>
                     </div>
-                    <div style={{ fontSize: '1rem', fontWeight: 900, color: 'var(--color-text-main)' }}>
-                      {activeTrail.maxAltitudeM.toLocaleString('vi-VN')} <span style={{ fontSize: '0.72rem', color: 'var(--color-earth)', fontWeight: 700 }}>m</span>
+                    <div style={{ fontSize: '1.02rem', fontWeight: 900, color: 'var(--color-text-main)' }}>
+                      {activeTrail.maxAltitudeM.toLocaleString('vi-VN')}{' '}
+                      <span style={{ fontSize: '0.72rem', color: 'var(--color-earth)', fontWeight: 700 }}>m</span>
                     </div>
                   </div>
 
-                  <div style={{ background: 'var(--color-bg-main)', borderRadius: 12, padding: '8px 12px', border: '1px solid var(--color-border)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.66rem', color: 'var(--color-sky)', fontWeight: 700, marginBottom: 2 }}>
+                  <div
+                    style={{
+                      background: 'var(--color-bg-main)',
+                      borderRadius: 4,
+                      padding: '9px 11px',
+                      border: '1px solid var(--color-border)',
+                      minWidth: 0,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 5,
+                        fontSize: '0.66rem',
+                        color: 'var(--color-sky)',
+                        fontWeight: 700,
+                        marginBottom: 3,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
                       <Footprints size={13} color="var(--color-sky)" />
                       <span>CHIỀU DÀI CUNG</span>
                     </div>
-                    <div style={{ fontSize: '1rem', fontWeight: 900, color: 'var(--color-text-main)' }}>
-                      {activeTrail.distanceKm} <span style={{ fontSize: '0.72rem', color: 'var(--color-sky)', fontWeight: 700 }}>km</span>
+                    <div style={{ fontSize: '1.02rem', fontWeight: 900, color: 'var(--color-text-main)' }}>
+                      {activeTrail.distanceKm}{' '}
+                      <span style={{ fontSize: '0.72rem', color: 'var(--color-sky)', fontWeight: 700 }}>km</span>
                     </div>
                   </div>
 
-                  <div style={{ background: 'var(--color-bg-main)', borderRadius: 12, padding: '8px 12px', border: '1px solid var(--color-border)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.66rem', color: 'var(--color-primary)', fontWeight: 700, marginBottom: 2 }}>
+                  <div
+                    style={{
+                      background: 'var(--color-bg-main)',
+                      borderRadius: 4,
+                      padding: '9px 11px',
+                      border: '1px solid var(--color-border)',
+                      minWidth: 0,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 5,
+                        fontSize: '0.66rem',
+                        color: 'var(--color-primary)',
+                        fontWeight: 700,
+                        marginBottom: 3,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
                       <TrendingUp size={13} color="var(--color-primary)" />
                       <span>ĐỘ DỐC TÍCH LŨY</span>
                     </div>
-                    <div style={{ fontSize: '1rem', fontWeight: 900, color: 'var(--color-text-main)' }}>
-                      +{activeTrail.elevationGainM.toLocaleString('vi-VN')} <span style={{ fontSize: '0.72rem', color: 'var(--color-primary)', fontWeight: 700 }}>m</span>
+                    <div style={{ fontSize: '1.02rem', fontWeight: 900, color: 'var(--color-text-main)' }}>
+                      +{activeTrail.elevationGainM.toLocaleString('vi-VN')}{' '}
+                      <span style={{ fontSize: '0.72rem', color: 'var(--color-primary)', fontWeight: 700 }}>m</span>
                     </div>
                   </div>
 
-                  <div style={{ background: 'var(--color-bg-main)', borderRadius: 12, padding: '8px 12px', border: '1px solid var(--color-border)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.66rem', color: '#f59e0b', fontWeight: 700, marginBottom: 2 }}>
-                      <Clock size={13} color="#f59e0b" />
+                  <div
+                    style={{
+                      background: 'var(--color-bg-main)',
+                      borderRadius: 4,
+                      padding: '9px 11px',
+                      border: '1px solid var(--color-border)',
+                      minWidth: 0,
+                    }}
+                    title={`${activeTrail.durationDays > 1 ? `${activeTrail.durationDays}N${activeTrail.durationDays - 1}Đ` : 'Trong ngày'} · ${activeTrail.durationHoursNote || '8-10h'}`}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 5,
+                        fontSize: '0.66rem',
+                        color: 'var(--color-sun)',
+                        fontWeight: 700,
+                        marginBottom: 3,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      <Clock size={13} color="var(--color-sun)" />
                       <span>THỜI GIAN LÝ TƯỞNG</span>
                     </div>
-                    <div style={{ fontSize: '0.88rem', fontWeight: 900, color: 'var(--color-text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {activeTrail.durationDays > 1 ? `${activeTrail.durationDays}N${activeTrail.durationDays - 1}Đ` : 'Trong ngày'} • {activeTrail.durationHoursNote || '8-10h'}
+                    <div
+                      style={{
+                        fontSize: '0.92rem',
+                        fontWeight: 900,
+                        color: 'var(--color-text-main)',
+                        lineHeight: 1.2,
+                      }}
+                    >
+                      {activeTrail.durationDays > 1
+                        ? `${activeTrail.durationDays}N${activeTrail.durationDays - 1}Đ`
+                        : 'Trong ngày'}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: '0.71rem',
+                        fontWeight: 500,
+                        color: 'var(--color-text-muted)',
+                        lineHeight: 1.35,
+                        marginTop: 2,
+                        display: '-webkit-box',
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: 'vertical',
+                        overflow: 'hidden',
+                        wordBreak: 'break-word',
+                      }}
+                    >
+                      {activeTrail.durationHoursNote || '8–10 giờ trekking'}
                     </div>
                   </div>
                 </div>
@@ -613,55 +779,86 @@ ${trackPointsXml}
                 <div
                   style={{
                     background: 'var(--color-bg-main)',
-                    borderRadius: 12,
-                    padding: '8px 12px',
+                    borderRadius: 4,
+                    padding: '8px 11px',
                     border: '1px solid var(--color-border)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
                     gap: 10,
+                    minWidth: 0,
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                    <div style={{ width: 28, height: 28, borderRadius: 8, background: 'rgba(16, 185, 129, 0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
+                    <div
+                      style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 4,
+                        background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flexShrink: 0,
+                      }}
+                    >
                       <ShieldCheck size={15} color="var(--color-primary)" />
                     </div>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>
-                        Trạm Kiểm Lâm & Giấy Phép
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div
+                        style={{
+                          fontSize: '0.65rem',
+                          color: 'var(--color-text-dim)',
+                          fontWeight: 700,
+                          textTransform: 'uppercase',
+                        }}
+                      >
+                        Trạm Kiểm Lâm &amp; Giấy Phép
                       </div>
-                      <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--color-text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {activeTrail.rescueContact?.rangerContact || 'Ban Quản Lý Rừng / VQG Hoàng Liên'}
+                      <div
+                        style={{
+                          fontSize: '0.76rem',
+                          fontWeight: 800,
+                          color: 'var(--color-text-main)',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {activeTrail.rescueContact?.rangerContact || `Ban Quản Lý Rừng / Kiểm Lâm ${activeTrail.province}`}
                       </div>
                     </div>
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
                     <a
-                      href={`tel:${activeTrail.rescueContact?.phone ? activeTrail.rescueContact.phone.replace(/\D/g, '') : '114'}`}
+                      href={`tel:${extractPrimaryDialNumber(activeTrail.rescueContact?.phone)}`}
                       title="Hotline cứu hộ trạm"
+                      className="interactive-click"
                       style={{
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: 4,
-                        background: 'rgba(239, 68, 68, 0.12)',
-                        border: '1px solid rgba(239, 68, 68, 0.3)',
-                        color: 'var(--color-error)',
+                        background: 'color-mix(in srgb, var(--color-error) 12%, transparent)',
+                        border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)',
+                        color: 'var(--color-error-text, var(--color-error))',
                         fontSize: '0.72rem',
                         fontWeight: 800,
                         padding: '4px 8px',
-                        borderRadius: 8,
+                        borderRadius: 4,
                         textDecoration: 'none',
+                        whiteSpace: 'nowrap',
+                        fontVariantNumeric: 'tabular-nums',
                       }}
                     >
                       <PhoneCall size={11} color="var(--color-error)" />
-                      {activeTrail.rescueContact?.phone || '114 (SOS)'}
+                      {activeTrail.rescueContact?.phone || '112 / 114'}
                     </a>
                   </div>
                 </div>
 
-                {/* Action Buttons: View Details & Download GPX */}
-                <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
+                {/* Action Buttons */}
+                <div style={{ display: 'flex', gap: 8 }}>
                   <button
                     type="button"
                     onClick={() => onSelectTrail(activeTrail)}
@@ -671,7 +868,7 @@ ${trackPointsXml}
                       padding: '9px 14px',
                       fontSize: '0.82rem',
                       fontWeight: 800,
-                      borderRadius: 12,
+                      borderRadius: 4,
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
@@ -684,13 +881,14 @@ ${trackPointsXml}
 
                   <button
                     type="button"
+                    className="interactive-click"
                     onClick={() => handleDownloadGpx(activeTrail)}
                     style={{
                       flex: '0 0 auto',
                       background: 'var(--color-bg-main)',
                       color: 'var(--color-text-main)',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: 12,
+                      border: '1px solid var(--color-border-strong)',
+                      borderRadius: 4,
                       padding: '9px 14px',
                       fontSize: '0.8rem',
                       fontWeight: 700,
@@ -698,7 +896,7 @@ ${trackPointsXml}
                       display: 'inline-flex',
                       alignItems: 'center',
                       gap: 6,
-                      transition: 'all 0.15s ease',
+                      whiteSpace: 'nowrap',
                     }}
                     title="Tải tệp GPX Tracklog thực địa để định vị ngoại tuyến"
                   >
@@ -707,10 +905,25 @@ ${trackPointsXml}
                   </button>
                 </div>
 
-                {/* Quick Trail Selector Rail (Interactive 2-Way Sync) */}
-                <div style={{ marginTop: 4, borderTop: '1px solid var(--color-border)', paddingTop: 8 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-                    <span style={{ fontSize: '0.68rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                {/* Quick Trail Selector Rail (Fully Visible at Bottom of Frame) */}
+                <div
+                  style={{
+                    marginTop: 'auto',
+                    borderTop: '1px solid var(--color-border)',
+                    paddingTop: 10,
+                    minWidth: 0,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 7, gap: 8 }}>
+                    <span
+                      style={{
+                        fontSize: '0.68rem',
+                        fontWeight: 800,
+                        color: 'var(--color-text-dim)',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.04em',
+                      }}
+                    >
                       Cung Đường Cùng Vùng ({filteredTrails.length})
                     </span>
                     <span style={{ fontSize: '0.64rem', color: 'var(--color-primary)', fontWeight: 700 }}>
@@ -725,37 +938,47 @@ ${trackPointsXml}
                       overflowX: 'auto',
                       paddingBottom: 4,
                       scrollbarWidth: 'thin',
+                      minWidth: 0,
                     }}
                   >
                     {filteredTrails.map((t) => {
                       const isCur = t.id === activeTrail.id;
                       const tDiff = getDifficultyBadge(t.difficultyLevel);
                       return (
-                        <div
+                        <button
                           key={t.id}
-                          onClick={() => onSelectTrail(t)}
+                          type="button"
+                          className="interactive-click"
+                          onClick={() => setFocusedTrail(t)}
+                          onDoubleClick={() => onSelectTrail(t)}
+                          title="Nhấp để bản đồ bay đến, nhấp đúp để mở hồ sơ chi tiết"
                           style={{
-                            flex: '0 0 160px',
-                            background: isCur ? 'rgba(16, 185, 129, 0.12)' : 'var(--color-bg-main)',
-                            border: isCur ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)',
-                            borderRadius: 10,
-                            padding: '6px 8px',
+                            flex: '0 0 166px',
+                            background: isCur ? 'color-mix(in srgb, var(--color-primary) 12%, transparent)' : 'var(--color-bg-main)',
+                            border: isCur ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+                            borderRadius: 4,
+                            padding: '7px 8px',
                             cursor: 'pointer',
                             display: 'flex',
                             alignItems: 'center',
                             gap: 8,
-                            transition: 'all 0.15s ease',
-                            boxShadow: isCur ? '0 0 12px rgba(16, 185, 129, 0.2)' : 'none',
+                            textAlign: 'left',
                           }}
                         >
                           <img
-                            src={t.coverImage || 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=120&q=80'}
+                            src={t.coverImage || VERIFIED_TRAIL_FALLBACK}
                             alt={t.name}
-                            style={{ width: 34, height: 34, borderRadius: 7, objectFit: 'cover', flexShrink: 0 }}
+                            loading="lazy"
+                            onError={(e) => {
+                              const img = e.currentTarget;
+                              if (img.src !== VERIFIED_TRAIL_FALLBACK) {
+                                img.src = VERIFIED_TRAIL_FALLBACK;
+                              }
+                            }}
+                            style={{ width: 34, height: 34, borderRadius: 4, objectFit: 'cover', flexShrink: 0 }}
                           />
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div
-                              title={t.name}
                               style={{
                                 fontSize: '0.74rem',
                                 fontWeight: 800,
@@ -767,14 +990,24 @@ ${trackPointsXml}
                             >
                               {t.name}
                             </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.64rem', color: 'var(--color-text-dim)', marginTop: 1 }}>
+                            <div
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 4,
+                                fontSize: '0.64rem',
+                                color: 'var(--color-text-dim)',
+                                marginTop: 2,
+                                fontVariantNumeric: 'tabular-nums',
+                              }}
+                            >
                               <span style={{ width: 5, height: 5, borderRadius: '50%', background: tDiff.color }} />
                               <span>{t.maxAltitudeM}m</span>
-                              <span>•</span>
+                              <span>·</span>
                               <span>{t.distanceKm}km</span>
                             </div>
                           </div>
-                        </div>
+                        </button>
                       );
                     })}
                   </div>
@@ -798,9 +1031,9 @@ ${trackPointsXml}
           flexWrap: 'wrap',
           gap: 12,
           marginTop: 14,
-          padding: '12px 20px',
+          padding: '12px 18px',
           background: 'var(--color-bg-card)',
-          borderRadius: 18,
+          borderRadius: 6,
           border: '1px solid var(--color-border)',
           fontSize: '0.78rem',
           color: 'var(--color-text-dim)',
@@ -812,9 +1045,9 @@ ${trackPointsXml}
             style={{
               width: 28,
               height: 28,
-              borderRadius: '50%',
-              background: 'rgba(250, 204, 21, 0.12)',
-              border: '1px solid rgba(250, 204, 21, 0.3)',
+              borderRadius: 4,
+              background: 'color-mix(in srgb, var(--color-sun) 14%, transparent)',
+              border: '1px solid color-mix(in srgb, var(--color-sun) 35%, transparent)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -824,17 +1057,17 @@ ${trackPointsXml}
             <IconLightbulb size={15} color="var(--color-sun)" />
           </div>
           <span>
-            <strong>Mẹo tương tác:</strong> Nhấp vào bất kỳ điểm nào trên bản đồ hoặc danh sách bên cạnh để xem trọn vẹn thông số thực địa, trạm kiểm lâm và tải file GPX.
+            <strong>Mẹo tương tác:</strong> Nhấp vào bất kỳ điểm nào trên bản đồ để mở popup thời tiết thực địa, xem hồ sơ kiểm lâm và tải file GPX.
           </span>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
           <span>
             Đang hiển thị: <strong style={{ color: 'var(--color-primary)' }}>{filteredTrails.length} cung đường</strong>
           </span>
           <span style={{ color: 'var(--color-border)' }}>|</span>
           <span>
-            Cao độ đỉnh: <strong style={{ color: 'var(--color-sky)' }}>Fansipan (3,143m)</strong>
+            Cao độ đỉnh: <strong style={{ color: 'var(--color-sky)' }}>Fansipan (3.143m)</strong>
           </span>
           <span style={{ color: 'var(--color-border)' }}>|</span>
           <span>
@@ -845,3 +1078,5 @@ ${trackPointsXml}
     </section>
   );
 };
+
+export const InteractiveMapShowcase = React.memo(InteractiveMapShowcaseBase);

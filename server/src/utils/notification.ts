@@ -1,7 +1,7 @@
-import { Types } from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import { NotificationModel, NotificationType, NotificationCategory } from '../models/Notification.js';
 import { UserModel } from '../models/User.js';
-import { emitToUser, broadcastEvent } from '../config/socket.js';
+import { emitToUser } from '../config/socket.js';
 
 export interface SendNotificationParams {
   recipientId: string | Types.ObjectId;
@@ -20,13 +20,14 @@ export interface SendNotificationParams {
 
 export const sendNotification = async (params: SendNotificationParams) => {
   try {
+    if (mongoose.connection.readyState !== 1) return null;
     const recipientStr = String(params.recipientId);
 
     const doc: any = await NotificationModel.create({
       recipient: recipientStr,
       sender: params.sender || {
         id: 'system',
-        name: 'Ban Quản Trị TrekMap',
+        name: 'Ban Quản Trị LOST',
         avatarUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg',
       },
       type: params.type,
@@ -40,32 +41,51 @@ export const sendNotification = async (params: SendNotificationParams) => {
 
     const payload = doc && typeof doc.toObject === 'function' ? doc.toObject() : doc;
 
-    // 1. Emit to target user's private socket room
+    // Security: Emit strictly to the intended recipient's private socket room (prevents recipient PII leak & duplicate alerts)
     emitToUser(recipientStr, 'newNotification', payload);
-
-    // 2. If safety emergency, broadcast to all connected trekkers
-    if (params.category === 'safety') {
-      broadcastEvent('newSafetyAlert', payload);
-    }
 
     return doc;
   } catch (err) {
-    console.error('❌ [Send Notification Error]:', err);
+    console.error('[Send Notification Error]:', err);
     return null;
   }
 };
 
-export const notifyAdmins = async (params: Omit<SendNotificationParams, 'recipientId' | 'category'>) => {
+export const notifyAdmins = async (
+  params: Omit<SendNotificationParams, 'recipientId' | 'category'> & {
+    category?: NotificationCategory;
+    includeModerators?: boolean;
+  }
+) => {
   try {
-    const admins = await UserModel.find({ role: 'admin' }).select('_id email').lean().exec();
-    for (const admin of admins) {
-      await sendNotification({
-        ...params,
-        recipientId: admin._id.toString(),
-        category: 'moderation',
-      });
-    }
+    if (mongoose.connection.readyState !== 1) return;
+    const roles: Array<'admin' | 'moderator'> = params.includeModerators ? ['admin', 'moderator'] : ['admin'];
+    const admins = await UserModel.find({
+      role: { $in: roles },
+      isBanned: { $ne: true },
+    })
+      .select('_id')
+      .lean()
+      .exec();
+
+    const targetCategory: NotificationCategory =
+      params.category || (params.type === 'safety_alert' ? 'safety' : 'moderation');
+
+    await Promise.all(
+      admins.map((admin) =>
+        sendNotification({
+          sender: params.sender,
+          type: params.type,
+          title: params.title,
+          message: params.message,
+          link: params.link,
+          relatedId: params.relatedId,
+          recipientId: admin._id.toString(),
+          category: targetCategory,
+        })
+      )
+    );
   } catch (err) {
-    console.error('❌ [Notify Admins Error]:', err);
+    console.error('[Notify Admins Error]:', err);
   }
 };

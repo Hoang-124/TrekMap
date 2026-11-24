@@ -1,30 +1,49 @@
 import { Request, Response } from 'express';
+import mongoose from 'mongoose';
 import { CommentModel } from '../models/Comment.js';
 import { ThreadModel } from '../models/Thread.js';
 import { UserModel } from '../models/User.js';
-import { verifyToken } from '../utils/auth.js';
-import { getUserKey, getUserKeys } from '../middleware/auth.middleware.js';
+import { AuthRequest, getUserKeys } from '../middleware/auth.middleware.js';
 import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
-import { awardReputationPoints, deductReputationPoints, REPUTATION_POINTS, PENALTY_POINTS } from '../utils/reputation.js';
-import { NotificationModel } from '../models/Notification.js';
-import { emitToUser, broadcastEvent } from '../config/socket.js';
+import {
+  awardReputationPoints,
+  deductReputationPoints,
+  REPUTATION_POINTS,
+  PENALTY_POINTS,
+} from '../utils/reputation.js';
+import { sendNotification } from '../utils/notification.js';
+import { broadcastEvent } from '../config/socket.js';
+import { sanitizeInput } from '../utils/validation.js';
+import { isValidObjectId } from '../utils/resolveTrail.js';
+import { recordAuditLog } from '../utils/audit.js';
+
+const VALID_REACTIONS = new Set(['like', 'love', 'haha', 'wow', 'buon', 'huhu', 'sad', 'angry', 'dislike']);
+const DEFAULT_AVATAR =
+  'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
 
 export const getComments = async (req: Request, res: Response) => {
   const { threadId } = req.params;
   try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.json({ success: true, totalCount: 0, data: [] });
+    }
     const userKeys = getUserKeys(req);
 
-    const allComments = await CommentModel.find({ threadId }).populate('userId').sort({ createdAt: 1 });
-    
+    const allComments = await CommentModel.find({ threadId: String(threadId) })
+      .populate('userId', 'fullName username avatarUrl')
+      .sort({ createdAt: 1 })
+      .limit(500)
+      .lean();
+
     const commentMap = new Map<string, any>();
     const rootComments: any[] = [];
 
-    allComments.forEach((c) => {
+    allComments.forEach((c: any) => {
       let currentUserReaction: string | null = null;
       if (c.userReactionsMap) {
-        const isMap = typeof (c.userReactionsMap as any).get === 'function';
+        const isMap = typeof c.userReactionsMap.get === 'function';
         for (const key of userKeys) {
-          const r = isMap ? (c.userReactionsMap as any).get(key) : (c.userReactionsMap as any)[key];
+          const r = isMap ? c.userReactionsMap.get(key) : c.userReactionsMap[key];
           if (r) {
             currentUserReaction = r;
             break;
@@ -32,27 +51,37 @@ export const getComments = async (req: Request, res: Response) => {
         }
       }
 
-      const userObj = c.userId as any;
-      const liveAvatar = (userObj && userObj.avatarUrl)
-        ? userObj.avatarUrl
-        : (c.authorAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(c.authorName)}&background=0ed7b5&color=041217&bold=true`);
-      const liveName = (userObj && userObj.fullName) ? userObj.fullName : c.authorName;
+      const userObj = c.userId && typeof c.userId === 'object' ? c.userId : null;
+      const liveName = userObj?.fullName || c.authorName;
+      const liveAvatar = userObj?.avatarUrl || c.authorAvatar || DEFAULT_AVATAR;
 
       const formatted = {
         id: c._id.toString(),
         parentId: c.parentId || null,
+        userId: userObj?._id?.toString() || (c.userId ? String(c.userId) : undefined),
         authorName: liveName,
         authorAvatar: liveAvatar,
         content: c.content,
-        reactions: c.reactions || { like: 0, love: 0, haha: 0, wow: 0, buon: 0, huhu: 0, sad: 0, angry: 0, dislike: 0 },
+        reactions: c.reactions || {
+          like: 0,
+          love: 0,
+          haha: 0,
+          wow: 0,
+          buon: 0,
+          huhu: 0,
+          sad: 0,
+          angry: 0,
+          dislike: 0,
+        },
         userReaction: currentUserReaction || null,
         replies: [],
-        createdAt: new Date(c.createdAt).toLocaleDateString('vi-VN') + ' ' + new Date(c.createdAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
+        // Always emit clean ISO-8601 timestamps for timezone-safe client formatting
+        createdAt: c.createdAt ? new Date(c.createdAt).toISOString() : new Date().toISOString(),
       };
       commentMap.set(c._id.toString(), formatted);
     });
 
-    allComments.forEach((c) => {
+    allComments.forEach((c: any) => {
       const current = commentMap.get(c._id.toString());
       if (c.parentId && commentMap.has(c.parentId)) {
         commentMap.get(c.parentId).replies.push(current);
@@ -67,38 +96,37 @@ export const getComments = async (req: Request, res: Response) => {
       data: rootComments,
     });
   } catch (err) {
+    console.error('[Get Comments Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi khi tải bình luận.' });
   }
 };
 
-export const createComment = async (req: Request, res: Response) => {
-  const { threadId } = req.params;
-  const { content, parentId } = req.body;
+export const createComment = async (req: AuthRequest, res: Response) => {
+  const targetThreadId = String(req.params.threadId || '').trim();
+  const { content, parentId } = req.body || {};
+  const currentUserId = req.user?.userId;
 
-  if (!content || !content.trim()) {
+  if (!currentUserId || !isValidObjectId(currentUserId)) {
+    return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để gửi bình luận.' });
+  }
+
+  if (typeof content !== 'string' || !content.trim()) {
     return res.status(400).json({ success: false, message: 'Vui lòng nhập nội dung bình luận.' });
   }
 
-  const cleanText = content.trim();
+  const safeParentId = typeof parentId === 'string' && parentId.trim() ? parentId.trim() : null;
+  const cleanText = sanitizeInput(content).slice(0, 2000);
+  if (!cleanText.trim()) {
+    return res.status(400).json({ success: false, message: 'Nội dung bình luận không hợp lệ.' });
+  }
 
-  // Automated profanity & toxic content filter check
-  const isToxic = containsProfanity(cleanText);
-  if (isToxic) {
+  if (containsProfanity(cleanText)) {
     const matchedWord = getProfanityMatch(cleanText);
-    let penaltyInfo = null;
-
-    const authHeader = req.headers['authorization'];
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7);
-      const decoded = verifyToken(token);
-      if (decoded?.userId) {
-        penaltyInfo = await deductReputationPoints(
-          decoded.userId,
-          PENALTY_POINTS.TOXIC_COMMENT,
-          `Bình luận chứa từ ngữ thô tục ("${matchedWord}")`
-        );
-      }
-    }
+    const penaltyInfo = await deductReputationPoints(
+      currentUserId,
+      PENALTY_POINTS.TOXIC_COMMENT,
+      `Bình luận chứa từ ngữ vi phạm ("${matchedWord}")`
+    );
 
     return res.status(400).json({
       success: false,
@@ -107,252 +135,337 @@ export const createComment = async (req: Request, res: Response) => {
     });
   }
 
-  const duplicateCheck = await CommentModel.findOne({
-    threadId,
-    parentId: parentId || null,
-    content: cleanText,
-    createdAt: { $gte: new Date(Date.now() - 4000) },
-  });
-  if (duplicateCheck) {
-    const totalCount = await CommentModel.countDocuments({ threadId });
-    return res.status(200).json({
-      success: true,
-      message: 'Bình luận đã được ghi nhận.',
-      repliesCount: totalCount,
-      data: {
-        id: duplicateCheck._id.toString(),
-        parentId: duplicateCheck.parentId || null,
-        authorName: duplicateCheck.authorName,
-        authorAvatar: duplicateCheck.authorAvatar,
-        content: cleanText,
-        reactions: duplicateCheck.reactions || { like: 0, love: 0, haha: 0, wow: 0, buon: 0, huhu: 0, sad: 0, angry: 0, dislike: 0 },
-        replies: [],
-        createdAt: 'Vừa xong',
-      },
-    });
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
   }
-
-  let authorName = 'Trekker Cộng Đồng';
-  let authorAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(authorName)}&background=0ed7b5&color=041217&bold=true`;
-  let userIdObj: any = undefined;
-  let reputationReward = null;
-
-  const authHeader = req.headers['authorization'];
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.substring(7);
-    const decoded = verifyToken(token);
-    if (decoded?.userId) {
-      try {
-        const user = await UserModel.findById(decoded.userId);
-        if (user) {
-          userIdObj = user._id;
-          reputationReward = await awardReputationPoints(
-            user._id.toString(),
-            REPUTATION_POINTS.CREATE_COMMENT,
-            'Bình luận bài thảo luận'
-          );
-          authorName = user.fullName;
-          if (user.avatarUrl) {
-            authorAvatar = user.avatarUrl;
-          } else {
-            authorAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(user.fullName)}&background=0ed7b5&color=041217&bold=true`;
-          }
-        }
-      } catch (err) {
-        console.error('[Comment User Lookup Error]:', err);
-      }
-    }
-  }
-
-  // If not logged in, allow authorName/authorAvatar from request body if passed
-  if (!userIdObj && req.body.authorName && typeof req.body.authorName === 'string' && req.body.authorName.trim()) {
-    authorName = req.body.authorName.trim();
-    if (req.body.authorAvatar && typeof req.body.authorAvatar === 'string') {
-      authorAvatar = req.body.authorAvatar;
-    } else {
-      authorAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(authorName)}&background=0ed7b5&color=041217&bold=true`;
-    }
-  }
-
-  const targetThreadId = Array.isArray(threadId) ? threadId[0] : String(threadId);
 
   try {
-    const newCommentDoc: any = await CommentModel.create({
-      threadId: targetThreadId,
-      parentId: parentId || null,
-      authorName,
-      authorAvatar,
-      userId: userIdObj,
-      content: cleanText,
-      reactions: { like: 0, love: 0, haha: 0, wow: 0, buon: 0, huhu: 0, sad: 0, angry: 0, dislike: 0 },
-      userReactionsMap: {},
-    });
-
-    const totalCount = await CommentModel.countDocuments({ threadId: targetThreadId });
-    await ThreadModel.findOneAndUpdate({ id: targetThreadId }, { repliesCount: totalCount });
-
-    // Notify parent comment author (if this is a sub-reply) and/or thread author
-    try {
-      const thread = await ThreadModel.findOne({ id: targetThreadId });
-      let postAuthorId = thread?.userId ? String(thread.userId) : null;
-      if (!postAuthorId && thread?.authorName) {
-        const authorUser = await UserModel.findOne({
-          $or: [{ fullName: thread.authorName }, { username: thread.authorName }],
-        });
-        if (authorUser) postAuthorId = String(authorUser._id);
-      }
-
-      let parentAuthorId: string | null = null;
-      if (parentId) {
-        const parentComment = await CommentModel.findById(parentId);
-        if (parentComment) {
-          parentAuthorId = parentComment.userId ? String(parentComment.userId) : null;
-          if (!parentAuthorId && parentComment.authorName) {
-            const parentAuthorUser = await UserModel.findOne({
-              $or: [{ fullName: parentComment.authorName }, { username: parentComment.authorName }],
-            });
-            if (parentAuthorUser) parentAuthorId = String(parentAuthorUser._id);
-          }
-
-          // Send notification to the parent comment author
-          if (parentAuthorId && String(parentAuthorId) !== String(userIdObj)) {
-            const notif = new NotificationModel({
-              recipient: parentAuthorId as any,
-              sender: userIdObj as any,
-              type: 'comment',
-              title: 'Phản hồi mới về bình luận của bạn',
-              message: `${authorName} đã trả lời bình luận của bạn: "${cleanText.length > 50 ? cleanText.substring(0, 50) + '...' : cleanText}"`,
-              link: `/forum?threadId=${targetThreadId}`,
-              relatedId: targetThreadId as any,
-              isRead: false,
-            });
-            await notif.save();
-            emitToUser(parentAuthorId, 'newNotification', notif);
-          }
-        }
-      }
-
-      // Send notification to thread author (if different from sender and parent author)
-      if (
-        postAuthorId &&
-        String(postAuthorId) !== String(userIdObj) &&
-        String(postAuthorId) !== String(parentAuthorId)
-      ) {
-        const notif = new NotificationModel({
-          recipient: postAuthorId as any,
-          sender: userIdObj as any,
-          type: 'comment',
-          title: 'Bình luận mới về bài viết của bạn',
-          message: `${authorName} đã bình luận: "${cleanText.length > 50 ? cleanText.substring(0, 50) + '...' : cleanText}"`,
-          link: `/forum?threadId=${targetThreadId}`,
-          relatedId: targetThreadId as any,
-          isRead: false,
-        });
-        await notif.save();
-        emitToUser(postAuthorId, 'newNotification', notif);
-      }
-    } catch (notifErr) {
-      console.warn('⚠️ [Comment Notification Warning]:', notifErr);
+    const thread = await ThreadModel.findOne({ id: targetThreadId });
+    if (!thread) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết để bình luận.' });
+    }
+    if (thread.isLocked) {
+      return res.status(403).json({
+        success: false,
+        message: 'Bài viết này đã bị Ban Quản Trị khóa tính năng bình luận.',
+      });
     }
 
-    // Broadcast real-time newComment event to all connected clients
+    // Validate parentId belongs to this exact thread (prevents cross-thread reply injection)
+    let parentAuthorId: string | null = null;
+    if (safeParentId) {
+      if (!isValidObjectId(safeParentId)) {
+        return res.status(400).json({ success: false, message: 'Mã bình luận cha không hợp lệ.' });
+      }
+      const parentComment = await CommentModel.findOne({ _id: safeParentId, threadId: targetThreadId })
+        .select('userId')
+        .lean();
+      if (!parentComment) {
+        return res.status(400).json({ success: false, message: 'Bình luận cha không thuộc bài viết này.' });
+      }
+      if (parentComment.userId) {
+        parentAuthorId = String(parentComment.userId);
+      }
+    }
+
+    const userObjId = new mongoose.Types.ObjectId(currentUserId);
+
+    const duplicateCheck = await CommentModel.findOne({
+      threadId: targetThreadId,
+      parentId: safeParentId,
+      userId: userObjId,
+      content: cleanText,
+      createdAt: { $gte: new Date(Date.now() - 4000) },
+    });
+    if (duplicateCheck) {
+      const totalCount = await CommentModel.countDocuments({ threadId: targetThreadId });
+      return res.status(200).json({
+        success: true,
+        message: 'Bình luận đã được ghi nhận.',
+        repliesCount: totalCount,
+        data: {
+          id: duplicateCheck._id.toString(),
+          parentId: duplicateCheck.parentId || null,
+          userId: currentUserId,
+          authorName: duplicateCheck.authorName,
+          authorAvatar: duplicateCheck.authorAvatar,
+          content: cleanText,
+          reactions: duplicateCheck.reactions,
+          replies: [],
+          createdAt: duplicateCheck.createdAt.toISOString(),
+        },
+      });
+    }
+
+    const user = await UserModel.findById(userObjId).select('fullName avatarUrl').lean();
+    const authorName = user?.fullName || 'Trekker Cộng Đồng';
+    const authorAvatar = user?.avatarUrl || DEFAULT_AVATAR;
+
+    const newCommentDoc = await CommentModel.create({
+      threadId: targetThreadId,
+      parentId: safeParentId,
+      authorName,
+      authorAvatar,
+      userId: userObjId,
+      content: cleanText,
+      reactions: { like: 0, love: 0, haha: 0, wow: 0, buon: 0, huhu: 0, sad: 0, angry: 0, dislike: 0 },
+      userReactionsMap: new Map(),
+    });
+
+    const reputationReward = await awardReputationPoints(
+      currentUserId,
+      REPUTATION_POINTS.CREATE_COMMENT,
+      'Bình luận bài thảo luận'
+    );
+
+    const totalCount = await CommentModel.countDocuments({ threadId: targetThreadId });
+    await ThreadModel.updateOne({ _id: thread._id }, { $set: { repliesCount: totalCount } });
+
+    const senderInfo = {
+      id: currentUserId,
+      name: authorName,
+      avatarUrl: authorAvatar,
+    };
+
+    const previewText = cleanText.length > 50 ? cleanText.substring(0, 50) + '...' : cleanText;
+
+    if (parentAuthorId && parentAuthorId !== String(currentUserId)) {
+      sendNotification({
+        recipientId: parentAuthorId,
+        sender: senderInfo,
+        type: 'community_reply',
+        category: 'social',
+        title: 'Phản hồi mới về bình luận của bạn',
+        message: `${authorName} đã trả lời bình luận của bạn: "${previewText}"`,
+        link: `/forum?threadId=${targetThreadId}`,
+        relatedId: targetThreadId,
+      }).catch(() => {});
+    }
+
+    const postAuthorId = thread.userId ? String(thread.userId) : null;
+    if (postAuthorId && postAuthorId !== String(currentUserId) && postAuthorId !== parentAuthorId) {
+      sendNotification({
+        recipientId: postAuthorId,
+        sender: senderInfo,
+        type: 'community_comment',
+        category: 'social',
+        title: 'Bình luận mới về bài viết của bạn',
+        message: `${authorName} đã bình luận: "${previewText}"`,
+        link: `/forum?threadId=${targetThreadId}`,
+        relatedId: targetThreadId,
+      }).catch(() => {});
+    }
+
+    const responseComment = {
+      id: newCommentDoc._id.toString(),
+      parentId: newCommentDoc.parentId || null,
+      userId: currentUserId,
+      authorName,
+      authorAvatar,
+      content: cleanText,
+      reactions: newCommentDoc.reactions,
+      replies: [],
+      createdAt: newCommentDoc.createdAt.toISOString(),
+    };
+
     broadcastEvent('newComment', {
       threadId: targetThreadId,
       repliesCount: totalCount,
-      comment: {
-        id: newCommentDoc._id ? newCommentDoc._id.toString() : String(Date.now()),
-        parentId: newCommentDoc.parentId || null,
-        authorName,
-        authorAvatar,
-        content: cleanText,
-        reactions: newCommentDoc.reactions,
-        replies: [],
-        createdAt: 'Vừa xong',
-      },
+      comment: responseComment,
     });
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'Gửi bình luận thành công! Bạn nhận +10 điểm uy tín.',
       repliesCount: totalCount,
-      data: {
-        id: newCommentDoc._id ? newCommentDoc._id.toString() : String(Date.now()),
-        parentId: newCommentDoc.parentId || null,
-        authorName,
-        authorAvatar,
-        content: cleanText,
-        reactions: newCommentDoc.reactions,
-        replies: [],
-        createdAt: 'Vừa xong',
-      },
+      data: responseComment,
       reputationReward,
     });
   } catch (err) {
     console.error('[Comment Save Error]:', err);
-    return res.status(500).json({ success: false, message: 'Lỗi khi lưu bình luận vào MongoDB.' });
+    return res.status(500).json({ success: false, message: 'Lỗi khi lưu bình luận.' });
   }
 };
 
-export const reactToComment = async (req: Request, res: Response) => {
-  const { commentId } = req.params;
-  const { reactionType } = req.body;
-
+export const updateComment = async (req: AuthRequest, res: Response) => {
   try {
+    const currentUserId = req.user?.userId;
+    const isStaff = req.user?.role === 'admin' || req.user?.role === 'moderator';
+    const { commentId } = req.params;
+    const { content } = req.body || {};
+
+    if (!currentUserId) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    if (!isValidObjectId(commentId)) {
+      return res.status(400).json({ success: false, message: 'Mã bình luận không hợp lệ.' });
+    }
+    if (typeof content !== 'string' || !content.trim()) {
+      return res.status(400).json({ success: false, message: 'Vui lòng nhập nội dung bình luận.' });
+    }
+    const cleanText = sanitizeInput(content).slice(0, 2000);
+    if (!cleanText.trim()) {
+      return res.status(400).json({ success: false, message: 'Nội dung bình luận không hợp lệ.' });
+    }
+
+    if (containsProfanity(cleanText)) {
+      const matchedWord = getProfanityMatch(cleanText);
+      const penaltyInfo = await deductReputationPoints(
+        currentUserId,
+        PENALTY_POINTS.TOXIC_COMMENT,
+        `Chỉnh sửa bình luận chứa từ ngữ vi phạm ("${matchedWord}")`
+      );
+      return res.status(400).json({
+        success: false,
+        message: `Bình luận bị từ chối do chứa từ ngữ vi phạm ("${matchedWord}").`,
+        penaltyInfo,
+      });
+    }
+
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
     const comment = await CommentModel.findById(commentId);
     if (!comment) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy bình luận.' });
     }
-
-    const userKeys = getUserKeys(req);
-    const primaryKey = userKeys[0];
-
-    if (!comment.userReactionsMap) {
-      comment.userReactionsMap = {} as any;
+    if (!isStaff && String(comment.userId) !== String(currentUserId)) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền chỉnh sửa bình luận này.' });
     }
 
-    const mapObj = comment.userReactionsMap as any;
-    const isMapInstance = typeof mapObj.get === 'function';
+    comment.content = cleanText;
+    await comment.save();
+    await recordAuditLog(req, 'UPDATE_COMMENT', 'comments', `Cập nhật bình luận ${comment._id}`);
 
-    let currentReaction: string | null = null;
-    let targetKey = primaryKey;
+    const responseComment = {
+      id: comment._id.toString(),
+      parentId: comment.parentId || null,
+      userId: comment.userId ? String(comment.userId) : undefined,
+      authorName: comment.authorName,
+      authorAvatar: comment.authorAvatar || DEFAULT_AVATAR,
+      content: comment.content,
+      reactions: comment.reactions,
+      createdAt: comment.createdAt ? new Date(comment.createdAt).toISOString() : new Date().toISOString(),
+    };
 
-    for (const key of userKeys) {
-      const existing = isMapInstance ? mapObj.get(key) : mapObj[key];
-      if (existing) {
-        currentReaction = existing;
-        targetKey = key;
-        break;
-      }
+    broadcastEvent('commentUpdated', {
+      commentId: comment._id.toString(),
+      threadId: comment.threadId,
+      content: comment.content,
+    });
+
+    return res.json({
+      success: true,
+      message: 'Đã cập nhật bình luận thành công!',
+      data: responseComment,
+    });
+  } catch (err) {
+    console.error('[Update Comment Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi cập nhật bình luận.' });
+  }
+};
+
+export const deleteComment = async (req: AuthRequest, res: Response) => {
+  try {
+    const currentUserId = req.user?.userId;
+    const isStaff = req.user?.role === 'admin' || req.user?.role === 'moderator';
+    const { commentId } = req.params;
+
+    if (!currentUserId) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    if (!isValidObjectId(commentId)) {
+      return res.status(400).json({ success: false, message: 'Mã bình luận không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
     }
 
-    let newReaction: string | null = reactionType;
+    const comment = await CommentModel.findById(commentId);
+    if (!comment) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bình luận.' });
+    }
+    if (!isStaff && String(comment.userId) !== String(currentUserId)) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền xóa bình luận này.' });
+    }
 
-    if (currentReaction === reactionType) {
+    const targetThreadId = comment.threadId;
+    await CommentModel.deleteMany({ $or: [{ _id: comment._id }, { parentId: comment._id.toString() }] });
+
+    const totalCount = await CommentModel.countDocuments({ threadId: targetThreadId });
+    await ThreadModel.updateOne({ id: targetThreadId }, { $set: { repliesCount: totalCount } }).catch(() => {});
+    await recordAuditLog(req, 'DELETE_COMMENT', 'comments', `Xóa bình luận ${comment._id} thuộc bài ${targetThreadId}`);
+
+    broadcastEvent('commentDeleted', {
+      commentId: comment._id.toString(),
+      threadId: targetThreadId,
+      repliesCount: totalCount,
+    });
+
+    return res.json({ success: true, repliesCount: totalCount, message: 'Đã xóa bình luận thành công!' });
+  } catch (err) {
+    console.error('[Delete Comment Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi xóa bình luận.' });
+  }
+};
+
+export const reactToComment = async (req: AuthRequest, res: Response) => {
+  const { commentId } = req.params;
+  const { reactionType } = req.body || {};
+  const currentUserId = req.user?.userId;
+
+  if (!currentUserId) {
+    return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để thả cảm xúc.' });
+  }
+
+  if (!isValidObjectId(commentId)) {
+    return res.status(400).json({ success: false, message: 'Mã bình luận không hợp lệ.' });
+  }
+
+  if (
+    reactionType !== null &&
+    reactionType !== undefined &&
+    (typeof reactionType !== 'string' || !VALID_REACTIONS.has(reactionType))
+  ) {
+    return res.status(400).json({ success: false, message: 'Loại cảm xúc không hợp lệ.' });
+  }
+
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+  }
+
+  try {
+    const primaryKey = String(currentUserId);
+    const existing = await CommentModel.findById(commentId)
+      .select('_id threadId userId content userReactionsMap')
+      .lean();
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bình luận.' });
+    }
+
+    const existingMap: Record<string, string> =
+      existing.userReactionsMap instanceof Map
+        ? Object.fromEntries(existing.userReactionsMap.entries())
+        : ((existing.userReactionsMap as any) || {});
+    const currentReaction = existingMap[primaryKey] || null;
+    let newReaction: string | null = reactionType || null;
+    if (!newReaction || currentReaction === newReaction) {
       newReaction = null;
-      if (isMapInstance) {
-        mapObj.delete(targetKey);
-        mapObj.delete(primaryKey);
-      } else {
-        delete mapObj[targetKey];
-        delete mapObj[primaryKey];
-      }
-    } else if (reactionType) {
-      newReaction = reactionType;
-      if (targetKey !== primaryKey) {
-        if (isMapInstance) mapObj.delete(targetKey);
-        else delete mapObj[targetKey];
-      }
-      if (isMapInstance) mapObj.set(primaryKey, reactionType);
-      else mapObj[primaryKey] = reactionType;
-    } else {
-      newReaction = null;
-      if (isMapInstance) {
-        mapObj.delete(targetKey);
-        mapObj.delete(primaryKey);
-      } else {
-        delete mapObj[targetKey];
-        delete mapObj[primaryKey];
-      }
+    }
+
+    // Atomic per-user key update prevents concurrent lost updates
+    const mapField = `userReactionsMap.${primaryKey}`;
+    const updated = await CommentModel.findByIdAndUpdate(
+      commentId,
+      newReaction ? { $set: { [mapField]: newReaction } } : { $unset: { [mapField]: '' } },
+      { new: true }
+    )
+      .select('userReactionsMap')
+      .lean();
+
+    if (!updated) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bình luận.' });
     }
 
     const counts: Record<string, number> = {
@@ -367,74 +480,49 @@ export const reactToComment = async (req: Request, res: Response) => {
       dislike: 0,
     };
 
-    if (isMapInstance) {
-      for (const [_, r] of mapObj.entries()) {
-        if (r && counts[r] !== undefined) counts[r]++;
-      }
-    } else {
-      for (const r of Object.values(mapObj as Record<string, string>)) {
-        if (r && counts[r] !== undefined) counts[r]++;
-      }
+    const entries =
+      updated.userReactionsMap instanceof Map
+        ? Array.from(updated.userReactionsMap.entries())
+        : Object.entries((updated.userReactionsMap as any) || {});
+    for (const [, r] of entries) {
+      if (typeof r === 'string' && counts[r] !== undefined) counts[r]++;
     }
 
-    comment.reactions = counts as any;
-    comment.markModified('reactions');
-    comment.markModified('userReactionsMap');
-    await comment.save();
+    await CommentModel.updateOne({ _id: existing._id }, { $set: { reactions: counts } });
 
-    // Notify comment author about new reaction
-    if (newReaction) {
-      try {
-        let commentAuthorId = comment.userId ? String(comment.userId) : null;
-        if (!commentAuthorId && comment.authorName) {
-          const authorUser = await UserModel.findOne({
-            $or: [{ fullName: comment.authorName }, { username: comment.authorName }],
-          });
-          if (authorUser) commentAuthorId = String(authorUser._id);
-        }
+    if (newReaction && !currentReaction && existing.userId && String(existing.userId) !== primaryKey) {
+      const reactor = isValidObjectId(primaryKey)
+        ? await UserModel.findById(primaryKey).select('fullName avatarUrl').lean()
+        : null;
+      const reactorName = reactor?.fullName || 'Thành viên LOST';
+      const snippet = existing.content
+        ? existing.content.length > 40
+          ? existing.content.substring(0, 40) + '...'
+          : existing.content
+        : '';
 
-        const authHeader = req.headers['authorization'];
-        let reactorName = 'Thành viên TrekMap';
-        let reactorId = null;
-        if (authHeader && authHeader.startsWith('Bearer ')) {
-          const decoded = verifyToken(authHeader.substring(7));
-          if (decoded?.userId) {
-            reactorId = decoded.userId;
-            const reactor = await UserModel.findById(decoded.userId);
-            if (reactor) reactorName = reactor.fullName || reactor.username;
-          }
-        }
-
-        if (commentAuthorId && String(commentAuthorId) !== String(reactorId)) {
-          const notif = new NotificationModel({
-            recipient: commentAuthorId as any,
-            sender: reactorId as any,
-            type: 'reaction',
-            title: 'Cảm xúc mới về bình luận của bạn',
-            message: `${reactorName} đã thả cảm xúc cho bình luận của bạn: "${comment.content ? (comment.content.length > 40 ? comment.content.substring(0, 40) + '...' : comment.content) : ''}"`,
-            link: `/forum?threadId=${comment.threadId}`,
-            relatedId: comment.threadId as any,
-            isRead: false,
-          });
-          await notif.save();
-          emitToUser(commentAuthorId, 'newNotification', notif);
-        }
-      } catch (notifErr) {
-        console.warn('⚠️ [Comment Reaction Notification Warning]:', notifErr);
-      }
+      sendNotification({
+        recipientId: String(existing.userId),
+        sender: { id: primaryKey, name: reactorName, avatarUrl: reactor?.avatarUrl || '' },
+        type: 'community_comment',
+        category: 'social',
+        title: 'Cảm xúc mới về bình luận của bạn',
+        message: `${reactorName} đã thả cảm xúc cho bình luận của bạn: "${snippet}"`,
+        link: `/forum?threadId=${existing.threadId}`,
+        relatedId: existing.threadId,
+      }).catch(() => {});
     }
 
-    // Broadcast commentReactionUpdate event to all connected clients
     broadcastEvent('commentReactionUpdate', {
-      commentId: comment._id.toString(),
-      threadId: comment.threadId,
-      reactions: comment.reactions,
+      commentId: existing._id.toString(),
+      threadId: existing.threadId,
+      reactions: counts,
     });
 
     return res.json({
       success: true,
       userReaction: newReaction,
-      data: comment.reactions,
+      data: counts,
     });
   } catch (err) {
     console.error('[Comment Reaction API Error]:', err);

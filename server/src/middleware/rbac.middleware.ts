@@ -1,11 +1,8 @@
 import { Response, NextFunction } from 'express';
 import { AuthRequest } from './auth.middleware.js';
+import { UserRole } from '../utils/auth.js';
 
-/**
- * Middleware to restrict route access to specific roles.
- * Usage: router.post('/admin/path', authMiddleware, requireRole('admin'), handler);
- */
-export const requireRole = (...allowedRoles: Array<'user' | 'guide' | 'admin' | 'moderator'>) => {
+export const requireRole = (...allowedRoles: UserRole[]) => {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user) {
       return res.status(401).json({
@@ -25,13 +22,16 @@ export const requireRole = (...allowedRoles: Array<'user' | 'guide' | 'admin' | 
   };
 };
 
-/**
- * Helper to check if current user is owner of a resource or an admin.
- */
-export const isOwnerOrAdmin = (req: AuthRequest, resourceUserId: string | object): boolean => {
-  if (!req.user) return false;
+export const isOwnerOrAdmin = (
+  req: AuthRequest,
+  resourceUserId: string | { _id?: unknown; toString?: () => string } | null | undefined
+): boolean => {
+  if (!req.user || !resourceUserId) return false;
   if (req.user.role === 'admin') return true;
 
-  const ownerId = resourceUserId.toString();
+  const ownerId =
+    typeof resourceUserId === 'object' && '_id' in resourceUserId && resourceUserId._id
+      ? String(resourceUserId._id)
+      : String(resourceUserId);
   return req.user.userId === ownerId;
 };

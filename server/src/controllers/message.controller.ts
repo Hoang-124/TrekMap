@@ -4,12 +4,15 @@ import { AuthRequest } from '../middleware/auth.middleware.js';
 import { ConversationModel } from '../models/Conversation.js';
 import { MessageModel } from '../models/Message.js';
 import { UserModel } from '../models/User.js';
-import { emitToUser } from '../config/socket.js';
-import { NotificationModel } from '../models/Notification.js';
+import { emitToUser, emitToConversation, isUserOnline } from '../config/socket.js';
+import { isValidObjectId } from '../utils/resolveTrail.js';
+import { sanitizeInput } from '../utils/validation.js';
+import { containsProfanity } from '../utils/profanityFilter.js';
+import { sendNotification } from '../utils/notification.js';
 
 /**
  * GET /api/conversations
- * Get list of conversations for current user
+ * Get paginated list of conversations for current user (single aggregation for unread counts)
  */
 export const getConversations = async (req: AuthRequest, res: Response) => {
   try {
@@ -17,47 +20,70 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
     if (!currentUserId) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
     }
-
-    if (!mongoose.Types.ObjectId.isValid(currentUserId)) {
+    if (mongoose.connection.readyState !== 1 || !isValidObjectId(currentUserId)) {
       return res.json({ success: true, count: 0, data: [] });
     }
 
+    const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 50);
+    const currentObjId = new mongoose.Types.ObjectId(currentUserId);
+
     const conversations = await ConversationModel.find({
-      participants: currentUserId as any,
-      'lastMessage.content': { $exists: true, $ne: '' },
+      participants: currentObjId,
+      $or: [{ 'lastMessage.content': { $exists: true, $ne: '' } }, { isGroup: true }],
     })
       .sort({ updatedAt: -1 })
-      .populate('participants', 'username fullName avatarUrl email role')
-      .populate('lastMessage.sender', 'username fullName avatarUrl');
+      .limit(limit)
+      .populate('participants', 'username fullName avatarUrl role')
+      .populate('lastMessage.sender', 'username fullName avatarUrl')
+      .lean();
 
-    // Calculate unread count for each conversation
-    const result = await Promise.all(
-      conversations.map(async (conv) => {
-        const unreadCount = await MessageModel.countDocuments({
-          conversation: conv._id as any,
-          sender: { $ne: currentUserId as any },
-          readBy: { $ne: currentUserId as any },
-        });
+    const convIds = conversations.map((c) => c._id);
 
-        // Identify other participant
-        const otherParticipant = conv.participants.find(
-          (p: any) => String(p._id || p) !== String(currentUserId)
-        );
+    const unreadAgg = convIds.length
+      ? await MessageModel.aggregate([
+          {
+            $match: {
+              conversation: { $in: convIds },
+              sender: { $ne: currentObjId },
+              readBy: { $ne: currentObjId },
+            },
+          },
+          { $group: { _id: '$conversation', count: { $sum: 1 } } },
+        ])
+      : [];
 
-        return {
-          _id: conv._id,
-          participants: conv.participants,
-          otherParticipant,
-          lastMessage: conv.lastMessage,
-          unreadCount,
-          createdAt: conv.createdAt,
-          updatedAt: conv.updatedAt,
-        };
-      })
-    );
+    const unreadMap = new Map<string, number>();
+    for (const item of unreadAgg) {
+      unreadMap.set(String(item._id), item.count);
+    }
+
+    const result = conversations.map((conv: any) => {
+      const otherParticipant = conv.isGroup
+        ? {
+            _id: String(conv._id),
+            username: conv.groupName || 'Nhóm Ghép Đoàn',
+            fullName: conv.groupName || 'Nhóm Ghép Đoàn',
+            avatarUrl: '',
+            role: 'group',
+          }
+        : conv.participants.find((p: any) => String(p._id || p) !== String(currentUserId));
+
+      return {
+        _id: conv._id,
+        isGroup: Boolean(conv.isGroup),
+        groupName: conv.groupName || '',
+        tripPlanId: conv.tripPlanId ? String(conv.tripPlanId) : undefined,
+        participants: conv.participants,
+        otherParticipant,
+        lastMessage: conv.lastMessage,
+        unreadCount: unreadMap.get(String(conv._id)) || 0,
+        createdAt: conv.createdAt,
+        updatedAt: conv.updatedAt,
+      };
+    });
 
     return res.json({ success: true, count: result.length, data: result });
-  } catch (err: any) {
+  } catch (err) {
     console.error('[Get Conversations Error]:', err);
     return res.status(500).json({ success: false, message: 'Không thể lấy danh sách cuộc trò chuyện.' });
   }
@@ -65,90 +91,93 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
 
 /**
  * POST /api/conversations
- * Create or get existing conversation with targetUserId
+ * Atomically create or get existing conversation by userId or exact username (NEVER email, preventing email enumeration)
  */
 export const getOrCreateConversation = async (req: AuthRequest, res: Response) => {
   try {
     const currentUserId = req.user?.userId;
-    const { targetUserId } = req.body;
+    const { targetUserId } = req.body || {};
 
-    if (!currentUserId) {
+    if (!currentUserId || !isValidObjectId(currentUserId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
     }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
 
-    if (!targetUserId) {
+    if (!targetUserId || typeof targetUserId !== 'string' || !targetUserId.trim()) {
       return res.status(400).json({ success: false, message: 'Yêu cầu chỉ định người nhận tin nhắn.' });
     }
 
-    let targetUser = null;
+    const cleanTarget = targetUserId.trim().slice(0, 100);
+    let targetUser: any = null;
 
-    try {
-      targetUser = await UserModel.findById(targetUserId);
-    } catch (err) {
-      // Not a valid ObjectId, search by email/username/fullName
-    }
-
-    if (!targetUser) {
-      const cleanTarget = String(targetUserId).trim();
-      const exactRegex = new RegExp(`^${cleanTarget.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
-      const partialRegex = new RegExp(cleanTarget.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-
+    if (/^[a-fA-F0-9]{24}$/.test(cleanTarget)) {
+      targetUser = await UserModel.findOne({ _id: cleanTarget, isBanned: { $ne: true } })
+        .select('_id username fullName avatarUrl role')
+        .lean();
+    } else if (!cleanTarget.includes('@')) {
+      // Strictly disallow email lookup to prevent account/email enumeration; match username or exact fullName only
+      const escaped = cleanTarget.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const exactRegex = new RegExp(`^${escaped}$`, 'i');
       targetUser = await UserModel.findOne({
-        $or: [
-          { email: exactRegex },
-          { username: exactRegex },
-          { fullName: exactRegex },
-          { fullName: partialRegex },
-          { username: partialRegex },
-        ],
-      });
+        isBanned: { $ne: true },
+        $or: [{ username: exactRegex }, { fullName: exactRegex }],
+      })
+        .select('_id username fullName avatarUrl role')
+        .lean();
     }
 
-    // Return 404 instead of auto-creating fake users — prevents mass abuse
     if (!targetUser) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy người dùng. Vui lòng kiểm tra lại tên hoặc email.' });
+      return res.status(404).json({
+        success: false,
+        message: 'Không tìm thấy người dùng. Vui lòng kiểm tra lại mã hoặc tên tài khoản (username).',
+      });
     }
 
     const actualTargetId = String(targetUser._id);
     const isSelf = actualTargetId === String(currentUserId);
-
-    // Sort IDs to form deterministic composite key (support self-messaging like Telegram Saved Messages)
     const sortedIds = isSelf ? [String(currentUserId)] : [String(currentUserId), actualTargetId].sort();
     const participantKey = isSelf ? `${currentUserId}_self` : sortedIds.join('_');
 
-    let conversation = await ConversationModel.findOne({ participantKey })
-      .populate('participants', 'username fullName avatarUrl email role')
-      .populate('lastMessage.sender', 'username fullName avatarUrl');
-
-    if (!conversation) {
-      const newConv = new ConversationModel({
-        participants: sortedIds as any,
-        participantKey,
-      });
-      await newConv.save();
-
-      conversation = await ConversationModel.findById(newConv._id)
-        .populate('participants', 'username fullName avatarUrl email role');
-    }
+    // Atomic upsert eliminates E11000 duplicate race when both users open a DM simultaneously
+    const conversation = await ConversationModel.findOneAndUpdate(
+      { participantKey },
+      {
+        $setOnInsert: {
+          participants: sortedIds.map((id) => new mongoose.Types.ObjectId(id)),
+          participantKey,
+          isGroup: false,
+        },
+      },
+      { upsert: true, new: true }
+    )
+      .populate('participants', 'username fullName avatarUrl role')
+      .populate('lastMessage.sender', 'username fullName avatarUrl')
+      .lean();
 
     if (!conversation) {
       return res.status(500).json({ success: false, message: 'Lỗi khi khởi tạo cuộc trò chuyện.' });
     }
 
-    const otherParticipant = (conversation.participants as any[]).find(
-      (p: any) => String(p._id || p) !== String(currentUserId)
-    ) || (conversation.participants as any[])[0];
+    const otherParticipant =
+      (conversation.participants as any[]).find((p: any) => String(p._id || p) !== String(currentUserId)) ||
+      (conversation.participants as any[])[0];
 
+    const currentObjId = new mongoose.Types.ObjectId(currentUserId);
     const unreadCount = await MessageModel.countDocuments({
-      conversation: conversation._id as any,
-      sender: { $ne: currentUserId as any },
-      readBy: { $ne: currentUserId as any },
+      conversation: conversation._id,
+      sender: { $ne: currentObjId },
+      readBy: { $ne: currentObjId },
     });
 
     return res.json({
       success: true,
       data: {
         _id: conversation._id,
+        isGroup: Boolean(conversation.isGroup),
+        groupName: conversation.groupName || '',
+        tripPlanId: conversation.tripPlanId ? String(conversation.tripPlanId) : undefined,
         participants: conversation.participants,
         otherParticipant,
         lastMessage: conversation.lastMessage,
@@ -157,7 +186,7 @@ export const getOrCreateConversation = async (req: AuthRequest, res: Response) =
         updatedAt: conversation.updatedAt,
       },
     });
-  } catch (err: any) {
+  } catch (err) {
     console.error('[Get or Create Conversation Error]:', err);
     return res.status(500).json({ success: false, message: 'Không thể tạo cuộc trò chuyện.' });
   }
@@ -165,7 +194,7 @@ export const getOrCreateConversation = async (req: AuthRequest, res: Response) =
 
 /**
  * GET /api/conversations/:id/messages
- * Get paginated messages for a conversation
+ * Cursor-paginated messages sorted consistently by _id descending to match _id < before cursor
  */
 export const getMessages = async (req: AuthRequest, res: Response) => {
   try {
@@ -173,32 +202,39 @@ export const getMessages = async (req: AuthRequest, res: Response) => {
     const { id: conversationId } = req.params;
     const { before, limit = 20 } = req.query;
 
-    if (!currentUserId) {
+    if (!currentUserId || !isValidObjectId(currentUserId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    if (!isValidObjectId(conversationId)) {
+      return res.status(400).json({ success: false, message: 'Mã cuộc trò chuyện không hợp lệ.' });
     }
 
     const conversation = await ConversationModel.findOne({
-      _id: conversationId as any,
-      participants: currentUserId as any,
+      _id: conversationId,
+      participants: new mongoose.Types.ObjectId(currentUserId),
     });
 
     if (!conversation) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy cuộc trò chuyện.' });
     }
 
-    const query: any = { conversation: conversationId };
+    const query: any = { conversation: conversation._id };
     if (before) {
-      query._id = { $lt: before };
+      if (!isValidObjectId(before)) {
+        return res.status(400).json({ success: false, message: 'Tham số phân trang không hợp lệ.' });
+      }
+      query._id = { $lt: new mongoose.Types.ObjectId(before) };
     }
 
-    const parsedLimit = Math.min(Number(limit) || 20, 50);
+    const parsedLimit = Math.min(Math.max(Number(limit) || 20, 1), 50);
 
+    // Sort by _id: -1 to match the _id cursor strictly (eliminates same-millisecond skip/duplicate glitches)
     const messages = await MessageModel.find(query)
-      .sort({ createdAt: -1 })
+      .sort({ _id: -1 })
       .limit(parsedLimit)
-      .populate('sender', 'username fullName avatarUrl');
+      .populate('sender', 'username fullName avatarUrl')
+      .lean();
 
-    // Return in reverse (chronological order)
     const reversedMessages = messages.reverse();
 
     return res.json({
@@ -207,7 +243,7 @@ export const getMessages = async (req: AuthRequest, res: Response) => {
       data: reversedMessages,
       hasMore: messages.length === parsedLimit,
     });
-  } catch (err: any) {
+  } catch (err) {
     console.error('[Get Messages Error]:', err);
     return res.status(500).json({ success: false, message: 'Không thể lấy danh sách tin nhắn.' });
   }
@@ -215,103 +251,99 @@ export const getMessages = async (req: AuthRequest, res: Response) => {
 
 /**
  * POST /api/messages
- * Send a new message
+ * Send a new message (Strict Participant Authorization + room broadcast + offline notification)
  */
 export const sendMessage = async (req: AuthRequest, res: Response) => {
   try {
     const currentUserId = req.user?.userId;
-    const { conversationId, content } = req.body;
+    const { conversationId, content } = req.body || {};
 
-    if (!currentUserId) {
+    if (!currentUserId || !isValidObjectId(currentUserId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
     }
-
-    if (!conversationId || !content || !content.trim()) {
+    if (!isValidObjectId(conversationId)) {
+      return res.status(400).json({ success: false, message: 'Mã cuộc trò chuyện không hợp lệ.' });
+    }
+    if (typeof content !== 'string' || !content.trim()) {
       return res.status(400).json({ success: false, message: 'Nội dung tin nhắn không được để trống.' });
     }
 
-    let conversation = null;
-    try {
-      conversation = await ConversationModel.findById(conversationId);
-    } catch (err) {}
+    const trimmedContent = sanitizeInput(content).slice(0, 4000);
+    if (!trimmedContent) {
+      return res.status(400).json({ success: false, message: 'Nội dung tin nhắn không hợp lệ.' });
+    }
+    if (containsProfanity(trimmedContent)) {
+      return res.status(400).json({ success: false, message: 'Tin nhắn chứa từ ngữ vi phạm quy chuẩn cộng đồng.' });
+    }
+
+    const senderObjId = new mongoose.Types.ObjectId(currentUserId);
+
+    const conversation = await ConversationModel.findOne({
+      _id: conversationId,
+      participants: senderObjId,
+    });
 
     if (!conversation) {
-      conversation = await ConversationModel.findOne({ participants: currentUserId as any }).sort({ updatedAt: -1 });
-      if (!conversation) {
-        conversation = new ConversationModel({
-          participants: [currentUserId as any],
-          participantKey: `${currentUserId}_default_${Date.now()}`,
-        });
-        await conversation.save();
-      }
+      return res.status(404).json({
+        success: false,
+        message: 'Không tìm thấy cuộc trò chuyện hoặc bạn không phải thành viên.',
+      });
     }
 
-    let senderUser = null;
-    try {
-      senderUser = await UserModel.findById(currentUserId);
-    } catch (err) {}
-
-    if (!senderUser && req.user?.email) {
-      senderUser = await UserModel.findOne({ email: req.user.email });
-    }
-
-    if (!senderUser) {
-      senderUser = await UserModel.findOne({ username: currentUserId });
-    }
-
-    if (!senderUser) {
-      return res.status(401).json({ success: false, message: 'Không tìm thấy tài khoản người gửi. Vui lòng đăng nhập lại.' });
-    }
-
-    const senderId = senderUser._id;
-
-    // Ensure senderId is registered as participant
-    const isParticipant = conversation.participants.some(
-      (p) => String(p) === String(senderId) || String(p) === String(currentUserId)
-    );
-    if (!isParticipant) {
-      conversation.participants.push(senderId as any);
-      await conversation.save();
-    }
-
-    // Create and save message
-    const message = new MessageModel({
-      conversation: conversationId as any,
-      sender: senderId as any,
-      content: content.trim(),
-      readBy: [senderId as any],
+    const message = await MessageModel.create({
+      conversation: conversation._id,
+      sender: senderObjId,
+      content: trimmedContent,
+      readBy: [senderObjId],
     });
-    await message.save();
 
-    // Populate sender info
     await message.populate('sender', 'username fullName avatarUrl');
 
-    // Update conversation lastMessage & updatedAt
-    conversation.lastMessage = {
-      content: content.trim(),
-      sender: senderId as any,
-      createdAt: new Date(),
-    };
-    conversation.updatedAt = new Date();
-    await conversation.save();
-
-    // Identify recipient(s)
-    const recipientId = conversation.participants
-      .find((p) => String(p) !== String(currentUserId))
-      ?.toString();
+    await ConversationModel.updateOne(
+      { _id: conversation._id },
+      {
+        $set: {
+          lastMessage: {
+            content: trimmedContent,
+            sender: senderObjId,
+            createdAt: message.createdAt,
+          },
+        },
+      }
+    );
 
     const formattedPayload = {
       _id: message._id,
-      conversation: conversationId,
+      conversation: conversation._id.toString(),
       sender: message.sender,
       content: message.content,
       readBy: message.readBy,
       createdAt: message.createdAt,
     };
 
-    if (recipientId) {
-      // Real-time socket emission to recipient room for messages
-      emitToUser(recipientId, 'newMessage', formattedPayload);
+    const senderInfo: any = message.sender;
+    const senderName = senderInfo?.fullName || senderInfo?.username || 'Trekker';
+    const preview = trimmedContent.length > 60 ? `${trimmedContent.slice(0, 60)}...` : trimmedContent;
+
+    // Emit to conversation room AND each participant's user room (keeps multi-tab & sidebar badges synced)
+    emitToConversation(conversation._id.toString(), 'newMessage', formattedPayload);
+    for (const participant of conversation.participants) {
+      const pid = String(participant);
+      emitToUser(pid, 'newMessage', formattedPayload);
+
+      // Persist direct_message notification for offline recipients
+      if (pid !== String(currentUserId) && !isUserOnline(pid)) {
+        sendNotification({
+          recipientId: pid,
+          sender: { id: currentUserId, name: senderName, avatarUrl: senderInfo?.avatarUrl || '' },
+          type: 'direct_message',
+          category: 'social',
+          title: conversation.isGroup ? `Tin nhắn mới trong ${conversation.groupName || 'Nhóm đoàn'}` : `Tin nhắn mới từ ${senderName}`,
+          message: preview,
+          link: '/#messages',
+          relatedId: conversation._id.toString(),
+        }).catch(() => {});
+      }
     }
 
     return res.status(201).json({
@@ -319,7 +351,7 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
       message: 'Gửi tin nhắn thành công.',
       data: formattedPayload,
     });
-  } catch (err: any) {
+  } catch (err) {
     console.error('[Send Message Error]:', err);
     return res.status(500).json({ success: false, message: 'Không thể gửi tin nhắn.' });
   }
@@ -327,54 +359,56 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
 
 /**
  * PATCH /api/conversations/:id/read
- * Mark all messages in a conversation as read
+ * Mark all messages from other participants in a conversation as read
  */
 export const markConversationAsRead = async (req: AuthRequest, res: Response) => {
   try {
     const currentUserId = req.user?.userId;
     const { id: conversationId } = req.params;
 
-    if (!currentUserId) {
+    if (!currentUserId || !isValidObjectId(currentUserId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
     }
+    if (!isValidObjectId(conversationId)) {
+      return res.status(400).json({ success: false, message: 'Mã cuộc trò chuyện không hợp lệ.' });
+    }
 
+    const currentObjId = new mongoose.Types.ObjectId(currentUserId);
     const conversation = await ConversationModel.findOne({
-      _id: conversationId as any,
-      participants: currentUserId as any,
+      _id: conversationId,
+      participants: currentObjId,
     });
 
     if (!conversation) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy cuộc trò chuyện.' });
     }
 
-    // Add currentUserId to readBy array for all messages in this conversation where it's not present
     await MessageModel.updateMany(
       {
-        conversation: conversationId as any,
-        readBy: { $ne: currentUserId as any },
+        conversation: conversation._id,
+        sender: { $ne: currentObjId },
+        readBy: { $ne: currentObjId },
       },
       {
-        $addToSet: { readBy: currentUserId as any },
+        $addToSet: { readBy: currentObjId },
       }
     );
 
-    // Identify recipient/other participant
-    const otherParticipantId = conversation.participants
-      .find((p) => String(p) !== String(currentUserId))
-      ?.toString();
-
-    if (otherParticipantId) {
-      emitToUser(otherParticipantId, 'messageRead', {
-        conversationId,
-        userId: currentUserId,
-      });
+    for (const participant of conversation.participants) {
+      const pid = String(participant);
+      if (pid !== String(currentUserId)) {
+        emitToUser(pid, 'messageRead', {
+          conversationId: conversation._id.toString(),
+          userId: currentUserId,
+        });
+      }
     }
 
     return res.json({
       success: true,
       message: 'Đã đánh dấu cuộc trò chuyện là đã đọc.',
     });
-  } catch (err: any) {
+  } catch (err) {
     console.error('[Mark Read Error]:', err);
     return res.status(500).json({ success: false, message: 'Không thể cập nhật trạng thái tin nhắn.' });
   }

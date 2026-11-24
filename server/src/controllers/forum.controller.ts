@@ -1,123 +1,191 @@
+import crypto from 'crypto';
 import { Request, Response } from 'express';
 import mongoose, { Types } from 'mongoose';
 import { ThreadModel } from '../models/Thread.js';
+import { CommentModel } from '../models/Comment.js';
 import { UserModel } from '../models/User.js';
-import { TrailModel } from '../models/Trail.js';
 import { CommunityMessageModel } from '../models/CommunityMessage.js';
-import { verifyToken } from '../utils/auth.js';
-import { getUserKey, getUserKeys } from '../middleware/auth.middleware.js';
+import { mockTrails } from '../data/seedData.js';
+import { AuthRequest, getUserKeys } from '../middleware/auth.middleware.js';
 import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
-import { awardReputationPoints, deductReputationPoints, REPUTATION_POINTS, PENALTY_POINTS } from '../utils/reputation.js';
-import { NotificationModel } from '../models/Notification.js';
+import {
+  awardReputationPoints,
+  deductReputationPoints,
+  REPUTATION_POINTS,
+  PENALTY_POINTS,
+} from '../utils/reputation.js';
+import { sendNotification } from '../utils/notification.js';
+import { broadcastEvent } from '../config/socket.js';
+import { sanitizeInput, isSafeHttpUrl } from '../utils/validation.js';
+import { isValidObjectId, resolveTrailByIdOrSlug } from '../utils/resolveTrail.js';
+import { recordAuditLog } from '../utils/audit.js';
 
-// XML entity escaper for safe GPX export
+const VALID_REACTIONS = new Set(['like', 'love', 'haha', 'wow', 'buon', 'huhu', 'sad', 'angry', 'dislike']);
+const VALID_CATEGORIES = new Set(['Hỏi Đáp', 'Kinh Nghiệm', 'Tìm Đồng Đội', 'Cảnh Báo']);
+const DEFAULT_AVATAR =
+  'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
+
 function escapeXml(unsafe: string): string {
-  return unsafe.replace(/[<>&'"]/g, (c) => {
+  return String(unsafe || '').replace(/[<>&'"]/g, (c) => {
     switch (c) {
-      case '<': return '&lt;';
-      case '>': return '&gt;';
-      case '&': return '&amp;';
-      case "'": return '&apos;';
-      case '"': return '&quot;';
-      default: return c;
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case '&':
+        return '&amp;';
+      case "'":
+        return '&apos;';
+      case '"':
+        return '&quot;';
+      default:
+        return c;
     }
   });
 }
-import { emitToUser, broadcastEvent } from '../config/socket.js';
+
+function formatThreadResponse(t: any, userKeys: string[]) {
+  const userObj = t.userId && typeof t.userId === 'object' ? (t.userId as any) : null;
+  const liveName = userObj?.fullName || t.authorName;
+  const liveAvatar = userObj?.avatarUrl || t.authorAvatar || DEFAULT_AVATAR;
+
+  let currentUserReaction: string | null = null;
+  if (t.userReactionsMap) {
+    const isMap = typeof (t.userReactionsMap as any).get === 'function';
+    for (const key of userKeys) {
+      if (!key) continue;
+      const r = isMap ? (t.userReactionsMap as any).get(key) : (t.userReactionsMap as any)[key];
+      if (r) {
+        currentUserReaction = r;
+        break;
+      }
+    }
+  }
+
+  const authorUserId = userObj
+    ? userObj._id
+      ? userObj._id.toString()
+      : String(userObj)
+    : t.userId
+      ? String(t.userId)
+      : '';
+
+  return {
+    id: t.id,
+    title: t.title,
+    authorName: liveName,
+    authorAvatar: liveAvatar,
+    userId: authorUserId,
+    category: t.category,
+    content: t.content,
+    images: t.images || [],
+    upvotes: t.upvotes,
+    reactions: t.reactions,
+    userReaction: currentUserReaction || null,
+    repliesCount: t.repliesCount,
+    viewsCount: t.viewsCount,
+    isPinned: Boolean(t.isPinned),
+    isLocked: Boolean(t.isLocked),
+    createdAt: t.createdAt ? new Date(t.createdAt).toISOString() : new Date().toISOString(),
+  };
+}
 
 export const getThreads = async (req: Request, res: Response) => {
   try {
     const userKeys = getUserKeys(req);
+    const page = Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10) || 50, 1), 100);
+    const skip = (page - 1) * limit;
+
+    const filter: any = {};
+    if (typeof req.query.category === 'string' && VALID_CATEGORIES.has(req.query.category)) {
+      filter.category = req.query.category;
+    }
+    if (typeof req.query.search === 'string' && req.query.search.trim()) {
+      const escaped = req.query.search.trim().slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rx = new RegExp(escaped, 'i');
+      filter.$or = [{ title: rx }, { content: rx }, { authorName: rx }];
+    }
 
     let mongoThreads: any[] = [];
-    try {
-      mongoThreads = await ThreadModel.find()
-        .populate('userId', 'fullName username avatarUrl')
-        .lean()
-        .sort({ isPinned: -1, createdAt: -1 });
-    } catch (dbErr) {
-      console.error('[Forum DB Query Error]:', dbErr);
-      mongoThreads = [];
+    let total = 0;
+    if (mongoose.connection.readyState === 1) {
+      [mongoThreads, total] = await Promise.all([
+        ThreadModel.find(filter)
+          .populate('userId', 'fullName username avatarUrl')
+          .sort({ isPinned: -1, createdAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .lean(),
+        ThreadModel.countDocuments(filter),
+      ]);
     }
-    if (mongoThreads && mongoThreads.length > 0) {
-      return res.json({
-        success: true,
-        data: mongoThreads.map((t) => {
-          const userObj = (t.userId && typeof t.userId === 'object') ? (t.userId as any) : null;
-          const liveAvatar = (userObj && userObj.avatarUrl)
-            ? userObj.avatarUrl
-            : (t.authorAvatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(t.authorName)}&background=0ed7b5&color=041217&bold=true`);
 
-          let currentUserReaction: string | null = null;
-          if (t.userReactionsMap) {
-            const isMap = typeof (t.userReactionsMap as any).get === 'function';
-            for (const key of userKeys) {
-              if (!key) continue;
-              const r = isMap ? (t.userReactionsMap as any).get(key) : (t.userReactionsMap as any)[key];
-              if (r) {
-                currentUserReaction = r;
-                break;
-              }
-            }
-          }
-
-          const authorUserId = userObj ? (userObj._id ? userObj._id.toString() : String(userObj)) : (t.userId ? String(t.userId) : '');
-
-          return {
-            id: t.id,
-            title: t.title,
-            authorName: userObj?.fullName || t.authorName,
-            authorAvatar: liveAvatar,
-            userId: authorUserId,
-            category: t.category,
-            content: t.content,
-            images: t.images || [],
-            upvotes: t.upvotes,
-            reactions: t.reactions,
-            userReaction: currentUserReaction || null,
-            repliesCount: t.repliesCount,
-            viewsCount: t.viewsCount,
-            isPinned: Boolean(t.isPinned),
-            isLocked: Boolean(t.isLocked),
-            createdAt: t.createdAt ? new Date(t.createdAt).toISOString() : new Date().toISOString(),
-          };
-        }),
-      });
-    }
     return res.json({
       success: true,
-      data: [],
+      data: mongoThreads.map((t) => formatThreadResponse(t, userKeys)),
+      pagination: { total, page, limit },
     });
   } catch (err) {
-    return res.json({ success: true, data: [] });
+    console.error('[Forum DB Query Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi tải danh sách bài viết diễn đàn.' });
   }
 };
 
-export const createThread = async (req: Request, res: Response) => {
-  const { title, category, content, images } = req.body;
+export const getThreadById = async (req: Request, res: Response) => {
+  try {
+    const threadId = String(req.params.threadId || '').trim();
+    if (!threadId) {
+      return res.status(400).json({ success: false, message: 'Thiếu mã bài viết.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
 
-  if (!title || !content) {
+    const query = isValidObjectId(threadId) ? { $or: [{ id: threadId }, { _id: new Types.ObjectId(threadId) }] } : { id: threadId };
+    const thread = await ThreadModel.findOneAndUpdate(query, { $inc: { viewsCount: 1 } }, { new: true })
+      .populate('userId', 'fullName username avatarUrl')
+      .lean();
+
+    if (!thread) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết.' });
+    }
+
+    return res.json({
+      success: true,
+      data: formatThreadResponse(thread, getUserKeys(req)),
+    });
+  } catch (err) {
+    console.error('[Get Thread By ID Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi tải chi tiết bài viết.' });
+  }
+};
+
+export const createThread = async (req: AuthRequest, res: Response) => {
+  const { title, category, content, images } = req.body || {};
+  const currentUserId = req.user?.userId;
+
+  if (!currentUserId) {
+    return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để đăng bài thảo luận.' });
+  }
+
+  if (typeof title !== 'string' || !title.trim() || typeof content !== 'string' || !content.trim()) {
     return res.status(400).json({ success: false, message: 'Vui lòng nhập tiêu đề và nội dung bài viết.' });
   }
 
-  // Check automated profanity & toxic content filter
-  const isToxic = containsProfanity(`${title} ${content}`);
-  if (isToxic) {
-    const matchedWord = getProfanityMatch(`${title} ${content}`);
-    let penaltyInfo = null;
+  const cleanTitle = sanitizeInput(title).slice(0, 200);
+  const cleanContent = sanitizeInput(content).slice(0, 8000);
+  if (!cleanTitle || !cleanContent) {
+    return res.status(400).json({ success: false, message: 'Tiêu đề hoặc nội dung bài viết không hợp lệ.' });
+  }
 
-    const authHeader = req.headers['authorization'];
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7);
-      const decoded = verifyToken(token);
-      if (decoded?.userId) {
-        penaltyInfo = await deductReputationPoints(
-          decoded.userId,
-          PENALTY_POINTS.PROFANITY_VIOLATION,
-          `Đăng bài chứa từ ngữ thô tục/xúc phạm (${matchedWord})`
-        );
-      }
-    }
+  if (containsProfanity(`${cleanTitle} ${cleanContent}`)) {
+    const matchedWord = getProfanityMatch(`${cleanTitle} ${cleanContent}`);
+    const penaltyInfo = await deductReputationPoints(
+      currentUserId,
+      PENALTY_POINTS.PROFANITY_VIOLATION,
+      `Đăng bài chứa từ ngữ vi phạm (${matchedWord})`
+    );
 
     return res.status(400).json({
       success: false,
@@ -126,165 +194,237 @@ export const createThread = async (req: Request, res: Response) => {
     });
   }
 
-  let authorName = 'Hoàng';
-  let authorAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(authorName)}&background=0ed7b5&color=041217&bold=true`;
-  let userIdObj: any = undefined;
-
-  let reputationReward = null;
-  const authHeader = req.headers['authorization'];
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.substring(7);
-    const decoded = verifyToken(token);
-    if (decoded?.userId) {
-      try {
-        if (Types.ObjectId.isValid(decoded.userId)) {
-          const user = await UserModel.findById(decoded.userId);
-          if (user) {
-            userIdObj = user._id;
-            reputationReward = await awardReputationPoints(
-              user._id.toString(),
-              REPUTATION_POINTS.CREATE_FORUM_THREAD,
-              'Đăng bài nhật ký băng rừng'
-            );
-
-            authorName = user.fullName;
-            if (user.avatarUrl) {
-              authorAvatar = user.avatarUrl;
-            } else {
-              authorAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(user.fullName)}&background=0ed7b5&color=041217&bold=true`;
-            }
-          }
-        }
-      } catch (err) {
-        console.error('[Forum User Lookup Error]:', err);
-      }
-    }
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu đang không khả dụng.' });
   }
 
-  const threadId = `thread-${Date.now()}`;
-  const newThreadObj = {
-    id: threadId,
-    title,
-    authorName,
-    authorAvatar,
-    userId: userIdObj,
-    category: category || 'Kinh Nghiệm',
-    content,
-    images: Array.isArray(images) ? images.slice(0, 8) : [],
-    upvotes: 0,
-    reactions: { like: 0, love: 0, haha: 0, wow: 0, buon: 0, huhu: 0, sad: 0, angry: 0, dislike: 0 },
-    repliesCount: 0,
-    viewsCount: 1,
-    createdAt: 'Vừa xong',
-  };
-
   try {
-    if (mongoose.connection.readyState === 1) {
-      const createdDoc = await ThreadModel.create({
-        id: threadId,
-        title,
-        authorName,
-        authorAvatar,
-        userId: userIdObj,
-        category: category || 'Kinh Nghiệm',
-        content,
-        images: Array.isArray(images) ? images.slice(0, 8) : [],
+    const user = isValidObjectId(currentUserId)
+      ? await UserModel.findById(currentUserId).select('fullName avatarUrl').lean()
+      : null;
+
+    const authorName = user?.fullName || 'Trekker Cộng Đồng';
+    const authorAvatar = user?.avatarUrl || DEFAULT_AVATAR;
+
+    const safeCategory = typeof category === 'string' && VALID_CATEGORIES.has(category) ? category : 'Kinh Nghiệm';
+    // Security: Reject raw Base64 blobs in MongoDB documents; allow only validated public HTTP/HTTPS CDN URLs
+    const safeImages = Array.isArray(images)
+      ? images.filter((img): img is string => typeof img === 'string' && isSafeHttpUrl(img)).slice(0, 8)
+      : [];
+
+    const threadId = `thread-${crypto.randomUUID().slice(0, 12)}`;
+    const createdDoc = await ThreadModel.create({
+      id: threadId,
+      title: cleanTitle,
+      authorName,
+      authorAvatar,
+      userId: user?._id || undefined,
+      category: safeCategory,
+      content: cleanContent,
+      images: safeImages,
+      upvotes: 0,
+      reactions: { like: 0, love: 0, haha: 0, wow: 0, buon: 0, huhu: 0, sad: 0, angry: 0, dislike: 0 },
+      userReactionsMap: new Map(),
+      repliesCount: 0,
+      viewsCount: 1,
+    });
+
+    const reputationReward = await awardReputationPoints(
+      currentUserId,
+      REPUTATION_POINTS.CREATE_FORUM_THREAD,
+      'Đăng bài nhật ký băng rừng'
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: 'Đăng bài thảo luận thành công! Bạn nhận +15 điểm uy tín.',
+      data: {
+        id: createdDoc.id,
+        title: createdDoc.title,
+        authorName: createdDoc.authorName,
+        authorAvatar: createdDoc.authorAvatar,
+        userId: createdDoc.userId ? createdDoc.userId.toString() : currentUserId,
+        category: createdDoc.category,
+        content: createdDoc.content,
+        images: createdDoc.images || [],
         upvotes: 0,
-        reactions: { like: 0, love: 0, haha: 0, wow: 0, buon: 0, huhu: 0, sad: 0, angry: 0, dislike: 0 },
-        userReactionsMap: {},
+        reactions: createdDoc.reactions,
         repliesCount: 0,
         viewsCount: 1,
-      });
-
-      return res.status(201).json({
-        success: true,
-        message: 'Đăng bài thảo luận thành công! Bạn nhận +15 điểm uy tín.',
-        data: {
-          id: createdDoc.id,
-          title: createdDoc.title,
-          authorName: createdDoc.authorName,
-          authorAvatar: createdDoc.authorAvatar,
-          userId: createdDoc.userId ? createdDoc.userId.toString() : undefined,
-          category: createdDoc.category,
-          content: createdDoc.content,
-          images: createdDoc.images || [],
-          upvotes: createdDoc.upvotes || 0,
-          reactions: createdDoc.reactions,
-          repliesCount: 0,
-          viewsCount: 1,
-          createdAt: 'Vừa xong',
-        },
-        reputationReward,
-      });
-    } else {
-      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu đang không khả dụng.' });
-    }
+        createdAt: createdDoc.createdAt.toISOString(),
+      },
+      reputationReward,
+    });
   } catch (err) {
     console.error('[MongoDB Thread Save Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi khi lưu bài viết vào cơ sở dữ liệu.' });
   }
 };
 
-export const reactToThread = async (req: Request, res: Response) => {
-  const { threadId } = req.params;
-  const { reactionType } = req.body;
-
+export const updateThread = async (req: AuthRequest, res: Response) => {
   try {
-    const threadDoc = await ThreadModel.findOne({ id: threadId });
-    if (!threadDoc) {
+    const currentUserId = req.user?.userId;
+    const isStaff = req.user?.role === 'admin' || req.user?.role === 'moderator';
+    if (!currentUserId) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const threadId = String(req.params.threadId || '').trim();
+    if (!threadId) {
+      return res.status(400).json({ success: false, message: 'Thiếu mã bài viết.' });
+    }
+
+    const query = isValidObjectId(threadId) ? { $or: [{ id: threadId }, { _id: new Types.ObjectId(threadId) }] } : { id: threadId };
+    const thread = await ThreadModel.findOne(query);
+    if (!thread) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết.' });
+    }
+    if (!isStaff && String(thread.userId) !== String(currentUserId)) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền chỉnh sửa bài viết này.' });
+    }
+
+    const { title, content, category, images } = req.body || {};
+    const nextTitle = title !== undefined ? sanitizeInput(String(title)).slice(0, 200) : thread.title;
+    const nextContent = content !== undefined ? sanitizeInput(String(content)).slice(0, 8000) : thread.content;
+
+    if (!nextTitle.trim() || !nextContent.trim()) {
+      return res.status(400).json({ success: false, message: 'Tiêu đề và nội dung bài viết không được để trống.' });
+    }
+
+    if (containsProfanity(`${nextTitle} ${nextContent}`)) {
+      const matchedWord = getProfanityMatch(`${nextTitle} ${nextContent}`);
+      const penaltyInfo = await deductReputationPoints(
+        currentUserId,
+        PENALTY_POINTS.PROFANITY_VIOLATION,
+        `Chỉnh sửa bài viết chứa từ ngữ vi phạm (${matchedWord})`
+      );
+      return res.status(400).json({
+        success: false,
+        message: `Bài viết chứa từ ngữ vi phạm quy chuẩn phát ngôn cộng đồng ("${matchedWord}").`,
+        penaltyInfo,
+      });
+    }
+
+    thread.title = nextTitle;
+    thread.content = nextContent;
+    if (typeof category === 'string' && VALID_CATEGORIES.has(category)) {
+      thread.category = category as any;
+    }
+    if (images !== undefined) {
+      thread.images = Array.isArray(images)
+        ? images.filter((img): img is string => typeof img === 'string' && isSafeHttpUrl(img)).slice(0, 8)
+        : [];
+    }
+
+    await thread.save();
+    await recordAuditLog(req, 'UPDATE_THREAD', 'threads', `Cập nhật bài viết ${thread.id}`);
+
+    const populated = await ThreadModel.findById(thread._id)
+      .populate('userId', 'fullName username avatarUrl')
+      .lean();
+    const formatted = formatThreadResponse(populated || thread.toObject(), getUserKeys(req));
+    broadcastEvent('threadUpdated', { threadId: thread.id, thread: formatted });
+
+    return res.json({
+      success: true,
+      message: 'Đã cập nhật bài viết thành công!',
+      data: formatted,
+    });
+  } catch (err) {
+    console.error('[Update Thread Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi cập nhật bài viết.' });
+  }
+};
+
+export const deleteOwnThread = async (req: AuthRequest, res: Response) => {
+  try {
+    const currentUserId = req.user?.userId;
+    const isStaff = req.user?.role === 'admin' || req.user?.role === 'moderator';
+    if (!currentUserId) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const threadId = String(req.params.threadId || '');
+    const query = isValidObjectId(threadId) ? { $or: [{ id: threadId }, { _id: new Types.ObjectId(threadId) }] } : { id: threadId };
+    const thread = await ThreadModel.findOne(query);
+    if (!thread) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết.' });
     }
 
-    const userKeys = getUserKeys(req);
-    const primaryKey = userKeys[0];
-
-    if (!threadDoc.userReactionsMap) {
-      threadDoc.userReactionsMap = {} as any;
+    if (!isStaff && String(thread.userId) !== String(currentUserId)) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền xóa bài viết này.' });
     }
 
-    const mapObj = threadDoc.userReactionsMap as any;
-    const isMapInstance = typeof mapObj.get === 'function';
+    await ThreadModel.deleteOne({ _id: thread._id });
+    await CommentModel.deleteMany({ threadId: thread.id }).catch(() => {});
+    await recordAuditLog(req, 'DELETE_THREAD', 'threads', `Xóa bài viết "${thread.title}" (${thread.id})`);
+    broadcastEvent('threadDeleted', { threadId: thread.id });
 
-    let currentReaction: string | null = null;
-    let targetKey = primaryKey;
+    return res.json({ success: true, message: 'Đã xóa bài viết thành công!' });
+  } catch (err) {
+    console.error('[Delete Own Thread Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi xóa bài viết.' });
+  }
+};
 
-    for (const key of userKeys) {
-      const existing = isMapInstance ? mapObj.get(key) : mapObj[key];
-      if (existing) {
-        currentReaction = existing;
-        targetKey = key;
-        break;
-      }
+export const reactToThread = async (req: AuthRequest, res: Response) => {
+  const { threadId } = req.params;
+  const { reactionType } = req.body || {};
+  const currentUserId = req.user?.userId;
+
+  if (!currentUserId) {
+    return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để thả cảm xúc.' });
+  }
+
+  if (
+    reactionType !== null &&
+    reactionType !== undefined &&
+    (typeof reactionType !== 'string' || !VALID_REACTIONS.has(reactionType))
+  ) {
+    return res.status(400).json({ success: false, message: 'Loại cảm xúc không hợp lệ.' });
+  }
+
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+  }
+
+  try {
+    const primaryKey = String(currentUserId);
+    const existingDoc = await ThreadModel.findOne({ id: String(threadId) })
+      .select('_id id title userId userReactionsMap')
+      .lean();
+    if (!existingDoc) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết.' });
     }
 
-    let newReaction: string | null = reactionType;
+    const existingMap: Record<string, string> =
+      existingDoc.userReactionsMap instanceof Map
+        ? Object.fromEntries(existingDoc.userReactionsMap.entries())
+        : ((existingDoc.userReactionsMap as any) || {});
+    const currentReaction = existingMap[primaryKey] || null;
+    let newReaction: string | null = reactionType || null;
+    if (!newReaction || currentReaction === newReaction) {
+      newReaction = null;
+    }
 
-    if (currentReaction === reactionType) {
-      newReaction = null;
-      if (isMapInstance) {
-        mapObj.delete(targetKey);
-        mapObj.delete(primaryKey);
-      } else {
-        delete mapObj[targetKey];
-        delete mapObj[primaryKey];
-      }
-    } else if (reactionType) {
-      newReaction = reactionType;
-      if (targetKey !== primaryKey) {
-        if (isMapInstance) mapObj.delete(targetKey);
-        else delete mapObj[targetKey];
-      }
-      if (isMapInstance) mapObj.set(primaryKey, reactionType);
-      else mapObj[primaryKey] = reactionType;
-    } else {
-      newReaction = null;
-      if (isMapInstance) {
-        mapObj.delete(targetKey);
-        mapObj.delete(primaryKey);
-      } else {
-        delete mapObj[targetKey];
-        delete mapObj[primaryKey];
-      }
+    // Atomic per-user key update prevents concurrent users from overwriting each other's reactions
+    const mapField = `userReactionsMap.${primaryKey}`;
+    const updatedDoc = await ThreadModel.findOneAndUpdate(
+      { _id: existingDoc._id },
+      newReaction ? { $set: { [mapField]: newReaction } } : { $unset: { [mapField]: '' } },
+      { new: true }
+    )
+      .select('id userId title userReactionsMap')
+      .lean();
+
+    if (!updatedDoc) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết.' });
     }
 
     const counts: Record<string, number> = {
@@ -299,78 +439,52 @@ export const reactToThread = async (req: Request, res: Response) => {
       dislike: 0,
     };
 
-    if (isMapInstance) {
-      for (const [_, r] of mapObj.entries()) {
-        if (r && counts[r] !== undefined) counts[r]++;
-      }
-    } else {
-      for (const r of Object.values(mapObj as Record<string, string>)) {
-        if (r && counts[r] !== undefined) counts[r]++;
-      }
+    const entries =
+      updatedDoc.userReactionsMap instanceof Map
+        ? Array.from(updatedDoc.userReactionsMap.entries())
+        : Object.entries((updatedDoc.userReactionsMap as any) || {});
+    for (const [, r] of entries) {
+      if (typeof r === 'string' && counts[r] !== undefined) counts[r]++;
     }
-
     const totalUpvotes = Object.values(counts).reduce((a, b) => a + b, 0);
 
-    threadDoc.reactions = counts as any;
-    threadDoc.upvotes = totalUpvotes;
-    threadDoc.markModified('reactions');
-    threadDoc.markModified('userReactionsMap');
-    await threadDoc.save();
+    await ThreadModel.updateOne({ _id: existingDoc._id }, { $set: { reactions: counts, upvotes: totalUpvotes } });
 
-    // Notify thread author about new reaction
-    if (newReaction) {
-      try {
-        let threadAuthorId = threadDoc.userId ? String(threadDoc.userId) : null;
-        if (!threadAuthorId && threadDoc.authorName) {
-          const authorUser = await UserModel.findOne({
-            $or: [{ fullName: threadDoc.authorName }, { username: threadDoc.authorName }],
-          });
-          if (authorUser) threadAuthorId = String(authorUser._id);
-        }
+    // Notify author only when adding a fresh reaction (not switching/toggling rapidly)
+    if (newReaction && !currentReaction && existingDoc.userId && String(existingDoc.userId) !== primaryKey) {
+      const reactor = isValidObjectId(primaryKey)
+        ? await UserModel.findById(primaryKey).select('fullName avatarUrl').lean()
+        : null;
+      const reactorName = reactor?.fullName || 'Thành viên LOST';
+      const titleSnippet = existingDoc.title
+        ? existingDoc.title.length > 35
+          ? existingDoc.title.substring(0, 35) + '...'
+          : existingDoc.title
+        : 'của bạn';
 
-        const authHeader = req.headers['authorization'];
-        let reactorName = 'Thành viên TrekMap';
-        let reactorId = null;
-        if (authHeader && authHeader.startsWith('Bearer ')) {
-          const decoded = verifyToken(authHeader.substring(7));
-          if (decoded?.userId) {
-            reactorId = decoded.userId;
-            const reactor = await UserModel.findById(decoded.userId);
-            if (reactor) reactorName = reactor.fullName || reactor.username;
-          }
-        }
-
-        if (threadAuthorId && String(threadAuthorId) !== String(reactorId)) {
-          const notif = new NotificationModel({
-            recipient: threadAuthorId as any,
-            sender: reactorId as any,
-            type: 'reaction',
-            title: 'Cảm xúc mới về bài viết của bạn',
-            message: `${reactorName} đã thả cảm xúc cho bài viết "${threadDoc.title ? (threadDoc.title.length > 35 ? threadDoc.title.substring(0, 35) + '...' : threadDoc.title) : 'của bạn'}"`,
-            link: `/forum?threadId=${threadDoc.id}`,
-            relatedId: threadDoc.id as any,
-            isRead: false,
-          });
-          await notif.save();
-          emitToUser(threadAuthorId, 'newNotification', notif);
-        }
-      } catch (notifErr) {
-        console.warn('⚠️ [Thread Reaction Notification Warning]:', notifErr);
-      }
+      sendNotification({
+        recipientId: String(existingDoc.userId),
+        sender: { id: primaryKey, name: reactorName, avatarUrl: reactor?.avatarUrl || '' },
+        type: 'community_comment',
+        category: 'social',
+        title: 'Cảm xúc mới về bài viết của bạn',
+        message: `${reactorName} đã thả cảm xúc cho bài viết "${titleSnippet}"`,
+        link: `/forum?threadId=${existingDoc.id}`,
+        relatedId: existingDoc.id,
+      }).catch(() => {});
     }
 
-    // Broadcast threadReactionUpdate event to all connected clients
     broadcastEvent('threadReactionUpdate', {
-      threadId: threadDoc.id,
+      threadId: existingDoc.id,
       upvotes: totalUpvotes,
-      reactions: threadDoc.reactions,
+      reactions: counts,
     });
 
     return res.json({
       success: true,
       upvotes: totalUpvotes,
       userReaction: newReaction,
-      data: threadDoc.reactions,
+      data: counts,
     });
   } catch (err) {
     console.error('[Thread Reaction API Error]:', err);
@@ -378,45 +492,66 @@ export const reactToThread = async (req: Request, res: Response) => {
   }
 };
 
-// GET /api/forum/top-trekkers
-export const getTopTrekkers = async (req: Request, res: Response) => {
+export const getTopTrekkers = async (_req: Request, res: Response) => {
   try {
-    const topUsers = await UserModel.find({ reputationScore: { $gt: 0 } })
-      .select('fullName avatarUrl reputationScore badges role')
+    if (mongoose.connection.readyState !== 1) {
+      return res.json({ success: true, data: [] });
+    }
+    const topUsers = await UserModel.find({ reputationScore: { $gt: 0 }, isBanned: { $ne: true } })
+      .select('fullName username avatarUrl reputationScore badges role')
       .sort({ reputationScore: -1 })
       .limit(6)
       .lean();
 
     return res.json({ success: true, data: topUsers });
-  } catch (err) {
+  } catch {
     return res.status(500).json({ success: false, message: 'Lỗi tải danh sách trekker' });
   }
 };
 
-// GET /api/forum/gpx/:trailId
 export const downloadTrailGpx = async (req: Request, res: Response) => {
   try {
-    const trailParam = String(req.params.trailId || '');
-    const query: any = Types.ObjectId.isValid(trailParam)
-      ? { $or: [{ id: trailParam }, { _id: new Types.ObjectId(trailParam) }] }
-      : { id: trailParam };
+    const trailParam = String(req.params.trailId || '').trim();
+    let trail: any = await resolveTrailByIdOrSlug(trailParam);
+    if (!trail) {
+      trail = mockTrails.find((t) => t.id === trailParam) || null;
+    }
 
-    const trail = (await TrailModel.findOne(query).lean()) as any;
-    if (!trail || !trail.gpxTrack || trail.gpxTrack.length === 0) {
+    if (!trail || !Array.isArray(trail.gpxTrack) || trail.gpxTrack.length === 0) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy dữ liệu GPS của cung đường này' });
     }
 
-    const safeName = escapeXml(trail.name || 'TrekMap Trail');
+    const safeName = escapeXml(trail.name || 'LOST Trail');
     const safeDesc = escapeXml(trail.description || 'Cung đường trekking thực địa Việt Nam');
-    const gpxPoints = trail.gpxTrack.map((pt: [number, number]) => `      <trkpt lat="${pt[0]}" lon="${pt[1]}"></trkpt>`).join('\n');
+    const validPoints = trail.gpxTrack.filter(
+      (pt: unknown): pt is [number, number] =>
+        Array.isArray(pt) &&
+        pt.length >= 2 &&
+        Number.isFinite(Number(pt[0])) &&
+        Number.isFinite(Number(pt[1]))
+    );
+    const gpxPoints = validPoints
+      .map((pt: [number, number]) => `      <trkpt lat="${Number(pt[0])}" lon="${Number(pt[1])}"></trkpt>`)
+      .join('\n');
+
+    const wptXml = Array.isArray(trail.waypoints)
+      ? trail.waypoints
+          .filter((w: any) => w && Number.isFinite(Number(w.lat)) && Number.isFinite(Number(w.lng)))
+          .map((w: any) => {
+            const eleTag = Number.isFinite(Number(w.elevationM)) ? `<ele>${Math.round(Number(w.elevationM))}</ele>` : '';
+            return `  <wpt lat="${Number(w.lat)}" lon="${Number(w.lng)}">${eleTag}<name>${escapeXml(w.name || 'Waypoint')}</name><desc>${escapeXml(w.description || '')}</desc><type>${escapeXml(w.type || 'viewpoint')}</type></wpt>`;
+          })
+          .join('\n')
+      : '';
+
     const gpxXml = `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="TrekMap Vietnam - https://trekmap.vn" xmlns="http://www.topografix.com/GPX/1/1">
+<gpx version="1.1" creator="LOST Vietnam - https://lost.vn" xmlns="http://www.topografix.com/GPX/1/1">
   <metadata>
     <name>${safeName}</name>
     <desc>${safeDesc}</desc>
     <time>${new Date().toISOString()}</time>
   </metadata>
-  <trk>
+${wptXml ? `${wptXml}\n` : ''}  <trk>
     <name>${safeName}</name>
     <trkseg>
 ${gpxPoints}
@@ -425,7 +560,10 @@ ${gpxPoints}
 </gpx>`;
 
     res.setHeader('Content-Type', 'application/gpx+xml; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(trail.id || trail._id?.toString() || 'trail')}.gpx"`);
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${encodeURIComponent(trail.id || trail._id?.toString() || 'trail')}.gpx"`
+    );
     return res.send(gpxXml);
   } catch (err) {
     console.error('[GPX Export Error]:', err);
@@ -433,9 +571,11 @@ ${gpxPoints}
   }
 };
 
-// GET /api/forum/chat-messages
-export const getCommunityChatMessages = async (req: Request, res: Response) => {
+export const getCommunityChatMessages = async (_req: Request, res: Response) => {
   try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.json({ success: true, data: [] });
+    }
     const rawMessages = await CommunityMessageModel.find()
       .populate('senderId', 'fullName username avatarUrl')
       .sort({ createdAt: -1 })
@@ -448,7 +588,7 @@ export const getCommunityChatMessages = async (req: Request, res: Response) => {
         id: m._id.toString(),
         senderId: liveSender?._id?.toString() || (m.senderId ? m.senderId.toString() : undefined),
         senderName: liveSender?.fullName || m.senderName,
-        senderAvatar: (liveSender && liveSender.avatarUrl) ? liveSender.avatarUrl : m.senderAvatar,
+        senderAvatar: liveSender?.avatarUrl || m.senderAvatar,
         senderBadge: m.senderBadge,
         nameColor: m.nameColor,
         text: m.text,
@@ -464,14 +604,16 @@ export const getCommunityChatMessages = async (req: Request, res: Response) => {
   }
 };
 
-// PUT /api/admin/threads/:id/pin - Toggle pin thread (Admin only)
-export const pinThreadAdmin = async (req: Request, res: Response) => {
+export const pinThreadAdmin = async (req: AuthRequest, res: Response) => {
   try {
+    const userRole = req.user?.role;
+    if (userRole !== 'admin' && userRole !== 'moderator') {
+      return res.status(403).json({ success: false, message: 'Yêu cầu quyền Admin hoặc Moderator.' });
+    }
     const id = String(req.params.id || '');
-    const isMongoId = Types.ObjectId.isValid(id);
-    const query = isMongoId ? { $or: [{ id }, { _id: new Types.ObjectId(id) }] } : { id };
+    const query = isValidObjectId(id) ? { $or: [{ id }, { _id: new Types.ObjectId(id) }] } : { id };
 
-    let thread = await ThreadModel.findOne(query);
+    const thread = await ThreadModel.findOne(query);
     if (!thread) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết.' });
     }
@@ -479,6 +621,7 @@ export const pinThreadAdmin = async (req: Request, res: Response) => {
     thread.isPinned = !thread.isPinned;
     await thread.save();
 
+    await recordAuditLog(req, thread.isPinned ? 'PIN_THREAD' : 'UNPIN_THREAD', 'threads', `${thread.isPinned ? 'Ghim' : 'Gỡ ghim'} bài viết ${thread.id}`);
     broadcastEvent('threadPinned', { threadId: thread.id, isPinned: thread.isPinned });
 
     return res.json({
@@ -497,14 +640,16 @@ export const pinThreadAdmin = async (req: Request, res: Response) => {
   }
 };
 
-// PUT /api/admin/threads/:id/lock - Toggle lock comments on thread (Admin only)
-export const lockThreadAdmin = async (req: Request, res: Response) => {
+export const lockThreadAdmin = async (req: AuthRequest, res: Response) => {
   try {
+    const userRole = req.user?.role;
+    if (userRole !== 'admin' && userRole !== 'moderator') {
+      return res.status(403).json({ success: false, message: 'Yêu cầu quyền Admin hoặc Moderator.' });
+    }
     const id = String(req.params.id || '');
-    const isMongoId = Types.ObjectId.isValid(id);
-    const query = isMongoId ? { $or: [{ id }, { _id: new Types.ObjectId(id) }] } : { id };
+    const query = isValidObjectId(id) ? { $or: [{ id }, { _id: new Types.ObjectId(id) }] } : { id };
 
-    let thread = await ThreadModel.findOne(query);
+    const thread = await ThreadModel.findOne(query);
     if (!thread) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết.' });
     }
@@ -512,6 +657,7 @@ export const lockThreadAdmin = async (req: Request, res: Response) => {
     thread.isLocked = !thread.isLocked;
     await thread.save();
 
+    await recordAuditLog(req, thread.isLocked ? 'LOCK_THREAD' : 'UNLOCK_THREAD', 'threads', `${thread.isLocked ? 'Khóa' : 'Mở khóa'} bài viết ${thread.id}`);
     broadcastEvent('threadLocked', { threadId: thread.id, isLocked: thread.isLocked });
 
     return res.json({
@@ -530,18 +676,22 @@ export const lockThreadAdmin = async (req: Request, res: Response) => {
   }
 };
 
-// DELETE /api/admin/threads/:id - Delete thread (Admin only)
-export const deleteThreadAdmin = async (req: Request, res: Response) => {
+export const deleteThreadAdmin = async (req: AuthRequest, res: Response) => {
   try {
+    const userRole = req.user?.role;
+    if (userRole !== 'admin' && userRole !== 'moderator') {
+      return res.status(403).json({ success: false, message: 'Yêu cầu quyền Admin hoặc Moderator.' });
+    }
     const id = String(req.params.id || '');
-    const isMongoId = Types.ObjectId.isValid(id);
-    const query = isMongoId ? { $or: [{ id }, { _id: new Types.ObjectId(id) }] } : { id };
+    const query = isValidObjectId(id) ? { $or: [{ id }, { _id: new Types.ObjectId(id) }] } : { id };
 
     const thread = await ThreadModel.findOneAndDelete(query);
     if (!thread) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết để xóa.' });
     }
 
+    await CommentModel.deleteMany({ threadId: thread.id }).catch(() => {});
+    await recordAuditLog(req, 'DELETE_THREAD', 'threads', `Xóa bài viết "${thread.title}" (${thread.id})`);
     broadcastEvent('threadDeleted', { threadId: thread.id });
 
     return res.json({

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { Trail, Incident, LocalGuide } from '../../types.js';
-import { mockGuides } from '../../data/seedData.js';
+import { mockTrails } from '../../data/seedData.js';
+import { VERIFIED_GUIDES_EXTENDED, VIETNAM_RANGER_STATIONS } from '../../data/vietnamDirectory.js';
 import {
   IconRadio,
   IconBird,
@@ -14,6 +15,7 @@ import {
   IconMapPin,
   IconClock,
   IconShieldAlert,
+  IconShieldCheck,
   IconTrees,
   IconCompass,
 } from '../common/SvgIcons.js';
@@ -38,6 +40,30 @@ interface AudioTrack {
   IconComponent: React.ComponentType<{ size?: number; color?: string; className?: string }>;
 }
 
+const FALLBACK_OFFICIAL_GUIDES: LocalGuide[] = VERIFIED_GUIDES_EXTENDED.map((g) => ({
+  id: g.slug,
+  slug: g.slug,
+  name: g.name,
+  phone: g.phone,
+  avatarUrl: g.avatarUrl,
+  region: g.region,
+  roleType: g.roleType,
+  provinces: g.provinces,
+  trailSlugs: g.trailSlugs,
+  priceNote: g.priceNote,
+  basePricePerDayVnd: g.basePricePerDayVnd,
+  maxGroupSize: g.maxGroupSize,
+  specialties: g.specialties,
+  languages: g.languages,
+  certifications: g.certifications,
+  experienceYears: g.experienceYears,
+  bio: g.bio,
+  isActive: g.isActive,
+  rating: g.rating,
+  reviewCount: g.reviewCount,
+  verified: g.verified,
+}));
+
 const AMBIENT_CHANNELS: AudioTrack[] = [
   {
     id: '1',
@@ -60,7 +86,7 @@ const AMBIENT_CHANNELS: AudioTrack[] = [
   {
     id: '3',
     name: 'Trạm Khí Tượng Đỉnh Núi',
-    location: 'Đỉnh Tà Xùa (2.875m)',
+    location: 'Đỉnh Tà Xùa (2.865m)',
     freq: '144.800 MHz',
     type: 'wind',
     isLiveStream: true,
@@ -95,14 +121,12 @@ const AMBIENT_CHANNELS: AudioTrack[] = [
   },
 ];
 
-// Helper: High-Fidelity Non-Repeating Organic Web Audio Nature Sound Engine
 interface SoundEngine {
   stop: () => void;
   setVolume: (vol: number) => void;
 }
 
-// Generate organic 1/f Pink Noise (Voss-McCartney algorithm) - warm, natural, non-repeating
-function createOrganicPinkNoiseBuffer(ctx: AudioContext, durationSeconds: number = 24): AudioBuffer {
+function createOrganicPinkNoiseBuffer(ctx: AudioContext, durationSeconds = 24): AudioBuffer {
   const bufferSize = Math.floor(ctx.sampleRate * durationSeconds);
   const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
   const data = buffer.getChannelData(0);
@@ -127,11 +151,13 @@ function playRealisticNatureAmbient(
   volume: number
 ): SoundEngine {
   try {
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    const AudioContextClass =
+      window.AudioContext ||
+      (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextClass) return { stop: () => {}, setVolume: () => {} };
     const ctx = new AudioContextClass();
     if (ctx.state === 'suspended') {
-      ctx.resume();
+      void ctx.resume();
     }
 
     const masterGain = ctx.createGain();
@@ -139,14 +165,12 @@ function playRealisticNatureAmbient(
     masterGain.gain.linearRampToValueAtTime(Math.max(0.01, volume * 0.28), ctx.currentTime + 0.08);
     masterGain.connect(ctx.destination);
 
-    // 24-second deep organic non-repeating pink noise buffer
     const pinkNoiseBuffer = createOrganicPinkNoiseBuffer(ctx, 24);
     const noiseNode = ctx.createBufferSource();
     noiseNode.buffer = pinkNoiseBuffer;
     noiseNode.loop = true;
 
-    // Track all active timeouts to clear cleanly on stop
-    const activeTimeouts: any[] = [];
+    const activeTimeouts: Array<ReturnType<typeof setTimeout>> = [];
     let isStopped = false;
 
     const safeTimeout = (fn: () => void, delay: number) => {
@@ -159,7 +183,6 @@ function playRealisticNatureAmbient(
     };
 
     if (type === 'rain') {
-      // 1. Trạm Hoàng Liên - Mưa rừng Hoàng Liên & Giọt mưa rải rác trên lá
       const lowFilter = ctx.createBiquadFilter();
       lowFilter.type = 'lowpass';
       lowFilter.frequency.setValueAtTime(950, ctx.currentTime);
@@ -178,7 +201,6 @@ function playRealisticNatureAmbient(
       highGain.connect(masterGain);
       noiseNode.start(0);
 
-      // Stochastic organic leaf raindrop pings
       const scheduleRainDrop = () => {
         if (isStopped || ctx.state === 'closed') return;
         try {
@@ -197,31 +219,30 @@ function playRealisticNatureAmbient(
           dropGain.connect(masterGain);
           dropOsc.start(ctx.currentTime);
           dropOsc.stop(ctx.currentTime + 0.05);
-        } catch (e) {}
+        } catch {
+          // ignore
+        }
         safeTimeout(scheduleRainDrop, 90 + Math.random() * 320);
       };
       scheduleRainDrop();
-
     } else if (type === 'birds') {
-      // 2. Sa Pa Valley - Róc rách suối ngàn & Chim rừng hót tự nhiên
       const streamFilter = ctx.createBiquadFilter();
       streamFilter.type = 'bandpass';
       streamFilter.frequency.setValueAtTime(1050, ctx.currentTime);
       streamFilter.Q.setValueAtTime(1.1, ctx.currentTime);
 
-      // Gentle stream water turbulence drift
       const streamLfo = ctx.createOscillator();
       const streamLfoGain = ctx.createGain();
       streamLfo.frequency.setValueAtTime(0.19, ctx.currentTime);
       streamLfoGain.gain.setValueAtTime(180, ctx.currentTime);
-      streamLfo.connect(streamFilter.frequency);
+      streamLfo.connect(streamLfoGain);
+      streamLfoGain.connect(streamFilter.frequency);
       streamLfo.start(0);
 
       noiseNode.connect(streamFilter);
       streamFilter.connect(masterGain);
       noiseNode.start(0);
 
-      // Dynamic Non-Repeating Melodic Birdsong Engine
       const scheduleBirdSong = () => {
         if (isStopped || ctx.state === 'closed') return;
         try {
@@ -229,7 +250,6 @@ function playRealisticNatureAmbient(
           const baseFreq = 2600 + Math.random() * 800;
 
           if (pattern === 0) {
-            // Pattern A: Double Chirp (Chirp-Chirp)
             for (let c = 0; c < 2; c++) {
               const chirpTime = ctx.currentTime + c * 0.12;
               const osc = ctx.createOscillator();
@@ -249,7 +269,6 @@ function playRealisticNatureAmbient(
               osc.stop(chirpTime + 0.11);
             }
           } else if (pattern === 1) {
-            // Pattern B: Ascending Forest Trill
             const osc = ctx.createOscillator();
             const gain = ctx.createGain();
             osc.type = 'sine';
@@ -266,7 +285,6 @@ function playRealisticNatureAmbient(
             osc.start(ctx.currentTime);
             osc.stop(ctx.currentTime + 0.25);
           } else {
-            // Pattern C: Soft Distant Whistle
             const osc = ctx.createOscillator();
             const gain = ctx.createGain();
             osc.type = 'sine';
@@ -282,15 +300,14 @@ function playRealisticNatureAmbient(
             osc.start(ctx.currentTime);
             osc.stop(ctx.currentTime + 0.23);
           }
-        } catch (e) {}
+        } catch {
+          // ignore
+        }
 
-        // Non-repeating random pause (between 2.2s and 5.5s)
         safeTimeout(scheduleBirdSong, 2200 + Math.random() * 3300);
       };
       safeTimeout(scheduleBirdSong, 600);
-
     } else if (type === 'wind') {
-      // 3. Đỉnh Tà Xùa - Gió rít đại ngàn (Dual compound out-of-phase LFOs)
       const windFilter = ctx.createBiquadFilter();
       windFilter.type = 'bandpass';
       windFilter.frequency.setValueAtTime(320, ctx.currentTime);
@@ -298,24 +315,24 @@ function playRealisticNatureAmbient(
 
       const lfo1 = ctx.createOscillator();
       const lfoGain1 = ctx.createGain();
-      lfo1.frequency.setValueAtTime(0.11, ctx.currentTime); // 9.1s cycle
+      lfo1.frequency.setValueAtTime(0.11, ctx.currentTime);
       lfoGain1.gain.setValueAtTime(140, ctx.currentTime);
-      lfo1.connect(windFilter.frequency);
+      lfo1.connect(lfoGain1);
+      lfoGain1.connect(windFilter.frequency);
       lfo1.start(0);
 
       const lfo2 = ctx.createOscillator();
       const lfoGain2 = ctx.createGain();
-      lfo2.frequency.setValueAtTime(0.19, ctx.currentTime); // 5.2s cycle
+      lfo2.frequency.setValueAtTime(0.19, ctx.currentTime);
       lfoGain2.gain.setValueAtTime(90, ctx.currentTime);
-      lfo2.connect(windFilter.frequency);
+      lfo2.connect(lfoGain2);
+      lfoGain2.connect(windFilter.frequency);
       lfo2.start(0);
 
       noiseNode.connect(windFilter);
       windFilter.connect(masterGain);
       noiseNode.start(0);
-
     } else if (type === 'campfire') {
-      // 4. Basecamp Lảo Thẩn - Lửa bập bùng & Gỗ nổ tí tách (Poisson Process)
       const fireFilter = ctx.createBiquadFilter();
       fireFilter.type = 'lowpass';
       fireFilter.frequency.setValueAtTime(620, ctx.currentTime);
@@ -324,11 +341,9 @@ function playRealisticNatureAmbient(
       fireFilter.connect(masterGain);
       noiseNode.start(0);
 
-      // Stochastic Wood Crackles & Pop Bursts
       const scheduleWoodPop = () => {
         if (isStopped || ctx.state === 'closed') return;
         try {
-          // 25% chance of a micro-cluster (2-3 rapid pops in succession)
           const burstCount = Math.random() < 0.25 ? 2 + Math.floor(Math.random() * 2) : 1;
 
           for (let b = 0; b < burstCount; b++) {
@@ -347,15 +362,14 @@ function playRealisticNatureAmbient(
             popOsc.start(popTime);
             popOsc.stop(popTime + 0.045);
           }
-        } catch (e) {}
+        } catch {
+          // ignore
+        }
 
-        // Non-repeating random pause (between 120ms and 750ms)
         safeTimeout(scheduleWoodPop, 120 + Math.random() * 630);
       };
       scheduleWoodPop();
-
     } else if (type === 'pine_wind') {
-      // 5. Rừng thông Tà Năng - Gió thông reo & Dế rừng đêm (Organic Pulse Trains)
       const pineFilter = ctx.createBiquadFilter();
       pineFilter.type = 'bandpass';
       pineFilter.frequency.setValueAtTime(460, ctx.currentTime);
@@ -365,18 +379,18 @@ function playRealisticNatureAmbient(
       const lfoGain = ctx.createGain();
       lfo.frequency.setValueAtTime(0.12, ctx.currentTime);
       lfoGain.gain.setValueAtTime(110, ctx.currentTime);
-      lfo.connect(pineFilter.frequency);
+      lfo.connect(lfoGain);
+      lfoGain.connect(pineFilter.frequency);
       lfo.start(0);
 
       noiseNode.connect(pineFilter);
       pineFilter.connect(masterGain);
       noiseNode.start(0);
 
-      // Natural Cricket Stridulation Trains
       const scheduleCricketTrain = () => {
         if (isStopped || ctx.state === 'closed') return;
         try {
-          const pulses = 3 + Math.floor(Math.random() * 3); // 3 to 5 chirps in a train
+          const pulses = 3 + Math.floor(Math.random() * 3);
           const baseFreq = 4400 + Math.random() * 400;
 
           for (let p = 0; p < pulses; p++) {
@@ -395,15 +409,14 @@ function playRealisticNatureAmbient(
             osc.start(chirpTime);
             osc.stop(chirpTime + 0.08);
           }
-        } catch (e) {}
+        } catch {
+          // ignore
+        }
 
-        // Irregular natural pause between cricket calls
         safeTimeout(scheduleCricketTrain, 1200 + Math.random() * 2400);
       };
       scheduleCricketTrain();
-
     } else {
-      // 6. Thác K50 Kon Chư Răng - Thác nước hùng vĩ 54m cuồn cuộn
       const rumbleFilter = ctx.createBiquadFilter();
       rumbleFilter.type = 'lowpass';
       rumbleFilter.frequency.setValueAtTime(450, ctx.currentTime);
@@ -424,38 +437,66 @@ function playRealisticNatureAmbient(
       noiseNode.start(0);
     }
 
+    let closeTimeoutId: ReturnType<typeof setTimeout> | null = null;
     return {
       stop: () => {
+        if (isStopped) return;
         isStopped = true;
         activeTimeouts.forEach((tid) => clearTimeout(tid));
+        if (closeTimeoutId) {
+          clearTimeout(closeTimeoutId);
+          closeTimeoutId = null;
+        }
         try {
-          masterGain.gain.setTargetAtTime(0, ctx.currentTime, 0.06);
-          setTimeout(() => {
-            try {
-              noiseNode.stop();
-              ctx.close();
-            } catch (e) {}
-          }, 120);
-        } catch (e) {}
+          if (ctx.state !== 'closed') {
+            masterGain.gain.setTargetAtTime(0, ctx.currentTime, 0.06);
+            closeTimeoutId = setTimeout(() => {
+              closeTimeoutId = null;
+              try {
+                noiseNode.stop();
+              } catch {
+                // ignore already stopped
+              }
+              try {
+                if (ctx.state !== 'closed') {
+                  void ctx.close();
+                }
+              } catch {
+                // ignore
+              }
+            }, 120);
+          }
+        } catch {
+          // ignore
+        }
       },
       setVolume: (vol: number) => {
         try {
           masterGain.gain.setTargetAtTime(Math.max(0.01, vol * 0.28), ctx.currentTime, 0.05);
-        } catch (e) {}
+        } catch {
+          // ignore
+        }
       },
     };
-  } catch (e) {
+  } catch {
     return { stop: () => {}, setVolume: () => {} };
   }
 }
 
+function extractPrimaryDialNumber(phone?: string): string {
+  if (!phone) return '112';
+  const primary = String(phone).split('/')[0] || '';
+  return primary.replace(/[^0-9+]/g, '') || '112';
+}
+
 export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
   incidents: propIncidents,
+  trails,
   onOpenIncidentModal,
   onNavigateToForum,
   onShowToast,
 }) => {
-  // --- 1. Basecamp Radio State & Instant Zero-Latency Synthesizer Player ---
+  // 1. Basecamp Radio State
   const [activeTrack, setActiveTrack] = useState<AudioTrack>(AMBIENT_CHANNELS[0]);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [volume, setVolume] = useState<number>(0.6);
@@ -497,178 +538,105 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
     };
   }, []);
 
-  // --- 2. Live Safety Radar Incidents Data ---
-  const [incidents, setIncidents] = useState<Incident[]>([]);
+  // 2. Live Safety Radar Incidents Data (Avoids duplicate /api/incidents fetch when parent passes incidents prop)
+  const [fetchedIncidents, setFetchedIncidents] = useState<Incident[]>([]);
 
   useEffect(() => {
-    if (propIncidents && propIncidents.length > 0) {
-      setIncidents(propIncidents.slice(0, 4));
-      return;
-    }
-    const fetchIncidents = async () => {
-      try {
-        const res = await fetch('/api/incidents');
-        const data = await res.json();
-        if (data.success && Array.isArray(data.data) && data.data.length > 0) {
-          setIncidents(data.data.slice(0, 4));
+    if (propIncidents !== undefined) return;
+    const controller = new AbortController();
+    fetch('/api/incidents', { signal: controller.signal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!controller.signal.aborted && data?.success && Array.isArray(data.data)) {
+          setFetchedIncidents(data.data.slice(0, 4));
         }
-      } catch (err) {
-        setIncidents([
-          {
-            id: 'inc-1',
-            trailId: 'trail-taxua',
-            trailName: 'Tà Xùa (Sống Lưng Khủng Long)',
-            userId: 'user-1',
-            userName: 'Cứu Hộ Háng Đồng',
-            type: 'bad_weather',
-            description: 'Sương mù dày đặc và gió giật mạnh cấp 6 trên sống núi.',
-            severity: 'high',
-            reportedAt: '2026-08-16T10:30:00Z',
-            resolved: false,
-            locationNote: 'Sống Lưng Khủng Long',
-          },
-          {
-            id: 'inc-2',
-            trailId: 'trail-tanangphandung',
-            trailName: 'Tà Năng - Phan Dũng',
-            userId: 'user-2',
-            userName: 'Kiểm Lâm Phan Dũng',
-            type: 'flash_flood',
-            description: 'Mưa lớn đầu nguồn làm nước suối dâng cao. Cẩn trọng vượt suối.',
-            severity: 'high',
-            reportedAt: '2026-08-16T08:15:00Z',
-            resolved: false,
-            locationNote: 'Trạm Suối Phan Dũng',
-          },
-          {
-            id: 'inc-3',
-            trailId: 'trail-fansipan',
-            trailName: 'Fansipan (Trạm Tôn)',
-            userId: 'user-1',
-            userName: 'Kiểm Lâm Hoàng Liên',
-            type: 'bad_weather',
-            description: 'Nhiệt độ ban đêm giảm sâu xuống 6°C tại lán 2.800m.',
-            severity: 'medium',
-            reportedAt: '2026-07-28T14:00:00Z',
-            resolved: false,
-            locationNote: 'Lán Đêm 2.800m',
-          },
-        ]);
-      }
+      })
+      .catch(() => {
+        // Keep empty honestly when offline or aborted
+      });
+    return () => {
+      controller.abort();
     };
-    fetchIncidents();
   }, [propIncidents]);
 
-  // --- 3. Certified Mountain Porters Data ---
-  const [porters, setPorters] = useState<LocalGuide[]>(mockGuides);
+  const incidents = (propIncidents !== undefined ? propIncidents : fetchedIncidents)
+    .filter((i) => !i.resolved)
+    .slice(0, 4);
+
+  // 3. Certified Mountain Porters & Official VQG Guiding Centers
+  const [porters, setPorters] = useState<LocalGuide[]>(() => FALLBACK_OFFICIAL_GUIDES.slice(0, 4));
+  const [totalGuidesCount, setTotalGuidesCount] = useState<number>(VERIFIED_GUIDES_EXTENDED.length);
 
   useEffect(() => {
-    const fetchPorters = async () => {
-      try {
-        const res = await fetch('/api/guides');
-        const data = await res.json();
-        if (data.success && Array.isArray(data.data) && data.data.length > 0) {
+    const controller = new AbortController();
+    fetch('/api/guides', { signal: controller.signal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!controller.signal.aborted && data?.success && Array.isArray(data.data) && data.data.length > 0) {
           setPorters(data.data.slice(0, 4));
+          setTotalGuidesCount(Math.max(data.data.length, VERIFIED_GUIDES_EXTENDED.length));
         }
-      } catch (err) {
-        setPorters(mockGuides.slice(0, 4));
-      }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setPorters(FALLBACK_OFFICIAL_GUIDES.slice(0, 4));
+      });
+    return () => {
+      controller.abort();
     };
-    fetchPorters();
   }, []);
 
-  const handleCallPorter = (phone: string, name: string) => {
-    if (onShowToast) {
-      onShowToast(`Đang liên hệ Porter ${name}: ${phone}`, 'info');
-    }
-    window.location.href = `tel:${phone.replace(/\s+/g, '')}`;
-  };
+  const activeTrailCount = Array.isArray(trails) && trails.length > 0 ? trails.length : mockTrails.length;
 
   return (
     <section
       style={{
-        padding: '24px 0 32px 0',
+        padding: '36px 0 40px 0',
         maxWidth: 1320,
         margin: '0 auto',
       }}
     >
-      {/* Section Header */}
-      <div style={{ textAlign: 'center', marginBottom: 20 }}>
-        <div
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: '5px 16px',
-            borderRadius: 20,
-            background: 'var(--color-bg-card)',
-            border: '1px solid var(--color-border)',
-            fontSize: '0.78rem',
-            fontWeight: 800,
-            color: 'var(--color-primary)',
-            textTransform: 'uppercase',
-            letterSpacing: '0.06em',
-            marginBottom: 10,
-            boxShadow: 'var(--shadow-card)',
-          }}
-        >
-          <IconRadio size={16} color="var(--color-primary)" />
-          HỆ SINH THÁI CHỈ HUY THỰC ĐỊA
-        </div>
+      {/* Editorial Left-Aligned Section Header */}
+      <div style={{ marginBottom: 22 }}>
+        <div className="section-eyebrow">03 / Hỗ trợ thực địa</div>
 
         <h2
+          className="font-editorial"
           style={{
-            fontSize: 'clamp(1.5rem, 3vw, 2.2rem)',
-            fontWeight: 900,
+            fontSize: 'clamp(1.75rem, 3.2vw, 2.55rem)',
+            fontWeight: 500,
             color: 'var(--color-text-main)',
-            margin: '0 0 8px 0',
-            letterSpacing: '-0.02em',
+            margin: '0 0 6px 0',
+            letterSpacing: '-0.025em',
+            lineHeight: 1.12,
           }}
         >
-          Trạm Chỉ Huy & Vô Tuyến Basecamp
+          Âm thanh thiên nhiên,{' '}
+          <span style={{ color: 'var(--color-primary)', fontWeight: 700 }}>
+            cảnh báo &amp; Porter bản địa
+          </span>
         </h2>
-        <p style={{ color: 'var(--color-text-muted)', fontSize: '0.92rem', maxWidth: 640, margin: '0 auto' }}>
-          Tần số âm thanh thiên nhiên thư giãn, mạng lưới radar cảnh báo an toàn thời gian thực và danh bạ porter bản địa.
+        <p style={{ color: 'var(--color-text-muted)', fontSize: '0.88rem', maxWidth: 680, margin: 0 }}>
+          Góc thư giãn âm thanh rừng núi, cập nhật cảnh báo thực địa trên {activeTrailCount} cung đường cùng danh bạ {VIETNAM_RANGER_STATIONS.length} trạm VQG/Kiểm lâm và {totalGuidesCount} đơn vị dẫn đường đã xác minh.
         </p>
       </div>
 
-      {/* Balanced 3-Card Tactical Command Dashboard Grid */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))',
-          gap: 24,
-          alignItems: 'stretch',
-        }}
-      >
+      {/* Seamless 1px Hairline Architectural 3-Panel Grid */}
+      <div className="architectural-hairline-grid">
         {/* CARD 1: Basecamp Ambient Radio */}
-        <div
-          style={{
-            background: 'var(--color-bg-card)',
-            border: '1px solid var(--color-border)',
-            borderRadius: 24,
-            padding: 22,
-            boxShadow: 'var(--shadow-card)',
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'space-between',
-            backdropFilter: 'blur(16px)',
-          }}
-        >
+        <div className="bento-command-card" style={{ borderRadius: 0, border: 'none', boxShadow: 'none', padding: 22 }}>
           <div>
-            {/* Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, gap: 8 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <span
                   style={{
-                    background: 'rgba(5, 150, 105, 0.15)',
+                    background: 'color-mix(in srgb, var(--color-primary) 14%, transparent)',
                     color: 'var(--color-primary)',
                     padding: 9,
-                    borderRadius: 14,
+                    borderRadius: 4,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    border: '1px solid rgba(5, 150, 105, 0.3)',
+                    border: '1px solid var(--color-border-glow)',
                   }}
                 >
                   <IconRadio size={20} color="var(--color-primary)" />
@@ -678,32 +646,69 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
                     Basecamp Radio
                   </h3>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                    <span style={{ fontSize: '0.73rem', color: isPlaying ? 'var(--color-primary)' : 'var(--color-text-dim)', fontWeight: 700 }}>
-                      {isPlaying ? '● Đang Phát Âm Thanh' : '○ Chế Độ Chờ'}
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 5,
+                        fontSize: '0.73rem',
+                        color: isPlaying ? 'var(--color-primary)' : 'var(--color-text-dim)',
+                        fontWeight: 700,
+                      }}
+                    >
+                      <span
+                        className={isPlaying ? 'radar-pulse-dot' : ''}
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: '50%',
+                          background: isPlaying ? 'var(--color-primary)' : 'var(--color-text-dim)',
+                        }}
+                      />
+                      {isPlaying ? 'Đang Phát Âm Thanh' : 'Chế Độ Chờ'}
                     </span>
                     {isPlaying && (
-                      <div style={{ display: 'inline-flex', alignItems: 'flex-end', gap: 2, height: 11 }}>
-                        <span style={{ width: 2.5, height: '60%', background: 'var(--color-primary)', borderRadius: 2 }} />
-                        <span style={{ width: 2.5, height: '100%', background: 'var(--color-primary)', borderRadius: 2 }} />
-                        <span style={{ width: 2.5, height: '75%', background: 'var(--color-primary)', borderRadius: 2 }} />
-                        <span style={{ width: 2.5, height: '90%', background: 'var(--color-primary)', borderRadius: 2 }} />
+                      <div style={{ display: 'inline-flex', alignItems: 'flex-end', gap: 2, height: 14 }}>
+                        <span className="audio-bar-1" style={{ width: 2.5, background: 'var(--color-primary)', borderRadius: 2 }} />
+                        <span className="audio-bar-2" style={{ width: 2.5, background: 'var(--color-primary)', borderRadius: 2 }} />
+                        <span className="audio-bar-3" style={{ width: 2.5, background: 'var(--color-primary)', borderRadius: 2 }} />
+                        <span className="audio-bar-4" style={{ width: 2.5, background: 'var(--color-primary)', borderRadius: 2 }} />
                       </div>
                     )}
                   </div>
                 </div>
               </div>
 
-              <div style={{ textAlign: 'right' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                {isPlaying && (
+                  <button
+                    type="button"
+                    onClick={stopTrack}
+                    aria-label="Tắt âm thanh Basecamp Radio"
+                    style={{
+                      fontSize: '0.7rem',
+                      fontWeight: 700,
+                      color: 'var(--color-error-text, var(--color-error))',
+                      background: 'color-mix(in srgb, var(--color-error) 12%, transparent)',
+                      border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)',
+                      borderRadius: 4,
+                      padding: '3px 8px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Tắt tiếng
+                  </button>
+                )}
                 <span
                   style={{
                     fontSize: '0.72rem',
-                    fontFamily: 'monospace',
+                    fontFamily: 'var(--font-family)',
                     color: 'var(--color-primary)',
-                    background: 'rgba(5, 150, 105, 0.12)',
+                    background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
                     padding: '3px 8px',
-                    borderRadius: 6,
+                    borderRadius: 4,
                     border: '1px solid var(--color-border-glow)',
-                    fontWeight: 700,
+                    fontWeight: 800,
                   }}
                 >
                   VHF {activeTrack.freq}
@@ -711,7 +716,6 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
               </div>
             </div>
 
-            {/* Channels List - 6 Full Channels Filling Vertical Space */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginBottom: 14 }}>
               {AMBIENT_CHANNELS.map((channel) => {
                 const isCurrent = activeTrack.id === channel.id;
@@ -721,40 +725,40 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
                     key={channel.id}
                     type="button"
                     onClick={() => togglePlay(channel)}
+                    className="interactive-click"
                     style={{
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
                       padding: '9px 12px',
-                      borderRadius: 12,
-                      border: isCurrent && isPlaying ? '1.5px solid var(--color-primary)' : '1px solid var(--color-border)',
-                      background: isCurrent && isPlaying ? 'rgba(5, 150, 105, 0.12)' : 'var(--color-bg-main)',
+                      borderRadius: 4,
+                      border: isCurrent && isPlaying ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+                      background: isCurrent && isPlaying ? 'color-mix(in srgb, var(--color-primary) 12%, transparent)' : 'var(--color-bg-main)',
                       cursor: 'pointer',
                       textAlign: 'left',
-                      transition: 'all 0.15s ease',
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
                       <span
                         style={{
                           background: isCurrent && isPlaying ? 'var(--color-primary)' : 'var(--color-bg-card)',
-                          color: isCurrent && isPlaying ? '#041108' : 'var(--color-text-dim)',
+                          color: isCurrent && isPlaying ? 'var(--color-on-primary)' : 'var(--color-text-dim)',
                           padding: 6,
-                          borderRadius: 8,
+                          borderRadius: 4,
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
                           border: '1px solid var(--color-border)',
                         }}
                       >
-                        <ChannelIcon size={14} color={isCurrent && isPlaying ? '#041108' : 'var(--color-primary)'} />
+                        <ChannelIcon size={14} color={isCurrent && isPlaying ? 'var(--color-on-primary)' : 'var(--color-primary)'} />
                       </span>
                       <div>
                         <div style={{ fontSize: '0.8rem', fontWeight: 700, color: isCurrent && isPlaying ? 'var(--color-primary)' : 'var(--color-text-main)' }}>
                           {channel.name}
                         </div>
                         <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)' }}>
-                          {channel.location} • {channel.freq}
+                          {channel.location} · {channel.freq}
                         </div>
                       </div>
                     </div>
@@ -762,16 +766,34 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
                     <span
                       style={{
                         fontSize: '0.72rem',
-                        fontWeight: 700,
+                        fontWeight: 800,
                         color: isCurrent && isPlaying ? 'var(--color-primary)' : 'var(--color-text-muted)',
-                        background: isCurrent && isPlaying ? 'rgba(5, 150, 105, 0.2)' : 'transparent',
+                        background: isCurrent && isPlaying ? 'color-mix(in srgb, var(--color-primary) 18%, transparent)' : 'transparent',
                         padding: '3px 8px',
-                        borderRadius: 6,
+                        borderRadius: 4,
                         border: isCurrent && isPlaying ? '1px solid var(--color-primary)' : '1px solid transparent',
                         whiteSpace: 'nowrap',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
                       }}
                     >
-                      {isCurrent && isPlaying ? 'Tạm Dừng ⏸' : 'Nghe ▶'}
+                      {isCurrent && isPlaying ? (
+                        <>
+                          <span>Tạm Dừng</span>
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                            <rect x="6" y="4" width="4" height="16" rx="1" />
+                            <rect x="14" y="4" width="4" height="16" rx="1" />
+                          </svg>
+                        </>
+                      ) : (
+                        <>
+                          <span>Nghe</span>
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                            <polygon points="5 3 19 12 5 21 5 3" />
+                          </svg>
+                        </>
+                      )}
                     </span>
                   </button>
                 );
@@ -784,7 +806,7 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
             style={{
               background: 'var(--color-bg-main)',
               border: '1px solid var(--color-border)',
-              borderRadius: 14,
+              borderRadius: 4,
               padding: '9px 12px',
               display: 'flex',
               alignItems: 'center',
@@ -816,178 +838,181 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
         </div>
 
         {/* CARD 2: Realtime Safety Radar & SOS Incident Status */}
-        <div
-          style={{
-            background: 'var(--color-bg-card)',
-            border: '1px solid var(--color-border)',
-            borderRadius: 24,
-            padding: 22,
-            boxShadow: 'var(--shadow-card)',
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'space-between',
-            backdropFilter: 'blur(16px)',
-          }}
-        >
+        <div className="bento-command-card" style={{ borderRadius: 0, border: 'none', boxShadow: 'none', padding: 22 }}>
           <div>
-            {/* Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, gap: 8 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <span
                   style={{
-                    background: 'rgba(239, 68, 68, 0.15)',
-                    color: 'var(--color-error)',
+                    background: 'color-mix(in srgb, var(--color-error) 14%, transparent)',
+                    color: 'var(--color-error-text, var(--color-error))',
                     padding: 9,
-                    borderRadius: 14,
+                    borderRadius: 4,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    border: '1px solid color-mix(in srgb, var(--color-error) 32%, transparent)',
                   }}
                 >
-                  <IconRadar size={20} color="var(--color-error)" />
+                  <IconRadar size={20} color="var(--color-error-text, var(--color-error))" />
                 </span>
                 <div>
                   <h3 style={{ fontSize: '1.02rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
                     Radar Cảnh Báo An Toàn
                   </h3>
-                  <span style={{ fontSize: '0.73rem', color: 'var(--color-error)', fontWeight: 700 }}>
-                    Trực ban cứu hộ & SOS 24/7
+                  <span style={{ fontSize: '0.73rem', color: 'var(--color-error-text, var(--color-error))', fontWeight: 700 }}>
+                    Trực ban cứu hộ &amp; SOS 24/7
                   </span>
                 </div>
               </div>
 
               <span
                 style={{
-                  background: 'rgba(239, 68, 68, 0.15)',
-                  color: 'var(--color-error)',
+                  background: 'color-mix(in srgb, var(--color-error) 14%, transparent)',
+                  color: 'var(--color-error-text, var(--color-error))',
                   fontSize: '0.72rem',
                   fontWeight: 800,
                   padding: '3px 9px',
-                  borderRadius: 12,
-                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                  borderRadius: 4,
+                  border: '1px solid color-mix(in srgb, var(--color-error) 32%, transparent)',
+                  flexShrink: 0,
+                  fontVariantNumeric: 'tabular-nums',
                 }}
               >
                 {incidents.length} Cảnh Báo
               </span>
             </div>
 
-            {/* List of Recent Incidents */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
-              {incidents.map((inc) => {
-                const title = inc.trailName || (inc as any).title || 'Cảnh Báo Cung Đường';
-                const location = inc.locationNote || (inc as any).location || inc.trailName || 'Vùng rừng núi';
-                const dateStr = new Date(inc.reportedAt || (inc as any).createdAt || Date.now()).toLocaleDateString('vi-VN');
-                const isHigh = inc.severity === 'high' || inc.severity === 'critical';
-
-                return (
-                  <div
-                    key={inc.id || (inc as any)._id}
-                    style={{
-                      background: 'var(--color-bg-main)',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: 12,
-                      padding: '10px 12px',
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4, gap: 6 }}>
-                      <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-text-main)', lineHeight: 1.3 }}>
-                        {title}
-                      </span>
-                      <span
-                        style={{
-                          fontSize: '0.66rem',
-                          fontWeight: 800,
-                          padding: '1px 6px',
-                          borderRadius: 6,
-                          background: isHigh ? 'rgba(239, 68, 68, 0.2)' : 'rgba(249, 115, 22, 0.2)',
-                          color: isHigh ? 'var(--color-error)' : 'var(--color-earth)',
-                          border: isHigh ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid rgba(249, 115, 22, 0.3)',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {isHigh ? 'Khẩn Cấp' : 'Chú Ý'}
-                      </span>
-                    </div>
-
-                    <div style={{ fontSize: '0.73rem', color: 'var(--color-text-muted)', marginBottom: 4, lineHeight: 1.4 }}>
-                      {inc.description}
-                    </div>
-
-                    <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        <IconMapPin size={11} color="var(--color-text-dim)" />
-                        {location}
-                      </span>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        <IconClock size={11} color="var(--color-text-dim)" />
-                        {dateStr}
-                      </span>
-                    </div>
+              {incidents.length === 0 ? (
+                <div
+                  style={{
+                    background: 'var(--color-bg-main)',
+                    border: '1px dashed var(--color-border-strong)',
+                    borderRadius: 4,
+                    padding: '28px 16px',
+                    textAlign: 'center',
+                    color: 'var(--color-text-muted)',
+                  }}
+                >
+                  <div style={{ display: 'inline-flex', marginBottom: 8 }}>
+                    <IconShieldCheck size={26} color="var(--color-primary)" />
                   </div>
-                );
-              })}
+                  <div style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
+                    Chưa ghi nhận sự cố khẩn cấp đang mở
+                  </div>
+                  <div style={{ fontSize: '0.74rem', marginTop: 4 }}>
+                    Các tuyến đường hiện chưa có cảnh báo nguy hiểm mới từ cộng đồng.
+                  </div>
+                </div>
+              ) : (
+                incidents.map((inc) => {
+                  const incExt = inc as Incident & { _id?: string; title?: string; location?: string; createdAt?: string };
+                  const title = inc.trailName || incExt.title || 'Cảnh Báo Cung Đường';
+                  const location = inc.locationNote || incExt.location || inc.trailName || 'Vùng rừng núi';
+                  const rawDate = inc.reportedAt || incExt.createdAt;
+                  const dateStr = rawDate ? new Date(rawDate).toLocaleDateString('vi-VN') : 'Gần đây';
+                  const isHigh = inc.severity === 'high' || inc.severity === 'critical';
+
+                  return (
+                    <div
+                      key={inc.id || incExt._id}
+                      style={{
+                        background: 'var(--color-bg-main)',
+                        border: '1px solid var(--color-border)',
+                        borderLeft: `3px solid ${isHigh ? 'var(--color-error)' : 'var(--color-earth)'}`,
+                        borderRadius: 4,
+                        padding: '10px 12px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4, gap: 6 }}>
+                        <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-text-main)', lineHeight: 1.3 }}>
+                          {title}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: '0.66rem',
+                            fontWeight: 800,
+                            padding: '1px 6px',
+                            borderRadius: 3,
+                            background: isHigh
+                              ? 'color-mix(in srgb, var(--color-error) 16%, transparent)'
+                              : 'color-mix(in srgb, var(--color-earth) 16%, transparent)',
+                            color: isHigh ? 'var(--color-error-text, var(--color-error))' : 'var(--color-earth)',
+                            border: isHigh
+                              ? '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)'
+                              : '1px solid color-mix(in srgb, var(--color-earth) 35%, transparent)',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {isHigh ? 'Khẩn Cấp' : 'Chú Ý'}
+                        </span>
+                      </div>
+
+                      <div style={{ fontSize: '0.73rem', color: 'var(--color-text-muted)', marginBottom: 4, lineHeight: 1.4 }}>
+                        {inc.description}
+                      </div>
+
+                      <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <IconMapPin size={11} color="var(--color-text-dim)" />
+                          {location}
+                        </span>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <IconClock size={11} color="var(--color-text-dim)" />
+                          {dateStr}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
 
-          {/* SOS Incident Button */}
           <button
             type="button"
             onClick={onOpenIncidentModal}
             className="btn btn-danger"
             style={{
               width: '100%',
-              borderRadius: 14,
-              padding: '11px 14px',
+              borderRadius: 4,
+              padding: '10px 14px',
               fontSize: '0.82rem',
               fontWeight: 800,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               gap: 8,
-              boxShadow: '0 4px 14px rgba(239, 68, 68, 0.3)',
             }}
           >
-            <IconAlertTriangle size={15} color="#ffffff" />
+            <IconAlertTriangle size={15} color="var(--color-on-danger)" />
             Báo Cáo Sự Cố Hoặc Yêu Cầu Cứu Hộ
           </button>
         </div>
 
         {/* CARD 3: Certified Mountain Porters & Local Guides */}
-        <div
-          style={{
-            background: 'var(--color-bg-card)',
-            border: '1px solid var(--color-border)',
-            borderRadius: 24,
-            padding: 22,
-            boxShadow: 'var(--shadow-card)',
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'space-between',
-            backdropFilter: 'blur(16px)',
-          }}
-        >
+        <div className="bento-command-card" style={{ borderRadius: 0, border: 'none', boxShadow: 'none', padding: 22 }}>
           <div>
-            {/* Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, gap: 8 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <span
                   style={{
-                    background: 'rgba(2, 132, 199, 0.15)',
+                    background: 'color-mix(in srgb, var(--color-sky) 14%, transparent)',
                     color: 'var(--color-sky)',
                     padding: 9,
-                    borderRadius: 14,
+                    borderRadius: 4,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    border: '1px solid rgba(2, 132, 199, 0.3)',
+                    border: '1px solid color-mix(in srgb, var(--color-sky) 32%, transparent)',
                   }}
                 >
                   <IconBackpack size={20} color="var(--color-sky)" />
                 </span>
                 <div>
                   <h3 style={{ fontSize: '1.02rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
-                    Porter & Hướng Dẫn Bản Địa
+                    Porter &amp; Hướng Dẫn Bản Địa
                   </h3>
                   <span style={{ fontSize: '0.73rem', color: 'var(--color-sky)', fontWeight: 700 }}>
                     Xác minh danh tính 100%
@@ -997,28 +1022,29 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
 
               <span
                 style={{
-                  background: 'rgba(2, 132, 199, 0.12)',
+                  background: 'color-mix(in srgb, var(--color-sky) 14%, transparent)',
                   color: 'var(--color-sky)',
                   fontSize: '0.72rem',
                   fontWeight: 800,
                   padding: '3px 9px',
-                  borderRadius: 12,
-                  border: '1px solid rgba(2, 132, 199, 0.3)',
+                  borderRadius: 4,
+                  border: '1px solid color-mix(in srgb, var(--color-sky) 32%, transparent)',
+                  flexShrink: 0,
+                  fontVariantNumeric: 'tabular-nums',
                 }}
               >
-                {porters.length} Người Dẫn
+                {totalGuidesCount} Đơn Vị
               </span>
             </div>
 
-            {/* List of Verified Porters */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 9, marginBottom: 14 }}>
               {porters.map((porter) => (
                 <div
-                  key={porter.id || (porter as any)._id}
+                  key={porter.id || (porter as LocalGuide & { _id?: string })._id}
                   style={{
                     background: 'var(--color-bg-main)',
                     border: '1px solid var(--color-border)',
-                    borderRadius: 12,
+                    borderRadius: 4,
                     padding: '11px 12px',
                     display: 'flex',
                     alignItems: 'center',
@@ -1032,8 +1058,24 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
                         {porter.name}
                       </span>
                       {porter.verified && (
-                        <span style={{ fontSize: '0.65rem', background: 'rgba(5, 150, 105, 0.15)', color: 'var(--color-primary)', padding: '1px 5px', borderRadius: 5, fontWeight: 700, border: '1px solid rgba(5, 150, 105, 0.3)' }}>
-                          ✓ Đã Xác Minh
+                        <span
+                          style={{
+                            fontSize: '0.65rem',
+                            background: 'color-mix(in srgb, var(--color-primary) 14%, transparent)',
+                            color: 'var(--color-primary)',
+                            padding: '1px 6px',
+                            borderRadius: 3,
+                            fontWeight: 700,
+                            border: '1px solid var(--color-border-glow)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 3,
+                          }}
+                        >
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                          Đã Xác Minh
                         </span>
                       )}
                     </div>
@@ -1042,35 +1084,45 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
                       {porter.priceNote || 'Thông thạo địa hình núi cao'}
                     </div>
 
-                    <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', marginTop: 2, display: 'flex', gap: 6 }}>
+                    <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                       <span>Khu vực: <strong>{porter.region}</strong></span>
-                      <span>•</span>
-                      <span>{porter.rating > 0 ? `${porter.rating.toFixed(1)}/5 ★ (${porter.reviewCount} đánh giá)` : 'Mới • Người bản địa'}</span>
+                      <span>·</span>
+                      {porter.rating > 0 ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--color-sun)', fontWeight: 700 }}>
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--color-sun)" stroke="var(--color-sun)" strokeWidth="1.5">
+                            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                          </svg>
+                          {porter.rating.toFixed(1)}/5 ({porter.reviewCount} đánh giá)
+                        </span>
+                      ) : (
+                        <span>Mới · Người bản địa</span>
+                      )}
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => handleCallPorter(porter.phone, porter.name)}
+                  <a
+                    href={`tel:${extractPrimaryDialNumber(porter.phone)}`}
+                    onClick={() => onShowToast?.(`Đang liên hệ ${porter.name}: ${porter.phone}`, 'info')}
                     className="btn btn-outline"
                     style={{
                       padding: '6px 11px',
                       fontSize: '0.74rem',
                       fontWeight: 700,
-                      borderRadius: 9,
+                      borderRadius: 4,
                       borderColor: 'var(--color-sky)',
                       color: 'var(--color-sky)',
-                      background: 'rgba(2, 132, 199, 0.08)',
+                      background: 'color-mix(in srgb, var(--color-sky) 10%, transparent)',
                       whiteSpace: 'nowrap',
-                      display: 'flex',
+                      display: 'inline-flex',
                       alignItems: 'center',
                       gap: 4,
                       flexShrink: 0,
+                      textDecoration: 'none',
                     }}
                   >
                     <IconPhone size={12} color="var(--color-sky)" />
                     Gọi Điện
-                  </button>
+                  </a>
                 </div>
               ))}
             </div>
@@ -1084,7 +1136,7 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
               style={{
                 width: '100%',
                 padding: '8px 12px',
-                borderRadius: 12,
+                borderRadius: 4,
                 fontSize: '0.82rem',
                 fontWeight: 700,
                 marginTop: 8,
@@ -1098,13 +1150,13 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
               }}
             >
               <IconCompass size={14} color="var(--color-primary)" />
-              Tham Gia Diễn Đàn & Ghép Đoàn
+              Tham Gia Diễn Đàn &amp; Ghép Đoàn
             </button>
           )}
 
-          <div style={{ fontSize: '0.73rem', color: 'var(--color-text-dim)', textAlign: 'center', lineHeight: 1.4, padding: '6px 10px', background: 'var(--color-bg-main)', borderRadius: 10, border: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+          <div style={{ fontSize: '0.73rem', color: 'var(--color-text-dim)', textAlign: 'center', lineHeight: 1.4, padding: '6px 10px', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
             <IconShieldAlert size={13} color="var(--color-sky)" />
-            Tất cả porter đều là người bản địa am hiểu địa hình rừng núi sâu.
+            Tất cả đơn vị dẫn đường đều được xác minh thực địa.
           </div>
         </div>
       </div>
