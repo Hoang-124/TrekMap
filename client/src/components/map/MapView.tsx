@@ -1,8 +1,20 @@
 import React, { useEffect, useState, useMemo, useRef, useCallback, Suspense, lazy } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, Circle, CircleMarker, useMap, useMapEvents } from 'react-leaflet';
-import MarkerClusterGroup from 'react-leaflet-cluster';
+import {
+  MapContainer,
+  FreeBasemapLayer,
+  Marker,
+  Popup,
+  Tooltip,
+  Polyline,
+  Circle,
+  CircleMarker,
+  MarkerClusterGroup,
+  useMap,
+  useMapEvents,
+} from './LeafletPrimitives.js';
 import L from 'leaflet';
 import type { Trail, Incident } from '../../types.js';
+import { FREE_BASEMAPS, FREE_BASEMAP_ORDER, type BasemapKey } from '../../utils/mapTiles.js';
 import { fetchNearbyTrails, reverseGeocode } from '../../services/api.js';
 import {
   distanceToTrackMeters,
@@ -1312,24 +1324,6 @@ export interface MapViewProps {
   onHoverTrackIndex?: (index: number | null) => void;
 }
 
-const TILE_PROVIDERS = {
-  satellite: {
-    name: 'Vệ Tinh (Esri)',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and GIS User Community',
-  },
-  terrain: {
-    name: 'Địa Hình (OpenTopoMap)',
-    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
-    attribution: '&copy; OpenStreetMap contributors, SRTM | Map style: &copy; OpenTopoMap (CC-BY-SA)',
-  },
-  roadmap: {
-    name: 'Đường Phố (OpenStreetMap Offline)',
-    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: '&copy; OpenStreetMap contributors',
-  },
-};
-
 const MapController: React.FC<{
   selectedTrail?: Trail | null;
   flyToPos?: [number, number] | null;
@@ -1538,8 +1532,8 @@ export const MapView: React.FC<MapViewProps> = React.memo(({
   trailPois = [],
   onHoverTrackIndex,
 }) => {
-  const [currentTileKey, setCurrentTileKey] = useState<keyof typeof TILE_PROVIDERS>(() =>
-    typeof navigator !== 'undefined' && navigator.onLine === false ? 'roadmap' : 'satellite'
+  const [currentTileKey, setCurrentTileKey] = useState<BasemapKey>(() =>
+    typeof navigator !== 'undefined' && navigator.onLine === false ? 'topo' : 'standard'
   );
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [isFallbackLocation, setIsFallbackLocation] = useState(false);
@@ -1618,8 +1612,8 @@ export const MapView: React.FC<MapViewProps> = React.memo(({
 
   useEffect(() => {
     const handleOffline = () => {
-      setCurrentTileKey('roadmap');
-      onShowToast?.('Đang ở chế độ ngoại tuyến — tự động dùng lớp bản đồ OpenStreetMap đã tải.', 'info');
+      setCurrentTileKey('topo');
+      onShowToast?.('Đang ở chế độ ngoại tuyến — tự động dùng lớp địa hình AWS Terrarium DEM đã tải.', 'info');
     };
     window.addEventListener('offline', handleOffline);
     return () => window.removeEventListener('offline', handleOffline);
@@ -1790,8 +1784,6 @@ export const MapView: React.FC<MapViewProps> = React.memo(({
     setIsAlertsDrawerOpen(false);
     onShowToast?.(`Đang định vị đến cung cảnh báo: ${trail.name}`, 'info');
   };
-
-  const currentTile = TILE_PROVIDERS[currentTileKey];
 
   const handleResetView = () => {
     setFocusedTrailId(null);
@@ -2246,7 +2238,7 @@ export const MapView: React.FC<MapViewProps> = React.memo(({
             }}
           >
             <Layers size={13} color="var(--color-primary)" />
-            <span>{(TILE_PROVIDERS[currentTileKey]?.name || 'Vệ Tinh').split('(')[0].trim()}</span>
+            <span>{FREE_BASEMAPS[currentTileKey]?.shortLabel || 'Bản Đồ Chuẩn'}</span>
             <ChevronDown size={11} />
           </button>
 
@@ -2261,14 +2253,14 @@ export const MapView: React.FC<MapViewProps> = React.memo(({
                 borderRadius: 6,
                 padding: 5,
                 boxShadow: 'var(--shadow-3d)',
-                minWidth: 196,
+                minWidth: 224,
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 3,
                 zIndex: 'calc(var(--z-map-hud, 400) + 1)' as unknown as number,
               }}
             >
-              {(Object.keys(TILE_PROVIDERS) as Array<keyof typeof TILE_PROVIDERS>).map((key) => {
+              {FREE_BASEMAP_ORDER.map((key) => {
                 const isSelected = key === currentTileKey;
                 return (
                   <button
@@ -2290,11 +2282,12 @@ export const MapView: React.FC<MapViewProps> = React.memo(({
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
+                      gap: 8,
                       textAlign: 'left',
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    <span>{TILE_PROVIDERS[key].name}</span>
+                    <span>{FREE_BASEMAPS[key].label}</span>
                     {isSelected && <Check size={13} color="var(--color-primary)" />}
                   </button>
                 );
@@ -2725,11 +2718,7 @@ export const MapView: React.FC<MapViewProps> = React.memo(({
             onUnlockScrollZoom={() => setIsScrollZoomUnlocked(true)}
           />
 
-          <TileLayer
-            key={currentTileKey}
-            attribution={currentTile.attribution}
-            url={currentTile.url}
-          />
+          <FreeBasemapLayer basemap={currentTileKey} />
 
           {/* Active GPS Proximity Filter Radius Ring (50 / 150 / 300 km) */}
           {userLocation && gpsRadiusKm && !selectedTrail && (

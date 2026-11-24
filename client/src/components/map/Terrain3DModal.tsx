@@ -4,6 +4,7 @@ import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Trail } from '../../types.js';
 import { haversineMeters } from '../../utils/geoMath.js';
+import { resolveTerrain3DStyle, type Terrain3DBasemapMode } from '../../utils/mapTiles.js';
 import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
 import { IconX, IconMountain, IconCompass, IconAlertTriangle } from '../common/SvgIcons.js';
 
@@ -122,7 +123,9 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
   }, [trail]);
 
   const [trackedTrailId, setTrackedTrailId] = useState<string>(trail.id);
+  const [basemap3D, setBasemap3D] = useState<Terrain3DBasemapMode>('outdoor');
   const [exaggeration, setExaggeration] = useState<number>(1.6);
+  const exaggerationRef = useRef<number>(1.6);
   const [pitch, setPitch] = useState<number>(64);
   const [mapError, setMapError] = useState<string | null>(null);
   const [isLoaded, setIsLoaded] = useState<boolean>(false);
@@ -218,6 +221,10 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
   }, [pitch]);
 
   useEffect(() => {
+    exaggerationRef.current = exaggeration;
+  }, [exaggeration]);
+
+  useEffect(() => {
     flySpeedRef.current = flySpeed;
   }, [flySpeed]);
 
@@ -305,287 +312,258 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
 
     let map: maplibregl.Map | null = null;
     let loaded = false;
+    let disposed = false;
     let errorCount = 0;
+    const styleAbort = new AbortController();
 
     // Prevent infinite spinner when offline or tile CDN is unreachable
     const loadTimeout = window.setTimeout(() => {
-      if (!loaded) {
+      if (!loaded && !disposed) {
         setMapError(
-          'Không thể tải dữ liệu địa hình 3D DEM (AWS Terrarium / Esri). Vui lòng kiểm tra kết nối mạng hoặc thử tải lại.'
+          'Không thể tải dữ liệu địa hình 3D DEM (AWS Terrarium / OpenFreeMap). Vui lòng kiểm tra kết nối mạng hoặc thử tải lại.'
         );
       }
     }, 12000);
 
-    try {
-      map = new maplibregl.Map({
-        container: containerRef.current,
-        center: [centerLng, centerLat],
-        zoom: 12.8,
-        pitch: 64,
-        bearing: -28,
-        maxPitch: 85,
-        style: {
-          version: 8,
-          sources: {
-            esriSatellite: {
-              type: 'raster',
-              tiles: [
-                'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-              ],
-              tileSize: 256,
-              attribution: '© Esri World Imagery',
-              maxzoom: 17,
-            },
-            awsTerrainDem: {
-              type: 'raster-dem',
-              tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
-              encoding: 'terrarium',
-              tileSize: 256,
-              maxzoom: 15,
-            },
-          },
-          layers: [
-            {
-              id: 'satellite-layer',
-              type: 'raster',
-              source: 'esriSatellite',
-            },
-          ],
-          terrain: {
-            source: 'awsTerrainDem',
-            exaggeration: 1.6,
-          },
-          sky: {
-            'sky-color': '#1e3a5f',
-            'horizon-color': '#93c5fd',
-            'fog-color': '#cbd5e1',
-            'fog-ground-blend': 0.5,
-            'horizon-fog-blend': 0.6,
-            'sky-horizon-blend': 0.8,
-            'atmosphere-blend': 0.7,
-          },
-        },
-      });
-
-      map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
-
-      // Pause 3D Fly-Through automatically whenever the user manually grabs, drags, or zooms the map
-      const handleUserMapInteraction = () => {
-        stopFlyThrough();
-      };
-      map.on('dragstart', handleUserMapInteraction);
-      map.on('mousedown', handleUserMapInteraction);
-      map.on('touchstart', handleUserMapInteraction);
-      map.on('wheel', handleUserMapInteraction);
-
-      map.on('load', () => {
-        if (!map) return;
-        loaded = true;
-        window.clearTimeout(loadTimeout);
-        lastReportedFlyPctRef.current = 0;
-        setFlyTrackDistM(totalDistM);
-        setIsLoaded(true);
-        setMapError(null);
-
-        map.addSource('trail-gpx-3d', {
-          type: 'geojson',
-          data: {
-            type: 'Feature',
-            properties: { name: currentTrail.name },
-            geometry: {
-              type: 'LineString',
-              coordinates: trackCoords,
-            },
-          },
-        });
-
-        // Draped track halo for contrast on real 3D satellite terrain
-        map.addLayer({
-          id: 'trail-gpx-3d-glow',
-          type: 'line',
-          source: 'trail-gpx-3d',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: {
-            'line-color': '#4ade80',
-            'line-width': 8,
-            'line-opacity': 0.45,
-            'line-blur': 4,
-          },
-        });
-
-        // Crisp core GPX polyline
-        map.addLayer({
-          id: 'trail-gpx-3d-core',
-          type: 'line',
-          source: 'trail-gpx-3d',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: {
-            'line-color': '#ffffff',
-            'line-width': 3,
-          },
-        });
-
-        // Live 3D Fly-Through camera position beacon on the trail
-        map.addSource('trail-fly-cursor', {
-          type: 'geojson',
-          data: {
-            type: 'Feature',
-            properties: {},
-            geometry: {
-              type: 'Point',
-              coordinates: trackCoords[0],
-            },
-          },
-        });
-
-        map.addLayer({
-          id: 'trail-fly-cursor-halo',
-          type: 'circle',
-          source: 'trail-fly-cursor',
-          paint: {
-            'circle-radius': 11,
-            'circle-color': '#d4a348',
-            'circle-opacity': 0.32,
-          },
-        });
-
-        map.addLayer({
-          id: 'trail-fly-cursor-dot',
-          type: 'circle',
-          source: 'trail-fly-cursor',
-          paint: {
-            'circle-radius': 5.5,
-            'circle-color': '#d4a348',
-            'circle-stroke-color': '#ffffff',
-            'circle-stroke-width': 2,
-          },
-        });
-
-        // Auto-frame full track bounds so long 30-55km traverses (Ta Nang, Ky Quan San) never get cropped
+    void resolveTerrain3DStyle(basemap3D, exaggerationRef.current, styleAbort.signal)
+      .then((resolvedStyle) => {
+        if (disposed || !containerRef.current) return;
         try {
-          const bounds = new maplibregl.LngLatBounds();
-          for (const pt of trackCoords) {
-            bounds.extend(pt);
-          }
-          if (!bounds.isEmpty()) {
-            map.fitBounds(bounds, {
-              padding: 72,
-              pitch: 64,
-              bearing: -28,
-              maxZoom: 13.8,
-              duration: 0,
+          map = new maplibregl.Map({
+            container: containerRef.current,
+            center: [centerLng, centerLat],
+            zoom: 12.8,
+            pitch: pitchRef.current,
+            bearing: -28,
+            maxPitch: 85,
+            attributionControl: false,
+            style: resolvedStyle,
+          });
+
+          map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+          map.addControl(new maplibregl.AttributionControl({ compact: false }), 'bottom-right');
+
+          // Pause 3D Fly-Through automatically whenever the user manually grabs, drags, or zooms the map
+          const handleUserMapInteraction = () => {
+            stopFlyThrough();
+          };
+          map.on('dragstart', handleUserMapInteraction);
+          map.on('mousedown', handleUserMapInteraction);
+          map.on('touchstart', handleUserMapInteraction);
+          map.on('wheel', handleUserMapInteraction);
+
+          map.on('load', () => {
+            if (!map || disposed) return;
+            loaded = true;
+            window.clearTimeout(loadTimeout);
+            lastReportedFlyPctRef.current = 0;
+            setFlyTrackDistM(totalDistM);
+            setIsLoaded(true);
+            setMapError(null);
+
+            map.addSource('trail-gpx-3d', {
+              type: 'geojson',
+              data: {
+                type: 'Feature',
+                properties: { name: currentTrail.name },
+                geometry: {
+                  type: 'LineString',
+                  coordinates: trackCoords,
+                },
+              },
             });
-          }
-        } catch {
-          // Keep default center/zoom if bounds collapse to single point
-        }
 
-        const safeName = escapePopupHtml(currentTrail.name);
-        const altLabel = `${(currentTrail.maxAltitudeM || 0).toLocaleString('vi-VN')}m`;
+            // Draped track halo for contrast on real 3D terrain
+            map.addLayer({
+              id: 'trail-gpx-3d-glow',
+              type: 'line',
+              source: 'trail-gpx-3d',
+              layout: { 'line-join': 'round', 'line-cap': 'round' },
+              paint: {
+                'line-color': '#4ade80',
+                'line-width': 8,
+                'line-opacity': 0.45,
+                'line-blur': 4,
+              },
+            });
 
-        // High-contrast popup HTML safe in both Dark & Light modes (MapLibre popup surface is light)
-        new maplibregl.Marker({ color: '#10b981' })
-          .setLngLat(trackCoords[0])
-          .setPopup(
-            new maplibregl.Popup({ offset: 20 }).setHTML(
-              `<div style="color:#171c19;font-family:var(--font-family);font-size:12px;font-weight:700;padding:2px 4px;">Điểm xuất phát: ${safeName}</div>`
-            )
-          )
-          .addTo(map);
+            // Crisp core GPX polyline
+            map.addLayer({
+              id: 'trail-gpx-3d-core',
+              type: 'line',
+              source: 'trail-gpx-3d',
+              layout: { 'line-join': 'round', 'line-cap': 'round' },
+              paint: {
+                'line-color': '#ffffff',
+                'line-width': 3,
+              },
+            });
 
-        new maplibregl.Marker({ color: '#ef4444' })
-          .setLngLat(trackCoords[trackCoords.length - 1])
-          .setPopup(
-            new maplibregl.Popup({ offset: 20 }).setHTML(
-              `<div style="color:#171c19;font-family:var(--font-family);font-size:12px;font-weight:700;padding:2px 4px;">Đích / Đỉnh (${altLabel})</div>`
-            )
-          )
-          .addTo(map);
+            // Live 3D Fly-Through camera position beacon on the trail
+            map.addSource('trail-fly-cursor', {
+              type: 'geojson',
+              data: {
+                type: 'Feature',
+                properties: {},
+                geometry: {
+                  type: 'Point',
+                  coordinates: trackCoords[0],
+                },
+              },
+            });
 
-        // Render trail.waypoints as crisp custom HTML/SVG markers with MapLibre popups on 3D terrain
-        if (Array.isArray(currentTrail.waypoints) && currentTrail.waypoints.length > 0) {
-          for (const wp of currentTrail.waypoints) {
-            const wpLat = Number(wp.lat);
-            const wpLng = Number(wp.lng);
-            if (!Number.isFinite(wpLat) || !Number.isFinite(wpLng)) continue;
+            map.addLayer({
+              id: 'trail-fly-cursor-halo',
+              type: 'circle',
+              source: 'trail-fly-cursor',
+              paint: {
+                'circle-radius': 11,
+                'circle-color': '#d4a348',
+                'circle-opacity': 0.32,
+              },
+            });
 
-            const wpMeta = getWaypoint3DMeta(wp.type);
-            const markerEl = document.createElement('div');
-            markerEl.setAttribute('role', 'button');
-            markerEl.setAttribute('aria-label', wp.name || wpMeta.label);
-            markerEl.style.width = '28px';
-            markerEl.style.height = '28px';
-            markerEl.style.borderRadius = '50%';
-            markerEl.style.background = wpMeta.color;
-            markerEl.style.border = '2px solid #ffffff';
-            markerEl.style.boxShadow = '0 3px 8px rgba(0, 0, 0, 0.48)';
-            markerEl.style.display = 'flex';
-            markerEl.style.alignItems = 'center';
-            markerEl.style.justifyContent = 'center';
-            markerEl.style.cursor = 'pointer';
-            markerEl.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${wpMeta.svg}</svg>`;
+            map.addLayer({
+              id: 'trail-fly-cursor-dot',
+              type: 'circle',
+              source: 'trail-fly-cursor',
+              paint: {
+                'circle-radius': 5.5,
+                'circle-color': '#d4a348',
+                'circle-stroke-color': '#ffffff',
+                'circle-stroke-width': 2,
+              },
+            });
 
-            const safeWpName = escapePopupHtml(wp.name || 'Mốc tọa độ');
-            const safeWpDesc = escapePopupHtml(wp.description || '');
-            const wpEleHtml =
-              typeof wp.elevationM === 'number' && Number.isFinite(wp.elevationM)
-                ? `<div style="color:#0284c7;font-size:11px;font-weight:700;margin-top:2px;">Cao độ: ${Math.round(wp.elevationM).toLocaleString('vi-VN')}m</div>`
-                : '';
-            const wpDescHtml = safeWpDesc
-              ? `<div style="color:#374151;font-size:11px;line-height:1.4;margin-top:4px;">${safeWpDesc}</div>`
-              : '';
+            // Auto-frame full track bounds so long 30-55km traverses (Ta Nang, Ky Quan San) never get cropped
+            try {
+              const bounds = new maplibregl.LngLatBounds();
+              for (const pt of trackCoords) {
+                bounds.extend(pt);
+              }
+              if (!bounds.isEmpty()) {
+                map.fitBounds(bounds, {
+                  padding: 72,
+                  pitch: pitchRef.current,
+                  bearing: -28,
+                  maxZoom: 13.8,
+                  duration: 0,
+                });
+              }
+            } catch {
+              // Keep default center/zoom if bounds collapse to single point
+            }
 
-            const popupHtml = `
-              <div style="color:#171c19;font-family:var(--font-family);min-width:160px;max-width:230px;padding:3px 4px;">
-                <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;color:${wpMeta.color};margin-bottom:2px;">
-                  ${escapePopupHtml(wpMeta.label)}
-                </div>
-                <div style="font-size:12.5px;font-weight:800;color:#111827;">${safeWpName}</div>
-                ${wpEleHtml}
-                ${wpDescHtml}
-              </div>
-            `;
+            const safeName = escapePopupHtml(currentTrail.name);
+            const altLabel = `${(currentTrail.maxAltitudeM || 0).toLocaleString('vi-VN')}m`;
 
-            new maplibregl.Marker({ element: markerEl, anchor: 'center' })
-              .setLngLat([wpLng, wpLat])
-              .setPopup(new maplibregl.Popup({ offset: 16 }).setHTML(popupHtml))
+            // High-contrast popup HTML safe in both Dark & Light modes (MapLibre popup surface is light)
+            new maplibregl.Marker({ color: '#10b981' })
+              .setLngLat(trackCoords[0])
+              .setPopup(
+                new maplibregl.Popup({ offset: 20 }).setHTML(
+                  `<div style="color:#171c19;font-family:var(--font-family);font-size:12px;font-weight:700;padding:2px 4px;">Điểm xuất phát: ${safeName}</div>`
+                )
+              )
               .addTo(map);
+
+            new maplibregl.Marker({ color: '#ef4444' })
+              .setLngLat(trackCoords[trackCoords.length - 1])
+              .setPopup(
+                new maplibregl.Popup({ offset: 20 }).setHTML(
+                  `<div style="color:#171c19;font-family:var(--font-family);font-size:12px;font-weight:700;padding:2px 4px;">Đích / Đỉnh (${altLabel})</div>`
+                )
+              )
+              .addTo(map);
+
+            // Render trail.waypoints as crisp custom HTML/SVG markers with MapLibre popups on 3D terrain
+            if (Array.isArray(currentTrail.waypoints) && currentTrail.waypoints.length > 0) {
+              for (const wp of currentTrail.waypoints) {
+                const wpLat = Number(wp.lat);
+                const wpLng = Number(wp.lng);
+                if (!Number.isFinite(wpLat) || !Number.isFinite(wpLng)) continue;
+
+                const wpMeta = getWaypoint3DMeta(wp.type);
+                const markerEl = document.createElement('div');
+                markerEl.setAttribute('role', 'button');
+                markerEl.setAttribute('aria-label', wp.name || wpMeta.label);
+                markerEl.style.width = '28px';
+                markerEl.style.height = '28px';
+                markerEl.style.borderRadius = '50%';
+                markerEl.style.background = wpMeta.color;
+                markerEl.style.border = '2px solid #ffffff';
+                markerEl.style.boxShadow = '0 3px 8px rgba(0, 0, 0, 0.48)';
+                markerEl.style.display = 'flex';
+                markerEl.style.alignItems = 'center';
+                markerEl.style.justifyContent = 'center';
+                markerEl.style.cursor = 'pointer';
+                markerEl.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${wpMeta.svg}</svg>`;
+
+                const safeWpName = escapePopupHtml(wp.name || 'Mốc tọa độ');
+                const safeWpDesc = escapePopupHtml(wp.description || '');
+                const wpEleHtml =
+                  typeof wp.elevationM === 'number' && Number.isFinite(wp.elevationM)
+                    ? `<div style="color:#0284c7;font-size:11px;font-weight:700;margin-top:2px;">Cao độ: ${Math.round(wp.elevationM).toLocaleString('vi-VN')}m</div>`
+                    : '';
+                const wpDescHtml = safeWpDesc
+                  ? `<div style="color:#374151;font-size:11px;line-height:1.4;margin-top:4px;">${safeWpDesc}</div>`
+                  : '';
+
+                const popupHtml = `
+                  <div style="color:#171c19;font-family:var(--font-family);min-width:160px;max-width:230px;padding:3px 4px;">
+                    <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;color:${wpMeta.color};margin-bottom:2px;">
+                      ${escapePopupHtml(wpMeta.label)}
+                    </div>
+                    <div style="font-size:12.5px;font-weight:800;color:#111827;">${safeWpName}</div>
+                    ${wpEleHtml}
+                    ${wpDescHtml}
+                  </div>
+                `;
+
+                new maplibregl.Marker({ element: markerEl, anchor: 'center' })
+                  .setLngLat([wpLng, wpLat])
+                  .setPopup(new maplibregl.Popup({ offset: 16 }).setHTML(popupHtml))
+                  .addTo(map);
+              }
+            }
+          });
+
+          map.on('error', (evt: { error?: { message?: string } }) => {
+            if (disposed) return;
+            errorCount += 1;
+            const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+            const isFatalWebGl =
+              evt?.error?.message &&
+              /webgl|context|shader|not supported/i.test(String(evt.error.message));
+            if (isFatalWebGl) {
+              window.clearTimeout(loadTimeout);
+              setMapError(
+                'Thiết bị hoặc trình duyệt hiện không hỗ trợ WebGL 3D. Vui lòng thử trên trình duyệt Chrome/Edge/Safari mới nhất.'
+              );
+            } else if (isOffline || (!loaded && errorCount >= 3)) {
+              window.clearTimeout(loadTimeout);
+              setMapError(
+                isOffline
+                  ? 'Bạn đang ngoại tuyến — chế độ địa hình 3D DEM yêu cầu kết nối mạng để tải khối bản đồ và cao độ.'
+                  : 'Không thể kết nối máy chủ bản đồ địa hình 3D lúc này. Vui lòng thử tải lại.'
+              );
+            }
+          });
+
+          mapRef.current = map;
+        } catch {
+          window.clearTimeout(loadTimeout);
+          if (!disposed) {
+            setMapError(
+              'Thiết bị hoặc trình duyệt hiện không hỗ trợ WebGL 3D. Vui lòng thử trên trình duyệt Chrome/Edge/Safari mới nhất.'
+            );
           }
         }
       });
-
-      map.on('error', (evt: { error?: { message?: string } }) => {
-        errorCount += 1;
-        const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
-        const isFatalWebGl =
-          evt?.error?.message &&
-          /webgl|context|shader|not supported/i.test(String(evt.error.message));
-        if (isFatalWebGl) {
-          window.clearTimeout(loadTimeout);
-          setMapError(
-            'Thiết bị hoặc trình duyệt hiện không hỗ trợ WebGL 3D. Vui lòng thử trên trình duyệt Chrome/Edge/Safari mới nhất.'
-          );
-        } else if (isOffline || (!loaded && errorCount >= 3)) {
-          window.clearTimeout(loadTimeout);
-          setMapError(
-            isOffline
-              ? 'Bạn đang ngoại tuyến — chế độ địa hình 3D DEM yêu cầu kết nối mạng để tải khối ảnh vệ tinh và cao độ.'
-              : 'Không thể kết nối máy chủ bản đồ địa hình 3D lúc này. Vui lòng thử tải lại.'
-          );
-        }
-      });
-
-      mapRef.current = map;
-    } catch {
-      window.clearTimeout(loadTimeout);
-      queueMicrotask(() => {
-        setMapError(
-          'Thiết bị hoặc trình duyệt hiện không hỗ trợ WebGL 3D. Vui lòng thử trên trình duyệt Chrome/Edge/Safari mới nhất.'
-        );
-      });
-    }
 
     return () => {
+      disposed = true;
+      styleAbort.abort();
       cancelFlyRaf();
       isFlyingRef.current = false;
       window.clearTimeout(loadTimeout);
@@ -593,7 +571,7 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
       mapRef.current = null;
       setIsLoaded(false);
     };
-  }, [isOpen, trail.id, retryTick, cancelFlyRaf, stopFlyThrough]);
+  }, [isOpen, trail.id, basemap3D, retryTick, cancelFlyRaf, stopFlyThrough]);
 
   // Smooth requestAnimationFrame Fly-Through playback loop
   useEffect(() => {
@@ -799,6 +777,53 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <div
+              role="group"
+              aria-label="Chọn lớp nền địa hình 3D"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 3,
+                padding: 2,
+                borderRadius: 4,
+                background: 'var(--color-bg-main)',
+                border: '1px solid var(--color-border)',
+              }}
+            >
+              {(
+                [
+                  { id: 'outdoor', label: 'OpenFreeMap' },
+                  { id: 'satellite', label: 'NASA GIBS' },
+                ] as const
+              ).map((opt) => {
+                const active = basemap3D === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => {
+                      stopFlyThrough();
+                      setMapError(null);
+                      setBasemap3D(opt.id);
+                    }}
+                    style={{
+                      padding: '4px 8px',
+                      borderRadius: 3,
+                      border: 'none',
+                      fontSize: '0.72rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      background: active ? 'var(--color-primary)' : 'transparent',
+                      color: active ? 'var(--color-on-primary)' : 'var(--color-text-muted)',
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.76rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>
               <span>Độ nổi núi ({exaggeration.toFixed(1)}x)</span>
               <input

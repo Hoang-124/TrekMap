@@ -1,10 +1,13 @@
 /**
- * LOST Service Worker - Offline 2D Basemap Tile & App Shell Caching (v3)
- * Provides resilient offline tile caching, entry bundle precaching, and SPA navigation across mountain areas.
- * Never caches /api/*, /socket.io*, or AWS Terrarium 3D DEM heightmap tiles.
+ * LOST Service Worker - Offline Free-Commercial Map Tile & App Shell Caching (v4)
+ * Caches ONLY 100% free commercial open-data tile hosts:
+ *   - tiles.openfreemap.org (OpenFreeMap vector styles/tiles/glyphs)
+ *   - s3.amazonaws.com/elevation-tiles-prod/terrarium/* (AWS Open Data Terrarium DEM)
+ *   - gibs.earthdata.nasa.gov (NASA GIBS Public Domain satellite imagery)
+ * Never caches /api/* or /socket.io*.
  */
 
-const CACHE_STATIC = 'lost-static-v3';
+const CACHE_STATIC = 'lost-static-v4';
 const CACHE_TILES = 'lost-tiles-v1';
 const CACHE_OFFLINE_PACKS = 'lost-offline-packs-v1';
 const MAX_STATIC_ITEMS = 160;
@@ -18,6 +21,12 @@ const STATIC_PRECACHE = [
   '/manifest.json',
   '/favicon.svg',
   '/icons/icon-192.png',
+];
+
+const MAP_TILE_HOSTS = [
+  'tiles.openfreemap.org',
+  's3.amazonaws.com',
+  'gibs.earthdata.nasa.gov',
 ];
 
 async function precacheHtmlAssets(htmlText, cache) {
@@ -48,13 +57,6 @@ async function precacheHtmlAssets(htmlText, cache) {
   }
 }
 
-const ALLOWED_2D_BASEMAP_HOST_PATTERNS = [
-  /(^|\.)tile\.openstreetmap\.org$/i,
-  /(^|\.)tile\.opentopomap\.org$/i,
-  /^server\.arcgisonline\.com$/i,
-  /(^|\.)cartocdn\.com$/i,
-];
-
 async function trimCache(cacheName, maxItems) {
   try {
     const cache = await caches.open(cacheName);
@@ -68,31 +70,40 @@ async function trimCache(cacheName, maxItems) {
   }
 }
 
-function isMapTileUrl(parsedUrl) {
-  const host = parsedUrl.hostname || '';
+function classifyFreeMapTileUrl(parsedUrl) {
+  const host = (parsedUrl.hostname || '').toLowerCase();
   const path = parsedUrl.pathname || '';
-  if (
-    host.includes('amazonaws.com') ||
-    path.includes('elevation-tiles-prod') ||
-    path.includes('/terrarium/')
-  ) {
-    return false;
-  }
-  return ALLOWED_2D_BASEMAP_HOST_PATTERNS.some((pattern) => pattern.test(host));
-}
+  if (!MAP_TILE_HOSTS.includes(host)) return null;
 
-function toCanonicalOsmTileUrl(url) {
-  const esriMatch = url.match(/server\.arcgisonline\.com\/.*\/tile\/(\d+)\/(\d+)\/(\d+)/i);
-  if (esriMatch) {
-    const [, z, y, x] = esriMatch;
-    return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+  if (host === 's3.amazonaws.com') {
+    return path.startsWith('/elevation-tiles-prod/terrarium/') ? 'raster-dem' : null;
   }
-  const slippyMatch = url.match(/\/(\d+)\/(\d+)\/(\d+)(?:@\dx)?(?:\.(?:png|jpg|jpeg))?(?:\?.*)?$/i);
-  if (slippyMatch) {
-    const [, z, x, y] = slippyMatch;
-    return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+  if (host === 'gibs.earthdata.nasa.gov') {
+    return 'raster-satellite';
+  }
+  if (host === 'tiles.openfreemap.org') {
+    return 'vector-openfreemap';
   }
   return null;
+}
+
+function createOfflineImageFallbackResponse() {
+  return new Response(
+    new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+      0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+      0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+      0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+      0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+      0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ]),
+    {
+      headers: {
+        'Content-Type': 'image/png',
+        'X-Lost-Offline-Fallback': '1',
+      },
+    }
+  );
 }
 
 self.addEventListener('install', (event) => {
@@ -150,25 +161,19 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  if (isMapTileUrl(parsedUrl)) {
-    if (request.cache === 'reload' || request.cache === 'no-store') {
+  const tileKind = classifyFreeMapTileUrl(parsedUrl);
+  if (tileKind) {
+    if (request.cache === 'no-store') {
       return;
     }
 
     event.respondWith(
       (async () => {
-        const offlinePackCache = await caches.open(CACHE_OFFLINE_PACKS);
-
-        const packedTile = await offlinePackCache.match(request);
-        if (packedTile) {
-          return packedTile;
-        }
-
-        const canonicalOsmUrl = toCanonicalOsmTileUrl(url);
-        if (canonicalOsmUrl && parsedUrl.hostname.includes('tile.openstreetmap.org') && canonicalOsmUrl !== url) {
-          const normalizedPacked = await offlinePackCache.match(canonicalOsmUrl);
-          if (normalizedPacked) {
-            return normalizedPacked;
+        if (tileKind === 'raster-dem') {
+          const offlinePackCache = await caches.open(CACHE_OFFLINE_PACKS);
+          const packedTile = await offlinePackCache.match(request);
+          if (packedTile) {
+            return packedTile;
           }
         }
 
@@ -180,13 +185,16 @@ self.addEventListener('fetch', (event) => {
 
         try {
           const networkResponse = await fetch(request);
-          const isValidCorsImage =
+          const contentType = (networkResponse.headers.get('content-type') || '').toLowerCase();
+          const isCacheable =
             networkResponse &&
             networkResponse.ok &&
             networkResponse.status === 200 &&
-            (networkResponse.headers.get('content-type') || '').toLowerCase().startsWith('image/');
+            (tileKind === 'vector-openfreemap'
+              ? !contentType.includes('text/html')
+              : contentType.startsWith('image/'));
 
-          if (isValidCorsImage) {
+          if (isCacheable) {
             await tileCache.put(request, networkResponse.clone());
             tilePutCounter += 1;
             if (tilePutCounter % 25 === 0) {
@@ -195,33 +203,10 @@ self.addEventListener('fetch', (event) => {
           }
           return networkResponse;
         } catch {
-          if (canonicalOsmUrl) {
-            const fallbackPacked = await offlinePackCache.match(canonicalOsmUrl);
-            if (fallbackPacked) {
-              return fallbackPacked;
-            }
-            const fallbackDynamic = await tileCache.match(canonicalOsmUrl);
-            if (fallbackDynamic) {
-              return fallbackDynamic;
-            }
+          if (tileKind === 'vector-openfreemap') {
+            return new Response('Offline vector tile unavailable', { status: 503 });
           }
-
-          return new Response(
-            new Uint8Array([
-              0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
-              0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-              0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
-              0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
-              0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
-              0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
-            ]),
-            {
-              headers: {
-                'Content-Type': 'image/png',
-                'X-Lost-Offline-Fallback': '1',
-              },
-            }
-          );
+          return createOfflineImageFallbackResponse();
         }
       })()
     );

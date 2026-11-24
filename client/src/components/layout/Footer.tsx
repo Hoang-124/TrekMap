@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { IconShieldAlert } from '../common/SvgIcons.js';
+import { LegalNoticesModal, type LegalNoticeTab } from '../legal/LegalNoticesModal.js';
 
 const FEATURED_TRAIL_LINKS = [
   { id: 'trail-fansipan', name: 'Fansipan (3,143m) - Nóc nhà Đông Dương' },
@@ -10,6 +11,8 @@ const FEATURED_TRAIL_LINKS = [
 ];
 
 export const Footer: React.FC = React.memo(() => {
+  const [legalTab, setLegalTab] = useState<LegalNoticeTab | null>(null);
+
   const handleSpaTrailClick = (e: React.MouseEvent<HTMLAnchorElement>, trailId: string) => {
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
     e.preventDefault();
@@ -227,6 +230,73 @@ export const Footer: React.FC = React.memo(() => {
           <span>© 2026 LOST Việt Nam — Bản đồ những cung đường hoang sơ.</span>
         </div>
 
+        <nav
+          aria-label="Liên kết pháp lý và nguồn mở"
+          style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 14 }}
+        >
+          <button
+            type="button"
+            onClick={() => setLegalTab('terms')}
+            style={{
+              color: 'var(--color-text-muted)',
+              fontSize: '0.76rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              padding: 0,
+              textDecoration: 'underline',
+              textUnderlineOffset: 3,
+              transition: 'color 0.15s ease',
+            }}
+          >
+            Điều khoản &amp; Miễn trừ
+          </button>
+          <button
+            type="button"
+            onClick={() => setLegalTab('privacy')}
+            style={{
+              color: 'var(--color-text-muted)',
+              fontSize: '0.76rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              padding: 0,
+              textDecoration: 'underline',
+              textUnderlineOffset: 3,
+              transition: 'color 0.15s ease',
+            }}
+          >
+            Bảo mật (NĐ 13/2023)
+          </button>
+          <button
+            type="button"
+            onClick={() => setLegalTab('licenses')}
+            style={{
+              color: 'var(--color-text-muted)',
+              fontSize: '0.76rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              padding: 0,
+              textDecoration: 'underline',
+              textUnderlineOffset: 3,
+              transition: 'color 0.15s ease',
+            }}
+          >
+            Bản quyền &amp; Nguồn mở
+          </button>
+          <a
+            href="/THIRD_PARTY_LICENSES.txt"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              color: 'var(--color-primary)',
+              fontSize: '0.75rem',
+              fontWeight: 700,
+              textDecoration: 'none',
+            }}
+          >
+            THIRD_PARTY_LICENSES.txt
+          </a>
+        </nav>
+
         <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
           <span style={{ color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
             v2.6 · 3D DEM &amp; Offline Atlas
@@ -239,6 +309,12 @@ export const Footer: React.FC = React.memo(() => {
       <div className="monolith-wordmark" aria-hidden="true">
         LOST<span style={{ color: 'var(--color-primary)' }}>.</span>
       </div>
+
+      <LegalNoticesModal
+        isOpen={legalTab !== null}
+        initialTab={legalTab ?? 'terms'}
+        onClose={() => setLegalTab(null)}
+      />
     </footer>
   );
 });

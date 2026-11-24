@@ -1500,7 +1500,7 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
     void copyTextWithFallback(fullUrl).then((ok) => {
       if (!isMountedRef.current) return;
       if (ok) {
-        onShowToastRef.current?.('Đã sao chép liên kết Live Beacon! Gửi ngay cho người thân qua Zalo/SMS.', 'success');
+        onShowToastRef.current?.('Đã sao chép liên kết Live Beacon! Gửi ngay cho người thân qua tin nhắn hoặc SMS.', 'success');
       } else {
         onShowToastRef.current?.(`Liên kết Live Beacon: ${fullUrl}`, 'info');
       }

@@ -126,7 +126,8 @@ export const uploadImageToCloudinary = async (req: Request, res: Response) => {
       public_id: uniquePublicId,
       resource_type: 'image',
       allowed_formats: ['jpg', 'jpeg', 'png', 'webp', 'gif'],
-      transformation: [{ width: 1200, quality: 'auto', fetch_format: 'auto' }],
+      exif: false,
+      transformation: [{ width: 1200, quality: 'auto', fetch_format: 'auto', flags: 'strip_profile' }],
     });
 
     const optimizedUrl = optimizeCloudinaryUrl(uploadResult.secure_url, { width: 1200 });

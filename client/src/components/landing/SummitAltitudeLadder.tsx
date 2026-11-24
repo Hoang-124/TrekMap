@@ -33,7 +33,7 @@ interface SummitItem {
   milestones: string[];
 }
 
-// 100% DEM-Verified Vietnam Summits & Verified Vietnam Cloudinary Mountain Photography (Rule 11)
+// 100% DEM-Verified Vietnam Summits & Original LOST Field-Atlas Topographic SVG Covers
 const TOP_10_SUMMITS: SummitItem[] = [
   {
     rank: 1,
@@ -47,7 +47,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
     bestSeason: 'T9 – T4',
     highlights: 'Nóc nhà Đông Dương 3.143m, đỉnh núi cao nhất Việt Nam và bán đảo Đông Dương với rừng trúc đỗ quyên bạt ngàn.',
     permitInfo: 'VQG Hoàng Liên',
-    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329097/trekmap/trails/trail_cover_trail-fansipan.jpg',
+    imageUrl: '/covers/trail-fansipan.svg',
     coordinates: { lat: 22.3032, lng: 103.7753 },
     milestones: ['Trạm Tôn (1.900m)', 'Lán 2 (2.800m)', 'Đỉnh Fansipan (3.143m)'],
   },
@@ -63,7 +63,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
     bestSeason: 'T10 – T4',
     highlights: 'Đỉnh núi cao thứ 2 Việt Nam 3.083m — cung trekking độc lập dài bậc nhất Tây Bắc qua Cột mốc 42 biên giới Việt–Trung.',
     permitInfo: 'Đồn BP Pa Vệ Sử',
-    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329101/trekmap/trails/trail_cover_trail-kyquansan.jpg',
+    imageUrl: '/covers/trail-pusilung.svg',
     coordinates: { lat: 22.6261, lng: 102.7871 },
     milestones: ['Pa Vệ Sử (1.255m)', 'Cột Mốc 42 (2.866m)', 'Đỉnh Pu Si Lung (3.083m)'],
   },
@@ -79,7 +79,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
     bestSeason: 'T11 – T3',
     highlights: 'Đỉnh núi cao thứ 3 Việt Nam 3.049m, thủ phủ hoa đỗ quyên cổ thụ đại ngàn và rừng trúc rêu phong ma mị.',
     permitInfo: 'Huyện Tam Đường',
-    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329103/trekmap/trails/trail_cover_trail-nhiucosan.jpg',
+    imageUrl: '/covers/trail-putaleng.svg',
     coordinates: { lat: 22.4226, lng: 103.6034 },
     milestones: ['Hồ Thầu (1.230m)', 'Lán Đỗ Quyên (2.400m)', 'Đỉnh Pu Ta Leng (3.049m)'],
   },
@@ -95,7 +95,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
     bestSeason: 'T10 – T4',
     highlights: 'Đỉnh núi cao thứ 4 Việt Nam 3.046m, nổi danh với sống lưng Núi Muối 2.100m ngắm hoàng hôn và biển mây cuộn sóng.',
     permitInfo: 'Kiểm Lâm Bát Xát',
-    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329101/trekmap/trails/trail_cover_trail-kyquansan.jpg',
+    imageUrl: '/covers/trail-kyquansan.svg',
     coordinates: { lat: 22.5070, lng: 103.5874 },
     milestones: ['Sàng Ma Sáo (1.060m)', 'Núi Muối (2.100m)', 'Đỉnh Kỳ Quan San (3.046m)'],
   },
@@ -111,7 +111,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
     bestSeason: 'T10 – T4',
     highlights: 'Đỉnh núi cao thứ 5 Việt Nam 3.012m thuộc xã Pa Vây Sử / Vàng Ma Chải — chinh phục Cột mốc biên giới số 79 (2.880m) cao nhất tuyến biên cương Việt–Trung.',
     permitInfo: 'Đồn BP Vàng Ma Chải',
-    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329099/trekmap/trails/trail_cover_trail-taxua.jpg',
+    imageUrl: '/covers/trail-khangsuvan.svg',
     coordinates: { lat: 22.754, lng: 103.4395 },
     milestones: ['Vàng Ma Chải (1.936m)', 'Cột Mốc 79 (2.880m)', 'Đỉnh Khang Su Văn (3.012m)'],
   },
@@ -127,7 +127,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
     bestSeason: 'T9 – T4',
     highlights: 'Đỉnh 2.996m nổi tiếng với khu rừng cổ tích nguyên sinh rêu phong và thảm lá phong đỏ rực rỡ mỗi độ thu về.',
     permitInfo: 'Chi cục KL Lai Châu',
-    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329104/trekmap/trails/trail_cover_trail-chuyangsin.jpg',
+    imageUrl: '/covers/trail-talienson.svg',
     coordinates: { lat: 22.4628, lng: 103.556 },
     milestones: ['Bản Tả Lèng (1.490m)', 'Lán 2.478m', 'Đỉnh Tả Liên (2.996m)'],
   },
@@ -143,7 +143,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
     bestSeason: 'T9 – T11',
     highlights: 'Đỉnh 2.979m — vương quốc hoa tím Chi Pâu đại ngàn và thảo nguyên săn mây đón gió lộng vùng Trạm Tấu.',
     permitInfo: 'UBND Huyện Trạm Tấu',
-    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329102/trekmap/trails/trail_cover_trail-tachinhu.jpg',
+    imageUrl: '/covers/trail-tachinhu.svg',
     coordinates: { lat: 21.5707, lng: 104.3065 },
     milestones: ['Mỏ Chì Xà Hồ (1.340m)', 'Lán Ngựa (2.400m)', 'Đỉnh Tà Chì Nhù (2.979m)'],
   },
@@ -159,7 +159,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
     bestSeason: 'T10 – T3',
     highlights: 'Đỉnh 2.965m đi qua rừng thảo quả, Thác Ong Chúa hùng vĩ và biển mây trên sống núi Sàng Ma Sáo.',
     permitInfo: 'Đồn BP Sàng Ma Sáo',
-    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329103/trekmap/trails/trail_cover_trail-nhiucosan.jpg',
+    imageUrl: '/covers/trail-nhiucosan.svg',
     coordinates: { lat: 22.5838, lng: 103.5834 },
     milestones: ['Bản Nhìu Cồ (1.520m)', 'Thác Ong Chúa (2.020m)', 'Đỉnh Nhìu Cồ (2.965m)'],
   },
@@ -175,7 +175,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
     bestSeason: 'T10 – T4',
     highlights: 'Đỉnh 2.913m với rừng táo mèo cổ thụ, rừng phong lá đỏ tháng 11–12 và bãi cỏ cháy rộng lớn trên đỉnh.',
     permitInfo: 'UBND Xã Nậm Có',
-    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329105/trekmap/trails/trail_cover_trail-bidoup.jpg',
+    imageUrl: '/covers/trail-lungcung.svg',
     coordinates: { lat: 21.9024, lng: 104.2308 },
     milestones: ['Bản Tu San (1.115m)', 'Lán 2.400m', 'Đỉnh Lùng Cúng (2.913m)'],
   },
@@ -191,7 +191,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
     bestSeason: 'T10 – T4',
     highlights: 'Đỉnh núi 2.881m xuất phát từ bản Thào A (xã Hố Mít, Tân Uyên) — nổi tiếng với hệ thống suối đá lớn xếp tầng, vách đá dựng đứng và biển mây dày đặc.',
     permitInfo: 'Chi cục KL Lai Châu',
-    imageUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329100/trekmap/trails/trail_cover_trail-laothan.jpg',
+    imageUrl: '/covers/trail-namkanghotao.svg',
     coordinates: { lat: 22.1508, lng: 103.9693 },
     milestones: ['Bản Thào A (1.575m)', 'Lán Sườn Núi (2.574m)', 'Đỉnh Nam Kang Ho Tao (2.881m)'],
   },
@@ -545,7 +545,7 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
           }}
         >
           <div>
-            {/* Panoramic Banner (<img> with verified Cloudinary fallback) */}
+            {/* Panoramic Banner (<img> with local Field-Atlas SVG fallback) */}
             <div
               style={{
                 position: 'relative',

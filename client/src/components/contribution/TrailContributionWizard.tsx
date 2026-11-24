@@ -1,6 +1,15 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, useMapEvents, useMap } from 'react-leaflet';
+import {
+  MapContainer,
+  FreeBasemapLayer,
+  Marker,
+  Popup,
+  Polyline,
+  useMapEvents,
+  useMap,
+} from '../map/LeafletPrimitives.js';
 import L from 'leaflet';
+import { FREE_BASEMAPS, FREE_BASEMAP_ORDER, type BasemapKey } from '../../utils/mapTiles.js';
 import {
   submitTrailContribution,
   updateTrailContribution,
@@ -319,7 +328,8 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
   const [editingId, setEditingId] = useState<string | null>(null);
   const isEditing = Boolean(editingId);
   const [pinMode, setPinMode] = useState<'start' | 'end' | 'waypoint'>('start');
-  const [mapTileType, setMapTileType] = useState<'satellite' | 'terrain' | 'osm'>('satellite');
+  const [mapTileType, setMapTileType] = useState<BasemapKey>('standard');
+  const [copyrightConfirmed, setCopyrightConfirmed] = useState<boolean>(false);
   const [gpxTrack, setGpxTrack] = useState<[number, number][]>([]);
   const [gpxFileName, setGpxFileName] = useState<string>('');
   const [mapFitVersion, setMapFitVersion] = useState<number>(0);
@@ -1146,6 +1156,18 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
       setStep(4);
       return;
     }
+    if (!copyrightConfirmed) {
+      setErrors((prev) => ({
+        ...prev,
+        copyrightConfirmed:
+          'Vui lòng xác nhận bản quyền hình ảnh và dữ liệu tọa độ trước khi gửi đóng góp.',
+      }));
+      onShowToast?.(
+        'Vui lòng đánh dấu xác nhận quyền sở hữu bản quyền hình ảnh & dữ liệu tọa độ trước khi gửi.',
+        'error'
+      );
+      return;
+    }
 
     setLoading(true);
     try {
@@ -1719,12 +1741,14 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                   style={{ width: 'auto', fontSize: '0.78rem', padding: '5px 10px', height: 32, borderRadius: 4 }}
                   value={mapTileType}
                   onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
-                    setMapTileType(e.target.value as 'satellite' | 'terrain' | 'osm')
+                    setMapTileType(e.target.value as BasemapKey)
                   }
                 >
-                  <option value="satellite">Vệ Tinh (Esri World)</option>
-                  <option value="terrain">Địa Hình (Topo)</option>
-                  <option value="osm">Bản Đồ Phố</option>
+                  {FREE_BASEMAP_ORDER.map((key) => (
+                    <option key={key} value={key}>
+                      {FREE_BASEMAPS[key].label}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -1738,16 +1762,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                     zoom={11}
                     style={{ height: '100%', width: '100%' }}
                   >
-                    <TileLayer
-                      url={
-                        mapTileType === 'satellite'
-                          ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
-                          : mapTileType === 'terrain'
-                            ? 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png'
-                            : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
-                      }
-                      attribution="Esri, OSM"
-                    />
+                    <FreeBasemapLayer basemap={mapTileType} />
                     <MapBoundsFitter
                       gpxTrack={gpxTrack}
                       start={[formData.startLat, formData.startLng]}
@@ -2082,7 +2097,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                     type="text"
                     className="form-input"
                     style={{ padding: '8px 12px', fontSize: '0.85rem', borderRadius: 4, borderColor: errors.coverImage ? 'var(--color-error)' : undefined }}
-                    placeholder="https://res.cloudinary.com/... hoặc dán link ảnh thực tế của bạn"
+                    placeholder="Dán link ảnh thực địa hợp pháp của bạn hoặc bấm 'Tải ảnh từ máy'"
                     value={formData.coverImage}
                     onChange={(e) => handleChange('coverImage', e.target.value)}
                   />
@@ -2313,6 +2328,76 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
               </div>
             </div>
 
+            <div
+              style={{
+                background: 'var(--color-bg-main)',
+                border: errors.copyrightConfirmed
+                  ? '1px solid var(--color-error)'
+                  : copyrightConfirmed
+                    ? '1px solid var(--color-border-glow)'
+                    : '1px solid var(--color-border-strong)',
+                borderRadius: 4,
+                padding: '12px 14px',
+                marginBottom: 16,
+              }}
+            >
+              <label
+                htmlFor="contrib-copyright-consent"
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 10,
+                  cursor: 'pointer',
+                  fontSize: '0.84rem',
+                  lineHeight: 1.5,
+                  color: 'var(--color-text-main)',
+                  fontWeight: 600,
+                }}
+              >
+                <input
+                  id="contrib-copyright-consent"
+                  type="checkbox"
+                  required
+                  checked={copyrightConfirmed}
+                  onChange={(e) => {
+                    setCopyrightConfirmed(e.target.checked);
+                    if (e.target.checked && errors.copyrightConfirmed) {
+                      setErrors((prev) => {
+                        const copy = { ...prev };
+                        delete copy.copyrightConfirmed;
+                        return copy;
+                      });
+                    }
+                  }}
+                  style={{
+                    marginTop: 3,
+                    width: 16,
+                    height: 16,
+                    accentColor: 'var(--color-primary)',
+                    flexShrink: 0,
+                    cursor: 'pointer',
+                  }}
+                />
+                <span>
+                  Tôi xác nhận sở hữu bản quyền hoặc có quyền hợp pháp sử dụng hình ảnh &amp; dữ liệu tọa độ gửi lên LOST{' '}
+                  <span style={{ color: 'var(--color-error-text, var(--color-error))' }}>*</span>
+                </span>
+              </label>
+              {errors.copyrightConfirmed && (
+                <div
+                  style={{
+                    color: 'var(--color-error-text, var(--color-error))',
+                    fontSize: '0.76rem',
+                    fontWeight: 600,
+                    marginTop: 6,
+                    paddingLeft: 26,
+                  }}
+                >
+                  {errors.copyrightConfirmed}
+                </div>
+              )}
+            </div>
+
             <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
               <button type="button" className="btn btn-secondary" onClick={() => setStep(4)} style={{ padding: '10px 22px', fontSize: '0.88rem', borderRadius: 4 }}>
                 <ArrowLeft size={16} /> Sửa thông tin
@@ -2321,8 +2406,20 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                 type="button"
                 className="btn btn-primary"
                 onClick={handleSubmit}
-                disabled={loading}
-                style={{ flex: 1, minWidth: 220, padding: '10px 28px', fontSize: '0.9rem', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 4 }}
+                disabled={loading || !copyrightConfirmed}
+                style={{
+                  flex: 1,
+                  minWidth: 220,
+                  padding: '10px 28px',
+                  fontSize: '0.9rem',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                  borderRadius: 4,
+                  opacity: loading || !copyrightConfirmed ? 0.58 : 1,
+                  cursor: loading || !copyrightConfirmed ? 'not-allowed' : 'pointer',
+                }}
               >
                 {loading ? (
                   <span>Đang lưu vào Database...</span>

@@ -82,8 +82,7 @@ interface TrailDetailViewProps {
   onSelectTrail?: (trail: Trail) => void;
 }
 
-const VERIFIED_AVATAR_FALLBACK =
-  'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
+const VERIFIED_AVATAR_FALLBACK = '/covers/avatar-default.svg';
 
 const WAYPOINT_TYPE_LABELS: Record<string, string> = {
   campsite: 'Điểm cắm trại',

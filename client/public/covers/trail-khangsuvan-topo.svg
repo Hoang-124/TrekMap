@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 750" width="1200" height="750" role="img" aria-label="Bản đồ địa hình Chinh Phục Khang Su Văn (Phàn Liên San) 3.012m &amp; Cột Mốc 79">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1310"/>
+      <stop offset="100%" stop-color="#13211c"/>
+    </linearGradient>
+    <linearGradient id="epFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#74c69d" stop-opacity="0.42"/>
+      <stop offset="100%" stop-color="#74c69d" stop-opacity="0.02"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="750" fill="url(#bg)"/>
+
+  <!-- Precision Metric Grid -->
+  <g stroke="#d8e6df" stroke-opacity="0.06" stroke-width="1">
+    <line x1="100" y1="0" x2="100" y2="750"/><line x1="200" y1="0" x2="200" y2="750"/><line x1="300" y1="0" x2="300" y2="750"/><line x1="400" y1="0" x2="400" y2="750"/><line x1="500" y1="0" x2="500" y2="750"/><line x1="600" y1="0" x2="600" y2="750"/><line x1="700" y1="0" x2="700" y2="750"/><line x1="800" y1="0" x2="800" y2="750"/><line x1="900" y1="0" x2="900" y2="750"/><line x1="1000" y1="0" x2="1000" y2="750"/><line x1="1100" y1="0" x2="1100" y2="750"/>
+    <line x1="0" y1="100" x2="1200" y2="100"/><line x1="0" y1="200" x2="1200" y2="200"/><line x1="0" y1="300" x2="1200" y2="300"/><line x1="0" y1="400" x2="1200" y2="400"/><line x1="0" y1="500" x2="1200" y2="500"/><line x1="0" y1="600" x2="1200" y2="600"/><line x1="0" y1="700" x2="1200" y2="700"/>
+  </g>
+
+  <!-- Topographic Contours -->
+  <g><ellipse cx="609.2" cy="290.0" rx="94" ry="46" transform="rotate(16 609.2 290.0)" fill="none" stroke="#74c69d" stroke-opacity="0.20" stroke-width="0.8"/><ellipse cx="609.2" cy="290.0" rx="172" ry="88" transform="rotate(16 609.2 290.0)" fill="none" stroke="#74c69d" stroke-opacity="0.18" stroke-width="0.8"/><ellipse cx="609.2" cy="290.0" rx="250" ry="130" transform="rotate(16 609.2 290.0)" fill="none" stroke="#74c69d" stroke-opacity="0.16" stroke-width="1.4"/><ellipse cx="609.2" cy="290.0" rx="328" ry="172" transform="rotate(16 609.2 290.0)" fill="none" stroke="#74c69d" stroke-opacity="0.14" stroke-width="0.8"/><ellipse cx="609.2" cy="290.0" rx="406" ry="214" transform="rotate(16 609.2 290.0)" fill="none" stroke="#74c69d" stroke-opacity="0.12" stroke-width="0.8"/><ellipse cx="609.2" cy="290.0" rx="484" ry="256" transform="rotate(16 609.2 290.0)" fill="none" stroke="#74c69d" stroke-opacity="0.10" stroke-width="1.4"/><ellipse cx="609.2" cy="290.0" rx="562" ry="298" transform="rotate(16 609.2 290.0)" fill="none" stroke="#74c69d" stroke-opacity="0.08" stroke-width="0.8"/><ellipse cx="609.2" cy="290.0" rx="640" ry="340" transform="rotate(16 609.2 290.0)" fill="none" stroke="#74c69d" stroke-opacity="0.06" stroke-width="0.8"/></g>
+
+  <!-- Real Normalized GPX Track -->
+  <path d="M 160.0 465.0 L 255.0 429.0 L 355.6 391.0 L 467.3 349.0 L 579.0 305.0 L 676.8 263.0 L 769.0 223.0 L 855.6 184.0 L 933.8 146.0 L 1040.0 145.0" fill="none" stroke="#74c69d" stroke-opacity="0.25" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 160.0 465.0 L 255.0 429.0 L 355.6 391.0 L 467.3 349.0 L 579.0 305.0 L 676.8 263.0 L 769.0 223.0 L 855.6 184.0 L 933.8 146.0 L 1040.0 145.0" fill="none" stroke="#74c69d" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Start & Summit Waypoints -->
+  <circle cx="160.0" cy="465.0" r="8" fill="#0b1310" stroke="#74c69d" stroke-width="3"/>
+  <circle cx="1040.0" cy="145.0" r="9" fill="#e8dfba" stroke="#0b1310" stroke-width="2.5"/>
+  <circle cx="1040.0" cy="145.0" r="18" fill="none" stroke="#e8dfba" stroke-opacity="0.55" stroke-width="1.3"/>
+
+  <!-- Elevation Profile Strip -->
+  <rect x="76" y="520" width="1048" height="175" rx="6" fill="#09100d" fill-opacity="0.72" stroke="#74c69d" stroke-opacity="0.28" stroke-width="1"/>
+  <path d="M 110.0 660.0 L 436.7 613.5 L 763.3 563.5 L 1090.0 550.0 L 1090.0 670 L 110.0 670 Z" fill="url(#epFill)"/>
+  <path d="M 110.0 660.0 L 436.7 613.5 L 763.3 563.5 L 1090.0 550.0" fill="none" stroke="#74c69d" stroke-width="2.6" stroke-linejoin="round"/>
+
+  <!-- Header Cartographic Bar -->
+  <rect x="24" y="24" width="1152" height="702" rx="4" fill="none" stroke="#f4f3ee" stroke-opacity="0.16" stroke-width="1"/>
+  <g font-family="'Plus Jakarta Sans','Inter',system-ui,sans-serif">
+    <text x="56" y="68" fill="#74c69d" font-size="12" font-weight="800" letter-spacing="3">LOST VIETNAM · TOPOGRAPHIC GPX SHEET</text>
+    <text x="56" y="102" fill="#f4f3ee" font-size="28" font-weight="800">Khang Su Văn (Phàn Liên San) 3.012…</text>
+    <text x="56" y="128" fill="#b7c7be" font-size="13" font-weight="600" letter-spacing="1">Lai Châu · 24.0 KM · +1.520M GAIN · ĐỈNH 3.012M</text>
+    <text x="1144" y="68" text-anchor="end" fill="#b7c7be" font-size="12" font-weight="700" letter-spacing="1.4">22.7220°N 103.4080°E  →  22.7540°N 103.4395°E</text>
+    <text x="108" y="544" fill="#b7c7be" font-size="11" font-weight="700" letter-spacing="2">MẶT CẮT ĐỘ CAO THỰC ĐỊA (1936M → 3012M)</text>
+  </g>
+</svg>

@@ -2,15 +2,21 @@ import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 
 import { createPortal } from 'react-dom';
 import {
   CircleMarker,
+  FreeBasemapLayer,
   MapContainer,
   Marker,
   Polyline,
   Popup,
-  TileLayer,
   useMap,
   useMapEvents,
-} from 'react-leaflet';
+} from '../map/LeafletPrimitives.js';
 import L from 'leaflet';
+import {
+  FREE_BASEMAPS,
+  FREE_BASEMAP_ORDER,
+  sampleTerrariumElevations,
+  type BasemapKey,
+} from '../../utils/mapTiles.js';
 import type { Region, Trail, User } from '../../types.js';
 import { isTopmostFocusTrap, useFocusTrap } from '../../hooks/useFocusTrap.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
@@ -66,12 +72,12 @@ export interface RoutePlannerViewProps {
   onBack?: () => void;
 }
 
-type MapTileKey = 'topo' | 'satellite' | 'osm';
+type MapTileKey = BasemapKey;
 type ClickToolMode = 'vertex' | 'waypoint';
 type ElevationSourceState =
   | 'none'
   | 'server-dem'
-  | 'open-meteo-dem'
+  | 'terrarium-dem'
   | 'gpx-elevation'
   | 'interpolated'
   | 'interpolated-fallback';
@@ -117,27 +123,6 @@ interface LoadedRouteMeta {
 const LOCAL_ROUTES_STORAGE_KEY = 'lost_custom_routes_v1';
 const DRAFT_CONTRIBUTION_KEY = 'lost_planner_draft_contribution';
 const AI_PENDING_PROMPT_KEY = 'lost_ai_pending_prompt';
-
-const TILE_LAYERS: Record<MapTileKey, { label: string; url: string; attribution: string; maxZoom: number }> = {
-  topo: {
-    label: 'Địa Hình Topo',
-    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
-    attribution: '&copy; OpenStreetMap, SRTM | OpenTopoMap',
-    maxZoom: 17,
-  },
-  satellite: {
-    label: 'Vệ Tinh',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    attribution: '&copy; Esri World Imagery',
-    maxZoom: 18,
-  },
-  osm: {
-    label: 'Bản Đồ Chuẩn',
-    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: '&copy; OpenStreetMap contributors',
-    maxZoom: 19,
-  },
-};
 
 const WAYPOINT_TYPE_META: Record<
   RouteWaypointType,
@@ -301,9 +286,9 @@ function computeFourTierSlopeBreakdown(profile: RouteMetricsSummary['profile']):
     const curr = profile[i];
     const segKm =
       Number.isFinite(prev.lat) &&
-      Number.isFinite(prev.lng) &&
-      Number.isFinite(curr.lat) &&
-      Number.isFinite(curr.lng)
+        Number.isFinite(prev.lng) &&
+        Number.isFinite(curr.lat) &&
+        Number.isFinite(curr.lng)
         ? calculateHaversineKm(prev.lat, prev.lng, curr.lat, curr.lng)
         : Math.max(0, curr.distanceKm - prev.distanceKm);
     if (!Number.isFinite(segKm) || segKm <= 0) continue;
@@ -490,8 +475,8 @@ function createStaticVertexDivIcon(role: 'start' | 'mid' | 'end'): L.DivIcon {
   const fill = isStart
     ? 'var(--color-primary)'
     : isEnd
-    ? 'var(--color-error)'
-    : 'var(--color-bg-card)';
+      ? 'var(--color-error)'
+      : 'var(--color-bg-card)';
   const stroke = isStart || isEnd ? 'var(--color-on-media)' : 'var(--color-primary)';
   const size = isStart || isEnd ? 18 : 13;
 
@@ -542,9 +527,9 @@ function buildVerticesFromTrail(trail: Trail): { vertices: RouteVertex[]; waypoi
     Array.isArray(trail.gpxTrack) && trail.gpxTrack.length >= 2
       ? trail.gpxTrack
       : [
-          [trail.startLat, trail.startLng] as [number, number],
-          [trail.endLat, trail.endLng] as [number, number],
-        ];
+        [trail.startLat, trail.startLng] as [number, number],
+        [trail.endLat, trail.endLng] as [number, number],
+      ];
 
   const baseAlt = Math.max(80, trail.maxAltitudeM - trail.elevationGainM);
   const vertices: RouteVertex[] = track.map(([lat, lng], idx) => {
@@ -643,9 +628,6 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
   const libraryDrawerRef = useRef<HTMLDivElement | null>(null);
   const onShowToastRef = useRef(onShowToast);
   const lastInitialTrailIdRef = useRef<string | undefined>(initialTrailId);
-  const profileScrubRafRef = useRef<number | null>(null);
-  const pendingProfileScrubRef = useRef<{ clientX: number; svgEl: SVGSVGElement } | null>(null);
-  const lastHoverIdxRef = useRef<number | null>(null);
 
   useEffect(() => {
     onShowToastRef.current = onShowToast;
@@ -655,10 +637,6 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
-      if (profileScrubRafRef.current !== null) {
-        window.cancelAnimationFrame(profileScrubRafRef.current);
-        profileScrubRafRef.current = null;
-      }
       libraryAbortRef.current?.abort();
       saveAbortRef.current?.abort();
     };
@@ -929,7 +907,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
         };
         setWaypoints((prev) => [...prev, newWp]);
       }
-      if (elevationSource === 'server-dem' || elevationSource === 'open-meteo-dem') {
+      if (elevationSource === 'server-dem' || elevationSource === 'terrarium-dem') {
         setElevationSource('interpolated');
       }
     },
@@ -948,7 +926,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
         )
       );
       setHoverIdx(null);
-      if (elevationSource === 'server-dem' || elevationSource === 'open-meteo-dem') {
+      if (elevationSource === 'server-dem' || elevationSource === 'terrarium-dem') {
         setElevationSource('interpolated');
       }
     },
@@ -1015,7 +993,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     }
   };
 
-  // Fetch Real DEM Elevation (Backend POST /api/custom-routes/analyze -> Open-Meteo Elevation -> Client fallback)
+  // Fetch Real DEM Elevation (Backend POST /api/custom-routes/analyze -> AWS Terrarium PNG Canvas Decoder -> Client fallback)
   const handleFetchRealDem = async () => {
     if (vertices.length < 2) {
       onShowToast?.('Vui lòng chấm tối thiểu 2 điểm trên bản đồ trước khi lấy cao độ DEM.', 'error');
@@ -1026,7 +1004,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     setDemLoading(true);
     const densifiedCoords = interpolateVerticesForDem(vertices, 64);
 
-    // 1. Primary: LOST Backend POST /api/custom-routes/analyze
+    // 1. Primary: LOST Backend POST /api/custom-routes/analyze (powered by AWS Open Data Terrarium DEM)
     try {
       const res = await fetch('/api/custom-routes/analyze', {
         method: 'POST',
@@ -1043,11 +1021,11 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
           success?: boolean;
           data?: {
             elevationProfile?:
-              | Array<{ lat?: number; lng?: number; elevationM?: number }>
-              | {
-                  source?: string;
-                  points?: Array<{ lat?: number; lng?: number; elevationM?: number }>;
-                };
+            | Array<{ lat?: number; lng?: number; elevationM?: number }>
+            | {
+              source?: string;
+              points?: Array<{ lat?: number; lng?: number; elevationM?: number }>;
+            };
             points?: Array<{ lat?: number; lng?: number; elevationM?: number }>;
             source?: string;
           };
@@ -1057,12 +1035,12 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
         const pts = Array.isArray(rawProfile)
           ? rawProfile
           : Array.isArray(rawProfile?.points)
-          ? rawProfile.points
-          : json?.data?.points;
+            ? rawProfile.points
+            : json?.data?.points;
         const profileSource =
           (!Array.isArray(rawProfile) ? rawProfile?.source : undefined) || json?.data?.source || '';
         const isFallbackSource = profileSource === 'interpolated-fallback';
-        if (json?.success && Array.isArray(pts) && pts.length >= 2) {
+        if (json?.success && Array.isArray(pts) && pts.length >= 2 && !isFallbackSource) {
           const updated: RouteVertex[] = pts.map((p, idx) => ({
             lat: typeof p.lat === 'number' ? p.lat : densifiedCoords[Math.min(idx, densifiedCoords.length - 1)][0],
             lng: typeof p.lng === 'number' ? p.lng : densifiedCoords[Math.min(idx, densifiedCoords.length - 1)][1],
@@ -1070,47 +1048,42 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
           }));
           pushUndoSnapshot();
           setVertices(updated);
-          setElevationSource(isFallbackSource ? 'interpolated-fallback' : 'server-dem');
+          setElevationSource('server-dem');
           setDemLoading(false);
           onShowToastRef.current?.(
-            isFallbackSource
-              ? 'Nguồn DEM thực địa tạm gián đoạn — đang hiển thị cao độ ước tính ngoại tuyến.'
-              : `Đã cập nhật cao độ DEM thật từ máy chủ LOST (${updated.length} mẫu).`,
-            isFallbackSource ? 'info' : 'success'
+            `Đã cập nhật cao độ DEM thật từ máy chủ LOST (${updated.length} mẫu).`,
+            'success'
           );
           return;
         }
       }
     } catch {
       if (!isMountedRef.current || demReqIdRef.current !== reqId) return;
-      // Fall through to Open-Meteo Elevation API
+      // Fall through to direct browser AWS Terrarium DEM PNG decoder
     }
 
-    // 2. Fallback: Open-Meteo Elevation API (Copernicus 90m DEM)
+    // 2. Fallback: Direct browser AWS Open Data Terrarium PNG decoder (100% free commercial & works offline with cached packs)
     try {
-      const lats = densifiedCoords.map((p) => p[0].toFixed(5)).join(',');
-      const lngs = densifiedCoords.map((p) => p[1].toFixed(5)).join(',');
-      const omRes = await fetch(
-        `https://api.open-meteo.com/v1/elevation?latitude=${lats}&longitude=${lngs}`,
-        { signal: AbortSignal.timeout(8_000) }
-      );
+      const terrariumElevations = await sampleTerrariumElevations(densifiedCoords, {
+        zoom: 12,
+        signal: AbortSignal.timeout(8_000),
+      });
       if (!isMountedRef.current || demReqIdRef.current !== reqId) return;
-      if (omRes.ok) {
-        const omJson = (await omRes.json().catch(() => null)) as { elevation?: number[] } | null;
-        if (!isMountedRef.current || demReqIdRef.current !== reqId) return;
-        if (Array.isArray(omJson?.elevation) && omJson.elevation.length === densifiedCoords.length) {
-          const updated: RouteVertex[] = densifiedCoords.map(([lat, lng], i) => ({
-            lat,
-            lng,
-            elevationM: Number.isFinite(omJson.elevation![i]) ? Math.round(omJson.elevation![i]) : 0,
-          }));
-          pushUndoSnapshot();
-          setVertices(updated);
-          setElevationSource('open-meteo-dem');
-          setDemLoading(false);
-          onShowToastRef.current?.(`Đã tải cao độ DEM 90m thật (Open-Meteo, ${updated.length} điểm).`, 'success');
-          return;
-        }
+      if (Array.isArray(terrariumElevations) && terrariumElevations.length === densifiedCoords.length) {
+        const updated: RouteVertex[] = densifiedCoords.map(([lat, lng], i) => ({
+          lat,
+          lng,
+          elevationM: Number.isFinite(terrariumElevations[i]) ? Math.round(terrariumElevations[i]) : 0,
+        }));
+        pushUndoSnapshot();
+        setVertices(updated);
+        setElevationSource('terrarium-dem');
+        setDemLoading(false);
+        onShowToastRef.current?.(
+          `Đã tải cao độ DEM thực địa (AWS Terrarium, ${updated.length} điểm).`,
+          'success'
+        );
+        return;
       }
     } catch {
       if (!isMountedRef.current || demReqIdRef.current !== reqId) return;
@@ -1169,9 +1142,9 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
 
   const canUpdateLoadedRoute = Boolean(
     currentUser &&
-      loadedRouteMeta?.isOwner &&
-      !loadedRouteMeta.isLocalOnly &&
-      /^[a-fA-F0-9]{24}$/.test(loadedRouteMeta.id)
+    loadedRouteMeta?.isOwner &&
+    !loadedRouteMeta.isLocalOnly &&
+    /^[a-fA-F0-9]{24}$/.test(loadedRouteMeta.id)
   );
 
   // Save & Share Custom Route (PUT /api/custom-routes/:id for owned loaded route, or POST for new / copy)
@@ -1306,8 +1279,8 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
           ? `Đã cập nhật cung "${cleanTitle}" trên máy chủ LOST!`
           : `Đã lưu & đồng bộ cung "${cleanTitle}" lên máy chủ LOST!`
         : currentUser
-        ? `Đã lưu cung "${cleanTitle}" vào bộ nhớ máy (chế độ Offline).`
-        : `Đã lưu cục bộ "${cleanTitle}". Đăng nhập để chia sẻ công khai cùng cộng đồng LOST.`,
+          ? `Đã lưu cung "${cleanTitle}" vào bộ nhớ máy (chế độ Offline).`
+          : `Đã lưu cục bộ "${cleanTitle}". Đăng nhập để chia sẻ công khai cùng cộng đồng LOST.`,
       'success'
     );
   };
@@ -1554,8 +1527,8 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
         : String(rec.creatorId || '');
     const isOwner = Boolean(
       libraryTab === 'mine' ||
-        rec.isLocalOnly ||
-        (currentUserId && ownerIdRaw && ownerIdRaw === currentUserId)
+      rec.isLocalOnly ||
+      (currentUserId && ownerIdRaw && ownerIdRaw === currentUserId)
     );
     setLoadedRouteMeta({
       id: rec._id || rec.id,
@@ -1771,10 +1744,10 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
         absSlope > 20
           ? 'var(--color-error)'
           : absSlope >= 12
-          ? 'var(--color-sun)'
-          : absSlope >= 5
-          ? 'var(--color-sky)'
-          : 'var(--color-primary)';
+            ? 'var(--color-sun)'
+            : absSlope >= 5
+              ? 'var(--color-sky)'
+              : 'var(--color-primary)';
       return {
         key: idx,
         x1: prev.x,
@@ -1806,46 +1779,20 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     return { W, H, padL, padR, padT, padB, plotW, plotH, segments, areaPath, yTicks, xTicks, coords };
   }, [metrics.profile, metrics.minAltitudeM, metrics.maxAltitudeM]);
 
-  const handleProfileScrub = useCallback(
-    (clientX: number, svgEl: SVGSVGElement) => {
-      pendingProfileScrubRef.current = { clientX, svgEl };
-      if (profileScrubRafRef.current !== null) return;
-      profileScrubRafRef.current = window.requestAnimationFrame(() => {
-        profileScrubRafRef.current = null;
-        const pending = pendingProfileScrubRef.current;
-        if (!pending || profileSvg.coords.length < 2) return;
-        const rect = pending.svgEl.getBoundingClientRect();
-        if (rect.width <= 0) return;
-        const relX = ((pending.clientX - rect.left) / rect.width) * profileSvg.W;
-        let bestIdx = 0;
-        let bestDiff = Infinity;
-        for (let idx = 0; idx < profileSvg.coords.length; idx++) {
-          const diff = Math.abs(profileSvg.coords[idx].x - relX);
-          if (diff < bestDiff) {
-            bestDiff = diff;
-            bestIdx = idx;
-          }
-        }
-        if (bestIdx !== lastHoverIdxRef.current) {
-          lastHoverIdxRef.current = bestIdx;
-          setHoverIdx(bestIdx);
-        }
-      });
-    },
-    [profileSvg.coords, profileSvg.W]
-  );
-
-  const handleProfileScrubEnd = useCallback(() => {
-    pendingProfileScrubRef.current = null;
-    if (profileScrubRafRef.current !== null) {
-      window.cancelAnimationFrame(profileScrubRafRef.current);
-      profileScrubRafRef.current = null;
-    }
-    if (lastHoverIdxRef.current !== null) {
-      lastHoverIdxRef.current = null;
-      setHoverIdx(null);
-    }
-  }, []);
+  const handleProfileScrub = (clientX: number, rect: DOMRect) => {
+    if (profileSvg.coords.length < 2 || rect.width <= 0) return;
+    const relX = ((clientX - rect.left) / rect.width) * profileSvg.W;
+    let bestIdx = 0;
+    let bestDiff = Infinity;
+    profileSvg.coords.forEach((c, idx) => {
+      const diff = Math.abs(c.x - relX);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIdx = idx;
+      }
+    });
+    setHoverIdx(bestIdx);
+  };
 
   const hoveredPoint =
     hoverIdx !== null && profileSvg.coords[hoverIdx] ? profileSvg.coords[hoverIdx] : null;
@@ -1870,8 +1817,6 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     }
     return out;
   }, [vertices]);
-
-  const activeTile = TILE_LAYERS[tileKey];
 
   return (
     <section className="hub-container page-view-slide" aria-label="Thiết Kế Cung Đường & Phân Tích GPX LOST">
@@ -2074,7 +2019,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
             {/* Tile Layer Toggle */}
             <div style={{ display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, marginRight: 4 }}>
               <IconLayersSvg size={14} />
-              {(Object.keys(TILE_LAYERS) as MapTileKey[]).map((key) => (
+              {FREE_BASEMAP_ORDER.map((key) => (
                 <button
                   key={key}
                   type="button"
@@ -2082,7 +2027,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                   style={{ padding: '5px 9px', fontSize: '0.74rem' }}
                   onClick={() => setTileKey(key)}
                 >
-                  {TILE_LAYERS[key].label}
+                  {FREE_BASEMAPS[key].shortLabel}
                 </button>
               ))}
             </div>
@@ -2150,12 +2095,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
           zoom={11}
           style={{ width: '100%', height: '100%' }}
         >
-          <TileLayer
-            key={tileKey}
-            url={activeTile.url}
-            attribution={activeTile.attribution}
-            maxZoom={activeTile.maxZoom}
-          />
+          <FreeBasemapLayer basemap={tileKey} />
           <MapInteractionController
             onMapClick={handleMapClick}
             fitBoundsToken={fitBoundsToken}
@@ -2180,8 +2120,8 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
               idx === 0
                 ? vertexIconMap.start
                 : idx === vertices.length - 1 && vertices.length > 1
-                ? vertexIconMap.end
-                : vertexIconMap.mid;
+                  ? vertexIconMap.end
+                  : vertexIconMap.mid;
             return (
               <Marker
                 key={`vtx-${idx}`}
@@ -2317,10 +2257,10 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                 metrics.maxSlopePercent > 20
                   ? 'var(--color-error-text, var(--color-error))'
                   : metrics.maxSlopePercent >= 12
-                  ? 'var(--color-sun)'
-                  : metrics.maxSlopePercent >= 5
-                  ? 'var(--color-sky)'
-                  : 'var(--color-primary)',
+                    ? 'var(--color-sun)'
+                    : metrics.maxSlopePercent >= 5
+                      ? 'var(--color-sky)'
+                      : 'var(--color-primary)',
               fontVariantNumeric: 'tabular-nums',
             }}
           >
@@ -2373,27 +2313,26 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
               </span>
             </div>
             <span
-              className={`badge ${
-                elevationSource === 'server-dem' || elevationSource === 'open-meteo-dem'
-                  ? 'badge-success'
-                  : elevationSource === 'gpx-elevation'
+              className={`badge ${elevationSource === 'server-dem' || elevationSource === 'terrarium-dem'
+                ? 'badge-success'
+                : elevationSource === 'gpx-elevation'
                   ? 'badge-info'
                   : elevationSource === 'interpolated-fallback'
-                  ? 'badge-sun'
-                  : 'badge-cloud'
-              }`}
+                    ? 'badge-sun'
+                    : 'badge-cloud'
+                }`}
             >
               {elevationSource === 'server-dem'
                 ? 'DEM Thực địa (LOST)'
-                : elevationSource === 'open-meteo-dem'
-                ? 'Open-Meteo DEM 90m'
-                : elevationSource === 'gpx-elevation'
-                ? 'Cao độ GPX gốc'
-                : elevationSource === 'interpolated-fallback'
-                ? 'Ước tính ngoại tuyến (DEM tạm gián đoạn)'
-                : elevationSource === 'interpolated'
-                ? 'Ước tính sơ bộ'
-                : 'Chưa có dữ liệu DEM'}
+                : elevationSource === 'terrarium-dem'
+                  ? 'AWS Terrarium DEM'
+                  : elevationSource === 'gpx-elevation'
+                    ? 'Cao độ GPX gốc'
+                    : elevationSource === 'interpolated-fallback'
+                      ? 'Ước tính ngoại tuyến (DEM tạm gián đoạn)'
+                      : elevationSource === 'interpolated'
+                        ? 'Ước tính sơ bộ'
+                        : 'Chưa có dữ liệu DEM'}
             </span>
           </div>
 
@@ -2404,13 +2343,12 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                 width="100%"
                 role="img"
                 aria-label="Biểu đồ cao độ và độ dốc tuyến đường"
-                onMouseMove={(e) => handleProfileScrub(e.clientX, e.currentTarget)}
+                onMouseMove={(e) => handleProfileScrub(e.clientX, e.currentTarget.getBoundingClientRect())}
                 onTouchMove={(e) => {
                   const t = e.touches[0];
-                  if (t) handleProfileScrub(t.clientX, e.currentTarget);
+                  if (t) handleProfileScrub(t.clientX, e.currentTarget.getBoundingClientRect());
                 }}
-                onMouseLeave={handleProfileScrubEnd}
-                onTouchEnd={handleProfileScrubEnd}
+                onMouseLeave={() => setHoverIdx(null)}
                 style={{
                   display: 'block',
                   width: '100%',
@@ -2463,8 +2401,8 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                       i === 0
                         ? 'start'
                         : i === profileSvg.xTicks.length - 1
-                        ? 'end'
-                        : 'middle'
+                          ? 'end'
+                          : 'middle'
                     }
                     fill="var(--color-text-muted)"
                     fontSize="10"
@@ -2994,10 +2932,10 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                     leg.avgSlopePercent > 20
                       ? 'var(--color-error-text, var(--color-error))'
                       : leg.avgSlopePercent >= 12
-                      ? 'var(--color-sun)'
-                      : leg.avgSlopePercent >= 5
-                      ? 'var(--color-sky)'
-                      : 'var(--color-primary)';
+                        ? 'var(--color-sun)'
+                        : leg.avgSlopePercent >= 5
+                          ? 'var(--color-sky)'
+                          : 'var(--color-primary)';
                   return (
                     <tr
                       key={`${leg.legIndex}-${leg.fromVertexIdx}-${leg.toVertexIdx}`}

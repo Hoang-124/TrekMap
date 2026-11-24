@@ -39,7 +39,7 @@ interface MonthMeteorology {
   fallbackImage: string;
 }
 
-// 100% Verified Vietnam Mountain Photography hosted on LOST Cloudinary CDN (Rule 11)
+// 100% Original LOST Field-Atlas Topographic SVG Covers (Zero External Stock Photos)
 const MONTH_METEOROLOGY: MonthMeteorology[] = [
   {
     month: 1,
@@ -54,7 +54,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '2°C - 10°C',
     cloudChance: '85% Săn mây',
     terrainState: 'Khô ráo, có băng giá',
-    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329097/trekmap/trails/trail_cover_trail-fansipan.jpg',
+    fallbackImage: '/covers/trail-fansipan.svg',
   },
   {
     month: 2,
@@ -69,7 +69,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '8°C - 16°C',
     cloudChance: '80% Biển mây',
     terrainState: 'Ấm dần, tiết trời dịu mát',
-    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329100/trekmap/trails/trail_cover_trail-laothan.jpg',
+    fallbackImage: '/covers/trail-laothan.svg',
   },
   {
     month: 3,
@@ -84,7 +84,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '12°C - 20°C',
     cloudChance: '70% Săn mây',
     terrainState: 'Đường khô, thảm hoa rực rỡ',
-    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329101/trekmap/trails/trail_cover_trail-kyquansan.jpg',
+    fallbackImage: '/covers/trail-kyquansan.svg',
   },
   {
     month: 4,
@@ -99,7 +99,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '16°C - 25°C',
     cloudChance: '60% Nắng đẹp',
     terrainState: 'Đường khô ráo, rừng thông reo',
-    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329105/trekmap/trails/trail_cover_trail-bidoup.jpg',
+    fallbackImage: '/covers/trail-bidoup.svg',
   },
   {
     month: 5,
@@ -114,7 +114,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '18°C - 26°C',
     cloudChance: '65% Nắng trong',
     terrainState: 'Ruộng bậc thang ngập nước',
-    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329104/trekmap/trails/trail_cover_trail-chuyangsin.jpg',
+    fallbackImage: '/covers/trail-chuyangsin.svg',
   },
   {
     month: 6,
@@ -129,7 +129,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '22°C - 30°C',
     cloudChance: '55% Thác nước đẹp',
     terrainState: 'Suối mát, thảm thực vật tốt',
-    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329104/trekmap/trails/trail_cover_trail-bachma.jpg',
+    fallbackImage: '/covers/trail-bachma.svg',
   },
   {
     month: 7,
@@ -144,7 +144,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '25°C - 33°C',
     cloudChance: '50% Nắng gắt',
     terrainState: 'Cát biển, đồi dốc lộng gió',
-    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329107/trekmap/trails/trail_cover_trail-nuidinh.jpg',
+    fallbackImage: '/covers/trail-muidoi.svg',
   },
   {
     month: 8,
@@ -159,7 +159,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '18°C - 26°C',
     cloudChance: '70% Mây thung lũng',
     terrainState: 'Đồi cỏ xanh, trơn nhẹ',
-    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329106/trekmap/trails/trail_cover_trail-tanangphandung.jpg',
+    fallbackImage: '/covers/trail-tanangphandung.svg',
   },
   {
     month: 9,
@@ -174,7 +174,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '15°C - 24°C',
     cloudChance: '75% Nắng thu vàng',
     terrainState: 'Khô ráo, lúa chín vàng',
-    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329103/trekmap/trails/trail_cover_trail-nhiucosan.jpg',
+    fallbackImage: '/covers/trail-nhiucosan.svg',
   },
   {
     month: 10,
@@ -189,7 +189,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '12°C - 20°C',
     cloudChance: '85% Biển mây',
     terrainState: 'Đồi hoa tím, gió mạnh',
-    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329102/trekmap/trails/trail_cover_trail-tachinhu.jpg',
+    fallbackImage: '/covers/trail-tachinhu.svg',
   },
   {
     month: 11,
@@ -204,7 +204,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '6°C - 16°C',
     cloudChance: '90% Đỉnh cao săn mây',
     terrainState: 'Khô ráo tuyệt đối',
-    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329099/trekmap/trails/trail_cover_trail-taxua.jpg',
+    fallbackImage: '/covers/trail-taxua.svg',
   },
   {
     month: 12,
@@ -219,7 +219,7 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
     tempRange: '0°C - 8°C',
     cloudChance: '85% Băng tuyết & mây',
     terrainState: 'Rất lạnh, sương giá',
-    fallbackImage: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329108/trekmap/trails/trail_cover_trail-chuachan.jpg',
+    fallbackImage: '/covers/trail-chuachan.svg',
   },
 ];
 

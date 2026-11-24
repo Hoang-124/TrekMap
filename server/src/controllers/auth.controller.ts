@@ -47,7 +47,7 @@ const DATA_IMAGE_REGEX = /^data:image\/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=
 const MAX_PROFILE_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_PROFILE_BASE64_CHARS = 7_000_000;
 const DEFAULT_AVATAR_URL =
-  'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
+  "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Crect width='120' height='120' rx='60' fill='%2312221a'/%3E%3Cpath d='M16 92 L48 44 L68 72 L82 54 L104 92 Z' fill='%231f6f4a'/%3E%3Cpath d='M48 44 L58 58 L44 62 L38 58 Z' fill='%23d4e9dd' opacity='0.85'/%3E%3Ccircle cx='84' cy='34' r='10' fill='%23d4a348' opacity='0.85'/%3E%3C/svg%3E";
 
 const REFRESH_COOKIE_NAME = 'lost_refresh';
 
@@ -139,9 +139,133 @@ function buildFullUserPayload(user: any) {
   };
 }
 
+interface GoogleJwk {
+  kid?: string;
+  kty: string;
+  alg?: string;
+  use?: string;
+  n?: string;
+  e?: string;
+}
+
+const GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs';
+const GOOGLE_VALID_ISSUERS = new Set(['https://accounts.google.com', 'accounts.google.com']);
+let cachedGoogleJwks: GoogleJwk[] = [];
+let cachedGoogleJwksExpiresAt = 0;
+let googleJwksInFlight: Promise<GoogleJwk[]> | null = null;
+
+async function fetchGoogleJwks(forceRefresh = false): Promise<GoogleJwk[]> {
+  const now = Date.now();
+  if (!forceRefresh && cachedGoogleJwks.length > 0 && now < cachedGoogleJwksExpiresAt) {
+    return cachedGoogleJwks;
+  }
+  if (!forceRefresh && googleJwksInFlight) {
+    return googleJwksInFlight;
+  }
+
+  const req = (async (): Promise<GoogleJwk[]> => {
+    try {
+      const res = await fetch(GOOGLE_JWKS_URL, { signal: AbortSignal.timeout(6000) });
+      if (!res.ok) return cachedGoogleJwks;
+      const json: any = await res.json();
+      if (!Array.isArray(json?.keys)) return cachedGoogleJwks;
+
+      let ttlMs = 60 * 60 * 1000; // Default 1 hour
+      const cacheControl = res.headers.get('cache-control') || '';
+      const maxAgeMatch = /max-age=(\d+)/i.exec(cacheControl);
+      if (maxAgeMatch) {
+        const secs = Number(maxAgeMatch[1]);
+        if (Number.isFinite(secs) && secs > 0) {
+          ttlMs = Math.max(5 * 60 * 1000, Math.min(24 * 60 * 60 * 1000, secs * 1000));
+        }
+      }
+
+      cachedGoogleJwks = json.keys as GoogleJwk[];
+      cachedGoogleJwksExpiresAt = Date.now() + ttlMs;
+      return cachedGoogleJwks;
+    } catch {
+      return cachedGoogleJwks;
+    } finally {
+      googleJwksInFlight = null;
+    }
+  })();
+
+  googleJwksInFlight = req;
+  return req;
+}
+
+async function verifyGoogleIdTokenJwt(
+  jwtToken: string,
+  expectedClientId: string
+): Promise<{ email: string; name: string; picture: string } | null> {
+  const parts = jwtToken.split('.');
+  if (parts.length !== 3) return null;
+
+  const [headerB64, payloadB64, sigB64] = parts;
+  let header: any;
+  let payload: any;
+  try {
+    header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8'));
+    payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+
+  if (header?.alg !== 'RS256' || typeof header?.kid !== 'string' || !header.kid) {
+    return null;
+  }
+
+  let keys = await fetchGoogleJwks(false);
+  let matchingJwk = keys.find((k) => k.kid === header.kid && k.kty === 'RSA');
+  if (!matchingJwk) {
+    // Handle Google signing key rotation with a single forced JWKS refresh
+    keys = await fetchGoogleJwks(true);
+    matchingJwk = keys.find((k) => k.kid === header.kid && k.kty === 'RSA');
+  }
+  if (!matchingJwk) return null;
+
+  let isValidSig = false;
+  try {
+    const publicKey = crypto.createPublicKey({ key: matchingJwk, format: 'jwk' });
+    const sigBuf = Buffer.from(sigB64, 'base64url');
+    isValidSig = crypto.verify('RSA-SHA256', Buffer.from(`${headerB64}.${payloadB64}`, 'ascii'), publicKey, sigBuf);
+  } catch {
+    return null;
+  }
+  if (!isValidSig) return null;
+
+  // Validate standard OIDC claims (iss, exp, iat, aud/azp, email_verified)
+  if (!GOOGLE_VALID_ISSUERS.has(String(payload?.iss || ''))) return null;
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const exp = Number(payload?.exp);
+  if (!Number.isFinite(exp) || exp <= nowSec - 60) return null;
+  const iat = Number(payload?.iat);
+  if (Number.isFinite(iat) && iat > nowSec + 300) return null;
+
+  if (expectedClientId) {
+    const aud = payload?.aud;
+    const audMatches = Array.isArray(aud)
+      ? aud.includes(expectedClientId)
+      : aud === expectedClientId || payload?.azp === expectedClientId;
+    if (!audMatches) return null;
+  }
+
+  const emailVerified = payload?.email_verified === true || payload?.email_verified === 'true';
+  if (!payload?.email || !emailVerified) return null;
+
+  return {
+    email: String(payload.email).toLowerCase().trim(),
+    name: payload.name || payload.given_name || 'Google Trekker',
+    picture: payload.picture || '',
+  };
+}
+
 /**
- * Verifies Google OAuth Token (ID Token or Access Token) against Google's official endpoints.
- * Enforces `email_verified === true`, strict `aud`/`azp === GOOGLE_CLIENT_ID`, and network timeouts.
+ * Verifies Google OAuth Token in production:
+ * 1. Local RS256 cryptographic JWT verification against cached Google JWKS (`www.googleapis.com/oauth2/v3/certs`).
+ * 2. Fallback for OAuth2 access tokens via `www.googleapis.com/oauth2/v3/userinfo`.
+ * Enforces `email_verified === true`, strict `iss`/`aud`/`exp`, and network timeouts.
  */
 async function verifyGoogleToken(
   googleToken: string
@@ -156,35 +280,12 @@ async function verifyGoogleToken(
   }
 
   try {
-    // 1. Try ID Token verification via tokeninfo (includes `aud` & `email_verified`)
-    const idInfoRes = await fetch(
-      `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(googleToken)}`,
-      { signal: AbortSignal.timeout(6000) }
-    );
-    if (idInfoRes.ok) {
-      const idData: any = await idInfoRes.json();
-      const emailVerified = idData.email_verified === true || idData.email_verified === 'true';
-      const audMatches = !expectedClientId || idData.aud === expectedClientId || idData.azp === expectedClientId;
-      if (idData?.email && emailVerified && audMatches) {
-        return {
-          email: String(idData.email).toLowerCase().trim(),
-          name: idData.name || idData.given_name || 'Google Trekker',
-          picture: idData.picture || '',
-        };
-      }
-      return null;
+    // 1. Verify Google ID Token locally via cached JWKS RS256 signature
+    if (googleToken.split('.').length === 3) {
+      return await verifyGoogleIdTokenJwt(googleToken, expectedClientId);
     }
 
-    // 2. Fallback: Verify Access Token via tokeninfo?access_token=... then fetch userinfo
-    const accessInfoRes = await fetch(
-      `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(googleToken)}`,
-      { signal: AbortSignal.timeout(6000) }
-    );
-    if (!accessInfoRes.ok) return null;
-    const accessInfo: any = await accessInfoRes.json();
-    const audMatches = !expectedClientId || accessInfo.aud === expectedClientId || accessInfo.azp === expectedClientId;
-    if (!audMatches) return null;
-
+    // 2. Fallback for OAuth2 Access Token flow (GIS initTokenClient) via official OIDC userinfo endpoint
     const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
       headers: { Authorization: `Bearer ${googleToken}` },
       signal: AbortSignal.timeout(6000),

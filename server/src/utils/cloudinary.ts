@@ -10,7 +10,7 @@ export function optimizeCloudinaryUrl(
   options: ServerImageOptions = {}
 ): string {
   if (!url || typeof url !== 'string') {
-    return 'https://images.unsplash.com/photo-1544735716-392fe2489ffa?auto=format&fit=crop&w=800&q=80';
+    return '/covers/trail-fansipan.svg';
   }
 
   const width = options.width || 800;
@@ -34,15 +34,6 @@ export function optimizeCloudinaryUrl(
         const transformParams = `f_${format},q_${quality},w_${width},c_limit`;
         return `${prefix}${transformParams}/${suffix}`;
       }
-    }
-
-    // Unsplash Image Auto-Format & WebP Compression
-    if (parsed.hostname === 'images.unsplash.com') {
-      parsed.searchParams.set('w', width.toString());
-      parsed.searchParams.set('q', '80');
-      parsed.searchParams.set('auto', 'format,compress');
-      parsed.searchParams.set('fm', 'webp');
-      return parsed.toString();
     }
   } catch {
     return cleanUrl;

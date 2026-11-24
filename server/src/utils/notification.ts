@@ -28,7 +28,7 @@ export const sendNotification = async (params: SendNotificationParams) => {
       sender: params.sender || {
         id: 'system',
         name: 'Ban Quản Trị LOST',
-        avatarUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg',
+        avatarUrl: '/covers/avatar-default.svg',
       },
       type: params.type,
       category: params.category || 'system',

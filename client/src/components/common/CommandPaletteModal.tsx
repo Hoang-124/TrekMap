@@ -200,7 +200,7 @@ function buildHubEntries(
       view: 'gear',
       title: 'Tủ Đồ & Tối Ưu Trọng Lượng Balo',
       subtitle: 'Phân tích Base Weight, tỉ lệ cân nặng cơ thể & đồng bộ đám mây',
-      keywords: 'tu do toi uu balo gear pack base weight trong luong lighterpack checklist',
+      keywords: 'tu do toi uu balo gear pack base weight ultralight trong luong checklist',
       badge: 'Hub',
       accent: 'var(--color-sun)',
       kind: 'hub',

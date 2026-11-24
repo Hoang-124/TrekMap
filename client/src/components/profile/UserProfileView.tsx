@@ -10,6 +10,7 @@ import { clearSensitiveSessionStorage } from '../../utils/storageScope.js';
 import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
 import { useSlidingIndicator } from '../../hooks/useSlidingIndicator.js';
 import { DEFAULT_VIETNAM_TRAIL_COVER } from '../../utils/cloudinary.js';
+import { getTrekkerAvatarSvg } from '../../utils/avatarSvg.js';
 import { generateQrMatrix, buildQrSvgPath } from '../../utils/qrMatrix.js';
 
 const createSvgIcon = (d: string | React.ReactNode, defaultSize = 18) => {
@@ -242,44 +243,44 @@ interface CoverPreset {
   url: string;
 }
 
-const DEFAULT_COVER_URL = 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329097/trekmap/trails/trail_cover_trail-fansipan.jpg';
+const DEFAULT_COVER_URL = '/covers/trail-fansipan.svg';
 
 const COVER_PRESETS: CoverPreset[] = [
   {
     id: 'fansipan',
     name: 'Đỉnh Fansipan - Nóc Nhà Đông Dương',
     location: '3,143m • Hoàng Liên Sơn, Lào Cai',
-    url: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329097/trekmap/trails/trail_cover_trail-fansipan.jpg',
+    url: '/covers/trail-fansipan.svg',
   },
   {
     id: 'taxua',
     name: 'Sống Lưng Khủng Long Tà Xùa',
     location: '2,865m • Bắc Yên, Sơn La',
-    url: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329099/trekmap/trails/trail_cover_trail-taxua.jpg',
+    url: '/covers/trail-taxua.svg',
   },
   {
     id: 'laothan',
     name: 'Đỉnh Lảo Thẩn - Thiên Đường Săn Mây',
     location: '2,860m • Y Tý, Bát Xát, Lào Cai',
-    url: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329100/trekmap/trails/trail_cover_trail-laothan.jpg',
+    url: '/covers/trail-laothan.svg',
   },
   {
     id: 'kyquansan',
     name: 'Bạch Mộc Lương Tử (Kỳ Quan San)',
     location: '3,046m • Bát Xát & Phong Thổ',
-    url: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329101/trekmap/trails/trail_cover_trail-kyquansan.jpg',
+    url: '/covers/trail-kyquansan.svg',
   },
   {
     id: 'bachma',
     name: 'Vườn Quốc Gia Bạch Mã',
     location: '1,450m • Phú Lộc, Thừa Thiên Huế',
-    url: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329104/trekmap/trails/trail_cover_trail-bachma.jpg',
+    url: '/covers/trail-bachma.svg',
   },
   {
     id: 'tanangphandung',
     name: 'Cung Trek Tà Năng - Phan Dũng',
     location: '55km • Lâm Đồng - Bình Thuận',
-    url: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329106/trekmap/trails/trail_cover_trail-tanangphandung.jpg',
+    url: '/covers/trail-tanangphandung.svg',
   },
 ];
 
@@ -2145,7 +2146,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         username: 'Trekker',
         email: '',
         fullName: 'Thành Viên',
-        avatarUrl: 'https://api.dicebear.com/7.x/bottts/svg?seed=Trekker',
+        avatarUrl: getTrekkerAvatarSvg('Thành Viên'),
         role: 'user',
         reputationScore: 0,
         badges: [],
@@ -2567,7 +2568,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             role="button"
             tabIndex={0}
             onClick={() => {
-              const currentAvatar = activeProfile.avatarUrl || activeProfile.avatar || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
+              const currentAvatar = activeProfile.avatarUrl || activeProfile.avatar || getTrekkerAvatarSvg(activeProfile.fullName || activeProfile.username, activeProfile.role);
               setFullViewImage({
                 url: currentAvatar,
                 title: 'Ảnh Đại Diện',
@@ -2578,7 +2579,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
-                const currentAvatar = activeProfile.avatarUrl || activeProfile.avatar || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
+                const currentAvatar = activeProfile.avatarUrl || activeProfile.avatar || getTrekkerAvatarSvg(activeProfile.fullName || activeProfile.username, activeProfile.role);
                 setFullViewImage({
                   url: currentAvatar,
                   title: 'Ảnh Đại Diện',
@@ -2592,7 +2593,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           >
             <img
               decoding="async"
-              src={activeProfile.avatarUrl || activeProfile.avatar || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
+              src={activeProfile.avatarUrl || activeProfile.avatar || getTrekkerAvatarSvg(activeProfile.fullName || activeProfile.username, activeProfile.role)}
               alt={activeProfile.fullName}
               style={{
                 width: 96,
@@ -3856,7 +3857,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                           <img
                             loading="lazy"
                             decoding="async"
-                            src={row.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(row.fullName || 'Trekker')}&background=10b981&color=fff`}
+                            src={row.avatarUrl || getTrekkerAvatarSvg(row.fullName || row.username || 'Trekker')}
                             alt={row.fullName}
                             style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
                           />
@@ -4567,7 +4568,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     <img
                       loading="lazy"
                       decoding="async"
-                      src={editAvatarUrl || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
+                      src={editAvatarUrl || getTrekkerAvatarSvg(activeProfile.fullName || activeProfile.username, activeProfile.role)}
                       alt="Preview"
                       style={{ width: 52, height: 52, borderRadius: 4, objectFit: 'cover', border: '1.5px solid var(--color-primary)', flexShrink: 0 }}
                     />
@@ -4849,7 +4850,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     <div style={{ width: 44, height: 44, borderRadius: 4, border: '2px solid var(--color-primary)', overflow: 'hidden', flexShrink: 0 }}>
                       <img
                         decoding="async"
-                        src={activeProfile.avatarUrl || activeProfile.avatar || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
+                        src={activeProfile.avatarUrl || activeProfile.avatar || getTrekkerAvatarSvg(activeProfile.fullName || activeProfile.username, activeProfile.role)}
                         alt={activeProfile.fullName}
                         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                       />
@@ -4961,7 +4962,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 <input
                   type="url"
                   className="form-input"
-                  placeholder="Dán link ảnh thực địa https://res.cloudinary.com/..."
+                  placeholder="Dán link ảnh thực địa hoặc chọn mẫu có sẵn bên trên..."
                   value={customCoverInput}
                   onChange={(e) => {
                     const val = e.target.value;
@@ -5290,9 +5291,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                       member._id === String((activeProfile as UserWithMongoId)._id || activeProfile.id || '');
                     const isToggling = togglingFollowIds.has(member._id);
                     const memberName = member.fullName || member.username || 'Trekker';
-                    const memberAvatar =
-                      member.avatarUrl ||
-                      `https://ui-avatars.com/api/?name=${encodeURIComponent(memberName)}&background=10b981&color=fff`;
+                    const memberAvatar = member.avatarUrl || getTrekkerAvatarSvg(memberName);
                     return (
                       <div
                         key={member._id}

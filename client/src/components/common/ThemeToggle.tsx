@@ -22,7 +22,11 @@ const resolveInitialTheme = (): ThemeMode => {
   return 'dark';
 };
 
-export const ThemeToggle: React.FC = memo(() => {
+interface ThemeToggleProps {
+  compact?: boolean;
+}
+
+export const ThemeToggle: React.FC<ThemeToggleProps> = memo(({ compact = false }) => {
   const instanceId = useId();
   const [theme, setTheme] = useState<ThemeMode>(resolveInitialTheme);
   const themeRef = useRef<ThemeMode>(theme);
@@ -74,22 +78,26 @@ export const ThemeToggle: React.FC = memo(() => {
     <button
       type="button"
       onClick={toggleTheme}
-      className="theme-spin interactive-click"
-      style={{
-        width: 36,
-        height: 36,
-        borderRadius: 4,
-        background: 'var(--color-surface-elevated)',
-        border: '1px solid var(--color-border-strong)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        cursor: 'pointer',
-        padding: 0,
-        color: 'var(--color-primary)',
-        boxShadow: 'var(--shadow-card)',
-        flexShrink: 0,
-      }}
+      className={compact ? 'admin-icon-btn theme-spin' : 'theme-spin interactive-click'}
+      style={
+        compact
+          ? undefined
+          : {
+              width: 36,
+              height: 36,
+              borderRadius: 4,
+              background: 'var(--color-surface-elevated)',
+              border: '1px solid var(--color-border-strong)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              padding: 0,
+              color: 'var(--color-primary)',
+              boxShadow: 'var(--shadow-card)',
+              flexShrink: 0,
+            }
+      }
       title={theme === 'dark' ? 'Chuyển sang Giao diện Sáng' : 'Chuyển sang Giao diện Tối'}
       aria-label={theme === 'dark' ? 'Chuyển sang Giao diện Sáng' : 'Chuyển sang Giao diện Tối'}
       aria-pressed={theme === 'light'}

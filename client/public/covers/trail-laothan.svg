@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 750" width="1200" height="750" role="img" aria-label="Săn Biển Mây Đỉnh Lảo Thẩn Y Tý 2860m">
+  <defs>
+    <linearGradient id="sky" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#141624"/>
+      <stop offset="56%" stop-color="#322b42"/>
+      <stop offset="100%" stop-color="#d98d54"/>
+    </linearGradient>
+    <radialGradient id="sunGlow" cx="0.23" cy="0.23" r="0.46">
+      <stop offset="0%" stop-color="#fce1a6" stop-opacity="0.58"/>
+      <stop offset="45%" stop-color="#fce1a6" stop-opacity="0.16"/>
+      <stop offset="100%" stop-color="#fce1a6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mistBand" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f5e6d3" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#f5e6d3" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#f5e6d3" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="vignette" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#050807" stop-opacity="0.28"/>
+      <stop offset="35%" stop-color="#050807" stop-opacity="0"/>
+      <stop offset="72%" stop-color="#050807" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#050807" stop-opacity="0.58"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Atmospheric Sky -->
+  <rect width="1200" height="750" fill="url(#sky)"/>
+  <rect width="1200" height="750" fill="url(#sunGlow)"/>
+  <circle cx="421" cy="117" r="0.9" fill="#ffffff" fill-opacity="0.25"/>
+  <circle cx="168" cy="166" r="1.5" fill="#ffffff" fill-opacity="0.41"/>
+  <circle cx="1075" cy="215" r="2.0" fill="#ffffff" fill-opacity="0.57"/>
+  <circle cx="822" cy="264" r="0.9" fill="#ffffff" fill-opacity="0.73"/>
+  <circle cx="569" cy="63" r="1.5" fill="#ffffff" fill-opacity="0.25"/>
+  <circle cx="316" cy="112" r="2.0" fill="#ffffff" fill-opacity="0.41"/>
+  <circle cx="63" cy="161" r="0.9" fill="#ffffff" fill-opacity="0.57"/>
+  <circle cx="970" cy="210" r="1.5" fill="#ffffff" fill-opacity="0.73"/>
+  <circle cx="717" cy="259" r="2.0" fill="#ffffff" fill-opacity="0.25"/>
+  <circle cx="464" cy="58" r="0.9" fill="#ffffff" fill-opacity="0.41"/>
+  <circle cx="211" cy="107" r="1.5" fill="#ffffff" fill-opacity="0.57"/>
+  <circle cx="1118" cy="156" r="2.0" fill="#ffffff" fill-opacity="0.73"/>
+  <circle cx="865" cy="205" r="0.9" fill="#ffffff" fill-opacity="0.25"/>
+  <circle cx="612" cy="254" r="1.5" fill="#ffffff" fill-opacity="0.41"/>
+  <circle cx="359" cy="53" r="2.0" fill="#ffffff" fill-opacity="0.57"/>
+  <circle cx="106" cy="102" r="0.9" fill="#ffffff" fill-opacity="0.73"/>
+  <circle cx="1013" cy="151" r="1.5" fill="#ffffff" fill-opacity="0.25"/>
+  <circle cx="760" cy="200" r="2.0" fill="#ffffff" fill-opacity="0.41"/>
+  <circle cx="507" cy="249" r="0.9" fill="#ffffff" fill-opacity="0.57"/>
+  <circle cx="254" cy="48" r="1.5" fill="#ffffff" fill-opacity="0.73"/>
+  <circle cx="1161" cy="97" r="2.0" fill="#ffffff" fill-opacity="0.25"/>
+  <circle cx="908" cy="146" r="0.9" fill="#ffffff" fill-opacity="0.41"/>
+  <circle cx="655" cy="195" r="1.5" fill="#ffffff" fill-opacity="0.57"/>
+  <circle cx="402" cy="244" r="2.0" fill="#ffffff" fill-opacity="0.73"/>
+  <circle cx="149" cy="43" r="0.9" fill="#ffffff" fill-opacity="0.25"/>
+  <circle cx="1056" cy="92" r="1.5" fill="#ffffff" fill-opacity="0.41"/>
+  <circle cx="803" cy="141" r="2.0" fill="#ffffff" fill-opacity="0.57"/>
+  <circle cx="550" cy="190" r="0.9" fill="#ffffff" fill-opacity="0.73"/>
+
+  <!-- Subtle Cartographic Grid Hairlines -->
+  <g stroke="#f4a261" stroke-opacity="0.08" stroke-width="1">
+    <line x1="200" y1="0" x2="200" y2="750"/>
+    <line x1="400" y1="0" x2="400" y2="750"/>
+    <line x1="600" y1="0" x2="600" y2="750"/>
+    <line x1="800" y1="0" x2="800" y2="750"/>
+    <line x1="1000" y1="0" x2="1000" y2="750"/>
+    <line x1="0" y1="187" x2="1200" y2="187"/>
+    <line x1="0" y1="375" x2="1200" y2="375"/>
+    <line x1="0" y1="562" x2="1200" y2="562"/>
+  </g>
+
+  <!-- Solar / Alpine Disc -->
+  <circle cx="279" cy="174" r="42" fill="#fce1a6" fill-opacity="0.82"/>
+  <circle cx="279" cy="174" r="68" fill="none" stroke="#fce1a6" stroke-opacity="0.24" stroke-width="1.2"/>
+
+  <!-- Far Alpine Ridge + Summit Reticle -->
+  <path d="M 0 750 L 0 382.8 L 0.0 382.8 L 25.0 419.0 L 50.0 446.2 L 75.0 458.8 L 100.0 459.8 L 125.0 456.8 L 150.0 454.5 L 175.0 451.4 L 200.0 440.8 L 225.0 417.6 L 250.0 383.0 L 275.0 346.4 L 300.0 320.0 L 325.0 311.4 L 350.0 317.6 L 375.0 326.4 L 400.0 322.6 L 425.0 297.0 L 450.0 251.4 L 475.0 197.3 L 500.0 148.8 L 525.0 114.8 L 550.0 96.0 L 575.0 90.0 L 600.0 90.0 L 625.0 90.0 L 650.0 100.0 L 675.0 131.7 L 700.0 180.8 L 725.0 237.6 L 750.0 286.6 L 775.0 314.5 L 800.0 317.5 L 825.0 303.2 L 850.0 286.7 L 875.0 281.4 L 900.0 292.3 L 925.0 314.2 L 950.0 337.1 L 975.0 353.4 L 1000.0 362.3 L 1025.0 369.0 L 1050.0 379.3 L 1075.0 393.4 L 1100.0 404.9 L 1125.0 404.3 L 1150.0 387.1 L 1175.0 357.7 L 1200.0 329.3 L 1200 750 Z" fill="#2f2c3f"/>
+  <path d="M 0 382.8 L 25.0 419.0 L 50.0 446.2 L 75.0 458.8 L 100.0 459.8 L 125.0 456.8 L 150.0 454.5 L 175.0 451.4 L 200.0 440.8 L 225.0 417.6 L 250.0 383.0 L 275.0 346.4 L 300.0 320.0 L 325.0 311.4 L 350.0 317.6 L 375.0 326.4 L 400.0 322.6 L 425.0 297.0 L 450.0 251.4 L 475.0 197.3 L 500.0 148.8 L 525.0 114.8 L 550.0 96.0 L 575.0 90.0 L 600.0 90.0 L 625.0 90.0 L 650.0 100.0 L 675.0 131.7 L 700.0 180.8 L 725.0 237.6 L 750.0 286.6 L 775.0 314.5 L 800.0 317.5 L 825.0 303.2 L 850.0 286.7 L 875.0 281.4 L 900.0 292.3 L 925.0 314.2 L 950.0 337.1 L 975.0 353.4 L 1000.0 362.3 L 1025.0 369.0 L 1050.0 379.3 L 1075.0 393.4 L 1100.0 404.9 L 1125.0 404.3 L 1150.0 387.1 L 1175.0 357.7 L 1200.0 329.3" fill="none" stroke="#fce1a6" stroke-opacity="0.34" stroke-width="1.6"/>
+
+  <!-- Sea of Clouds / Valley Mist -->
+  <rect x="0" y="385" width="1200" height="175" fill="url(#mistBand)"/>
+
+  <!-- Topographic Elevation Contour Overlay -->
+  <path d="M 0 446.4 L 30.0 469.5 L 60.0 484.2 L 90.0 487.9 L 120.0 486.1 L 150.0 484.2 L 180.0 481.4 L 210.0 471.8 L 240.0 452.1 L 270.0 427.4 L 300.0 408.9 L 330.0 404.0 L 360.0 409.2 L 390.0 411.7 L 420.0 399.6 L 450.0 371.4 L 480.0 336.9 L 510.0 308.6 L 540.0 292.4 L 570.0 285.9 L 600.0 283.9 L 630.0 286.5 L 660.0 299.0 L 690.0 325.6 L 720.0 361.7 L 750.0 394.1 L 780.0 410.2 L 810.0 407.5 L 840.0 395.8 L 870.0 389.1 L 900.0 394.6 L 930.0 408.7 L 960.0 422.3 L 990.0 430.0 L 1020.0 434.2 L 1050.0 440.6 L 1080.0 450.0 L 1110.0 455.9 L 1140.0 450.6 L 1170.0 433.7 L 1200.0 415.4" fill="none" stroke="#f4a261" stroke-opacity="0.18" stroke-width="1" stroke-dasharray="5 7"/>
+  <path d="M 0 484.0 L 30.0 503.3 L 60.0 513.1 L 90.0 514.1 L 120.0 512.3 L 150.0 511.0 L 180.0 507.4 L 210.0 496.1 L 240.0 476.4 L 270.0 455.9 L 300.0 444.2 L 330.0 444.9 L 360.0 450.9 L 390.0 449.6 L 420.0 432.8 L 450.0 403.3 L 480.0 372.0 L 510.0 348.9 L 540.0 336.6 L 570.0 331.2 L 600.0 329.3 L 630.0 333.1 L 660.0 348.0 L 690.0 375.6 L 720.0 408.2 L 750.0 433.1 L 780.0 441.1 L 810.0 434.6 L 840.0 424.7 L 870.0 423.0 L 900.0 432.2 L 930.0 446.4 L 960.0 457.4 L 990.0 463.1 L 1020.0 467.3 L 1050.0 474.4 L 1080.0 482.5 L 1110.0 484.6 L 1140.0 475.3 L 1170.0 458.0 L 1200.0 444.0" fill="none" stroke="#f4a261" stroke-opacity="0.16" stroke-width="1" stroke-dasharray="5 7"/>
+  <path d="M 0 519.3 L 30.0 534.2 L 60.0 539.8 L 90.0 539.3 L 120.0 538.0 L 150.0 537.0 L 180.0 532.2 L 210.0 519.7 L 240.0 501.5 L 270.0 486.0 L 300.0 480.6 L 330.0 485.0 L 360.0 489.9 L 390.0 484.4 L 420.0 464.4 L 450.0 435.6 L 480.0 408.7 L 510.0 390.7 L 540.0 381.2 L 570.0 376.3 L 600.0 374.7 L 630.0 380.1 L 660.0 397.0 L 690.0 423.9 L 720.0 451.5 L 750.0 468.7 L 780.0 470.4 L 810.0 462.4 L 840.0 455.7 L 870.0 458.5 L 900.0 469.8 L 930.0 482.6 L 960.0 491.1 L 990.0 495.3 L 1020.0 499.9 L 1050.0 507.1 L 1080.0 513.1 L 1110.0 511.4 L 1140.0 499.5 L 1170.0 483.6 L 1200.0 474.8" fill="none" stroke="#f4a261" stroke-opacity="0.14" stroke-width="1" stroke-dasharray="5 7"/>
+  <path d="M 0 552.2 L 30.0 562.5 L 60.0 565.1 L 90.0 564.1 L 120.0 563.4 L 150.0 562.1 L 180.0 556.0 L 210.0 543.2 L 240.0 527.8 L 270.0 517.7 L 300.0 517.4 L 330.0 523.4 L 360.0 526.0 L 390.0 516.7 L 420.0 495.3 L 450.0 469.1 L 480.0 447.1 L 510.0 433.3 L 540.0 425.7 L 570.0 421.1 L 600.0 420.3 L 630.0 427.4 L 660.0 445.2 L 690.0 469.8 L 720.0 491.6 L 750.0 501.7 L 780.0 499.2 L 810.0 491.6 L 840.0 488.7 L 870.0 494.8 L 900.0 506.6 L 930.0 517.3 L 960.0 523.4 L 990.0 527.0 L 1020.0 532.0 L 1050.0 538.5 L 1080.0 541.9 L 1110.0 536.9 L 1140.0 523.9 L 1170.0 510.9 L 1200.0 507.6" fill="none" stroke="#f4a261" stroke-opacity="0.12" stroke-width="1" stroke-dasharray="5 7"/>
+  <path d="M 0 582.5 L 30.0 588.9 L 60.0 589.6 L 90.0 588.7 L 120.0 588.4 L 150.0 586.5 L 180.0 579.4 L 210.0 567.3 L 240.0 555.5 L 270.0 550.4 L 300.0 553.7 L 330.0 559.6 L 360.0 559.2 L 390.0 547.3 L 420.0 526.2 L 450.0 503.8 L 480.0 486.6 L 510.0 476.2 L 540.0 469.8 L 570.0 465.7 L 600.0 465.9 L 630.0 474.5 L 660.0 492.1 L 690.0 513.1 L 720.0 528.6 L 750.0 532.9 L 780.0 528.3 L 810.0 522.6 L 840.0 523.2 L 870.0 531.3 L 900.0 542.3 L 930.0 550.6 L 960.0 554.9 L 990.0 558.3 L 1020.0 563.3 L 1050.0 568.6 L 1080.0 569.1 L 1110.0 561.7 L 1140.0 549.4 L 1170.0 540.3 L 1200.0 541.6" fill="none" stroke="#f4a261" stroke-opacity="0.10" stroke-width="1" stroke-dasharray="5 7"/>
+
+  <!-- Mid & Foreground Ridges -->
+  <path d="M 0 750 L 0 514.4 L 0.0 514.4 L 25.0 521.7 L 50.0 531.0 L 75.0 537.2 L 100.0 535.1 L 125.0 522.9 L 150.0 504.9 L 175.0 489.4 L 200.0 484.3 L 225.0 492.3 L 250.0 509.0 L 275.0 525.7 L 300.0 533.7 L 325.0 529.4 L 350.0 514.9 L 375.0 495.7 L 400.0 476.2 L 425.0 457.2 L 450.0 436.0 L 475.0 410.1 L 500.0 380.5 L 525.0 352.7 L 550.0 334.4 L 575.0 330.3 L 600.0 339.4 L 625.0 354.6 L 650.0 366.7 L 675.0 369.6 L 700.0 363.9 L 725.0 355.5 L 750.0 352.1 L 775.0 358.0 L 800.0 372.4 L 825.0 390.2 L 850.0 406.7 L 875.0 420.2 L 900.0 433.2 L 925.0 449.4 L 950.0 469.7 L 975.0 490.3 L 1000.0 503.9 L 1025.0 504.3 L 1050.0 490.8 L 1075.0 469.0 L 1100.0 448.9 L 1125.0 439.0 L 1150.0 442.5 L 1175.0 455.8 L 1200.0 471.8 L 1200 750 Z" fill="#1f222f"/>
+  <path d="M 0 514.4 L 25.0 521.7 L 50.0 531.0 L 75.0 537.2 L 100.0 535.1 L 125.0 522.9 L 150.0 504.9 L 175.0 489.4 L 200.0 484.3 L 225.0 492.3 L 250.0 509.0 L 275.0 525.7 L 300.0 533.7 L 325.0 529.4 L 350.0 514.9 L 375.0 495.7 L 400.0 476.2 L 425.0 457.2 L 450.0 436.0 L 475.0 410.1 L 500.0 380.5 L 525.0 352.7 L 550.0 334.4 L 575.0 330.3 L 600.0 339.4 L 625.0 354.6 L 650.0 366.7 L 675.0 369.6 L 700.0 363.9 L 725.0 355.5 L 750.0 352.1 L 775.0 358.0 L 800.0 372.4 L 825.0 390.2 L 850.0 406.7 L 875.0 420.2 L 900.0 433.2 L 925.0 449.4 L 950.0 469.7 L 975.0 490.3 L 1000.0 503.9 L 1025.0 504.3 L 1050.0 490.8 L 1075.0 469.0 L 1100.0 448.9 L 1125.0 439.0 L 1150.0 442.5 L 1175.0 455.8 L 1200.0 471.8" fill="none" stroke="#e9c46a" stroke-opacity="0.28" stroke-width="1.3"/>
+  <path d="M 0 750 L 0 578.3 L 0.0 578.3 L 25.0 570.3 L 50.0 567.5 L 75.0 570.7 L 100.0 576.6 L 125.0 579.4 L 150.0 574.1 L 175.0 559.6 L 200.0 539.7 L 225.0 520.9 L 250.0 508.9 L 275.0 505.8 L 300.0 509.5 L 325.0 516.0 L 350.0 522.2 L 375.0 527.9 L 400.0 534.8 L 425.0 544.8 L 450.0 556.7 L 475.0 566.8 L 500.0 570.3 L 525.0 564.3 L 550.0 550.6 L 575.0 534.7 L 600.0 522.8 L 625.0 518.9 L 650.0 521.9 L 675.0 527.1 L 700.0 529.2 L 725.0 525.1 L 750.0 516.0 L 775.0 505.2 L 800.0 496.3 L 825.0 489.9 L 850.0 484.4 L 875.0 477.3 L 900.0 468.5 L 925.0 461.0 L 950.0 460.1 L 975.0 469.5 L 1000.0 489.1 L 1025.0 514.2 L 1050.0 537.7 L 1075.0 553.6 L 1100.0 560.1 L 1125.0 559.9 L 1150.0 558.0 L 1175.0 558.1 L 1200.0 560.9 L 1200 750 Z" fill="#14181e"/>
+  <path d="M 0 578.3 L 25.0 570.3 L 50.0 567.5 L 75.0 570.7 L 100.0 576.6 L 125.0 579.4 L 150.0 574.1 L 175.0 559.6 L 200.0 539.7 L 225.0 520.9 L 250.0 508.9 L 275.0 505.8 L 300.0 509.5 L 325.0 516.0 L 350.0 522.2 L 375.0 527.9 L 400.0 534.8 L 425.0 544.8 L 450.0 556.7 L 475.0 566.8 L 500.0 570.3 L 525.0 564.3 L 550.0 550.6 L 575.0 534.7 L 600.0 522.8 L 625.0 518.9 L 650.0 521.9 L 675.0 527.1 L 700.0 529.2 L 725.0 525.1 L 750.0 516.0 L 775.0 505.2 L 800.0 496.3 L 825.0 489.9 L 850.0 484.4 L 875.0 477.3 L 900.0 468.5 L 925.0 461.0 L 950.0 460.1 L 975.0 469.5 L 1000.0 489.1 L 1025.0 514.2 L 1050.0 537.7 L 1075.0 553.6 L 1100.0 560.1 L 1125.0 559.9 L 1150.0 558.0 L 1175.0 558.1 L 1200.0 560.9" fill="none" stroke="#f4a261" stroke-opacity="0.22" stroke-width="1"/>
+  <path d="M 0 750 L 0 661.5 L 0.0 661.5 L 25.0 664.2 L 50.0 667.5 L 75.0 668.8 L 100.0 666.2 L 125.0 659.9 L 150.0 652.6 L 175.0 647.8 L 200.0 648.2 L 225.0 653.9 L 250.0 662.4 L 275.0 670.3 L 300.0 675.0 L 325.0 676.1 L 350.0 674.7 L 375.0 672.5 L 400.0 670.0 L 425.0 666.2 L 450.0 659.7 L 475.0 650.0 L 500.0 638.4 L 525.0 628.0 L 550.0 621.9 L 575.0 621.4 L 600.0 624.9 L 625.0 629.3 L 650.0 631.0 L 675.0 628.8 L 700.0 623.8 L 725.0 618.7 L 750.0 616.1 L 775.0 616.7 L 800.0 619.6 L 825.0 623.0 L 850.0 626.1 L 875.0 629.5 L 900.0 634.9 L 925.0 643.3 L 950.0 653.9 L 975.0 663.9 L 1000.0 669.7 L 1025.0 669.2 L 1050.0 662.5 L 1075.0 652.8 L 1100.0 643.7 L 1125.0 638.0 L 1150.0 636.2 L 1175.0 636.4 L 1200.0 636.7 L 1200 750 Z" fill="#0b0e11"/>
+
+  <!-- Summit Peak Reticle -->
+  <g transform="translate(575.0,90.0)">
+    <line x1="0" y1="-26" x2="0" y2="-6" stroke="#e9c46a" stroke-width="1.4" stroke-opacity="0.85"/>
+    <circle cx="0" cy="0" r="4.5" fill="#e9c46a"/>
+    <circle cx="0" cy="0" r="10" fill="none" stroke="#e9c46a" stroke-opacity="0.55" stroke-width="1.2"/>
+    <polygon points="0,-34 5,-26 -5,-26" fill="#fce1a6" fill-opacity="0.9"/>
+  </g>
+
+  <!-- Subtle Vignette -->
+  <rect width="1200" height="750" fill="url(#vignette)"/>
+
+  <!-- Fine Swiss Field-Atlas Frame & Top-Right Telemetry Stamp -->
+  <rect x="24" y="24" width="1152" height="702" rx="4" fill="none" stroke="#f4f3ee" stroke-opacity="0.16" stroke-width="1"/>
+  <g transform="translate(1148, 56)" text-anchor="end" font-family="'Plus Jakarta Sans','Inter',system-ui,sans-serif">
+    <text x="0" y="0" fill="#e9c46a" font-size="11" font-weight="800" letter-spacing="2.6">FIELD ATLAS · DEM PROFILE</text>
+    <text x="0" y="22" fill="#f4f3ee" fill-opacity="0.92" font-size="14" font-weight="700" letter-spacing="0.8">LÀO CAI · 2.860M · 16.0KM</text>
+    <text x="0" y="40" fill="#f4f3ee" fill-opacity="0.56" font-size="11" font-weight="600" letter-spacing="1.4">22.6104°N  103.6865°E</text>
+  </g>
+</svg>

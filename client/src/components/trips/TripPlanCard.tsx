@@ -58,7 +58,7 @@ const TRIP_STATUS_META: Record<
   cancelled: { label: 'Đã Hủy', badgeClass: 'badge-error', joinDisabledText: 'Chuyến Đi Đã Hủy' },
 };
 
-export const TripPlanCard: React.FC<TripPlanCardProps> = React.memo(({ trip, currentUser, onJoinSuccess }) => {
+export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, onJoinSuccess }) => {
   const [showJoinForm, setShowJoinForm] = useState(false);
   const [isSubmittingJoin, setIsSubmittingJoin] = useState(false);
   const [joinMsg, setJoinMsg] = useState('');
@@ -78,12 +78,12 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = React.memo(({ trip, cur
   );
   const isSquadMember = Boolean(
     isCreatorSelf ||
-      (currentUserId &&
-        Array.isArray(trip.currentMembers) &&
-        trip.currentMembers.some((m) => {
-          const memberId = typeof m === 'string' ? m : m?._id || m?.id || '';
-          return String(memberId) === currentUserId;
-        }))
+    (currentUserId &&
+      Array.isArray(trip.currentMembers) &&
+      trip.currentMembers.some((m) => {
+        const memberId = typeof m === 'string' ? m : m?._id || m?.id || '';
+        return String(memberId) === currentUserId;
+      }))
   );
   const isPendingRequest = !isSquadMember && (submitted || Boolean(trip.hasPendingRequest && !withdrewPending));
   const creatorName = trip.creatorId?.fullName || 'Trưởng đoàn';
@@ -247,8 +247,6 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = React.memo(({ trip, cur
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
             {effectiveCreatorAvatar ? (
               <img
-                loading="lazy"
-                decoding="async"
                 src={effectiveCreatorAvatar}
                 alt={creatorName}
                 referrerPolicy="no-referrer"
@@ -615,4 +613,4 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = React.memo(({ trip, cur
       )}
     </div>
   );
-});
+};

@@ -352,7 +352,7 @@ export const initSocketServer = (httpServer: HttpServer): Server => {
         const trustedSenderAvatar =
           dbUser.avatarUrl ||
           socket.data?.avatarUrl ||
-          'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
+          '/covers/avatar-default.svg';
         const trustedSenderBadge =
           dbUser.role === 'admin' ? 'BQT LOST' : dbUser.role === 'moderator' ? 'Điều phối LOST' : 'Trekker';
         const trustedNameColor =

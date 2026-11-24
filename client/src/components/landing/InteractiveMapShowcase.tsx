@@ -4,8 +4,7 @@ import { MapView } from '../map/MapView.js';
 import { IconLightbulb, IconCalendar, IconX, IconStar } from '../common/SvgIcons.js';
 import { useSlidingIndicator } from '../../hooks/useSlidingIndicator.js';
 
-const VERIFIED_TRAIL_FALLBACK =
-  'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329097/trekmap/trails/trail_cover_trail-fansipan.jpg';
+const VERIFIED_TRAIL_FALLBACK = '/covers/trail-fansipan.svg';
 
 // Pure Vector SVG Components (Rule 12 compliant)
 const Mountain = ({ size = 16, color = 'currentColor' }: { size?: number; color?: string }) => (

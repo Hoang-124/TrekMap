@@ -3,8 +3,15 @@ import mongoose from 'mongoose';
 import { WeatherForecastModel } from '../models/WeatherForecast.js';
 import { TrailModel } from '../models/Trail.js';
 import { mockTrails } from '../data/seedData.js';
-import { getLiveWeatherForecast, getSunriseSunsetData } from '../services/publicApis.service.js';
+import {
+  getLiveWeatherForecast,
+  getSunriseSunsetData,
+  MET_NORWAY_ATTRIBUTION,
+  type NormalizedLiveWeatherPayload,
+} from '../services/publicApis.service.js';
 import { resolveTrailByIdOrSlug } from '../utils/resolveTrail.js';
+
+const NASA_POWER_ATTRIBUTION = 'Climate archive: NASA POWER (Public Domain)';
 
 type WeatherCondition = 'clear' | 'cloudy' | 'foggy' | 'rainy' | 'storm';
 
@@ -130,7 +137,8 @@ export const getWeatherByCoordinates = async (req: Request, res: Response) => {
       forecasts,
       astroData,
       elevationM: liveMeteo.elevation || 0,
-      source: 'Open-Meteo Live API + Sunrise-Sunset API',
+      source: 'MET Norway Locationforecast 2.0 (CC BY 4.0) + NOAA Solar (Local)',
+      attribution: MET_NORWAY_ATTRIBUTION,
       hasWarning,
       warningMessage,
     });
@@ -220,7 +228,8 @@ export const getWeatherByTrailId = async (req: Request, res: Response) => {
       current,
       astroData,
       elevationM: liveMeteo?.elevation || trail.maxAltitudeM || 1400,
-      source: liveMeteo ? 'Open-Meteo Live API + Sunrise-Sunset API' : 'Cached DB Fallback',
+      source: liveMeteo ? 'MET Norway Locationforecast 2.0 (CC BY 4.0) + NOAA Solar (Local)' : 'Cached DB Fallback',
+      attribution: MET_NORWAY_ATTRIBUTION,
       hasWarning,
       warningMessage,
     });
@@ -269,8 +278,8 @@ interface SummitsCachePayload {
   peaks: SummitLiveTelemetry[];
 }
 
-const SUMMITS_CACHE_TTL_MS = 15 * 60 * 1000;
-const SUMMITS_STALE_GRACE_MS = 60 * 60 * 1000;
+const SUMMITS_CACHE_TTL_MS = 30 * 60 * 1000; // 30 min (MET Norway compliance)
+const SUMMITS_STALE_GRACE_MS = 90 * 60 * 1000;
 const VALID_SUMMIT_REGIONS = new Set(['Miền Bắc', 'Miền Trung', 'Miền Nam']);
 
 let summitsCache: SummitsCachePayload | null = null;
@@ -351,26 +360,23 @@ async function fetchLiveSummitsBatch(): Promise<SummitsCachePayload | null> {
   const peaksMeta = await loadTop12AlpinePeaks();
   if (peaksMeta.length === 0) return null;
 
-  const latParam = peaksMeta.map((p) => p.lat.toFixed(4)).join(',');
-  const lngParam = peaksMeta.map((p) => p.lng.toFixed(4)).join(',');
-  const url =
-    `https://api.open-meteo.com/v1/forecast?latitude=${latParam}&longitude=${lngParam}` +
-    `&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,cloud_cover` +
-    `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max,relative_humidity_2m_max` +
-    `&forecast_days=2&timezone=Asia%2FBangkok`;
+  // Bounded-concurrency MET Norway Locationforecast 2.0 fetches (reuses 45-min cache per coordinate)
+  const CONCURRENCY = 4;
+  const batchEntries: Array<NormalizedLiveWeatherPayload | null> = new Array(peaksMeta.length).fill(null);
+  for (let i = 0; i < peaksMeta.length; i += CONCURRENCY) {
+    const slice = peaksMeta.slice(i, i + CONCURRENCY);
+    const settled = await Promise.all(slice.map((p) => getLiveWeatherForecast(p.lat, p.lng)));
+    settled.forEach((entry, offset) => {
+      batchEntries[i + offset] = entry;
+    });
+  }
 
-  const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
-  if (!res.ok) return null;
-  const rawJson: any = await res.json();
-  if (!rawJson || rawJson.error === true) return null;
-  const batchEntries: any[] = Array.isArray(rawJson) ? rawJson : [rawJson];
-  // Strictly reject partial/truncated/error Open-Meteo batches so fake fallback weather is never fabricated or cached
+  // Strictly reject partial/truncated MET Norway batches so fake fallback weather is never fabricated or cached
   const allValid =
     batchEntries.length === peaksMeta.length &&
     batchEntries.every(
       (entry) =>
         entry &&
-        entry.error !== true &&
         entry.daily &&
         Array.isArray(entry.daily.time) &&
         entry.daily.time.length > 0 &&
@@ -380,7 +386,7 @@ async function fetchLiveSummitsBatch(): Promise<SummitsCachePayload | null> {
   if (!allValid) return null;
 
   const peaks: SummitLiveTelemetry[] = peaksMeta.map((meta, idx) => {
-    const entry = batchEntries[idx] || {};
+    const entry = batchEntries[idx]!;
     const cur = entry.current || {};
     const daily = entry.daily || {};
 
@@ -454,7 +460,7 @@ async function fetchLiveSummitsBatch(): Promise<SummitsCachePayload | null> {
     fetchedAt: new Date(nowMs).toISOString(),
     expiresAt: new Date(nowMs + SUMMITS_CACHE_TTL_MS).toISOString(),
     fetchedAtMs: nowMs,
-    source: 'Open-Meteo Live Batch API',
+    source: 'MET Norway Locationforecast 2.0 (CC BY 4.0)',
     peaks,
   };
 }
@@ -483,7 +489,7 @@ function summarizeSummits(peaks: SummitLiveTelemetry[]) {
 
 /**
  * GET /api/weather/summits-live?region=
- * 15-min cached live Open-Meteo summit temperature, lapse-rate, wind-chill & Sea-of-Clouds % for Vietnam's Top 12 Alpine Peaks.
+ * 30-min cached live MET Norway Locationforecast 2.0 summit temperature, lapse-rate, wind-chill & Sea-of-Clouds % for Vietnam's Top 12 Alpine Peaks.
  */
 export const getLiveSummitsWeather = async (req: Request, res: Response) => {
   try {
@@ -493,7 +499,7 @@ export const getLiveSummitsWeather = async (req: Request, res: Response) => {
 
     let payload: SummitsCachePayload | null = null;
     let servedFromCache = false;
-    let sourceLabel = 'Open-Meteo Live Batch API';
+    let sourceLabel = 'MET Norway Locationforecast 2.0 (CC BY 4.0)';
 
     if (summitsCache && nowMs - summitsCache.fetchedAtMs < SUMMITS_CACHE_TTL_MS) {
       payload = summitsCache;
@@ -536,6 +542,7 @@ export const getLiveSummitsWeather = async (req: Request, res: Response) => {
       fetchedAt: payload.fetchedAt,
       expiresAt: payload.expiresAt,
       source: sourceLabel,
+      attribution: MET_NORWAY_ATTRIBUTION,
       summary: summarizeSummits(filteredPeaks),
       data: filteredPeaks,
     });
@@ -546,7 +553,7 @@ export const getLiveSummitsWeather = async (req: Request, res: Response) => {
 };
 
 // =========================================================================
-// MULTI-TRAIL 3-DAY SUMMIT WEATHER COMPARE (SINGLE BATCH OPEN-METEO REQUEST)
+// MULTI-TRAIL 3-DAY SUMMIT WEATHER COMPARE (MET NORWAY LOCATIONFORECAST 2.0)
 // =========================================================================
 
 export interface MultiTrailCompareDay {
@@ -586,7 +593,7 @@ interface CompareCacheEntry {
   itemsById: Map<string, MultiTrailCompareItem>;
 }
 
-const COMPARE_CACHE_TTL_MS = 10 * 60 * 1000; // 10 min canonical sorted-ID cache
+const COMPARE_CACHE_TTL_MS = 30 * 60 * 1000; // 30 min canonical sorted-ID cache (MET Norway compliance)
 const COMPARE_CACHE_MAX_ENTRIES = 200;
 const compareWeatherCache = new Map<string, CompareCacheEntry>();
 
@@ -607,7 +614,7 @@ function setCompareWeatherCache(key: string, entry: CompareCacheEntry) {
 
 /**
  * GET /api/weather/compare?ids=trail-fansipan,trail-taxua,...
- * Accepts 1-4 approved trail slugs/IDs, runs ONE batched 3-day Open-Meteo request across summit coordinates,
+ * Accepts 1-4 approved trail slugs/IDs, fetches 3-day MET Norway Locationforecast 2.0 forecasts across summit coordinates,
  * uses a canonical sorted-ID internal cache (so ?ids=a,b and ?ids=b,a share 1 entry),
  * applies residual alpine lapse rate (-6.5°C/1000m), NWS windchill & storm-safe Sea-of-Clouds %.
  */
@@ -681,7 +688,8 @@ export const compareMultiTrailWeather = async (req: Request, res: Response) => {
           cached: true,
           count: ordered.length,
           fetchedAt: cached.fetchedAt,
-          source: 'Open-Meteo Live Batch API (3-Day Summit)',
+          source: 'MET Norway Locationforecast 2.0 (3-Day Summit)',
+          attribution: MET_NORWAY_ATTRIBUTION,
           bestWeatherTrailId: bestWeather?.trailId || null,
           bestCloudTrailId: bestCloud?.trailId || null,
           data: ordered,
@@ -694,36 +702,14 @@ export const compareMultiTrailWeather = async (req: Request, res: Response) => {
       lng: Number.isFinite(Number(t.endLng)) ? Number(t.endLng) : Number(t.startLng),
     }));
 
-    const latParam = coords.map((c) => c.lat.toFixed(4)).join(',');
-    const lngParam = coords.map((c) => c.lng.toFixed(4)).join(',');
-    const url =
-      `https://api.open-meteo.com/v1/forecast?latitude=${latParam}&longitude=${lngParam}` +
-      `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max,relative_humidity_2m_max` +
-      `&forecast_days=3&timezone=Asia%2FBangkok`;
-
-    let batchEntries: any[] = [];
+    let batchEntries: Array<NormalizedLiveWeatherPayload | null> = [];
     try {
-      const apiRes = await fetch(url, { signal: AbortSignal.timeout(6000) });
-      if (!apiRes.ok) {
-        return res.status(503).json({
-          success: false,
-          message: 'Dịch vụ dự báo thời tiết Open-Meteo tạm thời gián đoạn. Vui lòng thử lại sau.',
-        });
-      }
-      const rawJson: any = await apiRes.json();
-      if (!rawJson || rawJson.error === true) {
-        return res.status(503).json({
-          success: false,
-          message: 'Open-Meteo trả về dữ liệu thời tiết không hợp lệ. Vui lòng thử lại sau.',
-        });
-      }
-      batchEntries = Array.isArray(rawJson) ? rawJson : [rawJson];
+      batchEntries = await Promise.all(coords.map((c) => getLiveWeatherForecast(c.lat, c.lng)));
       const allValid =
         batchEntries.length === trails.length &&
         batchEntries.every(
           (entry) =>
             entry &&
-            entry.error !== true &&
             entry.daily &&
             Array.isArray(entry.daily.time) &&
             entry.daily.time.length > 0 &&
@@ -733,19 +719,19 @@ export const compareMultiTrailWeather = async (req: Request, res: Response) => {
       if (!allValid) {
         return res.status(503).json({
           success: false,
-          message: 'Dữ liệu dự báo thời tiết Open-Meteo chưa đầy đủ cho tất cả cung đường. Vui lòng thử lại sau.',
+          message: 'Dữ liệu dự báo thời tiết MET Norway chưa đầy đủ cho tất cả cung đường. Vui lòng thử lại sau.',
         });
       }
     } catch {
       return res.status(503).json({
         success: false,
-        message: 'Không thể kết nối Open-Meteo lúc này. Vui lòng thử lại sau.',
+        message: 'Không thể kết nối dịch vụ dự báo thời tiết MET Norway lúc này. Vui lòng thử lại sau.',
       });
     }
 
     const results: MultiTrailCompareItem[] = trails.map((t, idx) => {
-      const entry = batchEntries[idx] || {};
-      const daily = entry.daily || {};
+      const entry = batchEntries[idx]!;
+      const daily = entry.daily;
       const maxAlt = Number(t.maxAltitudeM) || 1500;
       const gridElevationM = Number.isFinite(Number(entry.elevation))
         ? Math.round(Number(entry.elevation))
@@ -852,7 +838,8 @@ export const compareMultiTrailWeather = async (req: Request, res: Response) => {
       cached: false,
       count: results.length,
       fetchedAt,
-      source: 'Open-Meteo Live Batch API (3-Day Summit)',
+      source: 'MET Norway Locationforecast 2.0 (3-Day Summit)',
+      attribution: MET_NORWAY_ATTRIBUTION,
       bestWeatherTrailId: bestWeather?.trailId || null,
       bestCloudTrailId: bestCloud?.trailId || null,
       data: results,
@@ -864,7 +851,7 @@ export const compareMultiTrailWeather = async (req: Request, res: Response) => {
 };
 
 // =========================================================================
-// REAL OPEN-METEO ERA5 3-YEAR SUMMIT CLIMATE NORMALS (24H SWR SINGLEFLIGHT)
+// NASA POWER (MERRA-2) 3-YEAR SUMMIT CLIMATE NORMALS (24H SWR SINGLEFLIGHT)
 // =========================================================================
 
 export interface TrailClimateMonth {
@@ -958,14 +945,14 @@ function getEra5ThreeYearWindow(): { startYear: number; endYear: number; startDa
     // Fallback to UTC parts above
   }
 
-  // Respect Open-Meteo ERA5 ~5-day publication delay in the first 10 days of January
-  const endYear = vnMonth === 1 && vnDay <= 10 ? vnYear - 2 : vnYear - 1;
+  // Respect NASA POWER ~7-day reanalysis lag in early January
+  const endYear = vnMonth === 1 && vnDay <= 15 ? vnYear - 2 : vnYear - 1;
   const startYear = endYear - 2;
   return {
     startYear,
     endYear,
-    startDate: `${startYear}-01-01`,
-    endDate: `${endYear}-12-31`,
+    startDate: `${startYear}0101`,
+    endDate: `${endYear}1231`,
   };
 }
 
@@ -1002,7 +989,7 @@ function computeMonthlyTrekkingScore(avgTempMinC: number, avgTempMaxC: number, a
   return Math.max(5, Math.min(100, Math.round(score)));
 }
 
-async function fetchEra5TrailClimate(params: {
+async function fetchNasaPowerTrailClimate(params: {
   trailId: string;
   trailName: string;
   maxAltitudeM: number;
@@ -1011,40 +998,36 @@ async function fetchEra5TrailClimate(params: {
 }): Promise<TrailClimateCacheEntry | null> {
   const window = getEra5ThreeYearWindow();
   const url =
-    `https://archive-api.open-meteo.com/v1/archive` +
-    `?latitude=${params.lat.toFixed(4)}&longitude=${params.lng.toFixed(4)}` +
-    `&start_date=${window.startDate}&end_date=${window.endDate}` +
-    `&daily=temperature_2m_min,temperature_2m_max,precipitation_sum` +
-    `&timezone=Asia%2FBangkok`;
+    `https://power.larc.nasa.gov/api/temporal/daily/point` +
+    `?parameters=T2M_MIN,T2M_MAX,PRECTOTCORR` +
+    `&community=RE` +
+    `&longitude=${params.lng.toFixed(4)}&latitude=${params.lat.toFixed(4)}` +
+    `&start=${window.startDate}&end=${window.endDate}` +
+    `&format=JSON`;
 
-  const apiRes = await fetch(url, { signal: AbortSignal.timeout(12000) });
+  const apiRes = await fetch(url, { signal: AbortSignal.timeout(15000) });
   if (!apiRes.ok) return null;
 
   const rawJson: any = await apiRes.json();
-  if (!rawJson || rawJson.error === true || !rawJson.daily) return null;
+  const paramBag = rawJson?.properties?.parameter;
+  const minMap = paramBag?.T2M_MIN;
+  const maxMap = paramBag?.T2M_MAX;
+  const precipMap = paramBag?.PRECTOTCORR;
 
-  const times = rawJson.daily.time;
-  const mins = rawJson.daily.temperature_2m_min;
-  const maxs = rawJson.daily.temperature_2m_max;
-  const precips = rawJson.daily.precipitation_sum;
-
-  if (
-    !Array.isArray(times) ||
-    !Array.isArray(mins) ||
-    !Array.isArray(maxs) ||
-    !Array.isArray(precips) ||
-    times.length < 900 ||
-    mins.length !== times.length ||
-    maxs.length !== times.length ||
-    precips.length !== times.length
-  ) {
+  if (!minMap || typeof minMap !== 'object' || !maxMap || typeof maxMap !== 'object' || !precipMap || typeof precipMap !== 'object') {
     return null;
   }
 
-  const hasGridElev = typeof rawJson.elevation === 'number' && Number.isFinite(rawJson.elevation);
+  const dateKeys = Object.keys(minMap);
+  if (dateKeys.length < 900) {
+    return null;
+  }
+
+  const rawCoordElev = Number(rawJson?.geometry?.coordinates?.[2]);
+  const hasGridElev = Number.isFinite(rawCoordElev) && rawCoordElev > -500;
   const effectiveMaxAlt =
-    params.maxAltitudeM > 0 ? params.maxAltitudeM : hasGridElev ? Math.round(rawJson.elevation) : 0;
-  const gridElevationM = hasGridElev ? Math.round(rawJson.elevation) : effectiveMaxAlt;
+    params.maxAltitudeM > 0 ? params.maxAltitudeM : hasGridElev ? Math.round(rawCoordElev) : 0;
+  const gridElevationM = hasGridElev ? Math.round(rawCoordElev) : effectiveMaxAlt;
   const deltaM = hasGridElev ? Math.max(0, effectiveMaxAlt - gridElevationM) : 0;
   const lapseDropC = hasGridElev ? Math.round((deltaM / 1000) * 6.5 * 10) / 10 : 0;
 
@@ -1068,27 +1051,28 @@ async function fetchEra5TrailClimate(params: {
     rainyDays: 0,
   }));
 
-  for (let i = 0; i < times.length; i++) {
-    const dateStr = typeof times[i] === 'string' ? times[i] : '';
-    if (dateStr.length < 7) continue;
-    const monthNum = Number(dateStr.slice(5, 7));
+  for (const dateKey of dateKeys) {
+    // NASA POWER daily keys follow YYYYMMDD (8 digits)
+    if (dateKey.length < 6) continue;
+    const monthNum = Number(dateKey.slice(4, 6));
     if (!Number.isInteger(monthNum) || monthNum < 1 || monthNum > 12) continue;
     const b = buckets[monthNum - 1];
 
-    const tMin = mins[i];
-    if (typeof tMin === 'number' && Number.isFinite(tMin)) {
+    // NASA POWER uses -999 as missing-data fill sentinel
+    const tMin = Number(minMap[dateKey]);
+    if (Number.isFinite(tMin) && tMin > -900) {
       b.minSum += tMin;
       b.minCount++;
     }
 
-    const tMax = maxs[i];
-    if (typeof tMax === 'number' && Number.isFinite(tMax)) {
+    const tMax = Number(maxMap[dateKey]);
+    if (Number.isFinite(tMax) && tMax > -900) {
       b.maxSum += tMax;
       b.maxCount++;
     }
 
-    const pSum = precips[i];
-    if (typeof pSum === 'number' && Number.isFinite(pSum) && pSum >= 0) {
+    const pSum = Number(precipMap[dateKey]);
+    if (Number.isFinite(pSum) && pSum >= 0) {
       b.rainSum += pSum;
       b.rainCount++;
       if (pSum >= CLIMATE_RAINY_DAY_THRESHOLD_MM) {
@@ -1159,7 +1143,7 @@ function getOrStartClimateFetch(
     trailClimateFailureBackoff.delete(cacheKey);
   }
 
-  const promise = fetchEra5TrailClimate(params)
+  const promise = fetchNasaPowerTrailClimate(params)
     .then((fresh) => {
       if (fresh) {
         trailClimateFailureBackoff.delete(cacheKey);
@@ -1183,7 +1167,7 @@ function getOrStartClimateFetch(
 
 /**
  * GET /api/weather/climate/:trailId
- * Fetches 3 full calendar years of real Open-Meteo ERA5 Historical Archive daily temp & rainfall,
+ * Fetches 3 full calendar years of NASA POWER (MERRA-2, Public Domain) daily temp & rainfall,
  * applies alpine summit lapse-rate correction (-6.5°C/1000m), and returns 12 monthly climate normals
  * with 24h SWR singleflight caching. Returns 503 if archive is unreachable (never fabricates weather).
  */
@@ -1267,7 +1251,7 @@ export const getTrailClimateNormals = async (req: Request, res: Response) => {
       res.setHeader('Cache-Control', 'no-store, max-age=0');
       return res.status(503).json({
         success: false,
-        message: 'Dịch vụ dữ liệu khí hậu lịch sử ERA5 tạm thời gián đoạn. Vui lòng thử lại sau.',
+        message: 'Dịch vụ dữ liệu khí hậu lịch sử NASA POWER tạm thời gián đoạn. Vui lòng thử lại sau.',
       });
     }
 
@@ -1282,7 +1266,8 @@ export const getTrailClimateNormals = async (req: Request, res: Response) => {
     return res.json({
       success: true,
       cached: servedFromCache,
-      source: 'open-meteo-era5-3yr',
+      source: 'nasa-power-merra2-3yr',
+      attribution: NASA_POWER_ATTRIBUTION,
       trailId: payload.trailId,
       trailName: payload.trailName,
       maxAltitudeM: payload.maxAltitudeM,

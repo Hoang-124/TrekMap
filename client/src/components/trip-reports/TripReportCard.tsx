@@ -82,7 +82,7 @@ function getInitialUserReaction(report: TripReportItem, currentUserId: string): 
   return null;
 }
 
-export const TripReportCard: React.FC<TripReportCardProps> = React.memo(({ report, currentUser }) => {
+export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentUser }) => {
   const loggedInUser = currentUser || null;
   const currentUserId = String(loggedInUser?.id || (loggedInUser as (UserProfile & { _id?: string }) | null)?._id || '');
 
@@ -107,10 +107,10 @@ export const TripReportCard: React.FC<TripReportCardProps> = React.memo(({ repor
   const reactions = hasReactionOverride
     ? reactionOverride.reactions
     : {
-        like: report.reactions?.like || 0,
-        love: report.reactions?.love || 0,
-        wow: report.reactions?.wow || 0,
-      };
+      like: report.reactions?.like || 0,
+      love: report.reactions?.love || 0,
+      wow: report.reactions?.wow || 0,
+    };
   const userReaction = hasReactionOverride
     ? reactionOverride.userReaction
     : getInitialUserReaction(report, currentUserId);
@@ -254,8 +254,6 @@ export const TripReportCard: React.FC<TripReportCardProps> = React.memo(({ repor
           >
             {showImageCover ? (
               <img
-                loading="lazy"
-                decoding="async"
                 src={rawCoverPhoto}
                 alt={report.title}
                 onError={() => setCoverFailed(true)}
@@ -348,8 +346,6 @@ export const TripReportCard: React.FC<TripReportCardProps> = React.memo(({ repor
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                 {effectiveAuthorAvatar ? (
                   <img
-                    loading="lazy"
-                    decoding="async"
                     src={effectiveAuthorAvatar}
                     alt={authorName}
                     referrerPolicy="no-referrer"
@@ -488,7 +484,7 @@ export const TripReportCard: React.FC<TripReportCardProps> = React.memo(({ repor
               alignItems: 'center',
               gap: 5,
               cursor: isReacting ? 'wait' : 'pointer',
-              transition: 'background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease',
+              transition: 'background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease',
             }}
             title={hasActiveReaction ? `Bấm để bỏ cảm xúc (${activeReactionLabel})` : 'Thả cảm xúc hữu ích'}
           >
@@ -544,4 +540,4 @@ export const TripReportCard: React.FC<TripReportCardProps> = React.memo(({ repor
       )}
     </>
   );
-});
+};

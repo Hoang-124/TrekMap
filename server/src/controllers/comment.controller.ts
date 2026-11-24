@@ -18,8 +18,7 @@ import { isValidObjectId } from '../utils/resolveTrail.js';
 import { recordAuditLog } from '../utils/audit.js';
 
 const VALID_REACTIONS = new Set(['like', 'love', 'haha', 'wow', 'buon', 'huhu', 'sad', 'angry', 'dislike']);
-const DEFAULT_AVATAR =
-  'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
+const DEFAULT_AVATAR = '/covers/avatar-default.svg';
 
 export const getComments = async (req: Request, res: Response) => {
   const { threadId } = req.params;

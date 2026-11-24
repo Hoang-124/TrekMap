@@ -39,7 +39,7 @@ export function isValidCalendarDateIso(input?: string): boolean {
 }
 
 /**
- * Moist-adiabatic alpine temperature lapse rate (-6.5°C per 1,000m elevation gain above Open-Meteo grid cell).
+ * Moist-adiabatic alpine temperature lapse rate (-6.5°C per 1,000m elevation gain above weather model grid cell).
  */
 function adjustTempForSummit(gridTempC: number, gridElevationM: number | null, maxAltitudeM: number): number {
   if (gridElevationM === null || !Number.isFinite(gridElevationM)) return Math.round(gridTempC);
@@ -253,7 +253,7 @@ export function evaluateGoNoGo(params: {
     weatherScore -= 12;
     risks.push(
       params.forecastWindowNote ||
-        `Ngày ${params.departureDate} nằm ngoài khung dự báo vệ tinh 14 ngày — điểm số dựa trên quy luật mùa vụ và cảnh báo thực địa.`
+        `Ngày ${params.departureDate} nằm ngoài khung dự báo khí tượng 9 ngày của MET Norway — điểm số dựa trên quy luật mùa vụ và cảnh báo thực địa.`
     );
   } else {
     weatherScore -= 12;
@@ -388,49 +388,6 @@ export function evaluateGoNoGo(params: {
   };
 }
 
-const EXTENDED_FORECAST_TTL_MS = 15 * 60 * 1000;
-const EXTENDED_FORECAST_MAX_ENTRIES = 100;
-const extended14DayCache = new Map<string, { expiry: number; data: any }>();
-const extended14DayInFlight = new Map<string, Promise<any | null>>();
-
-/**
- * Fetches extended 14-day forecast from Open-Meteo (with 15-min bounded TTL cache & singleflight dedup)
- * when departureDate is in Day 7–14 window.
- */
-async function fetchExtended14DayForecast(lat: number, lng: number): Promise<any | null> {
-  const key = `${lat.toFixed(3)},${lng.toFixed(3)}`;
-  const now = Date.now();
-  const cached = extended14DayCache.get(key);
-  if (cached && cached.expiry > now) {
-    return cached.data;
-  }
-  const pending = extended14DayInFlight.get(key);
-  if (pending) {
-    return pending;
-  }
-  const reqPromise = (async () => {
-    try {
-      const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max,relative_humidity_2m_max&forecast_days=14&timezone=Asia%2FBangkok`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(4500) });
-      if (!res.ok) return null;
-      const data = await res.json();
-      if (!data || data.error === true) return null;
-      if (extended14DayCache.size >= EXTENDED_FORECAST_MAX_ENTRIES) {
-        const oldest = extended14DayCache.keys().next().value;
-        if (oldest) extended14DayCache.delete(oldest);
-      }
-      extended14DayCache.set(key, { expiry: Date.now() + EXTENDED_FORECAST_TTL_MS, data });
-      return data;
-    } catch {
-      return null;
-    } finally {
-      extended14DayInFlight.delete(key);
-    }
-  })();
-  extended14DayInFlight.set(key, reqPromise);
-  return reqPromise;
-}
-
 export async function computeTrailGoNoGo(
   trailIdOrSlug: string,
   departureDateInput?: string
@@ -467,7 +424,7 @@ export async function computeTrailGoNoGo(
   let weatherOutOfRange = false;
   let forecastWindowNote: string | undefined;
 
-  // Check day delta from VN today to decide if within 14-day Open-Meteo horizon
+  // Check day delta from VN today to decide if within MET Norway Locationforecast 2.0 (~9-10 day) horizon
   const msPerDay = 24 * 60 * 60 * 1000;
   const dayDelta = Math.round(
     (Date.parse(`${departureDate}T00:00:00Z`) - Date.parse(`${todayIso}T00:00:00Z`)) / msPerDay
@@ -476,18 +433,12 @@ export async function computeTrailGoNoGo(
   if (dayDelta < 0) {
     weatherOutOfRange = true;
     forecastWindowNote = `Ngày ${departureDate} đã qua (hôm nay là ${todayIso}). Chỉ hiển thị đánh giá mùa vụ và sự cố hiện tại.`;
-  } else if (dayDelta > 13) {
+  } else if (dayDelta > 9) {
     weatherOutOfRange = true;
-    forecastWindowNote = `Ngày ${departureDate} vượt quá khung dự báo thời tiết 14 ngày của Open-Meteo (từ ${todayIso}). Đánh giá dựa trên mùa vụ thực địa và sự cố hiện mở.`;
+    forecastWindowNote = `Ngày ${departureDate} vượt quá khung dự báo thời tiết 9 ngày của MET Norway (từ ${todayIso}). Đánh giá dựa trên mùa vụ thực địa và sự cố hiện mở.`;
   } else {
     try {
-      // Bypass redundant 7-day Open-Meteo fetch when target date is in Days 7-14 (single 14-day fetch)
-      let live =
-        dayDelta >= 6 ? await fetchExtended14DayForecast(lat, lng) : await getLiveWeatherForecast(lat, lng);
-      if (dayDelta < 6 && live?.daily?.time?.length && live.daily.time.indexOf(departureDate) === -1) {
-        const ext = await fetchExtended14DayForecast(lat, lng);
-        if (ext?.daily?.time?.length) live = ext;
-      }
+      const live = await getLiveWeatherForecast(lat, lng);
 
       if (live?.daily?.time?.length) {
         const idx = live.daily.time.indexOf(departureDate);
@@ -516,11 +467,11 @@ export async function computeTrailGoNoGo(
             precipMm: firstDay.precipMm,
             humidityPercent: firstDay.humidityPercent,
             conditionLabel: firstDay.conditionLabel,
-            source: 'Open-Meteo Live API',
+            source: 'MET Norway Locationforecast 2.0 (CC BY 4.0)',
           };
         } else {
           weatherOutOfRange = true;
-          forecastWindowNote = `Ngày ${departureDate} chưa có trong bảng dự báo Open-Meteo hiện tại.`;
+          forecastWindowNote = `Ngày ${departureDate} chưa có trong bảng dự báo MET Norway hiện tại.`;
         }
       }
     } catch {

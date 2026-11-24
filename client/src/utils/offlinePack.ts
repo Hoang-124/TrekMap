@@ -200,7 +200,8 @@ export async function downloadOfflineTrailPack(
           [trail.endLat ?? trail.startLat, trail.endLng ?? trail.startLng],
         ];
 
-  const tileUrls = buildOfflineTileUrls(track, [12, 13, 14], 120);
+  // Download legal AWS Open Data Terrarium DEM tiles (z=10..12) alongside GPX/metadata/emergency JSON
+  const tileUrls = buildOfflineTileUrls(track, [10, 11, 12], 90);
   const totalRequestedTiles = tileUrls.length;
   let processedCount = 0;
   let succeededCount = 0;
@@ -246,7 +247,7 @@ export async function downloadOfflineTrailPack(
 
   if (typeof caches !== 'undefined' && totalRequestedTiles > 0) {
     const cache = await caches.open(TILE_CACHE_NAME);
-    const BATCH_SIZE = 6;
+    const BATCH_SIZE = 4;
     for (let i = 0; i < totalRequestedTiles; i += BATCH_SIZE) {
       if (signal?.aborted) {
         const abortErr = new Error('Đã hủy tải gói bản đồ ngoại tuyến.');
@@ -262,13 +263,12 @@ export async function downloadOfflineTrailPack(
               Boolean(existing) &&
               existing?.type !== 'opaque' &&
               existing?.headers.get('x-lost-offline-fallback') !== '1';
-            // Upgrade legacy opaque or fallback tiles cleanly to true CORS image tiles
+            // Upgrade legacy opaque or fallback tiles cleanly to true CORS DEM image tiles
             if (isExistingValid) {
               succeededCount++;
               cachedTileUrls.push(url);
             } else {
-              // cache: 'reload' bypasses SW tile cache interception so forceRefresh & upgrades hit network directly
-              const res = await fetch(url, { mode: 'cors', cache: 'reload', signal });
+              const res = await fetch(url, { mode: 'cors', signal });
               const contentType = (res.headers.get('content-type') || '').toLowerCase();
               const isSwFallback = res.headers.get('x-lost-offline-fallback') === '1';
               if (res.ok && !isSwFallback && contentType.startsWith('image/')) {
@@ -314,8 +314,8 @@ export async function downloadOfflineTrailPack(
   const elevationSnapshot = elevSnapRes.status === 'fulfilled' ? elevSnapRes.value : undefined;
   const weatherSnapshot = weatherSnapRes.status === 'fulfilled' ? weatherSnapRes.value : undefined;
 
-  // Average OSM PNG tile ≈ 28 KB + JSON trail metadata/snapshots ≈ 0.18 MB
-  const estimatedSizeMb = Math.max(0.2, Math.round(((succeededCount * 28) / 1024 + 0.18) * 10) / 10);
+  // Average AWS Terrarium DEM PNG tile ≈ 48 KB + JSON trail metadata/snapshots ≈ 0.18 MB
+  const estimatedSizeMb = Math.max(0.2, Math.round(((succeededCount * 48) / 1024 + 0.18) * 10) / 10);
 
   const record: OfflineTrailPackRecord = {
     trailId: trail.id,

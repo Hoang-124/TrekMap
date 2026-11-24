@@ -34,8 +34,7 @@ function serializeSafetyGate(raw: any): Record<string, boolean> {
   }
   return out;
 }
-const DEFAULT_TRIP_COVER =
-  'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329099/trekmap/trails/trail_cover_trail-taxua.jpg';
+const DEFAULT_TRIP_COVER = '/covers/trail-taxua.svg';
 
 // POST /api/trips - Create new trip recruitment plan
 export const createTripPlan = async (req: AuthRequest, res: Response) => {

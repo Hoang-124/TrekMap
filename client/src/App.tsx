@@ -233,7 +233,6 @@ const ModalLoadingFallback: React.FC<{ label?: string }> = ({ label = 'Đang m�
         inset: 0,
         zIndex: 'var(--z-modal, 3000)' as unknown as number,
         background: 'var(--overlay-bg)',
-        backdropFilter: 'blur(8px)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -294,7 +293,6 @@ const DisconnectBanner: React.FC<{ hasCompareDock?: boolean }> = ({ hasCompareDo
         gap: 10,
         boxShadow: 'var(--shadow-card)',
         border: '1px solid var(--banner-danger-border)',
-        backdropFilter: 'blur(12px)',
         pointerEvents: 'none',
         maxWidth: 'calc(100vw - 32px)',
         transition: 'bottom 0.2s ease',
@@ -1713,6 +1711,10 @@ export function App() {
     [handleNavigate, showToast]
   );
 
+  const isDedicatedAdminShell =
+    currentView === 'admin' &&
+    Boolean(currentUser && (currentUser.role === 'admin' || currentUser.role === 'moderator'));
+
   return (
     <SocketProvider currentUser={currentUser}>
       <div className="lost-grain-overlay" aria-hidden="true" />
@@ -1731,23 +1733,25 @@ export function App() {
           currentUser={currentUser}
           trails={allCatalogTrails}
         />
-        <Navbar
-          currentView={currentView}
-          currentUser={currentUser}
-          searchQuery={searchQuery}
-          trailsCount={allCatalogTrails.length}
-          onNavigate={handleNavigate}
-          onOpenIncidentModal={handleOpenIncidentReport}
-          onOpenAuthModal={() => handleNavigate('login')}
-          onSearchChange={(q) => setSearchQuery(q)}
-          onLogout={() => setIsLogoutModalOpen(true)}
-          onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
-          onOpenLiveTracker={() => handleOpenLiveTracker()}
-          onOpenShortcuts={handleOpenShortcutsHelp}
-        />
+        {!isDedicatedAdminShell && (
+          <Navbar
+            currentView={currentView}
+            currentUser={currentUser}
+            searchQuery={searchQuery}
+            trailsCount={allCatalogTrails.length}
+            onNavigate={handleNavigate}
+            onOpenIncidentModal={handleOpenIncidentReport}
+            onOpenAuthModal={() => handleNavigate('login')}
+            onSearchChange={(q) => setSearchQuery(q)}
+            onLogout={() => setIsLogoutModalOpen(true)}
+            onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+            onOpenLiveTracker={() => handleOpenLiveTracker()}
+            onOpenShortcuts={handleOpenShortcutsHelp}
+          />
+        )}
 
         {/* Slim Editorial Field Safety Notice Strip (Isolated Memoized Ticker — Zero Root Re-Render) */}
-        {!isAlertBannerDismissed && incidents.length > 0 && (
+        {!isDedicatedAdminShell && !isAlertBannerDismissed && incidents.length > 0 && (
           <IncidentTickerBanner
             incidents={incidents}
             onSelectIncident={setSelectedIncidentDetail}
@@ -2945,6 +2949,7 @@ export function App() {
                     onBack={() => handleNavigate('home')}
                     onShowToast={(msg, type) => showToast(msg, type)}
                     currentUser={currentUser}
+                    onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
                   />
                 </Suspense>
               ))}
@@ -3321,7 +3326,6 @@ export function App() {
                               fontWeight: 700,
                               padding: '2px 7px',
                               borderRadius: 4,
-                              backdropFilter: 'blur(6px)',
                             }}
                           >
                             Ảnh bằng chứng #{idx + 1}
@@ -3569,8 +3573,8 @@ export function App() {
           </button>
         )}
 
-        {/* LOST AI Virtual Assistant */}
-        {!isAiAssistantOpen && (
+        {/* LOST AI Virtual Assistant (hidden inside dedicated full-bleed Admin Ops Shell) */}
+        {!isDedicatedAdminShell && !isAiAssistantOpen && (
           <TrekAssistantFab
             isOpen={isAiAssistantOpen}
             onToggle={handleOpenAiAssistant}
@@ -3742,7 +3746,7 @@ export function App() {
           </div>
         )}
 
-        <Footer />
+        {!isDedicatedAdminShell && <Footer />}
       </div>
     </SocketProvider>
   );

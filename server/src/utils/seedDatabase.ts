@@ -50,7 +50,7 @@ export const seedAll13Collections = async (): Promise<boolean> => {
           email: 'hoang@lost.vn',
           passwordHash: hashPassword(finalPassword),
           fullName: 'Hoàng Trekker (Verified Guide)',
-          avatarUrl: 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg',
+          avatarUrl: '/covers/avatar-admin.svg',
           role: 'admin',
           authProvider: 'local',
           isEmailVerified: true,

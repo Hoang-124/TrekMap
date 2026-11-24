@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 750" width="1200" height="750" role="img" aria-label="Bản đồ địa hình Đỉnh Pha Luông — Nóc Nhà Mộc Châu &amp; Mỏm Đá Tây Tiến 2.000m">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1310"/>
+      <stop offset="100%" stop-color="#13211c"/>
+    </linearGradient>
+    <linearGradient id="epFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#74c69d" stop-opacity="0.42"/>
+      <stop offset="100%" stop-color="#74c69d" stop-opacity="0.02"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="750" fill="url(#bg)"/>
+
+  <!-- Precision Metric Grid -->
+  <g stroke="#d8e6df" stroke-opacity="0.06" stroke-width="1">
+    <line x1="100" y1="0" x2="100" y2="750"/><line x1="200" y1="0" x2="200" y2="750"/><line x1="300" y1="0" x2="300" y2="750"/><line x1="400" y1="0" x2="400" y2="750"/><line x1="500" y1="0" x2="500" y2="750"/><line x1="600" y1="0" x2="600" y2="750"/><line x1="700" y1="0" x2="700" y2="750"/><line x1="800" y1="0" x2="800" y2="750"/><line x1="900" y1="0" x2="900" y2="750"/><line x1="1000" y1="0" x2="1000" y2="750"/><line x1="1100" y1="0" x2="1100" y2="750"/>
+    <line x1="0" y1="100" x2="1200" y2="100"/><line x1="0" y1="200" x2="1200" y2="200"/><line x1="0" y1="300" x2="1200" y2="300"/><line x1="0" y1="400" x2="1200" y2="400"/><line x1="0" y1="500" x2="1200" y2="500"/><line x1="0" y1="600" x2="1200" y2="600"/><line x1="0" y1="700" x2="1200" y2="700"/>
+  </g>
+
+  <!-- Topographic Contours -->
+  <g><ellipse cx="682.4" cy="321.5" rx="87" ry="47" transform="rotate(9 682.4 321.5)" fill="none" stroke="#74c69d" stroke-opacity="0.20" stroke-width="0.8"/><ellipse cx="682.4" cy="321.5" rx="165" ry="89" transform="rotate(9 682.4 321.5)" fill="none" stroke="#74c69d" stroke-opacity="0.18" stroke-width="0.8"/><ellipse cx="682.4" cy="321.5" rx="243" ry="131" transform="rotate(9 682.4 321.5)" fill="none" stroke="#74c69d" stroke-opacity="0.16" stroke-width="1.4"/><ellipse cx="682.4" cy="321.5" rx="321" ry="173" transform="rotate(9 682.4 321.5)" fill="none" stroke="#74c69d" stroke-opacity="0.14" stroke-width="0.8"/><ellipse cx="682.4" cy="321.5" rx="399" ry="215" transform="rotate(9 682.4 321.5)" fill="none" stroke="#74c69d" stroke-opacity="0.12" stroke-width="0.8"/><ellipse cx="682.4" cy="321.5" rx="477" ry="257" transform="rotate(9 682.4 321.5)" fill="none" stroke="#74c69d" stroke-opacity="0.10" stroke-width="1.4"/><ellipse cx="682.4" cy="321.5" rx="555" ry="299" transform="rotate(9 682.4 321.5)" fill="none" stroke="#74c69d" stroke-opacity="0.08" stroke-width="0.8"/><ellipse cx="682.4" cy="321.5" rx="633" ry="341" transform="rotate(9 682.4 321.5)" fill="none" stroke="#74c69d" stroke-opacity="0.06" stroke-width="0.8"/></g>
+
+  <!-- Real Normalized GPX Track -->
+  <path d="M 160.0 145.0 L 272.8 178.7 L 385.6 212.5 L 513.5 253.0 L 633.8 295.4 L 761.7 337.8 L 844.4 371.5 L 919.7 403.3 L 964.8 426.4 L 1009.9 447.7 L 1040.0 465.0" fill="none" stroke="#74c69d" stroke-opacity="0.25" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 160.0 145.0 L 272.8 178.7 L 385.6 212.5 L 513.5 253.0 L 633.8 295.4 L 761.7 337.8 L 844.4 371.5 L 919.7 403.3 L 964.8 426.4 L 1009.9 447.7 L 1040.0 465.0" fill="none" stroke="#74c69d" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Start & Summit Waypoints -->
+  <circle cx="160.0" cy="145.0" r="8" fill="#0b1310" stroke="#74c69d" stroke-width="3"/>
+  <circle cx="1040.0" cy="465.0" r="9" fill="#e8dfba" stroke="#0b1310" stroke-width="2.5"/>
+  <circle cx="1040.0" cy="465.0" r="18" fill="none" stroke="#e8dfba" stroke-opacity="0.55" stroke-width="1.3"/>
+
+  <!-- Elevation Profile Strip -->
+  <rect x="76" y="520" width="1048" height="175" rx="6" fill="#09100d" fill-opacity="0.72" stroke="#74c69d" stroke-opacity="0.28" stroke-width="1"/>
+  <path d="M 110.0 660.0 L 436.7 650.5 L 763.3 610.5 L 1090.0 550.0 L 1090.0 670 L 110.0 670 Z" fill="url(#epFill)"/>
+  <path d="M 110.0 660.0 L 436.7 650.5 L 763.3 610.5 L 1090.0 550.0" fill="none" stroke="#74c69d" stroke-width="2.6" stroke-linejoin="round"/>
+
+  <!-- Header Cartographic Bar -->
+  <rect x="24" y="24" width="1152" height="702" rx="4" fill="none" stroke="#f4f3ee" stroke-opacity="0.16" stroke-width="1"/>
+  <g font-family="'Plus Jakarta Sans','Inter',system-ui,sans-serif">
+    <text x="56" y="68" fill="#74c69d" font-size="12" font-weight="800" letter-spacing="3">LOST VIETNAM · TOPOGRAPHIC GPX SHEET</text>
+    <text x="56" y="102" fill="#f4f3ee" font-size="28" font-weight="800">Đỉnh Pha Luông — Nóc Nhà Mộc Châu …</text>
+    <text x="56" y="128" fill="#b7c7be" font-size="13" font-weight="600" letter-spacing="1">Sơn La · 12.0 KM · +950M GAIN · ĐỈNH 2.000M</text>
+    <text x="1144" y="68" text-anchor="end" fill="#b7c7be" font-size="12" font-weight="700" letter-spacing="1.4">20.7060°N 104.6225°E  →  20.6728°N 104.6342°E</text>
+    <text x="108" y="544" fill="#b7c7be" font-size="11" font-weight="700" letter-spacing="2">MẶT CẮT ĐỘ CAO THỰC ĐỊA (1071M → 2000M)</text>
+  </g>
+</svg>

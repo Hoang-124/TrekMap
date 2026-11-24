@@ -1,6 +1,7 @@
 {
   "name": "lost-vietnam",
   "private": true,
+  "license": "UNLICENSED",
   "version": "2.6.0",
   "type": "module",
   "scripts": {

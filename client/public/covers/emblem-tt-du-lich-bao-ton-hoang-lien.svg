@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="Trung Tâm Du Lịch &amp; Bảo Tồn Sinh Vật Hoàng Liên (Sa Pa)">
+  <defs><linearGradient id="pg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#133126"/><stop offset="100%" stop-color="#0b1e17"/></linearGradient></defs>
+  <rect width="120" height="120" rx="18" fill="url(#pg)"/>
+  <path d="M60 12 L98 26 V58 C98 83 81 99 60 108 C39 99 22 83 22 58 V26 Z" fill="#0b1e17" fill-opacity="0.72" stroke="#52b788" stroke-width="2.4"/>
+  <path d="M29 70 L49 44 L61 59 L74 40 L91 70 Z" fill="#2d6a4f" stroke="#52b788" stroke-width="1.6" stroke-linejoin="round"/>
+  <path d="M60 22 L63 29 L57 29 Z" fill="#52b788"/>
+  <line x1="34" y1="77" x2="86" y2="77" stroke="#52b788" stroke-opacity="0.45" stroke-width="1.2"/>
+  <text x="60" y="93" text-anchor="middle" fill="#f4f3ee" font-family="'Plus Jakarta Sans','Inter',system-ui,sans-serif" font-size="14" font-weight="800" letter-spacing="2.2">VQG</text>
+</svg>

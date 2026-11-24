@@ -216,7 +216,7 @@ export const VIETNAM_PEAKS_MATRIX: PeakMatrixEntry[] = [
     altitude: 1700,
     province: 'Thanh Hóa',
     region: 'Miền Bắc',
-    rescue: '02373.880.671 / 0988.945.236 / 112',
+    rescue: '02373.880.671 / 112 / 114',
     checkpoint: 'Khu BTTN Pù Luông, Huyện Bá Thước, Thanh Hóa',
     days: '2N1Đ',
   },

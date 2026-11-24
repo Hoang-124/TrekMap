@@ -55,8 +55,7 @@ const SHOWCASE_PEAKS: HeroPeakShowcase[] = [
     elevationM: 3143,
     distanceKm: 22.4,
     coords: '22°18′12″N  103°46′30″E',
-    image:
-      'https://res.cloudinary.com/dsxbuk4pe/image/upload/f_auto,q_auto,w_1800/v1785329097/trekmap/trails/trail_cover_trail-fansipan.jpg',
+    image: '/covers/trail-fansipan.svg',
     silhouettePath: 'M0,120 L110,98 L210,72 L340,86 L460,44 L580,58 L710,16 L840,52 L960,76 L1120,96 L1200,120 Z',
   },
   {
@@ -69,8 +68,7 @@ const SHOWCASE_PEAKS: HeroPeakShowcase[] = [
     elevationM: 2865,
     distanceKm: 18.5,
     coords: '21°24′30″N  104°19′30″E',
-    image:
-      'https://res.cloudinary.com/dsxbuk4pe/image/upload/f_auto,q_auto,w_1800/v1785329099/trekmap/trails/trail_cover_trail-taxua.jpg',
+    image: '/covers/trail-taxua.svg',
     silhouettePath: 'M0,120 L120,86 L240,42 L370,64 L500,26 L640,54 L760,32 L880,68 L1000,82 L1110,96 L1200,120 Z',
   },
   {
@@ -83,8 +81,7 @@ const SHOWCASE_PEAKS: HeroPeakShowcase[] = [
     elevationM: 3046,
     distanceKm: 30.0,
     coords: '22°30′25″N  103°35′15″E',
-    image:
-      'https://res.cloudinary.com/dsxbuk4pe/image/upload/f_auto,q_auto,w_1800/v1785329101/trekmap/trails/trail_cover_trail-kyquansan.jpg',
+    image: '/covers/trail-kyquansan.svg',
     silhouettePath: 'M0,120 L95,100 L220,66 L360,78 L490,36 L640,48 L770,18 L900,56 L1010,74 L1110,92 L1200,120 Z',
   },
   {
@@ -97,8 +94,7 @@ const SHOWCASE_PEAKS: HeroPeakShowcase[] = [
     elevationM: 2860,
     distanceKm: 16.0,
     coords: '22°36′37″N  103°41′11″E',
-    image:
-      'https://res.cloudinary.com/dsxbuk4pe/image/upload/f_auto,q_auto,w_1800/v1785329100/trekmap/trails/trail_cover_trail-laothan.jpg',
+    image: '/covers/trail-laothan.svg',
     silhouettePath: 'M0,120 L130,96 L260,74 L390,62 L520,44 L630,24 L760,44 L890,66 L1000,84 L1110,100 L1200,120 Z',
   },
   {
@@ -111,8 +107,7 @@ const SHOWCASE_PEAKS: HeroPeakShowcase[] = [
     elevationM: 1100,
     distanceKm: 55.0,
     coords: '11°33′32″N  108°28′41″E',
-    image:
-      'https://res.cloudinary.com/dsxbuk4pe/image/upload/f_auto,q_auto,w_1800/v1785329106/trekmap/trails/trail_cover_trail-tanangphandung.jpg',
+    image: '/covers/trail-tanangphandung.svg',
     silhouettePath: 'M0,120 L120,82 L250,62 L380,72 L510,56 L640,48 L770,64 L900,76 L1020,88 L1120,104 L1200,120 Z',
   },
 ];

@@ -884,7 +884,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
         </div>
       </div>
 
-      {/* Right Column: Form Settings & Zalo Share Export */}
+      {/* Right Column: Form Settings & Group Share Export */}
       <div>
         <div className="card" style={{ position: 'sticky', top: 84 }}>
           <div className="section-eyebrow" style={{ marginBottom: 6 }}>Xuất bản lịch trình</div>
@@ -992,7 +992,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
               disabled={steps.length === 0}
               style={{ width: '100%', justifyContent: 'center', fontSize: '0.84rem', marginBottom: 14, borderRadius: 4 }}
             >
-              Xuất Card Ảnh Gửi Nhóm Zalo (PNG)
+              Xuất Card Ảnh Chia Sẻ Nhóm (PNG)
             </button>
           </form>
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import type { UserProfile } from '../../types.js';
 import { isTopmostFocusTrap, useFocusTrap } from '../../hooks/useFocusTrap.js';
+import { LegalNoticesModal, type LegalNoticeTab } from '../legal/LegalNoticesModal.js';
 import {
   IconUser,
   IconLock,
@@ -85,6 +86,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
+  const [legalTab, setLegalTab] = useState<LegalNoticeTab | null>(null);
 
   useEffect(() => {
     if (resendCooldown <= 0) return;
@@ -707,7 +709,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     boxSizing: 'border-box',
   };
 
-  return createPortal(
+  return (
+    <>
+      {createPortal(
     <div
       className="modal-overlay"
       onClick={handleClose}
@@ -1350,6 +1354,52 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               >
                 {isLoading ? 'Đang xử lý...' : mode === 'register' ? 'Đăng Ký Tài Khoản' : 'Đăng Nhập'}
               </button>
+
+              {mode === 'register' && (
+                <p
+                  style={{
+                    margin: '2px 0 0 0',
+                    fontSize: '0.72rem',
+                    lineHeight: 1.5,
+                    color: 'var(--color-text-dim)',
+                    textAlign: 'center',
+                  }}
+                >
+                  Bằng việc đăng ký tài khoản, bạn đồng ý với{' '}
+                  <button
+                    type="button"
+                    onClick={() => setLegalTab('terms')}
+                    style={{
+                      color: 'var(--color-primary)',
+                      fontWeight: 700,
+                      fontSize: 'inherit',
+                      textDecoration: 'underline',
+                      textUnderlineOffset: 2,
+                      cursor: 'pointer',
+                      padding: 0,
+                    }}
+                  >
+                    Điều khoản &amp; Miễn trừ thực địa
+                  </button>{' '}
+                  và{' '}
+                  <button
+                    type="button"
+                    onClick={() => setLegalTab('privacy')}
+                    style={{
+                      color: 'var(--color-primary)',
+                      fontWeight: 700,
+                      fontSize: 'inherit',
+                      textDecoration: 'underline',
+                      textUnderlineOffset: 2,
+                      cursor: 'pointer',
+                      padding: 0,
+                    }}
+                  >
+                    Chính sách bảo mật (NĐ 13/2023)
+                  </button>{' '}
+                  của LOST.
+                </p>
+              )}
             </form>
           )}
 
@@ -1671,7 +1721,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 }}
               >
                 <IconGoogle size={16} />
-                <span>Đăng nhập nhanh bằng Google</span>
+                <span>Đăng nhập bằng Google</span>
               </button>
             </div>
           )}
@@ -1679,5 +1729,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       </div>
     </div>,
     document.body
+      )}
+      <LegalNoticesModal
+        isOpen={legalTab !== null}
+        initialTab={legalTab ?? 'terms'}
+        onClose={() => setLegalTab(null)}
+        nested
+      />
+    </>
   );
 };

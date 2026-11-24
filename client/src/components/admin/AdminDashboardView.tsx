@@ -20,11 +20,23 @@ import { useSocket } from '../../context/SocketContext.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import { searchMatchVietnamese } from '../../utils/textUtils.js';
 import { isTopmostFocusTrap, useFocusTrap } from '../../hooks/useFocusTrap.js';
+import { ThemeToggle } from '../common/ThemeToggle.js';
+import type {
+  AdminCockpitSectionId,
+  CockpitBeaconPoint,
+  CockpitContributionPoint,
+  CockpitIncidentPoint,
+  CockpitInspectorSelection,
+  CockpitTrailPoint,
+  CockpitTriageItem,
+  CockpitUserPoint,
+} from './adminCockpitTypes.js';
+import { AdminCommandDeck, type AdminCommandDeckStats } from './AdminCommandDeck.js';
+import { AdminSpatialInspector } from './AdminSpatialInspector.js';
+import { AdminStatusBar, type AdminReadinessLevel } from './AdminStatusBar.js';
 
-const DEFAULT_TRAIL_COVER =
-  'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329097/trekmap/trails/trail_cover_trail-fansipan.jpg';
-const DEFAULT_AVATAR =
-  'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
+const DEFAULT_TRAIL_COVER = '/covers/trail-fansipan.svg';
+const DEFAULT_AVATAR = '/covers/avatar-default.svg';
 
 const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
   return ({
@@ -178,44 +190,28 @@ const ExternalLinkIcon = createSvgIcon(
   </>
 );
 
-const EmptyStateIllustration = () => (
-  <svg width="120" height="120" viewBox="0 0 120 120" fill="none" style={{ marginBottom: 16 }}>
-    <circle
-      cx="60"
-      cy="60"
-      r="50"
-      fill="color-mix(in srgb, var(--color-primary) 5%, transparent)"
-      stroke="var(--color-border)"
-      strokeWidth="1.5"
-      strokeDasharray="4 4"
-    />
-    <circle
-      cx="60"
-      cy="60"
-      r="36"
-      fill="color-mix(in srgb, var(--color-sky) 8%, transparent)"
-      stroke="color-mix(in srgb, var(--color-sky) 25%, transparent)"
-      strokeWidth="1.5"
-    />
-    <path
-      d="M30 78 L52 48 L64 64 L74 50 L92 78 Z"
-      fill="color-mix(in srgb, var(--color-primary) 16%, transparent)"
-      stroke="var(--color-primary)"
-      strokeWidth="2"
-      strokeLinejoin="round"
-    />
-    <circle cx="68" cy="40" r="6" fill="var(--color-sun)" opacity="0.9" />
-    <g transform="translate(48, 62)">
-      <circle cx="12" cy="12" r="14" fill="var(--color-primary)" />
-      <path
-        d="M7 12 L10.5 15.5 L17 9"
-        stroke="var(--color-on-primary)"
-        strokeWidth="2.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </g>
-  </svg>
+const MenuIcon = createSvgIcon(
+  <>
+    <line x1="4" y1="7" x2="20" y2="7" />
+    <line x1="4" y1="12" x2="20" y2="12" />
+    <line x1="4" y1="17" x2="20" y2="17" />
+  </>
+);
+
+const PanelLeftClose = createSvgIcon(
+  <>
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+    <line x1="9" y1="3" x2="9" y2="21" />
+    <polyline points="16 15 13 12 16 9" />
+  </>
+);
+
+const PanelLeftOpen = createSvgIcon(
+  <>
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+    <line x1="9" y1="3" x2="9" y2="21" />
+    <polyline points="13 9 16 12 13 15" />
+  </>
 );
 
 const formatDateVi = (value?: string): string => {
@@ -294,19 +290,10 @@ interface AdminAuthorModalState {
   date?: string;
 }
 
-type AdminSectionId =
-  | 'contributions'
-  | 'trails'
-  | 'incidents'
-  | 'inquiries'
-  | 'safety'
-  | 'field'
-  | 'users'
-  | 'forum'
-  | 'stats'
-  | 'audit';
+type AdminSectionId = AdminCockpitSectionId;
 
 const VALID_ADMIN_SECTIONS = new Set<AdminSectionId>([
+  'overview',
   'contributions',
   'trails',
   'incidents',
@@ -320,7 +307,7 @@ const VALID_ADMIN_SECTIONS = new Set<AdminSectionId>([
 ]);
 
 const resolveInitialAdminSection = (): AdminSectionId => {
-  if (typeof window === 'undefined') return 'contributions';
+  if (typeof window === 'undefined') return 'overview';
   const rawTab = (new URLSearchParams(window.location.search).get('tab') || '').trim().toLowerCase();
   if (VALID_ADMIN_SECTIONS.has(rawTab as AdminSectionId)) {
     return rawTab as AdminSectionId;
@@ -331,7 +318,7 @@ const resolveInitialAdminSection = (): AdminSectionId => {
   if (rawTab === 'pois' || rawTab === 'reviews') {
     return 'field';
   }
-  return 'contributions';
+  return 'overview';
 };
 
 const resolveInitialFieldSubTab = (): 'pois' | 'reviews' => {
@@ -476,11 +463,14 @@ interface AdminIncidentDispute {
 interface AdminIncidentItem {
   _id?: string;
   id?: string;
+  trailId?: string;
   trailName?: string;
   type?: string;
   severity?: string;
   description?: string;
   locationNote?: string;
+  lat?: number;
+  lng?: number;
   reportedAt?: string;
   createdAt?: string;
   reportedBy?: EntityRef;
@@ -782,34 +772,70 @@ interface AdminDashboardViewProps {
   onBack: () => void;
   onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
   currentUser?: (UserProfile & { _id?: string }) | null;
+  onOpenCommandPalette?: () => void;
 }
 
 export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   onBack,
   onShowToast,
   currentUser,
+  onOpenCommandPalette,
 }) => {
   const isStrictAdmin = currentUser?.role === 'admin';
   const { isConnected: isSocketConnected } = useSocket();
+  const [mobileRailOpen, setMobileRailOpen] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useState<boolean>(() => {
+    try {
+      return typeof window !== 'undefined' && localStorage.getItem('lost_admin_rail_collapsed') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [inspectorSelection, setInspectorSelection] = useState<CockpitInspectorSelection | null>(null);
+  const [hoverCoords, setHoverCoords] = useState<{ lat: number; lng: number } | null>(null);
+
+  const toggleRailCollapsed = useCallback(() => {
+    setRailCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('lost_admin_rail_collapsed', next ? '1' : '0');
+      } catch {
+        // ignore storage errors
+      }
+      return next;
+    });
+  }, []);
+
+  const handleCloseInspector = useCallback(() => {
+    setInspectorSelection(null);
+  }, []);
+
+  const handleSelectInspector = useCallback((nextSelection: CockpitInspectorSelection) => {
+    setInspectorSelection(nextSelection);
+  }, []);
 
   const [adminSection, setAdminSection] = useState<AdminSectionId>(resolveInitialAdminSection);
   const effectiveSection: AdminSectionId =
     !isStrictAdmin && (adminSection === 'users' || adminSection === 'audit')
-      ? 'contributions'
+      ? 'overview'
       : adminSection;
 
-  const handleSelectSection = (next: AdminSectionId) => {
-    if (!isStrictAdmin && (next === 'users' || next === 'audit')) return;
-    setAdminSection(next);
-    try {
-      if (typeof window !== 'undefined' && window.location.pathname === '/admin') {
-        const nextUrl = `/admin?tab=${encodeURIComponent(next)}`;
-        window.history.replaceState(null, '', nextUrl);
+  const handleSelectSection = useCallback(
+    (next: AdminSectionId) => {
+      if (!isStrictAdmin && (next === 'users' || next === 'audit')) return;
+      setAdminSection(next);
+      setMobileRailOpen(false);
+      try {
+        if (typeof window !== 'undefined' && window.location.pathname === '/admin') {
+          const nextUrl = `/admin?tab=${encodeURIComponent(next)}`;
+          window.history.replaceState(null, '', nextUrl);
+        }
+      } catch {
+        // ignore history API errors
       }
-    } catch {
-      // ignore history API errors
-    }
-  };
+    },
+    [isStrictAdmin]
+  );
 
   const [activeTab, setActiveTab] = useState<'pending' | 'approved' | 'rejected' | 'all'>('pending');
   const [incidentFilter, setIncidentFilter] = useState<'active' | 'resolved' | 'all'>('active');
@@ -1208,11 +1234,29 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     }
   }, [handleForbiddenStatus, markSectionLoaded]);
 
+  const requestedSectionsRef = useRef<Set<AdminSectionId>>(new Set());
+  const lastSafetyTimerViewRef = useRef<'live' | 'checked_in_safe' | 'cancelled'>(safetyTimerView);
+
+  const fetchSafetyMonitoring = useCallback(async () => {
+    lastSafetyTimerViewRef.current = safetyTimerView;
+    await Promise.all([
+      fetchAdminSafetyTimers(safetyTimerView),
+      fetchAdminLiveBeacons(),
+    ]);
+  }, [fetchAdminSafetyTimers, fetchAdminLiveBeacons, safetyTimerView]);
+
   const refreshAllData = async () => {
     setIsRefreshing(true);
     setAccessNotice('');
     const sectionsToSync = new Set<AdminSectionId>(loadedSections);
     sectionsToSync.add(effectiveSection);
+    if (effectiveSection === 'overview') {
+      sectionsToSync.add('contributions');
+      sectionsToSync.add('trails');
+      sectionsToSync.add('incidents');
+      sectionsToSync.add('safety');
+      sectionsToSync.add('inquiries');
+    }
     const tasks: Promise<void>[] = [fetchHealthStatus(), fetchAdminStats()];
     if (sectionsToSync.has('contributions')) tasks.push(fetchFromMongo());
     if (sectionsToSync.has('trails')) tasks.push(fetchAdminTrails());
@@ -1220,7 +1264,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     if (sectionsToSync.has('forum')) tasks.push(fetchAdminThreads());
     if (sectionsToSync.has('inquiries')) tasks.push(fetchAdminInquiries());
     if (sectionsToSync.has('safety')) {
-      tasks.push(fetchAdminSafetyTimers(safetyTimerView), fetchAdminLiveBeacons());
+      tasks.push(fetchSafetyMonitoring());
     }
     if (sectionsToSync.has('field')) {
       tasks.push(fetchAdminPois(), fetchAdminReviews());
@@ -1236,7 +1280,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     }, 350);
   };
 
-  // On mount: fetch ONLY lightweight health + summary stats (inactive tabs lazy-load on demand)
+  // On mount: fetch lightweight health + summary stats (section datasets load on demand via guard below)
   useEffect(() => {
     let active = true;
     void Promise.resolve().then(() => {
@@ -1249,27 +1293,50 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     };
   }, [fetchHealthStatus, fetchAdminStats]);
 
-  // Lazy-load data strictly for the active admin section when switching tabs
+  // Load rich live datasets for 'overview' and lazy-load inactive tabs once via requestedSectionsRef guard
   useEffect(() => {
     let active = true;
     void Promise.resolve().then(() => {
       if (!active) return;
-      if (effectiveSection === 'contributions') void fetchFromMongo();
-      if (effectiveSection === 'users' && isStrictAdmin) void fetchAdminUsers();
-      if (effectiveSection === 'trails') void fetchAdminTrails();
-      if (effectiveSection === 'incidents') void fetchAdminIncidents();
-      if (effectiveSection === 'inquiries') void fetchAdminInquiries();
+      const requested = requestedSectionsRef.current;
+
+      const ensureSection = (sec: AdminSectionId, loader: () => Promise<void>) => {
+        if (requested.has(sec)) return;
+        requested.add(sec);
+        void loader();
+      };
+
+      if (effectiveSection === 'overview') {
+        ensureSection('contributions', fetchFromMongo);
+        ensureSection('trails', fetchAdminTrails);
+        ensureSection('incidents', fetchAdminIncidents);
+        ensureSection('safety', fetchSafetyMonitoring);
+        ensureSection('inquiries', fetchAdminInquiries);
+        return;
+      }
+
+      if (effectiveSection === 'contributions') ensureSection('contributions', fetchFromMongo);
+      if (effectiveSection === 'users' && isStrictAdmin) ensureSection('users', fetchAdminUsers);
+      if (effectiveSection === 'trails') ensureSection('trails', fetchAdminTrails);
+      if (effectiveSection === 'incidents') ensureSection('incidents', fetchAdminIncidents);
+      if (effectiveSection === 'inquiries') ensureSection('inquiries', fetchAdminInquiries);
       if (effectiveSection === 'safety') {
-        void fetchAdminSafetyTimers(safetyTimerView);
-        void fetchAdminLiveBeacons();
+        if (!requested.has('safety')) {
+          requested.add('safety');
+          void fetchSafetyMonitoring();
+        } else if (lastSafetyTimerViewRef.current !== safetyTimerView) {
+          lastSafetyTimerViewRef.current = safetyTimerView;
+          void fetchAdminSafetyTimers(safetyTimerView);
+        }
       }
       if (effectiveSection === 'field') {
-        void fetchAdminPois();
-        void fetchAdminReviews();
+        ensureSection('field', async () => {
+          await Promise.all([fetchAdminPois(), fetchAdminReviews()]);
+        });
       }
-      if (effectiveSection === 'forum') void fetchAdminThreads();
-      if (effectiveSection === 'stats') void fetchAdminStats();
-      if (effectiveSection === 'audit' && isStrictAdmin) void fetchAuditLogs();
+      if (effectiveSection === 'forum') ensureSection('forum', fetchAdminThreads);
+      if (effectiveSection === 'stats') ensureSection('stats', fetchAdminStats);
+      if (effectiveSection === 'audit' && isStrictAdmin) ensureSection('audit', fetchAuditLogs);
     });
     return () => {
       active = false;
@@ -1284,7 +1351,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     fetchAdminIncidents,
     fetchAdminInquiries,
     fetchAdminSafetyTimers,
-    fetchAdminLiveBeacons,
+    fetchSafetyMonitoring,
     fetchAdminPois,
     fetchAdminReviews,
     fetchAdminThreads,
@@ -1862,6 +1929,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         if (selectedContribution?.id === id || selectedContribution?._id === id) {
           setSelectedContribution(null);
         }
+        setInspectorSelection((prev) => (prev?.kind === 'contribution' && prev.data.id === id ? null : prev));
         void fetchFromMongo();
         void fetchAdminStats();
         if (isStrictAdmin) void fetchAuditLogs();
@@ -1883,6 +1951,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         const data = await res.json();
         if (res.ok && data.success) {
           onShowToast?.(`Đã xóa cung đường "${name}"!`, 'info');
+          setInspectorSelection((prev) => (prev?.kind === 'trail' && prev.data.id === id ? null : prev));
           void fetchAdminTrails();
           void fetchAdminStats();
           if (isStrictAdmin) void fetchAuditLogs();
@@ -1927,6 +1996,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         const data = await res.json();
         if (res.ok && data.success) {
           onShowToast?.('Đã xóa sự cố khỏi hệ thống!', 'info');
+          setInspectorSelection((prev) => (prev?.kind === 'incident' && prev.data.id === id ? null : prev));
           void fetchAdminIncidents();
           void fetchAdminStats();
           if (isStrictAdmin) void fetchAuditLogs();
@@ -2146,119 +2216,626 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     return { filteredPois: matchedPois, filteredReviews: matchedReviews };
   }, [poisList, reviewsList, fieldSearchQuery]);
 
+  const { cockpitTrails, cockpitTrailsById, resolveTrailCoords } = useMemo(() => {
+    const mapped: CockpitTrailPoint[] = [];
+    const byId = new Map<string, CockpitTrailPoint>();
+    const coordsEntries: Array<{
+      id: string;
+      nameNorm: string;
+      altNorms: string[];
+      lat: number;
+      lng: number;
+    }> = [];
+
+    for (const t of trailsList) {
+      const id = String(t._id || t.id || '');
+      if (!id) continue;
+      const lat = Number(t.startLat);
+      const lng = Number(t.startLng);
+      const point: CockpitTrailPoint = {
+        id,
+        name: t.name || 'Cung đường trekking',
+        province: t.province || 'Việt Nam',
+        district: t.district,
+        region: t.region || 'Miền Bắc',
+        startLat: Number.isFinite(lat) ? lat : 0,
+        startLng: Number.isFinite(lng) ? lng : 0,
+        distanceKm: Number(t.distanceKm) || 0,
+        elevationGainM: Number(t.elevationGainM) || 0,
+        maxAltitudeM: Number(t.maxAltitudeM) || 0,
+        difficultyLevel: t.difficultyLevel,
+        durationHoursNote: t.durationHoursNote,
+        rating: t.rating,
+        reviewCount: t.reviewCount,
+        coverImage: t.coverImage,
+        permitRequired: t.permitRequired,
+        permitInfo: t.permitInfo,
+        hasCampsite: t.hasCampsite,
+        hasWaterSource: t.hasWaterSource,
+        kidFriendly: t.kidFriendly,
+        status: t.status,
+      };
+      mapped.push(point);
+      byId.set(id, point);
+
+      if (hasValidVnCoords({ startLat: lat, startLng: lng })) {
+        coordsEntries.push({
+          id,
+          nameNorm: (t.name || '').trim().toLowerCase(),
+          altNorms: Array.isArray(t.altNames)
+            ? t.altNames.map((a) => a.trim().toLowerCase()).filter(Boolean)
+            : [],
+          lat,
+          lng,
+        });
+      }
+    }
+
+    const resolveCoords = (
+      trailName?: string,
+      trailId?: string
+    ): { lat: number; lng: number } | null => {
+      if (trailId) {
+        const direct = coordsEntries.find((entry) => entry.id === trailId);
+        if (direct) return { lat: direct.lat, lng: direct.lng };
+      }
+      const q = (trailName || '').trim().toLowerCase();
+      if (!q) return null;
+      const exact = coordsEntries.find(
+        (entry) => entry.nameNorm === q || entry.altNorms.includes(q)
+      );
+      if (exact) return { lat: exact.lat, lng: exact.lng };
+      const partial = coordsEntries.find(
+        (entry) =>
+          (entry.nameNorm && (entry.nameNorm.includes(q) || q.includes(entry.nameNorm))) ||
+          entry.altNorms.some((alt) => alt.includes(q) || q.includes(alt)) ||
+          searchMatchVietnamese(entry.nameNorm, q)
+      );
+      return partial ? { lat: partial.lat, lng: partial.lng } : null;
+    };
+
+    return {
+      cockpitTrails: mapped,
+      cockpitTrailsById: byId,
+      resolveTrailCoords: resolveCoords,
+    };
+  }, [trailsList]);
+
+  const { cockpitContributions, cockpitContributionsById } = useMemo(() => {
+    const mapped: CockpitContributionPoint[] = [];
+    const byId = new Map<string, CockpitContributionPoint>();
+    for (const c of contributions) {
+      const id = String(c.id || c._id || '');
+      if (!id) continue;
+      const point: CockpitContributionPoint = {
+        id,
+        name: c.name || 'Cung đường trekking mới',
+        province: c.province || 'Chưa rõ tỉnh',
+        district: c.district,
+        region: c.region,
+        status: c.status || 'pending',
+        distanceKm: c.distanceKm,
+        elevationGainM: c.elevationGainM,
+        maxAltitudeM: c.maxAltitudeM,
+        durationHoursNote: c.durationHoursNote,
+        startLat: c.startLat,
+        startLng: c.startLng,
+        coverImage: c.coverImage,
+        authorName: c.authorName,
+        authorEmail: c.authorEmail,
+        createdAt: c.createdAt || c.submittedAt,
+        permitRequired: c.permitRequired,
+        hasCampsite: c.hasCampsite,
+        hasWaterSource: c.hasWaterSource,
+      };
+      mapped.push(point);
+      byId.set(id, point);
+    }
+    return { cockpitContributions: mapped, cockpitContributionsById: byId };
+  }, [contributions]);
+
+  const { cockpitIncidents, cockpitIncidentsById } = useMemo(() => {
+    const mapped: CockpitIncidentPoint[] = [];
+    const byId = new Map<string, CockpitIncidentPoint>();
+    for (const inc of incidentsList) {
+      const id = String(inc._id || inc.id || '');
+      if (!id) continue;
+      const synthetic = isSyntheticIncident(inc);
+      const explicitValid = hasValidVnCoords({ startLat: inc.lat, startLng: inc.lng });
+      const matched = explicitValid
+        ? { lat: Number(inc.lat), lng: Number(inc.lng) }
+        : resolveTrailCoords(inc.trailName, inc.trailId);
+      const point: CockpitIncidentPoint = {
+        id,
+        trailName: inc.trailName || 'Cảnh báo thực địa',
+        type: inc.type,
+        severity: inc.severity || 'high',
+        description: inc.description || 'Cảnh báo an toàn thực địa cần kiểm tra.',
+        locationNote: inc.locationNote,
+        resolved: Boolean(inc.resolved),
+        isSynthetic: synthetic,
+        lat: matched?.lat,
+        lng: matched?.lng,
+        reporterName: inc.reporterName || inc.userName || inc.verifiedBy,
+        reportedAt: inc.reportedAt || inc.createdAt,
+        disputesCount: Array.isArray(inc.disputes) ? inc.disputes.length : 0,
+      };
+      mapped.push(point);
+      byId.set(id, point);
+    }
+    return { cockpitIncidents: mapped, cockpitIncidentsById: byId };
+  }, [incidentsList, resolveTrailCoords]);
+
+  const { cockpitBeacons, cockpitBeaconsById } = useMemo(() => {
+    const mapped: CockpitBeaconPoint[] = [];
+    const byId = new Map<string, CockpitBeaconPoint>();
+    for (const b of liveBeaconsList) {
+      const id = String(b._id || b.token || '');
+      if (!id) continue;
+      const userObj = typeof b.userId === 'object' ? b.userId : null;
+      const posValid =
+        b.lastPosition &&
+        hasValidVnCoords({ startLat: b.lastPosition.lat, startLng: b.lastPosition.lng });
+      const fallbackCoords = posValid
+        ? { lat: b.lastPosition!.lat, lng: b.lastPosition!.lng }
+        : resolveTrailCoords(b.trailName, b.trailId);
+      const mappedStatus: CockpitBeaconPoint['status'] =
+        b.status === 'sos' ? 'sos' : b.status === 'safe' ? 'ended' : 'active';
+      const point: CockpitBeaconPoint = {
+        id,
+        token: b.token,
+        displayName: b.displayName || userObj?.fullName || userObj?.username || 'Trekker LOST',
+        trailName: b.trailName || 'Hành trình thực địa',
+        status: mappedStatus,
+        lat: fallbackCoords?.lat,
+        lng: fallbackCoords?.lng,
+        altitudeM: b.lastPosition?.altitudeM ?? null,
+        batteryPercent: b.batteryPercent ?? null,
+        distanceKm: b.distanceKm,
+        lastPingAt: b.lastPingAt,
+        isSignalStale: b.isSignalStale,
+        minutesSinceLastPing: b.minutesSinceLastPing ?? null,
+        emergencyNote: b.emergencyNote,
+        phone: userObj?.phone,
+        email: userObj?.email,
+        emergencyContact: userObj?.emergencyContact,
+        sharePath: b.sharePath || `/beacon/${b.token}`,
+      };
+      mapped.push(point);
+      byId.set(id, point);
+    }
+    return { cockpitBeacons: mapped, cockpitBeaconsById: byId };
+  }, [liveBeaconsList, resolveTrailCoords]);
+
+  const cockpitUsersById = useMemo(() => {
+    const byId = new Map<string, CockpitUserPoint>();
+    for (const u of usersList) {
+      const id = String(u._id || u.id || '');
+      if (!id) continue;
+      byId.set(id, {
+        id,
+        fullName: u.fullName || u.name || u.username || u.email || 'Thành viên LOST',
+        email: u.email || '',
+        role: u.role || 'user',
+        avatarUrl: u.avatarUrl || u.avatar,
+        reputationScore: Number(u.reputationScore ?? 0),
+        badges: Array.isArray(u.badges) ? u.badges : [],
+        isBanned: Boolean(u.isBanned),
+        banReason: u.banReason,
+      });
+    }
+    return byId;
+  }, [usersList]);
+
+  const cockpitTriageItems = useMemo<CockpitTriageItem[]>(() => {
+    const items: CockpitTriageItem[] = [];
+    const seenIncidentIds = new Set<string>();
+
+    // P1: SOS Beacons
+    for (const beacon of cockpitBeacons) {
+      if (beacon.status === 'sos') {
+        items.push({
+          id: `sos-${beacon.id}`,
+          kind: 'sos',
+          priority: 1,
+          title: `SOS · ${beacon.displayName}`,
+          subtitle: `${beacon.trailName}${beacon.emergencyNote ? ` — ${beacon.emergencyNote}` : ''}`,
+          meta: beacon.lastPingAt ? formatDateVi(beacon.lastPingAt) : 'Phát tín hiệu SOS',
+          targetSection: 'safety',
+          lat: beacon.lat,
+          lng: beacon.lng,
+          selection: { kind: 'beacon', data: beacon },
+        });
+      }
+    }
+
+    // P1: Overdue Safety Timers
+    for (const timer of safetyTimersList) {
+      if (timer.status === 'overdue_alerted') {
+        const userObj = typeof timer.userId === 'object' ? timer.userId : null;
+        const trekkerName = userObj?.fullName || userObj?.username || 'Thành viên LOST';
+        const fallback =
+          typeof timer.lastKnownLat === 'number' && typeof timer.lastKnownLng === 'number'
+            ? { lat: timer.lastKnownLat, lng: timer.lastKnownLng }
+            : resolveTrailCoords(timer.trailName, timer.trailSlug);
+        items.push({
+          id: `overdue-${timer._id}`,
+          kind: 'overdue',
+          priority: 1,
+          title: `Quá hạn báo bình an · ${trekkerName}`,
+          subtitle: `${timer.trailName || 'Tuyến thực địa'} · Hạn ${formatDateVi(timer.expectedReturnAt)}`,
+          meta: timer.emergencyContactPhone ? `Liên hệ: ${timer.emergencyContactPhone}` : 'Cần kiểm tra ngay',
+          targetSection: 'safety',
+          lat: fallback?.lat,
+          lng: fallback?.lng,
+        });
+      }
+    }
+
+    // P1: Community-disputed incidents & critical active incidents
+    for (const inc of cockpitIncidents) {
+      if (!inc.isSynthetic && inc.disputesCount > 0) {
+        seenIncidentIds.add(inc.id);
+        items.push({
+          id: `dispute-${inc.id}`,
+          kind: 'dispute',
+          priority: 1,
+          title: `Khiếu nại tin giả · ${inc.trailName}`,
+          subtitle: inc.description,
+          meta: `${inc.disputesCount} báo cáo tranh chấp`,
+          targetSection: 'incidents',
+          lat: inc.lat,
+          lng: inc.lng,
+          selection: { kind: 'incident', data: inc },
+        });
+      } else if (!inc.resolved && inc.severity === 'critical') {
+        seenIncidentIds.add(inc.id);
+        items.push({
+          id: `inc-crit-${inc.id}`,
+          kind: 'incident',
+          priority: 1,
+          title: `Khẩn cấp · ${inc.trailName}`,
+          subtitle: inc.description,
+          meta: inc.isSynthetic ? 'Nguồn vệ tinh' : formatDateVi(inc.reportedAt),
+          targetSection: 'incidents',
+          lat: inc.lat,
+          lng: inc.lng,
+          selection: { kind: 'incident', data: inc },
+        });
+      }
+    }
+
+    // P2: Pending Contributions
+    for (const contrib of cockpitContributions) {
+      if (contrib.status !== 'approved' && contrib.status !== 'rejected') {
+        items.push({
+          id: `contrib-${contrib.id}`,
+          kind: 'contribution',
+          priority: 2,
+          title: contrib.name,
+          subtitle: `${contrib.province} · ${contrib.distanceKm ?? 0} km · +${contrib.elevationGainM ?? 0}m`,
+          meta: contrib.authorName || contrib.authorEmail || 'Cộng đồng',
+          targetSection: 'contributions',
+          lat: contrib.startLat,
+          lng: contrib.startLng,
+          selection: { kind: 'contribution', data: contrib },
+        });
+      }
+    }
+
+    // P2: Pending Porter / Guide Inquiries
+    for (const inq of inquiriesList) {
+      if (inq.status === 'pending') {
+        const trekkerObj = typeof inq.userId === 'object' ? inq.userId : null;
+        const trailObj = typeof inq.trailId === 'object' ? inq.trailId : null;
+        const trailLabel = inq.trailName || trailObj?.name || 'Cung đường trekking';
+        items.push({
+          id: `inq-${inq._id}`,
+          kind: 'inquiry',
+          priority: 2,
+          title: `Đơn Porter/Guide · ${trailLabel}`,
+          subtitle: `${trekkerObj?.fullName || trekkerObj?.username || 'Trekker'} · ${inq.groupSize || 1} người · ${inq.durationDays || 1} ngày`,
+          meta: formatDateOnlyVi(inq.plannedStartDate),
+          targetSection: 'inquiries',
+        });
+      }
+    }
+
+    // P3: Other active unresolved incidents
+    for (const inc of cockpitIncidents) {
+      if (!inc.resolved && !seenIncidentIds.has(inc.id)) {
+        items.push({
+          id: `inc-${inc.id}`,
+          kind: 'incident',
+          priority: 3,
+          title: inc.trailName,
+          subtitle: inc.description,
+          meta: inc.isSynthetic ? 'Vệ tinh · Chỉ đọc' : formatDateVi(inc.reportedAt),
+          targetSection: 'incidents',
+          lat: inc.lat,
+          lng: inc.lng,
+          selection: { kind: 'incident', data: inc },
+        });
+      }
+    }
+
+    return items.sort((a, b) => a.priority - b.priority);
+  }, [cockpitBeacons, safetyTimersList, resolveTrailCoords, cockpitIncidents, cockpitContributions, inquiriesList]);
+
+  const commandDeckStats = useMemo<AdminCommandDeckStats>(() => {
+    const activeTimersCount = safetyTimersList.filter(
+      (t) => t.status === 'active' || t.status === 'overdue_alerted'
+    ).length;
+    return {
+      totalUsers: loadedSections.has('users')
+        ? usersList.length
+        : (adminStats?.totalUsers ?? usersList.length),
+      totalTrails: loadedSections.has('trails')
+        ? trailsList.length
+        : (adminStats?.totalTrails ?? trailsList.length),
+      pendingContributions: loadedSections.has('contributions')
+        ? pendingContributions.length
+        : (adminStats?.pendingContributions ?? pendingContributions.length),
+      activeIncidents: loadedSections.has('incidents')
+        ? activeIncidentsCount
+        : (adminStats?.totalIncidents ?? activeIncidentsCount),
+      activeSafetyTimers: loadedSections.has('safety')
+        ? activeTimersCount
+        : (adminStats?.activeSafetyTimers ?? activeTimersCount),
+      totalReviews: adminStats?.totalReviews ?? reviewsTotal,
+      totalThreads: loadedSections.has('forum')
+        ? threadsList.length
+        : (adminStats?.totalThreads ?? threadsList.length),
+      totalCheckins: adminStats?.totalCheckins ?? 0,
+      totalGuides: adminStats?.totalGuides ?? 0,
+      totalTripPlans: adminStats?.totalTripPlans ?? 0,
+      totalTripReports: adminStats?.totalTripReports ?? 0,
+      urgentSafetyCount,
+    };
+  }, [
+    loadedSections,
+    usersList.length,
+    trailsList.length,
+    pendingContributions.length,
+    activeIncidentsCount,
+    safetyTimersList,
+    reviewsTotal,
+    threadsList.length,
+    adminStats,
+    urgentSafetyCount,
+  ]);
+
+  // Keep docked Spatial Inspector synced with live state mutations (approve, reject, resolve, role/ban)
+  const liveInspectorSelection = useMemo<CockpitInspectorSelection | null>(() => {
+    if (!inspectorSelection) return null;
+    switch (inspectorSelection.kind) {
+      case 'trail': {
+        const fresh = cockpitTrailsById.get(inspectorSelection.data.id);
+        return fresh ? { kind: 'trail', data: fresh } : inspectorSelection;
+      }
+      case 'contribution': {
+        const fresh = cockpitContributionsById.get(inspectorSelection.data.id);
+        return fresh ? { kind: 'contribution', data: fresh } : inspectorSelection;
+      }
+      case 'incident': {
+        const fresh = cockpitIncidentsById.get(inspectorSelection.data.id);
+        return fresh ? { kind: 'incident', data: fresh } : inspectorSelection;
+      }
+      case 'beacon': {
+        const fresh = cockpitBeaconsById.get(inspectorSelection.data.id);
+        return fresh ? { kind: 'beacon', data: fresh } : inspectorSelection;
+      }
+      case 'user': {
+        const fresh = cockpitUsersById.get(inspectorSelection.data.id);
+        return fresh ? { kind: 'user', data: fresh } : inspectorSelection;
+      }
+    }
+  }, [
+    inspectorSelection,
+    cockpitTrailsById,
+    cockpitContributionsById,
+    cockpitIncidentsById,
+    cockpitBeaconsById,
+    cockpitUsersById,
+  ]);
+
+  const selectedInspectorId = liveInspectorSelection ? liveInspectorSelection.data.id : null;
+
+  const lockedCoords = useMemo<{ lat: number; lng: number } | null>(() => {
+    if (!liveInspectorSelection) return null;
+    if (liveInspectorSelection.kind === 'trail') {
+      const { startLat, startLng } = liveInspectorSelection.data;
+      return hasValidVnCoords({ startLat, startLng }) ? { lat: startLat, lng: startLng } : null;
+    }
+    if (liveInspectorSelection.kind === 'contribution') {
+      const { startLat, startLng } = liveInspectorSelection.data;
+      return hasValidVnCoords({ startLat, startLng })
+        ? { lat: Number(startLat), lng: Number(startLng) }
+        : null;
+    }
+    if (liveInspectorSelection.kind === 'incident' || liveInspectorSelection.kind === 'beacon') {
+      const { lat, lng } = liveInspectorSelection.data;
+      return hasValidVnCoords({ startLat: lat, startLng: lng })
+        ? { lat: Number(lat), lng: Number(lng) }
+        : null;
+    }
+    return null;
+  }, [liveInspectorSelection]);
+
+  const statusReadiness: AdminReadinessLevel =
+    urgentSafetyCount > 0
+      ? 'critical'
+      : commandDeckStats.activeIncidents > 0 ||
+          commandDeckStats.pendingContributions > 0 ||
+          pendingInquiriesCount > 0 ||
+          pendingDisputesCount > 0
+        ? 'attention'
+        : 'stable';
+
+  const statusReadinessDetail =
+    statusReadiness === 'critical'
+      ? `${urgentSafetyCount} cảnh báo SOS / quá hạn`
+      : statusReadiness === 'attention'
+        ? `${commandDeckStats.activeIncidents} sự cố · ${commandDeckStats.pendingContributions} chờ duyệt`
+        : `${commandDeckStats.totalTrails} tuyến VN`;
+
+  const handleInspectorEditTrail = useCallback(
+    (trailId: string) => {
+      const found = trailsList.find((t) => (t._id || t.id) === trailId);
+      if (found) openEditTrailModal(found);
+    },
+    [trailsList]
+  );
+
+  const handleInspectorOpenContribModal = useCallback(
+    (contribId: string) => {
+      const found = contributions.find((c) => (c.id || c._id) === contribId);
+      if (found) setSelectedContribution(found);
+    },
+    [contributions]
+  );
+
+  const handleOpenCreateTrail = useCallback(() => {
+    if (!isStrictAdmin) return;
+    setCreateTrailForm(createEmptyTrailForm());
+    setIsCreateTrailOpen(true);
+  }, [isStrictAdmin]);
+
+  type AdminNavGroupId = 'command' | 'moderation' | 'operations' | 'system';
+
   interface NavItemConfig {
     id: AdminSectionId;
+    group: AdminNavGroupId;
     label: string;
     icon: React.ComponentType<{ size?: number; color?: string }>;
-    badge?: number;
-    badgeColor?: string;
-    badgeTextColor?: string;
-    urgent?: boolean;
-    urgentText?: string;
+    count?: number;
+    alertTone?: 'danger' | 'warn';
+    urgentTooltip?: string;
     adminOnly?: boolean;
   }
 
+  const navGroupLabels: Record<AdminNavGroupId, string> = {
+    command: 'Chỉ huy',
+    moderation: 'Kiểm duyệt',
+    operations: 'Vận hành',
+    system: 'Hệ thống',
+  };
+
   const navItems = useMemo<NavItemConfig[]>(() => {
+    const pendingContribCount = loadedSections.has('contributions')
+      ? pendingContributions.length
+      : (adminStats?.pendingContributions ?? pendingContributions.length);
+    const totalTrailsCount = loadedSections.has('trails')
+      ? trailsList.length
+      : (adminStats?.totalTrails ?? trailsList.length);
+    const incidentsCount = loadedSections.has('incidents')
+      ? activeIncidentsCount
+      : (adminStats?.totalIncidents ?? activeIncidentsCount);
+    const inquiriesCount = loadedSections.has('inquiries')
+      ? pendingInquiriesCount > 0
+        ? pendingInquiriesCount
+        : inquiriesList.length
+      : undefined;
+    const safetyCount = loadedSections.has('safety')
+      ? urgentSafetyCount > 0
+        ? urgentSafetyCount
+        : liveSafetyTotal
+      : (adminStats?.activeSafetyTimers ?? liveSafetyTotal);
+    const fieldCount = loadedSections.has('field')
+      ? fieldModerationTotal
+      : (adminStats?.totalReviews ?? fieldModerationTotal);
+    const usersCount = loadedSections.has('users')
+      ? usersList.length
+      : (adminStats?.totalUsers ?? usersList.length);
+    const forumCount = loadedSections.has('forum')
+      ? threadsList.length
+      : (adminStats?.totalThreads ?? threadsList.length);
+
     const allNavItems: NavItemConfig[] = [
       {
-        id: 'contributions',
-        label: 'Duyệt Đóng Góp',
-        icon: Inbox,
-        badge: loadedSections.has('contributions')
-          ? pendingContributions.length
-          : (adminStats?.pendingContributions ?? pendingContributions.length),
-        badgeColor: 'var(--color-sun)',
-        badgeTextColor: 'var(--color-on-primary)',
+        id: 'overview',
+        group: 'command',
+        label: 'Trung tâm Điều hành',
+        icon: Compass,
+        count: urgentSafetyCount > 0 ? urgentSafetyCount : undefined,
+        alertTone: urgentSafetyCount > 0 ? 'danger' : undefined,
+        urgentTooltip: urgentSafetyCount > 0 ? `${urgentSafetyCount} tín hiệu khẩn cấp` : undefined,
       },
       {
-        id: 'trails',
-        label: 'Kho Cung Đường',
-        icon: Layers,
-        badge: loadedSections.has('trails')
-          ? trailsList.length
-          : (adminStats?.totalTrails ?? trailsList.length),
-        badgeColor: 'var(--color-sky)',
-        badgeTextColor: 'var(--color-on-primary)',
+        id: 'contributions',
+        group: 'moderation',
+        label: 'Duyệt đóng góp',
+        icon: Inbox,
+        count: pendingContribCount,
+        alertTone: pendingContribCount > 0 ? 'warn' : undefined,
       },
       {
         id: 'incidents',
-        label: 'Quản Lý Sự Cố',
+        group: 'moderation',
+        label: 'Quản lý sự cố',
         icon: AlertTriangle,
-        badge: loadedSections.has('incidents')
-          ? activeIncidentsCount
-          : (adminStats?.totalIncidents ?? activeIncidentsCount),
-        badgeColor: 'var(--color-error)',
-        badgeTextColor: 'var(--color-on-danger)',
-        urgent: pendingDisputesCount > 0,
-        urgentText: `${pendingDisputesCount} Khiếu nại`,
-      },
-      {
-        id: 'inquiries',
-        label: 'Đơn Porter / Guide',
-        icon: IconBackpack,
-        badge: loadedSections.has('inquiries')
-          ? pendingInquiriesCount > 0
-            ? pendingInquiriesCount
-            : inquiriesList.length
-          : undefined,
-        badgeColor: pendingInquiriesCount > 0 ? 'var(--color-sun)' : 'var(--color-sky)',
-        badgeTextColor: 'var(--color-on-primary)',
-      },
-      {
-        id: 'safety',
-        label: 'An Toàn & Đèn Hiệu',
-        icon: IconShieldAlert,
-        badge: loadedSections.has('safety')
-          ? liveSafetyTotal
-          : (adminStats?.activeSafetyTimers ?? liveSafetyTotal),
-        badgeColor: urgentSafetyCount > 0 ? 'var(--color-error)' : 'var(--color-primary)',
-        badgeTextColor: urgentSafetyCount > 0 ? 'var(--color-on-danger)' : 'var(--color-on-primary)',
-        urgent: urgentSafetyCount > 0,
-        urgentText: `${urgentSafetyCount} KHẨN CẤP`,
+        count: incidentsCount,
+        alertTone: pendingDisputesCount > 0 || incidentsCount > 0 ? 'danger' : undefined,
+        urgentTooltip: pendingDisputesCount > 0 ? `${pendingDisputesCount} khiếu nại tin giả` : undefined,
       },
       {
         id: 'field',
-        label: 'Kiểm Duyệt Thực Địa',
+        group: 'moderation',
+        label: 'Thực địa & Đánh giá',
         icon: IconMapPin,
-        badge: loadedSections.has('field')
-          ? fieldModerationTotal
-          : (adminStats?.totalReviews ?? fieldModerationTotal),
-        badgeColor: 'var(--color-stream)',
-        badgeTextColor: 'var(--color-on-primary)',
-      },
-      {
-        id: 'users',
-        label: 'Người Dùng & Quyền',
-        icon: Users,
-        badge: loadedSections.has('users')
-          ? usersList.length
-          : (adminStats?.totalUsers ?? usersList.length),
-        badgeColor: 'var(--color-primary)',
-        badgeTextColor: 'var(--color-on-primary)',
-        adminOnly: true,
+        count: fieldCount,
       },
       {
         id: 'forum',
-        label: 'Kiểm Duyệt Diễn Đàn',
+        group: 'moderation',
+        label: 'Diễn đàn',
         icon: MessageSquare,
-        badge: loadedSections.has('forum')
-          ? threadsList.length
-          : (adminStats?.totalThreads ?? threadsList.length),
-        badgeColor: 'var(--color-earth)',
-        badgeTextColor: 'var(--color-on-primary)',
+        count: forumCount,
+      },
+      {
+        id: 'trails',
+        group: 'operations',
+        label: 'Kho cung đường',
+        icon: Layers,
+        count: totalTrailsCount,
+      },
+      {
+        id: 'inquiries',
+        group: 'operations',
+        label: 'Đơn Porter / Guide',
+        icon: IconBackpack,
+        count: inquiriesCount,
+        alertTone: pendingInquiriesCount > 0 ? 'warn' : undefined,
+      },
+      {
+        id: 'safety',
+        group: 'operations',
+        label: 'An toàn & Đèn hiệu',
+        icon: IconShieldAlert,
+        count: safetyCount,
+        alertTone: urgentSafetyCount > 0 ? 'danger' : undefined,
+        urgentTooltip: urgentSafetyCount > 0 ? `${urgentSafetyCount} tín hiệu khẩn cấp` : undefined,
       },
       {
         id: 'stats',
-        label: 'Thống Kê Tổng Quan',
+        group: 'system',
+        label: 'Thống kê hệ thống',
         icon: BarChart3,
       },
       {
+        id: 'users',
+        group: 'system',
+        label: 'Thành viên & Quyền',
+        icon: Users,
+        count: usersCount,
+        adminOnly: true,
+      },
+      {
         id: 'audit',
-        label: 'Nhật Ký Kiểm Toán',
+        group: 'system',
+        label: 'Nhật ký kiểm toán',
         icon: ShieldCheck,
-        badge: auditLogs.length > 0 ? auditLogs.length : undefined,
-        badgeColor: 'var(--color-sky)',
-        badgeTextColor: 'var(--color-on-primary)',
+        count: auditLogs.length > 0 ? auditLogs.length : undefined,
         adminOnly: true,
       },
     ];
@@ -2281,56 +2858,133 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     isStrictAdmin,
   ]);
 
+  // Power-user keyboard shortcuts (ignored inside inputs/textareas/selects and while any modal is open)
+  useEffect(() => {
+    const hasOpenModal = Boolean(
+      confirmDialog ||
+        isCreateTrailOpen ||
+        editingTrailModal ||
+        selectedAuthorModal ||
+        selectedContribution
+    );
+
+    const handleShortcut = (e: KeyboardEvent) => {
+      if (e.isComposing || e.ctrlKey || e.metaKey || e.altKey || hasOpenModal) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        if (inspectorSelection) {
+          e.preventDefault();
+          setInspectorSelection(null);
+        } else if (mobileRailOpen) {
+          e.preventDefault();
+          setMobileRailOpen(false);
+        }
+        return;
+      }
+
+      if (e.key === '[') {
+        e.preventDefault();
+        toggleRailCollapsed();
+        return;
+      }
+
+      if (e.key === '/') {
+        const searchInput = document.querySelector<HTMLInputElement>(
+          '.admin-workspace .admin-search input'
+        );
+        if (searchInput) {
+          e.preventDefault();
+          searchInput.focus();
+          searchInput.select();
+        }
+        return;
+      }
+
+      if (e.key === '0') {
+        e.preventDefault();
+        handleSelectSection('overview');
+        return;
+      }
+
+      if (e.key >= '1' && e.key <= '9') {
+        const idx = Number(e.key);
+        const targetNav = navItems[idx];
+        if (targetNav) {
+          e.preventDefault();
+          handleSelectSection(targetNav.id);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleShortcut);
+    return () => window.removeEventListener('keydown', handleShortcut);
+  }, [
+    confirmDialog,
+    isCreateTrailOpen,
+    editingTrailModal,
+    selectedAuthorModal,
+    selectedContribution,
+    inspectorSelection,
+    mobileRailOpen,
+    toggleRailCollapsed,
+    handleSelectSection,
+    navItems,
+  ]);
+
   const sectionTitles: Record<AdminSectionId, { title: string; subtitle: string }> = {
+    overview: {
+      title: 'Trung tâm Điều hành',
+      subtitle: 'Bản đồ tác chiến thực địa Việt Nam, hàng đợi ưu tiên và chỉ số vận hành thời gian thực.',
+    },
     contributions: {
-      title: 'Duyệt & Quản Lý Đóng Góp Cung Đường',
-      subtitle:
-        'Xem chi tiết các bài đóng góp từ cộng đồng, kiểm tra thông tin địa lý và phê duyệt lên bản đồ 3D',
+      title: 'Duyệt đóng góp cung đường',
+      subtitle: 'Thẩm định tọa độ GPS, thông số địa hình và phê duyệt đóng góp cộng đồng lên bản đồ LOST.',
     },
     trails: {
-      title: 'Quản Lý Danh Mục Cung Đường Trekking',
-      subtitle:
-        'Theo dõi, tạo mới, chỉnh sửa trực tiếp thông số và quản lý kho dữ liệu cung đường thực địa Việt Nam',
+      title: 'Kho cung đường trekking',
+      subtitle: 'Quản lý danh mục tuyến thực địa Việt Nam, cập nhật cao độ, giấy phép và dữ liệu bản đồ.',
     },
     incidents: {
-      title: 'Trung Tâm Quản Lý Sự Cố & Cứu Hộ',
-      subtitle:
-        'Kiểm duyệt báo cáo sự cố sạt lở, lũ quét, dữ liệu vệ tinh Open-Meteo / NASA và giải quyết khiếu nại',
+      title: 'Sự cố thực địa & Cứu hộ',
+      subtitle: 'Theo dõi cảnh báo sạt lở, lũ quét, nguồn vệ tinh Open-Meteo / NASA và xử lý khiếu nại.',
     },
     inquiries: {
-      title: 'Quản Lý Đơn Đặt Porter & Hướng Dẫn Viên',
-      subtitle:
-        'Tiếp nhận yêu cầu thuê Porter/Guide bản địa, kiểm tra dự toán chi phí và cập nhật trạng thái điều phối',
+      title: 'Đơn đặt Porter & Hướng dẫn viên',
+      subtitle: 'Điều phối yêu cầu thuê Porter/Guide bản địa, theo dõi dự toán và trạng thái xác nhận.',
     },
     safety: {
-      title: 'Giám Sát An Toàn & Đèn Hiệu Trực Tiếp (SOS)',
-      subtitle:
-        'Theo dõi Hẹn Giờ Báo Bình An quá hạn và Live Beacon GPS thời gian thực để phối hợp cứu hộ kịp thời',
+      title: 'An toàn & Đèn hiệu trực tiếp',
+      subtitle: 'Giám sát Live Beacon GPS và Hẹn giờ báo bình an (Dead-Man Switch) theo thời gian thực.',
     },
     field: {
-      title: 'Kiểm Duyệt Dữ Liệu Thực Địa (POIs & Đánh Giá)',
-      subtitle:
-        'Cập nhật tình trạng nguồn nước/bãi trại/điểm nguy hiểm do cộng đồng đóng góp và gỡ nội dung spam',
+      title: 'Kiểm duyệt thực địa (POIs & Đánh giá)',
+      subtitle: 'Cập nhật tình trạng nguồn nước, bãi trại, điểm nguy hiểm và xử lý đánh giá vi phạm.',
     },
     users: {
-      title: 'Quản Trị Thành Viên & Phân Quyền Vai Trò',
-      subtitle:
-        'Tìm kiếm thành viên, cấp quyền Hướng dẫn viên (Guide), Điều hành viên (Mod) hoặc xử lý vi phạm',
+      title: 'Thành viên & Phân quyền',
+      subtitle: 'Quản lý tài khoản, cấp vai trò Hướng dẫn viên (Guide), Điều hành viên (Mod) và xử lý vi phạm.',
     },
     forum: {
-      title: 'Kiểm Duyệt & Điều Hành Diễn Đàn',
-      subtitle:
-        'Ghim bài thông báo quan trọng, khóa bình luận hoặc gỡ bài viết vi phạm chuẩn mực cộng đồng',
+      title: 'Kiểm duyệt diễn đàn',
+      subtitle: 'Ghim thông báo quan trọng, khóa bình luận hoặc gỡ bài viết vi phạm chuẩn mực cộng đồng.',
     },
     stats: {
-      title: 'Báo Cáo Thống Kê & Phân Tích Hệ Thống',
-      subtitle:
-        'Báo cáo tổng hợp đầy đủ 12 chỉ số thời gian thực được đồng bộ trực tiếp từ MongoDB Atlas',
+      title: 'Thống kê hệ thống',
+      subtitle: '12 chỉ số vận hành thời gian thực đồng bộ trực tiếp từ cơ sở dữ liệu MongoDB.',
     },
     audit: {
-      title: 'Nhật Ký Kiểm Toán Thao Tác Ban Quản Trị (Audit Log)',
-      subtitle:
-        'Lưu vết minh bạch mọi thay đổi phân quyền, khóa tài khoản, cập nhật/xóa cung đường trong 180 ngày gần nhất',
+      title: 'Nhật ký kiểm toán',
+      subtitle: 'Lưu vết minh bạch thao tác phân quyền, khóa tài khoản và thay đổi dữ liệu trong 180 ngày.',
     },
   };
 
@@ -2346,1719 +3000,1025 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     );
   }, [trailsList, trailSearchQuery]);
 
-  const dbStatusColor =
+  const activeNavItem = navItems.find((n) => n.id === effectiveSection) || navItems[0];
+  const dbDotClass =
     dbHealth.status === 'online'
-      ? 'var(--color-primary)'
+      ? 'admin-dot admin-dot--ok'
       : dbHealth.status === 'connecting'
-        ? 'var(--color-sun)'
+        ? 'admin-dot admin-dot--warn'
         : dbHealth.status === 'checking'
-          ? 'var(--color-text-muted)'
-          : 'var(--color-error-text, var(--color-error))';
+          ? 'admin-dot'
+          : 'admin-dot admin-dot--danger';
+  const navGroupsOrder: AdminNavGroupId[] = ['command', 'moderation', 'operations', 'system'];
 
   return (
-    <div className="admin-layout">
-      {/* 1. COMMAND SIDEBAR */}
-      <aside className="admin-sidebar">
-        <div>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              marginBottom: 8,
-            }}
+    <div className="admin-shell">
+      {/* Mobile Off-Canvas Backdrop */}
+      <div
+        className={`admin-rail-backdrop ${mobileRailOpen ? 'is-open' : ''}`}
+        onClick={() => setMobileRailOpen(false)}
+        aria-hidden="true"
+      />
+
+      {/* 1. LEFT NAVIGATION RAIL */}
+      <aside
+        className={`admin-rail ${mobileRailOpen ? 'is-open' : ''} ${railCollapsed ? 'is-collapsed' : ''}`}
+        aria-label="Điều hướng quản trị"
+      >
+        <div className="admin-rail-brand">
+          <button
+            type="button"
+            className="admin-brand-mark"
+            onClick={() => handleSelectSection('overview')}
+            title="Trung tâm Điều hành LOST OPS"
           >
-            <div
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                fontSize: '0.72rem',
-                fontWeight: 800,
-                color: 'var(--color-primary)',
-                letterSpacing: '0.08em',
-                textTransform: 'uppercase',
-              }}
-            >
-              <span
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: '50%',
-                  background: dbStatusColor,
-                  display: 'inline-block',
-                }}
-              />
-              LOST OPS v3.0
-            </div>
-            <span
-              style={{
-                fontSize: '0.68rem',
-                fontWeight: 700,
-                padding: '2px 8px',
-                borderRadius: 4,
-                background: isSocketConnected
-                  ? 'color-mix(in srgb, var(--color-sky) 12%, transparent)'
-                  : 'color-mix(in srgb, var(--color-sun) 14%, transparent)',
-                color: isSocketConnected ? 'var(--color-sky)' : 'var(--color-sun)',
-                border: isSocketConnected
-                  ? '1px solid color-mix(in srgb, var(--color-sky) 30%, transparent)'
-                  : '1px solid color-mix(in srgb, var(--color-sun) 35%, transparent)',
-              }}
-            >
-              {isSocketConnected ? 'REALTIME' : 'RECONNECTING'}
+            <span className="admin-brand-glyph" aria-hidden="true">
+              <Compass size={13} color="var(--color-primary)" />
             </span>
-          </div>
-          <h2
-            className="font-editorial"
-            style={{
-              fontSize: '1.45rem',
-              fontWeight: 500,
-              color: 'var(--color-text-main)',
-              margin: '0 0 2px 0',
-            }}
+            <span className="admin-brand-title">LOST</span>
+            <span className="admin-brand-env">OPS</span>
+          </button>
+
+          <button
+            type="button"
+            className="admin-rail-collapse-btn"
+            onClick={toggleRailCollapsed}
+            title={railCollapsed ? 'Mở rộng thanh điều hướng ([)' : 'Thu gọn thanh điều hướng ([)'}
+            aria-label={railCollapsed ? 'Mở rộng thanh điều hướng' : 'Thu gọn thanh điều hướng'}
+            aria-pressed={railCollapsed}
           >
-            Trung Tâm Chỉ Huy
-          </h2>
-          <p style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', margin: 0 }}>
-            Ban Quản Trị Hệ Thống LOST
-          </p>
+            {railCollapsed ? <PanelLeftOpen size={13} /> : <PanelLeftClose size={13} />}
+          </button>
+
+          {mobileRailOpen && (
+            <button
+              type="button"
+              className="admin-icon-btn"
+              onClick={() => setMobileRailOpen(false)}
+              aria-label="Đóng thanh điều hướng"
+            >
+              <IconX size={14} />
+            </button>
+          )}
         </div>
 
-        {/* Administrator Profile Card */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            padding: '10px 12px',
-            borderRadius: 4,
-            background: 'var(--color-bg-main)',
-            border: '1px solid var(--color-border)',
-          }}
-        >
-          <img
-            loading="lazy"
-            decoding="async"
-            src={currentUser?.avatarUrl || currentUser?.avatar || DEFAULT_AVATAR}
-            alt="Ảnh đại diện Quản trị viên"
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: 4,
-              objectFit: 'cover',
-              border: '1px solid var(--color-primary)',
-            }}
-          />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div
-              style={{
-                fontSize: '0.82rem',
-                fontWeight: 700,
-                color: 'var(--color-text-main)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {currentUser?.fullName || currentUser?.name || currentUser?.email || 'Quản Trị Viên LOST'}
-            </div>
-            <div
-              style={{
-                fontSize: '0.7rem',
-                color: 'var(--color-sky)',
-                fontWeight: 600,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-              }}
-            >
-              <ShieldCheck size={11} color="var(--color-sky)" />
-              <span>
-                {isStrictAdmin ? 'Quản Trị Viên Cấp Cao' : 'BQT · Điều Hành Viên'}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Navigation Items */}
-        <nav style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {navItems.map((item) => {
-            const isActive = effectiveSection === item.id;
+        <nav className="admin-rail-scroll">
+          {navGroupsOrder.map((groupId) => {
+            const groupItems = navItems.filter((item) => item.group === groupId);
+            if (groupItems.length === 0) return null;
             return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => handleSelectSection(item.id)}
-                className={`admin-nav-item ${isActive ? 'active' : ''}`}
-                style={{ width: '100%', textAlign: 'left' }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                  <item.icon size={15} />
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {item.label}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                  {item.urgent && (
-                    <span
-                      style={{
-                        background: 'var(--color-error)',
-                        color: 'var(--color-on-danger)',
-                        fontSize: '0.62rem',
-                        fontWeight: 700,
-                        padding: '2px 6px',
-                        borderRadius: 3,
-                        letterSpacing: '0.04em',
-                      }}
+              <div key={groupId} className="admin-rail-group">
+                <div className="admin-rail-group-label">{navGroupLabels[groupId]}</div>
+                {groupItems.map((item) => {
+                  const isActive = effectiveSection === item.id;
+                  const hasCount = typeof item.count === 'number' && item.count > 0;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => handleSelectSection(item.id)}
+                      className={`admin-nav-item ${isActive ? 'active' : ''}`}
+                      title={item.urgentTooltip || item.label}
+                      aria-current={isActive ? 'page' : undefined}
                     >
-                      {item.urgentText}
-                    </span>
-                  )}
-                  {item.badge !== undefined && (
-                    <span
-                      style={{
-                        background: item.badgeColor || 'var(--color-primary)',
-                        color: item.badgeTextColor || 'var(--color-on-primary)',
-                        fontSize: '0.68rem',
-                        fontWeight: 700,
-                        padding: '1px 6px',
-                        borderRadius: 3,
-                        minWidth: 18,
-                        textAlign: 'center',
-                        fontVariantNumeric: 'tabular-nums',
-                      }}
-                    >
-                      {item.badge}
-                    </span>
-                  )}
-                </div>
-              </button>
+                      <span className="admin-nav-item-main">
+                        <span className="admin-nav-item-icon" aria-hidden="true">
+                          <item.icon size={15} />
+                        </span>
+                        <span className="admin-nav-item-label">{item.label}</span>
+                      </span>
+                      {hasCount && (
+                        <span className="admin-nav-meta">
+                          {item.alertTone === 'danger' && (
+                            <span className="admin-dot admin-dot--danger" aria-hidden="true" />
+                          )}
+                          <span
+                            className={
+                              item.alertTone === 'danger'
+                                ? 'admin-nav-count admin-nav-count--alert'
+                                : item.alertTone === 'warn'
+                                  ? 'admin-nav-count admin-nav-count--warn'
+                                  : 'admin-nav-count'
+                            }
+                          >
+                            {item.count}
+                          </span>
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             );
           })}
         </nav>
 
-        {/* Live Infrastructure Status Widget & Back Link */}
-        <div
-          style={{
-            marginTop: 'auto',
-            paddingTop: 14,
-            borderTop: '1px solid var(--color-border)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 10,
-          }}
-        >
-          <div
-            style={{
-              fontSize: '0.68rem',
-              color: 'var(--color-text-dim)',
-              fontWeight: 700,
-              textTransform: 'uppercase',
-              letterSpacing: '0.1em',
-            }}
-          >
-            Hạ tầng hệ thống
-          </div>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              fontSize: '0.74rem',
-              color: 'var(--color-text-muted)',
-            }}
-          >
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <Database size={13} color={dbStatusColor} /> MongoDB Atlas
-            </span>
-            <span style={{ color: dbStatusColor, fontWeight: 700 }}>{dbHealth.label}</span>
-          </div>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              fontSize: '0.74rem',
-              color: 'var(--color-text-muted)',
-            }}
-          >
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <Radio
-                size={13}
-                color={isSocketConnected ? 'var(--color-sky)' : 'var(--color-sun)'}
-              />{' '}
-              Kênh Kết Nối
-            </span>
-            <span
-              style={{
-                color: isSocketConnected ? 'var(--color-sky)' : 'var(--color-sun)',
-                fontWeight: 700,
-              }}
-            >
-              {isSocketConnected ? 'Socket.IO Live' : 'Mất Kết Nối'}
-            </span>
+        <div className="admin-rail-footer">
+          <div className="admin-operator-row">
+            <img
+              loading="lazy"
+              decoding="async"
+              src={currentUser?.avatarUrl || currentUser?.avatar || DEFAULT_AVATAR}
+              alt="Ảnh đại diện Quản trị viên"
+              className="admin-operator-avatar"
+            />
+            <div className="admin-operator-meta" style={{ flex: 1, minWidth: 0 }}>
+              <div className="admin-operator-name">
+                {currentUser?.fullName || currentUser?.name || currentUser?.email || 'Quản trị viên'}
+              </div>
+              <div className="admin-operator-role">
+                {isStrictAdmin ? 'Quản trị viên' : 'Điều hành viên'}
+              </div>
+            </div>
           </div>
 
           <button
             type="button"
-            className="btn btn-outline"
+            className="admin-rail-back"
             onClick={onBack}
-            style={{
-              width: '100%',
-              justifyContent: 'center',
-              gap: 8,
-              marginTop: 6,
-              fontSize: '0.82rem',
-              padding: '8px 12px',
-            }}
+            title="Về trang bản đồ"
           >
-            <ArrowLeft size={14} /> Về Trang Chủ Bản Đồ
+            <ArrowLeft size={14} />
+            <span className="admin-rail-back-label">Về trang bản đồ</span>
           </button>
         </div>
       </aside>
 
-      {/* 2. MAIN WORKSPACE CONTENT */}
-      <main className="admin-content">
-        <header className="admin-top-bar">
-          <div>
-            <div
-              style={{
-                fontSize: '0.68rem',
-                color: 'var(--color-primary)',
-                fontWeight: 700,
-                textTransform: 'uppercase',
-                letterSpacing: '0.14em',
-                marginBottom: 4,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-              }}
-            >
-              <span>BQT LOST</span>
-              <span>·</span>
-              <span>{navItems.find((n) => n.id === effectiveSection)?.label}</span>
-            </div>
-            <h1
-              className="font-editorial"
-              style={{
-                fontSize: '1.65rem',
-                fontWeight: 500,
-                color: 'var(--color-text-main)',
-                margin: 0,
-                lineHeight: 1.1,
-              }}
-            >
-              {sectionTitles[effectiveSection].title}
-            </h1>
-            <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', margin: '4px 0 0 0' }}>
-              {sectionTitles[effectiveSection].subtitle}
-            </p>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+      {/* 2. MAIN WORKSPACE COLUMN */}
+      <div className="admin-main">
+        {/* Sticky 52px Command Topbar */}
+        <header className="admin-topbar">
+          <div className="admin-topbar-left">
             <button
               type="button"
-              className="btn btn-outline"
+              className="admin-mobile-menu-btn"
+              onClick={() => setMobileRailOpen(true)}
+              aria-label="Mở danh mục quản trị"
+            >
+              <MenuIcon size={16} />
+            </button>
+            <div className="admin-breadcrumb">
+              <span>LOST Ops</span>
+              <span className="admin-breadcrumb-sep">/</span>
+              <span>{activeNavItem ? navGroupLabels[activeNavItem.group] : 'Quản trị'}</span>
+              <span className="admin-breadcrumb-sep">/</span>
+              <span className="admin-breadcrumb-current">
+                {activeNavItem?.label || 'Bảng điều khiển'}
+              </span>
+            </div>
+          </div>
+
+          <div className="admin-topbar-right">
+            <div
+              className="admin-health-pill"
+              title={`Cơ sở dữ liệu: ${dbHealth.label} · Kênh realtime: ${isSocketConnected ? 'Socket.IO đang kết nối' : 'Đang kết nối lại'}`}
+            >
+              <span className="admin-health-item">
+                <span className={dbDotClass} aria-hidden="true" />
+                <Database size={12} color="var(--color-text-dim)" />
+                <span>DB</span>
+              </span>
+              <span style={{ opacity: 0.3 }} aria-hidden="true">·</span>
+              <span className="admin-health-item">
+                <span
+                  className={isSocketConnected ? 'admin-dot admin-dot--ok' : 'admin-dot admin-dot--warn'}
+                  aria-hidden="true"
+                />
+                <Radio size={12} color="var(--color-text-dim)" />
+                <span>{isSocketConnected ? 'Live' : 'Sync'}</span>
+              </span>
+            </div>
+
+            {onOpenCommandPalette && (
+              <button
+                type="button"
+                className="admin-kbd-trigger"
+                onClick={onOpenCommandPalette}
+                title="Mở bảng lệnh nhanh (Ctrl+K)"
+              >
+                <Search size={13} color="var(--color-text-dim)" />
+                <span>Tìm nhanh</span>
+                <span className="admin-kbd-hint">Ctrl K</span>
+              </button>
+            )}
+
+            <ThemeToggle compact />
+
+            <button
+              type="button"
+              className="admin-icon-btn"
               onClick={refreshAllData}
               disabled={isRefreshing}
-              style={{ fontSize: '0.8rem', padding: '7px 12px', gap: 6 }}
-              title="Đồng bộ dữ liệu thời gian thực từ MongoDB"
+              title="Làm mới dữ liệu từ máy chủ"
+              aria-label="Làm mới dữ liệu từ máy chủ"
             >
-              <RefreshCw size={13} className={isRefreshing ? 'spin-animation' : ''} />
-              <span>{isRefreshing ? 'Đang tải...' : 'Làm Mới Dữ Liệu'}</span>
+              <RefreshCw size={14} className={isRefreshing ? 'spin-animation' : ''} />
             </button>
-
-            {effectiveSection === 'trails' && isStrictAdmin && (
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => {
-                  setCreateTrailForm(createEmptyTrailForm());
-                  setIsCreateTrailOpen(true);
-                }}
-                style={{ fontSize: '0.8rem', padding: '7px 14px', gap: 6 }}
-              >
-                <IconPlus size={14} /> Thêm Cung Đường Mới
-              </button>
-            )}
-
-            {effectiveSection === 'contributions' && (
-              <button
-                type="button"
-                className="btn btn-outline"
-                onClick={handleOpenContributeWizard}
-                style={{
-                  fontSize: '0.8rem',
-                  padding: '7px 12px',
-                  gap: 6,
-                  color: 'var(--color-primary)',
-                  borderColor: 'var(--color-primary)',
-                }}
-              >
-                <IconPlus size={14} /> Mở Trình Đóng Góp
-              </button>
-            )}
           </div>
         </header>
 
-        {accessNotice && (
-          <div
-            role="alert"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 12,
-              padding: '12px 16px',
-              borderRadius: 4,
-              background: 'color-mix(in srgb, var(--color-error) 10%, transparent)',
-              border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)',
-              color: 'var(--color-error-text, var(--color-error))',
-              fontSize: '0.82rem',
-              fontWeight: 600,
-            }}
-          >
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-              <AlertTriangle size={16} color="var(--color-error-text, var(--color-error))" />
-              {accessNotice}
-            </span>
-            <button
-              type="button"
-              onClick={() => setAccessNotice('')}
-              aria-label="Đóng thông báo quyền"
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--color-error-text, var(--color-error))',
-                cursor: 'pointer',
-                padding: 2,
-              }}
-            >
-              <IconX size={15} />
-            </button>
-          </div>
-        )}
-
-        <div key={effectiveSection} className="tab-content-slide">
-          {/* =========================================================================
-           * SECTION 1: DUYỆT ĐÓNG GÓP (CONTRIBUTIONS)
-           * ========================================================================= */}
-          {effectiveSection === 'contributions' && (
-            <>
-              <div className="admin-kpi-grid">
-                <div className="admin-kpi-card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <div>
-                      <div
-                        style={{
-                          fontSize: '0.68rem',
-                          letterSpacing: '0.1em',
-                          textTransform: 'uppercase',
-                          color: 'var(--color-text-dim)',
-                          fontWeight: 700,
-                        }}
-                      >
-                        Chờ BQT Duyệt
-                      </div>
-                      <div
-                        className="font-editorial"
-                        style={{
-                          fontSize: '2rem',
-                          fontWeight: 500,
-                          color: 'var(--color-sun)',
-                          marginTop: 4,
-                          lineHeight: 1.05,
-                          fontVariantNumeric: 'tabular-nums',
-                        }}
-                      >
-                        {pendingContributions.length}{' '}
-                        <span
-                          style={{
-                            fontSize: '0.85rem',
-                            fontFamily: 'var(--font-family)',
-                            color: 'var(--color-text-muted)',
-                          }}
-                        >
-                          bài
-                        </span>
-                      </div>
-                    </div>
-                    <Clock size={18} color="var(--color-sun)" />
-                  </div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 8 }}>
-                    Cần xác thực dữ liệu thực địa
-                  </div>
+        {/* Split-Pane Workbench: Main Workspace + Docked Spatial Inspector */}
+        <div className="admin-workbench">
+          <div className="admin-workbench-main">
+            {/* Workspace Content Canvas */}
+            <div className="admin-workspace">
+              {/* Borderless Editorial Page Header */}
+              <div className="admin-page-head">
+                <div>
+                  <h1 className="admin-page-title">{sectionTitles[effectiveSection].title}</h1>
+                  <p className="admin-page-subtitle">{sectionTitles[effectiveSection].subtitle}</p>
                 </div>
 
-                <div className="admin-kpi-card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <div>
-                      <div
-                        style={{
-                          fontSize: '0.68rem',
-                          letterSpacing: '0.1em',
-                          textTransform: 'uppercase',
-                          color: 'var(--color-text-dim)',
-                          fontWeight: 700,
-                        }}
-                      >
-                        Đã Duyệt &amp; Công Khai
-                      </div>
-                      <div
-                        className="font-editorial"
-                        style={{
-                          fontSize: '2rem',
-                          fontWeight: 500,
-                          color: 'var(--color-primary)',
-                          marginTop: 4,
-                          lineHeight: 1.05,
-                          fontVariantNumeric: 'tabular-nums',
-                        }}
-                      >
-                        {approvedContributions.length}{' '}
-                        <span
-                          style={{
-                            fontSize: '0.85rem',
-                            fontFamily: 'var(--font-family)',
-                            color: 'var(--color-text-muted)',
-                          }}
-                        >
-                          bài
-                        </span>
-                      </div>
-                    </div>
-                    <CheckCircle2 size={18} color="var(--color-primary)" />
-                  </div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 8 }}>
-                    Đã đồng bộ lên bản đồ 3D
-                  </div>
-                </div>
-
-                <div className="admin-kpi-card">
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <div>
-                      <div
-                        style={{
-                          fontSize: '0.68rem',
-                          letterSpacing: '0.1em',
-                          textTransform: 'uppercase',
-                          color: 'var(--color-text-dim)',
-                          fontWeight: 700,
-                        }}
-                      >
-                        Tổng Số Đóng Góp
-                      </div>
-                      <div
-                        className="font-editorial"
-                        style={{
-                          fontSize: '2rem',
-                          fontWeight: 500,
-                          color: 'var(--color-text-main)',
-                          marginTop: 4,
-                          lineHeight: 1.05,
-                          fontVariantNumeric: 'tabular-nums',
-                        }}
-                      >
-                        {contributions.length}{' '}
-                        <span
-                          style={{
-                            fontSize: '0.85rem',
-                            fontFamily: 'var(--font-family)',
-                            color: 'var(--color-text-muted)',
-                          }}
-                        >
-                          bài
-                        </span>
-                      </div>
-                    </div>
-                    <Layers size={18} color="var(--color-sky)" />
-                  </div>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 8 }}>
-                    Kho dữ liệu mở từ cộng đồng
-                  </div>
-                </div>
-
-                {(() => {
-                  const gpsPool = [...trailsList, ...contributions];
-                  const validGpsCount = gpsPool.filter(hasValidVnCoords).length;
-                  const validGpsPercent =
-                    gpsPool.length > 0 ? Math.round((validGpsCount / gpsPool.length) * 100) : 0;
-                  return (
-                    <div className="admin-kpi-card">
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <div>
-                          <div
-                            style={{
-                              fontSize: '0.68rem',
-                              letterSpacing: '0.1em',
-                              textTransform: 'uppercase',
-                              color: 'var(--color-text-dim)',
-                              fontWeight: 700,
-                            }}
-                          >
-                            Độ Tin Cậy Thực Địa
-                          </div>
-                          <div
-                            className="font-editorial"
-                            style={{
-                              fontSize: '2rem',
-                              fontWeight: 500,
-                              color: 'var(--color-text-main)',
-                              marginTop: 4,
-                              lineHeight: 1.05,
-                              fontVariantNumeric: 'tabular-nums',
-                            }}
-                          >
-                            {gpsPool.length > 0 ? `${validGpsPercent}%` : '—'}{' '}
-                            <span
-                              style={{
-                                fontSize: '0.85rem',
-                                fontFamily: 'var(--font-family)',
-                                color: 'var(--color-text-muted)',
-                              }}
-                            >
-                              GPS VN
-                            </span>
-                          </div>
-                        </div>
-                        <Compass size={18} color="var(--color-stream)" />
-                      </div>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 8 }}>
-                        {validGpsCount}/{gpsPool.length} cung &amp; đóng góp có tọa độ hợp lệ
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-
-              {/* Toolbar: Segmented Switch + Search */}
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  flexWrap: 'wrap',
-                  gap: 12,
-                  marginBottom: 18,
-                }}
-              >
-                <div className="admin-segmented-control" style={{ flexWrap: 'wrap' }}>
-                  <button
-                    type="button"
-                    className={`admin-segmented-btn ${activeTab === 'pending' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('pending')}
-                  >
-                    <Clock size={14} />
-                    <span>Chờ duyệt</span>
-                    <span
-                      style={{
-                        fontSize: '0.7rem',
-                        padding: '1px 6px',
-                        borderRadius: 4,
-                        background:
-                          activeTab === 'pending'
-                            ? 'color-mix(in srgb, var(--color-sun) 18%, transparent)'
-                            : 'transparent',
-                        color: 'var(--color-sun)',
-                        fontWeight: 800,
-                      }}
-                    >
-                      {pendingContributions.length}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`admin-segmented-btn ${activeTab === 'approved' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('approved')}
-                  >
-                    <CheckCircle2 size={14} />
-                    <span>Đã công khai</span>
-                    <span
-                      style={{
-                        fontSize: '0.7rem',
-                        padding: '1px 6px',
-                        borderRadius: 4,
-                        background:
-                          activeTab === 'approved'
-                            ? 'color-mix(in srgb, var(--color-primary) 18%, transparent)'
-                            : 'transparent',
-                        color: 'var(--color-primary)',
-                        fontWeight: 800,
-                      }}
-                    >
-                      {approvedContributions.length}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`admin-segmented-btn ${activeTab === 'rejected' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('rejected')}
-                  >
-                    <XCircle size={14} />
-                    <span>Đã từ chối</span>
-                    <span
-                      style={{
-                        fontSize: '0.7rem',
-                        padding: '1px 6px',
-                        borderRadius: 4,
-                        background:
-                          activeTab === 'rejected'
-                            ? 'color-mix(in srgb, var(--color-error) 18%, transparent)'
-                            : 'transparent',
-                        color: 'var(--color-error-text, var(--color-error))',
-                        fontWeight: 800,
-                      }}
-                    >
-                      {rejectedContributions.length}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`admin-segmented-btn ${activeTab === 'all' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('all')}
-                  >
-                    <Layers size={14} />
-                    <span>Tất cả đóng góp</span>
-                    <span
-                      style={{
-                        fontSize: '0.7rem',
-                        padding: '1px 6px',
-                        borderRadius: 4,
-                        background:
-                          activeTab === 'all'
-                            ? 'color-mix(in srgb, var(--color-sky) 18%, transparent)'
-                            : 'transparent',
-                        color: 'var(--color-sky)',
-                        fontWeight: 800,
-                      }}
-                    >
-                      {contributions.length}
-                    </span>
-                  </button>
-                </div>
-
-                <div className="admin-search-wrapper">
-                  <Search size={16} color="var(--color-text-dim)" />
-                  <input
-                    type="text"
-                    placeholder="Tìm kiếm theo tên cung đường, tác giả, tỉnh thành..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    style={{
-                      border: 'none',
-                      background: 'transparent',
-                      color: 'var(--color-text-main)',
-                      fontSize: '0.82rem',
-                      width: '100%',
-                      outline: 'none',
-                      padding: 0,
-                    }}
-                  />
-                  {searchQuery && (
+                <div className="admin-page-actions">
+                  {effectiveSection === 'trails' && isStrictAdmin && (
                     <button
                       type="button"
-                      onClick={() => setSearchQuery('')}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        color: 'var(--color-text-dim)',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        padding: 2,
-                      }}
-                      title="Xóa tìm kiếm"
-                      aria-label="Xóa tìm kiếm"
+                      className="admin-btn admin-btn--primary"
+                      onClick={handleOpenCreateTrail}
                     >
-                      <IconX size={14} />
+                      <IconPlus size={14} />
+                      <span>Thêm cung đường</span>
+                    </button>
+                  )}
+
+                  {effectiveSection === 'contributions' && (
+                    <button
+                      type="button"
+                      className="admin-btn admin-btn--primary"
+                      onClick={handleOpenContributeWizard}
+                    >
+                      <IconPlus size={14} />
+                      <span>Đóng góp mới</span>
+                    </button>
+                  )}
+
+                  {effectiveSection === 'audit' && isStrictAdmin && (
+                    <button
+                      type="button"
+                      className="admin-btn"
+                      onClick={() => void fetchAuditLogs()}
+                    >
+                      <RefreshCw size={13} />
+                      <span>Tải lại nhật ký</span>
                     </button>
                   )}
                 </div>
               </div>
 
-              {/* Filtered Contributions Content */}
-              <div key={`${activeTab}-${searchQuery}`} className="tab-content-slide">
-                {(() => {
-                  const listToDisplay = displayedContributions;
+              {accessNotice && (
+                <div className="admin-notice" role="alert">
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    <AlertTriangle size={15} color="var(--color-error-text, var(--color-error))" />
+                    {accessNotice}
+                  </span>
+                  <button
+                    type="button"
+                    className="admin-icon-btn"
+                    onClick={() => setAccessNotice('')}
+                    aria-label="Đóng thông báo quyền"
+                    style={{ border: 'none', width: 24, height: 24 }}
+                  >
+                    <IconX size={14} />
+                  </button>
+                </div>
+              )}
 
-                  if (listToDisplay.length === 0) {
-                    return (
-                      <div className="admin-empty-state">
-                        <EmptyStateIllustration />
-                        <h3
-                          style={{
-                            fontSize: '1.2rem',
-                            fontWeight: 800,
-                            color: 'var(--color-text-main)',
-                            margin: '0 0 6px 0',
-                          }}
+              <div key={effectiveSection} className="tab-content-slide admin-section-block">
+                {/* =========================================================================
+                 * SECTION 0: TRUNG TÂM ĐIỀU HÀNH (GEO-OPS COMMAND DECK)
+                 * ========================================================================= */}
+                {effectiveSection === 'overview' && (
+                  <AdminCommandDeck
+                    trails={cockpitTrails}
+                    incidents={cockpitIncidents}
+                    beacons={cockpitBeacons}
+                    triageItems={cockpitTriageItems}
+                    stats={commandDeckStats}
+                    selectedId={selectedInspectorId}
+                    onSelect={handleSelectInspector}
+                    onNavigateSection={handleSelectSection}
+                    onPointerCoordChange={setHoverCoords}
+                    onOpenContributeWizard={handleOpenContributeWizard}
+                    onOpenCreateTrail={isStrictAdmin ? handleOpenCreateTrail : undefined}
+                    isStrictAdmin={isStrictAdmin}
+                  />
+                )}
+
+                {/* =========================================================================
+                 * SECTION 1: DUYỆT ĐÓNG GÓP (CONTRIBUTIONS)
+                 * ========================================================================= */}
+            {effectiveSection === 'contributions' && (() => {
+              const validContribCount = contributions.filter(hasValidVnCoords).length;
+              const validContribPercent =
+                contributions.length > 0
+                  ? Math.round((validContribCount / contributions.length) * 100)
+                  : null;
+              const catalogTrailsCount = loadedSections.has('trails')
+                ? trailsList.length
+                : (adminStats?.totalTrails ?? trailsList.length);
+
+              return (
+                <>
+                  <div className="admin-metric-ribbon">
+                    <div className="admin-metric-cell">
+                      <span className="admin-metric-label">Chờ phê duyệt</span>
+                      <div className="admin-metric-value-row">
+                        <span
+                          className={`admin-metric-value ${pendingContributions.length > 0 ? 'admin-metric-value--warn' : ''}`}
                         >
+                          {pendingContributions.length}
+                        </span>
+                        <span className="admin-metric-unit">hồ sơ</span>
+                      </div>
+                      <span className="admin-metric-caption">Cần thẩm định tọa độ &amp; thông số</span>
+                    </div>
+
+                    <div className="admin-metric-cell">
+                      <span className="admin-metric-label">Đã duyệt công khai</span>
+                      <div className="admin-metric-value-row">
+                        <span className="admin-metric-value admin-metric-value--primary">
+                          {approvedContributions.length}
+                        </span>
+                        <span className="admin-metric-unit">/ {contributions.length} đóng góp</span>
+                      </div>
+                      <span className="admin-metric-caption">Đã đồng bộ lên bản đồ 3D</span>
+                    </div>
+
+                    <div className="admin-metric-cell">
+                      <span className="admin-metric-label">Kho cung hoạt động</span>
+                      <div className="admin-metric-value-row">
+                        <span className="admin-metric-value">{catalogTrailsCount}</span>
+                        <span className="admin-metric-unit">tuyến VN</span>
+                      </div>
+                      <span className="admin-metric-caption">Đang hiển thị công khai trên LOST</span>
+                    </div>
+
+                    <div className="admin-metric-cell">
+                      <span className="admin-metric-label">Độ chuẩn tọa độ đóng góp</span>
+                      <div className="admin-metric-value-row">
+                        <span className="admin-metric-value">
+                          {validContribPercent !== null ? `${validContribPercent}%` : '—'}
+                        </span>
+                        <span className="admin-metric-unit">GPS VN</span>
+                      </div>
+                      <span className="admin-metric-caption">
+                        {validContribCount}/{contributions.length} bài đóng góp có tọa độ hợp lệ
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Flush Underline Tabs + Search */}
+                  <div className="admin-toolbar">
+                    <div className="admin-tabs" role="tablist" aria-label="Trạng thái đóng góp">
+                      {(
+                        [
+                          { id: 'pending', label: 'Chờ duyệt', count: pendingContributions.length },
+                          { id: 'approved', label: 'Đã công khai', count: approvedContributions.length },
+                          { id: 'rejected', label: 'Đã từ chối', count: rejectedContributions.length },
+                          { id: 'all', label: 'Tất cả', count: contributions.length },
+                        ] as const
+                      ).map((tab) => (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={activeTab === tab.id}
+                          className={`admin-tab-btn ${activeTab === tab.id ? 'active' : ''}`}
+                          onClick={() => setActiveTab(tab.id)}
+                        >
+                          <span>{tab.label}</span>
+                          <span className="admin-tab-count">{tab.count}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="admin-search">
+                      <Search size={14} color="var(--color-text-dim)" />
+                      <input
+                        type="text"
+                        placeholder="Tìm tên cung, tác giả, tỉnh thành..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                      />
+                      {searchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setSearchQuery('')}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--color-text-dim)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            padding: 2,
+                          }}
+                          aria-label="Xóa tìm kiếm"
+                        >
+                          <IconX size={13} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Contributions Ledger */}
+                  <div key={`${activeTab}-${searchQuery}`} className="admin-ledger tab-content-slide">
+                    {displayedContributions.length === 0 ? (
+                      <div className="admin-empty">
+                        <div className="admin-empty-icon" aria-hidden="true">
+                          <Inbox size={18} />
+                        </div>
+                        <h3 className="admin-empty-title">
                           {searchQuery
-                            ? 'Không Tìm Thấy Kết Quả Phù Hợp'
+                            ? 'Không tìm thấy đóng góp phù hợp'
                             : activeTab === 'pending'
-                              ? 'Hộp Thư Kiểm Duyệt Sạch Sẽ!'
-                              : 'Không Có Bài Đóng Góp Nào'}
+                              ? 'Không còn bài đóng góp chờ duyệt'
+                              : 'Chưa có bài đóng góp trong mục này'}
                         </h3>
-                        <p
-                          style={{
-                            fontSize: '0.84rem',
-                            color: 'var(--color-text-muted)',
-                            maxWidth: 460,
-                            margin: '0 0 20px 0',
-                            lineHeight: 1.5,
-                          }}
-                        >
+                        <p className="admin-empty-desc">
                           {searchQuery
-                            ? `Không có bài đóng góp nào khớp với từ khóa "${searchQuery}". Vui lòng thử lại với từ khóa khác.`
+                            ? `Không có hồ sơ nào khớp với từ khóa "${searchQuery}".`
                             : activeTab === 'pending'
-                              ? 'Toàn bộ bài đóng góp cung đường gửi về từ cộng đồng đã được kiểm tra và xử lý xong.'
-                              : 'Chưa có dữ liệu bài đóng góp trong danh mục này.'}
+                              ? 'Toàn bộ đóng góp từ cộng đồng đã được kiểm tra và xử lý xong.'
+                              : 'Các đóng góp mới từ thành viên sẽ tự động xuất hiện tại đây.'}
                         </p>
-
-                        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
-                          {activeTab === 'pending' && (
+                        <div className="admin-empty-actions">
+                          {activeTab === 'pending' && approvedContributions.length > 0 && (
                             <button
                               type="button"
-                              className="btn btn-primary"
+                              className="admin-btn admin-btn--primary"
                               onClick={() => setActiveTab('approved')}
-                              style={{ fontSize: '0.82rem', padding: '8px 16px' }}
                             >
-                              Xem Các Cung Đường Đã Công Khai ({approvedContributions.length})
+                              Xem đã công khai ({approvedContributions.length})
                             </button>
                           )}
-                          <button
-                            type="button"
-                            className="btn btn-outline"
-                            onClick={handleOpenContributeWizard}
-                            style={{ fontSize: '0.82rem', padding: '8px 16px' }}
-                          >
-                            Thêm Cung Đường Mới
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-outline"
-                            onClick={refreshAllData}
-                            style={{ fontSize: '0.82rem', padding: '8px 16px' }}
-                          >
-                            Làm Mới Danh Sách
-                          </button>
+                          {searchQuery ? (
+                            <button
+                              type="button"
+                              className="admin-btn admin-btn--ghost"
+                              onClick={() => setSearchQuery('')}
+                            >
+                              Xóa bộ lọc
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="admin-btn admin-btn--ghost"
+                              onClick={handleOpenContributeWizard}
+                            >
+                              Mở trình đóng góp
+                            </button>
+                          )}
                         </div>
                       </div>
-                    );
-                  }
+                    ) : (
+                      displayedContributions.map((contrib) => {
+                        const contribId = String(contrib.id || contrib._id || '');
+                        const isRowSelected =
+                          liveInspectorSelection?.kind === 'contribution' &&
+                          liveInspectorSelection.data.id === contribId;
+                        const statusDot =
+                          contrib.status === 'approved'
+                            ? 'admin-dot admin-dot--ok'
+                            : contrib.status === 'rejected'
+                              ? 'admin-dot admin-dot--danger'
+                              : 'admin-dot admin-dot--warn';
+                        const statusLabel =
+                          contrib.status === 'approved'
+                            ? 'Đã công khai'
+                            : contrib.status === 'rejected'
+                              ? 'Đã từ chối'
+                              : 'Chờ duyệt';
 
-                  return (
-                    <div
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(auto-fill, minmax(min(320px, 100%), 1fr))',
-                        gap: 18,
-                      }}
-                    >
-                      {listToDisplay.map((contrib) => {
-                        const contribId = contrib.id || contrib._id;
                         return (
-                          <article key={contribId} className="admin-item-card">
+                          <article
+                            key={contribId}
+                            className={`admin-ledger-row admin-ledger-row--center admin-ledger-row--selectable ${isRowSelected ? 'is-selected' : ''}`}
+                            onClick={() => {
+                              const mapped = cockpitContributionsById.get(contribId);
+                              if (mapped) setInspectorSelection({ kind: 'contribution', data: mapped });
+                            }}
+                          >
                             <div
                               style={{
-                                height: 180,
-                                position: 'relative',
-                                overflow: 'hidden',
-                                background: 'var(--color-surface-elevated)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 14,
+                                flex: 1,
+                                minWidth: 260,
                               }}
                             >
                               <img
                                 loading="lazy"
                                 decoding="async"
                                 src={contrib.coverImage || DEFAULT_TRAIL_COVER}
-                                alt={contrib.name}
-                                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                alt={contrib.name || 'Cung đường đóng góp'}
+                                className="admin-thumb"
                                 onError={(e) => {
                                   (e.currentTarget as HTMLImageElement).src = DEFAULT_TRAIL_COVER;
                                 }}
                               />
-                              <div style={{ position: 'absolute', top: 12, right: 12 }}>
-                                <span
-                                  style={{
-                                    background:
-                                      contrib.status === 'approved'
-                                        ? 'var(--color-primary)'
-                                        : contrib.status === 'rejected'
-                                          ? 'var(--color-error)'
-                                          : 'var(--color-sun)',
-                                    color:
-                                      contrib.status === 'rejected'
-                                        ? 'var(--color-on-danger)'
-                                        : 'var(--color-on-primary)',
-                                    fontSize: '0.72rem',
-                                    fontWeight: 800,
-                                    padding: '4px 10px',
-                                    borderRadius: 4,
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: 5,
-                                  }}
-                                >
-                                  {contrib.status === 'approved' ? (
-                                    <>
-                                      <CheckCircle2 size={13} color="currentColor" /> Đã Công Khai
-                                    </>
-                                  ) : contrib.status === 'rejected' ? (
-                                    <>
-                                      <XCircle size={13} color="currentColor" /> Đã Từ Chối
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Clock size={13} color="currentColor" /> Chờ BQT Duyệt
-                                    </>
-                                  )}
-                                </span>
-                              </div>
-
-                              <div style={{ position: 'absolute', bottom: 10, left: 12 }}>
-                                <span
-                                  style={{
-                                    background: 'var(--overlay-bg)',
-                                    color: 'var(--color-on-media)',
-                                    fontSize: '0.7rem',
-                                    fontWeight: 700,
-                                    padding: '3px 8px',
-                                    borderRadius: 4,
-                                    border: '1px solid color-mix(in srgb, var(--color-on-media) 18%, transparent)',
-                                  }}
-                                >
-                                  {contrib.region || 'Việt Nam'}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div
-                              style={{
-                                padding: 18,
-                                flex: 1,
-                                display: 'flex',
-                                flexDirection: 'column',
-                                justifyContent: 'space-between',
-                              }}
-                            >
-                              <div>
-                                <h4
-                                  style={{
-                                    fontSize: '1.05rem',
-                                    fontWeight: 800,
-                                    color: 'var(--color-text-main)',
-                                    margin: '0 0 6px 0',
-                                    lineHeight: 1.3,
-                                  }}
-                                >
-                                  {contrib.name || 'Cung đường Trekking mới'}
-                                </h4>
-
-                                <div
-                                  style={{
-                                    fontSize: '0.8rem',
-                                    color: 'var(--color-text-muted)',
-                                    marginBottom: 14,
-                                  }}
-                                >
-                                  {contrib.hamlet ? `${contrib.hamlet}, ` : ''}
-                                  {contrib.district}, {contrib.province}
+                              <div className="admin-ledger-main">
+                                <div className="admin-ledger-title-line">
+                                  <span className="admin-ledger-title">
+                                    {contrib.name || 'Cung đường trekking mới'}
+                                  </span>
+                                  <span className="admin-tag">{contrib.region || 'Việt Nam'}</span>
+                                  <span className="admin-status">
+                                    <span className={statusDot} aria-hidden="true" />
+                                    {statusLabel}
+                                  </span>
                                 </div>
-
-                                <div
-                                  style={{
-                                    display: 'grid',
-                                    gridTemplateColumns: 'repeat(3, 1fr)',
-                                    gap: 8,
-                                    marginBottom: 14,
-                                  }}
-                                >
-                                  <div
-                                    style={{
-                                      background: 'var(--color-bg-main)',
-                                      padding: 8,
-                                      borderRadius: 4,
-                                      border: '1px solid var(--color-border)',
-                                      textAlign: 'center',
-                                    }}
-                                  >
-                                    <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>
-                                      Cự ly
-                                    </div>
-                                    <div
-                                      style={{
-                                        fontSize: '0.88rem',
-                                        fontWeight: 800,
-                                        color: 'var(--color-primary)',
-                                        fontVariantNumeric: 'tabular-nums',
-                                      }}
-                                    >
-                                      {contrib.distanceKm} km
-                                    </div>
-                                  </div>
-                                  <div
-                                    style={{
-                                      background: 'var(--color-bg-main)',
-                                      padding: 8,
-                                      borderRadius: 4,
-                                      border: '1px solid var(--color-border)',
-                                      textAlign: 'center',
-                                    }}
-                                  >
-                                    <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>
-                                      Độ dốc nâng
-                                    </div>
-                                    <div
-                                      style={{
-                                        fontSize: '0.88rem',
-                                        fontWeight: 800,
-                                        color: 'var(--color-sky)',
-                                        fontVariantNumeric: 'tabular-nums',
-                                      }}
-                                    >
-                                      +{contrib.elevationGainM}m
-                                    </div>
-                                  </div>
-                                  <div
-                                    style={{
-                                      background: 'var(--color-bg-main)',
-                                      padding: 8,
-                                      borderRadius: 4,
-                                      border: '1px solid var(--color-border)',
-                                      textAlign: 'center',
-                                    }}
-                                  >
-                                    <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>
-                                      Thời lượng
-                                    </div>
-                                    <div
-                                      style={{
-                                        fontSize: '0.88rem',
-                                        fontWeight: 800,
-                                        color: 'var(--color-text-main)',
-                                      }}
-                                    >
-                                      {contrib.durationHoursNote || '1 ngày'}
-                                    </div>
-                                  </div>
-                                </div>
-
-                                <div
-                                  style={{
-                                    fontSize: '0.76rem',
-                                    color: 'var(--color-text-muted)',
-                                    marginBottom: 14,
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: 8,
-                                  }}
-                                >
-                                  <span
-                                    style={{
-                                      width: 7,
-                                      height: 7,
-                                      borderRadius: '50%',
-                                      background: 'var(--color-primary)',
-                                      flexShrink: 0,
-                                    }}
-                                  />
+                                <div className="admin-ledger-meta">
                                   <span>
-                                    Người gửi:{' '}
-                                    <strong style={{ color: 'var(--color-text-main)' }}>
-                                      {contrib.authorName || contrib.authorEmail || 'Trekker Cộng Đồng'}
+                                    {contrib.hamlet ? `${contrib.hamlet}, ` : ''}
+                                    {contrib.district ? `${contrib.district}, ` : ''}
+                                    {contrib.province || 'Chưa rõ tỉnh'}
+                                  </span>
+                                  <span>·</span>
+                                  <strong>{contrib.distanceKm} km</strong>
+                                  <span>·</span>
+                                  <strong>+{contrib.elevationGainM}m</strong>
+                                  <span>·</span>
+                                  <span>{contrib.durationHoursNote || '1 ngày'}</span>
+                                  <span>·</span>
+                                  <span>
+                                    Gửi bởi{' '}
+                                    <strong>
+                                      {contrib.authorName || contrib.authorEmail || 'Cộng đồng'}
                                     </strong>{' '}
                                     ({formatDateVi(contrib.createdAt)})
                                   </span>
                                 </div>
                               </div>
+                            </div>
 
-                              <div
-                                style={{
-                                  borderTop: '1px solid var(--color-border)',
-                                  paddingTop: 14,
-                                  display: 'flex',
-                                  gap: 8,
-                                  flexWrap: 'wrap',
+                            <div
+                              className="admin-ledger-actions"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <button
+                                type="button"
+                                className="admin-btn admin-btn--sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedContribution(contrib);
                                 }}
                               >
+                                <Eye size={13} />
+                                <span>Chi tiết</span>
+                              </button>
+                              {contrib.status !== 'approved' && (
                                 <button
                                   type="button"
-                                  className="btn btn-outline"
-                                  onClick={() => setSelectedContribution(contrib)}
-                                  style={{
-                                    flex: 1,
-                                    padding: '7px 12px',
-                                    fontSize: '0.8rem',
-                                    justifyContent: 'center',
-                                    gap: 6,
+                                  className="admin-btn admin-btn--sm admin-btn--primary"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void handleApprove(contribId, contrib.name || '');
                                   }}
                                 >
-                                  <Eye size={14} /> Chi tiết
+                                  <CheckCircle2 size={13} />
+                                  <span>Duyệt</span>
                                 </button>
-
-                                {contrib.status !== 'approved' && (
-                                  <button
-                                    type="button"
-                                    className="btn btn-primary"
-                                    onClick={() => handleApprove(contribId || '', contrib.name || '')}
-                                    style={{
-                                      flex: 1.2,
-                                      padding: '7px 12px',
-                                      fontSize: '0.8rem',
-                                      justifyContent: 'center',
-                                      gap: 6,
-                                    }}
-                                  >
-                                    <CheckCircle2 size={14} /> Phê Duyệt
-                                  </button>
-                                )}
-
-                                {contrib.status === 'pending' && (
-                                  <button
-                                    type="button"
-                                    className="btn btn-outline"
-                                    onClick={() => handleReject(contribId || '', contrib.name || '')}
-                                    style={{
-                                      padding: '7px 10px',
-                                      fontSize: '0.8rem',
-                                      justifyContent: 'center',
-                                      color: 'var(--color-sun)',
-                                      borderColor: 'color-mix(in srgb, var(--color-sun) 40%, transparent)',
-                                    }}
-                                    title="Từ chối bài đóng góp"
-                                    aria-label="Từ chối bài đóng góp"
-                                  >
-                                    <XCircle size={14} />
-                                  </button>
-                                )}
-
+                              )}
+                              {contrib.status === 'pending' && (
                                 <button
                                   type="button"
-                                  className="btn btn-outline"
-                                  onClick={() => handleDeleteContribution(contribId || '', contrib.name || '')}
-                                  style={{
-                                    padding: '7px 10px',
-                                    fontSize: '0.8rem',
-                                    justifyContent: 'center',
-                                    color: 'var(--color-error-text, var(--color-error))',
-                                    borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)',
+                                  className="admin-btn admin-btn--sm admin-btn--warn-ghost"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void handleReject(contribId, contrib.name || '');
                                   }}
-                                  title="Xóa vĩnh viễn khỏi MongoDB"
-                                  aria-label="Xóa bài đóng góp"
+                                  title="Từ chối bài đóng góp"
+                                  aria-label="Từ chối bài đóng góp"
                                 >
-                                  <Trash2 size={14} />
+                                  <XCircle size={13} />
                                 </button>
-                              </div>
+                              )}
+                              <button
+                                type="button"
+                                className="admin-btn admin-btn--sm admin-btn--danger-ghost"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteContribution(contribId, contrib.name || '');
+                                }}
+                                title="Xóa vĩnh viễn khỏi MongoDB"
+                                aria-label="Xóa bài đóng góp"
+                              >
+                                <Trash2 size={13} />
+                              </button>
                             </div>
                           </article>
                         );
-                      })}
-                    </div>
-                  );
-                })()}
-              </div>
-            </>
-          )}
-
-          {/* =========================================================================
-           * SECTION 2: QUẢN LÝ CUNG ĐƯỜNG (TRAILS)
-           * ========================================================================= */}
-          {effectiveSection === 'trails' && (
-            <div className="card" style={{ padding: 24, borderRadius: 6 }}>
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginBottom: 20,
-                  flexWrap: 'wrap',
-                  gap: 12,
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <Layers size={18} color="var(--color-primary)" />
-                  <h3
-                    style={{
-                      fontSize: '1.15rem',
-                      fontWeight: 700,
-                      color: 'var(--color-text-main)',
-                      margin: 0,
-                    }}
-                  >
-                    Kho Cung Đường Trekking Việt Nam ({filteredTrails.length}/{trailsList.length})
-                  </h3>
-                  {!isStrictAdmin && (
-                    <span className="badge badge-info">Chỉ xem · Cần quyền Admin để chỉnh sửa</span>
-                  )}
-                </div>
-
-                <div className="admin-search-wrapper" style={{ maxWidth: 320 }}>
-                  <Search size={15} color="var(--color-text-dim)" />
-                  <input
-                    type="text"
-                    placeholder="Lọc theo tên cung, tỉnh thành, huyện..."
-                    value={trailSearchQuery}
-                    onChange={(e) => setTrailSearchQuery(e.target.value)}
-                    style={{
-                      border: 'none',
-                      background: 'transparent',
-                      color: 'var(--color-text-main)',
-                      fontSize: '0.82rem',
-                      width: '100%',
-                      outline: 'none',
-                    }}
-                  />
-                  {trailSearchQuery && (
-                    <button
-                      type="button"
-                      onClick={() => setTrailSearchQuery('')}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        color: 'var(--color-text-dim)',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        padding: 2,
-                      }}
-                      aria-label="Xóa lọc cung đường"
-                    >
-                      <IconX size={14} />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {filteredTrails.length === 0 ? (
-                  <div
-                    style={{
-                      textAlign: 'center',
-                      padding: 32,
-                      color: 'var(--color-text-muted)',
-                      border: '1px dashed var(--color-border)',
-                      borderRadius: 4,
-                      fontSize: '0.84rem',
-                    }}
-                  >
-                    Không tìm thấy cung đường nào khớp với bộ lọc hiện tại.
+                      })
+                    )}
                   </div>
-                ) : (
-                  filteredTrails.map((trail) => (
-                    <div
-                      key={trail._id || trail.id}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        background: 'var(--color-bg-main)',
-                        border: '1px solid var(--color-border)',
-                        padding: '12px 16px',
-                        borderRadius: 4,
-                        flexWrap: 'wrap',
-                        gap: 14,
-                        transition: 'border-color 0.2s ease',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flex: 1, minWidth: 240 }}>
-                        <img
-                          loading="lazy"
-                          decoding="async"
-                          src={trail.coverImage || DEFAULT_TRAIL_COVER}
-                          alt={trail.name}
-                          style={{
-                            width: 64,
-                            height: 48,
-                            borderRadius: 4,
-                            objectFit: 'cover',
-                            border: '1px solid var(--color-border)',
-                            flexShrink: 0,
-                          }}
-                          onError={(e) => {
-                            (e.currentTarget as HTMLImageElement).src = DEFAULT_TRAIL_COVER;
-                          }}
-                        />
-                        <div style={{ minWidth: 0 }}>
-                          <div
-                            style={{
-                              fontSize: '0.95rem',
-                              fontWeight: 700,
-                              color: 'var(--color-text-main)',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 8,
-                              flexWrap: 'wrap',
-                            }}
-                          >
-                            <span>{trail.name}</span>
-                            <span className="badge badge-info">{trail.region}</span>
-                            {trail.status && trail.status !== 'approved' && (
-                              <span
-                                className={
-                                  trail.status === 'rejected' ? 'badge badge-error' : 'badge badge-sun'
-                                }
-                              >
-                                {trail.status === 'rejected' ? 'Từ chối' : 'Chờ duyệt'}
-                              </span>
-                            )}
-                          </div>
-                          <div
-                            style={{
-                              fontSize: '0.78rem',
-                              color: 'var(--color-text-muted)',
-                              marginTop: 3,
-                              display: 'flex',
-                              alignItems: 'center',
-                              flexWrap: 'wrap',
-                              gap: 6,
-                              fontVariantNumeric: 'tabular-nums',
-                            }}
-                          >
-                            <span>
-                              {trail.district ? `${trail.district}, ` : ''}
-                              {trail.province} · Cự ly:{' '}
-                              <strong style={{ color: 'var(--color-primary)' }}>
-                                {trail.distanceKm} km
-                              </strong>{' '}
-                              · Cao độ: <strong>+{trail.elevationGainM}m</strong> · Đỉnh:{' '}
-                              <strong>{trail.maxAltitudeM}m</strong> · Đánh giá:
-                            </span>
-                            <strong style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                              <IconStar size={12} color="var(--color-sun)" />{' '}
-                              {trail.reviewCount ? Number(trail.rating || 0).toFixed(1) : 'Mới'}
-                            </strong>
-                            <span>({trail.reviewCount || 0} lượt)</span>
-                          </div>
-                        </div>
-                      </div>
+                </>
+              );
+            })()}
 
-                      {isStrictAdmin && (
-                        <div style={{ display: 'flex', gap: 8 }}>
-                          <button
-                            type="button"
-                            className="btn btn-outline"
-                            onClick={() => openEditTrailModal(trail)}
-                            style={{
-                              color: 'var(--color-primary)',
-                              padding: '6px 14px',
-                              fontSize: '0.8rem',
-                            }}
-                          >
-                            Sửa
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-outline"
-                            onClick={() => handleDeleteTrail(trail._id || trail.id || '', trail.name || '')}
-                            style={{
-                              color: 'var(--color-error-text, var(--color-error))',
-                              borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)',
-                              padding: '6px 14px',
-                              fontSize: '0.8rem',
-                            }}
-                          >
-                            Xóa
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          )}
+            {/* =========================================================================
+             * SECTION 2: QUẢN LÝ CUNG ĐƯỜNG (TRAILS)
+             * ========================================================================= */}
+            {effectiveSection === 'trails' && (
+              <>
+                <div className="admin-toolbar">
+                  <div className="admin-subhead" style={{ paddingBottom: 9 }}>
+                    <h2 className="admin-subhead-title">
+                      <span>Danh mục tuyến thực địa</span>
+                      <span className="admin-subhead-count">
+                        {filteredTrails.length} / {trailsList.length}
+                      </span>
+                    </h2>
+                    {!isStrictAdmin && (
+                      <span className="admin-tag admin-tag--info">
+                        Chỉ xem · Cần quyền Admin để sửa
+                      </span>
+                    )}
+                  </div>
 
-          {/* =========================================================================
-           * SECTION 3: QUẢN LÝ SỰ CỐ & CỨU HỘ (INCIDENTS)
-           * ========================================================================= */}
-          {effectiveSection === 'incidents' && (
-              <div className="card" style={{ padding: 24, borderRadius: 6 }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    flexWrap: 'wrap',
-                    gap: 12,
-                    marginBottom: 20,
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <AlertTriangle size={18} color="var(--color-error)" />
-                    <div>
-                      <h3
+                  <div className="admin-search">
+                    <Search size={14} color="var(--color-text-dim)" />
+                    <input
+                      type="text"
+                      placeholder="Lọc theo tên cung, tỉnh thành, huyện..."
+                      value={trailSearchQuery}
+                      onChange={(e) => setTrailSearchQuery(e.target.value)}
+                    />
+                    {trailSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setTrailSearchQuery('')}
                         style={{
-                          fontSize: '1.15rem',
-                          fontWeight: 700,
-                          color: 'var(--color-text-main)',
-                          margin: 0,
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--color-text-dim)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          padding: 2,
                         }}
+                        aria-label="Xóa lọc cung đường"
                       >
-                        Sự Cố Khẩn Cấp &amp; Cảnh Báo Thực Địa ({displayedIncidents.length}/{incidentsList.length})
-                      </h3>
-                      <p style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', margin: '2px 0 0 0' }}>
-                        Kiểm duyệt tin báo cộng đồng, theo dõi cảnh báo đã xử lý và dữ liệu vệ tinh Open-Meteo / NASA
+                        <IconX size={13} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="admin-ledger">
+                  {filteredTrails.length === 0 ? (
+                    <div className="admin-empty">
+                      <div className="admin-empty-icon" aria-hidden="true">
+                        <Layers size={18} />
+                      </div>
+                      <h3 className="admin-empty-title">Không tìm thấy cung đường phù hợp</h3>
+                      <p className="admin-empty-desc">
+                        Thử điều chỉnh từ khóa tìm kiếm theo tên đỉnh núi hoặc tỉnh thành.
                       </p>
                     </div>
-                  </div>
+                  ) : (
+                    filteredTrails.map((trail) => {
+                      const trailId = String(trail._id || trail.id || '');
+                      const isRowSelected =
+                        liveInspectorSelection?.kind === 'trail' &&
+                        liveInspectorSelection.data.id === trailId;
 
-                  <div className="admin-segmented-control" style={{ flexWrap: 'wrap' }}>
-                    <button
-                      type="button"
-                      className={`admin-segmented-btn ${incidentFilter === 'active' ? 'active' : ''}`}
-                      onClick={() => setIncidentFilter('active')}
-                    >
-                      <AlertTriangle size={13} />
-                      <span>Đang cảnh báo</span>
-                      <span
-                        style={{
-                          fontSize: '0.7rem',
-                          padding: '1px 6px',
-                          borderRadius: 4,
-                          color: 'var(--color-error-text, var(--color-error))',
-                          fontWeight: 800,
+                      return (
+                      <div
+                        key={trailId}
+                        className={`admin-ledger-row admin-ledger-row--center admin-ledger-row--selectable ${isRowSelected ? 'is-selected' : ''}`}
+                        onClick={() => {
+                          const mapped = cockpitTrailsById.get(trailId);
+                          if (mapped) setInspectorSelection({ kind: 'trail', data: mapped });
                         }}
                       >
-                        {activeIncidents.length}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      className={`admin-segmented-btn ${incidentFilter === 'resolved' ? 'active' : ''}`}
-                      onClick={() => setIncidentFilter('resolved')}
-                    >
-                      <CheckCircle2 size={13} />
-                      <span>Đã xử lý</span>
-                      <span
-                        style={{
-                          fontSize: '0.7rem',
-                          padding: '1px 6px',
-                          borderRadius: 4,
-                          color: 'var(--color-primary)',
-                          fontWeight: 800,
-                        }}
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 14,
+                            flex: 1,
+                            minWidth: 260,
+                          }}
+                        >
+                          <img
+                            loading="lazy"
+                            decoding="async"
+                            src={trail.coverImage || DEFAULT_TRAIL_COVER}
+                            alt={trail.name}
+                            className="admin-thumb"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLImageElement).src = DEFAULT_TRAIL_COVER;
+                            }}
+                          />
+                          <div className="admin-ledger-main">
+                            <div className="admin-ledger-title-line">
+                              <span className="admin-ledger-title">{trail.name}</span>
+                              <span className="admin-tag">{trail.region}</span>
+                              {trail.status && trail.status !== 'approved' && (
+                                <span
+                                  className={
+                                    trail.status === 'rejected'
+                                      ? 'admin-tag admin-tag--danger'
+                                      : 'admin-tag admin-tag--warn'
+                                  }
+                                >
+                                  {trail.status === 'rejected' ? 'Từ chối' : 'Chờ duyệt'}
+                                </span>
+                              )}
+                            </div>
+                            <div className="admin-ledger-meta">
+                              <span>
+                                {trail.district ? `${trail.district}, ` : ''}
+                                {trail.province}
+                              </span>
+                              <span>·</span>
+                              <strong>{trail.distanceKm} km</strong>
+                              <span>·</span>
+                              <span>+{trail.elevationGainM}m</span>
+                              <span>·</span>
+                              <span>Đỉnh {trail.maxAltitudeM}m</span>
+                              <span>·</span>
+                              <span
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 3,
+                                }}
+                              >
+                                <IconStar size={11} color="var(--color-sun)" />
+                                <strong>
+                                  {trail.reviewCount ? Number(trail.rating || 0).toFixed(1) : 'Mới'}
+                                </strong>
+                                <span>({trail.reviewCount || 0})</span>
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {isStrictAdmin && (
+                          <div
+                            className="admin-ledger-actions"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              className="admin-btn admin-btn--sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openEditTrailModal(trail);
+                              }}
+                            >
+                              Chỉnh sửa
+                            </button>
+                            <button
+                              type="button"
+                              className="admin-btn admin-btn--sm admin-btn--danger-ghost"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteTrail(trailId, trail.name || '');
+                              }}
+                            >
+                              Xóa
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      );
+                    })
+                  )}
+                </div>
+              </>
+            )}
+
+            {/* =========================================================================
+             * SECTION 3: QUẢN LÝ SỰ CỐ & CỨU HỘ (INCIDENTS)
+             * ========================================================================= */}
+            {effectiveSection === 'incidents' && (
+              <>
+                <div className="admin-toolbar">
+                  <div className="admin-tabs" role="tablist" aria-label="Bộ lọc sự cố">
+                    {(
+                      [
+                        { id: 'active', label: 'Đang cảnh báo', count: activeIncidents.length },
+                        { id: 'resolved', label: 'Đã xử lý', count: resolvedIncidents.length },
+                        { id: 'all', label: 'Tất cả', count: incidentsList.length },
+                      ] as const
+                    ).map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        role="tab"
+                        aria-selected={incidentFilter === tab.id}
+                        className={`admin-tab-btn ${incidentFilter === tab.id ? 'active' : ''}`}
+                        onClick={() => setIncidentFilter(tab.id)}
                       >
-                        {resolvedIncidents.length}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      className={`admin-segmented-btn ${incidentFilter === 'all' ? 'active' : ''}`}
-                      onClick={() => setIncidentFilter('all')}
-                    >
-                      <Layers size={13} />
-                      <span>Tất cả</span>
-                      <span
-                        style={{
-                          fontSize: '0.7rem',
-                          padding: '1px 6px',
-                          borderRadius: 4,
-                          color: 'var(--color-sky)',
-                          fontWeight: 800,
-                        }}
-                      >
-                        {incidentsList.length}
-                      </span>
-                    </button>
+                        <span>{tab.label}</span>
+                        <span className="admin-tab-count">{tab.count}</span>
+                      </button>
+                    ))}
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div className="admin-ledger">
                   {displayedIncidents.length === 0 ? (
-                    <div
-                      style={{
-                        textAlign: 'center',
-                        padding: 32,
-                        color: 'var(--color-text-muted)',
-                        border: '1px dashed var(--color-border)',
-                        borderRadius: 4,
-                        fontSize: '0.84rem',
-                      }}
-                    >
-                      {incidentFilter === 'resolved'
-                        ? 'Chưa có báo cáo sự cố nào được đánh dấu đã xử lý.'
-                        : 'Hiện không có báo cáo sự cố nào trong danh mục này.'}
+                    <div className="admin-empty">
+                      <div className="admin-empty-icon" aria-hidden="true">
+                        <AlertTriangle size={18} />
+                      </div>
+                      <h3 className="admin-empty-title">
+                        {incidentFilter === 'resolved'
+                          ? 'Chưa có sự cố nào được xử lý'
+                          : 'Không có cảnh báo sự cố trong mục này'}
+                      </h3>
+                      <p className="admin-empty-desc">
+                        Các tin báo thực địa và cảnh báo thời tiết cực đoan sẽ hiển thị tại đây.
+                      </p>
                     </div>
                   ) : (
                     displayedIncidents.map((inc) => {
+                      const incId = String(inc._id || inc.id || '');
+                      const isRowSelected =
+                        liveInspectorSelection?.kind === 'incident' &&
+                        liveInspectorSelection.data.id === incId;
                       const synthetic = isSyntheticIncident(inc);
                       const reporterId = extractEntityId(inc.reportedBy);
+                      const isCritical = !synthetic && !inc.resolved && inc.severity === 'critical';
+                      const sevTagClass =
+                        inc.severity === 'critical'
+                          ? 'admin-tag admin-tag--danger'
+                          : inc.severity === 'high'
+                            ? 'admin-tag admin-tag--warn'
+                            : 'admin-tag admin-tag--info';
+
                       return (
                         <div
-                          key={inc._id || inc.id}
-                          style={{
-                            display: 'flex',
-                            flexDirection: 'column',
-                            background: 'var(--color-bg-main)',
-                            border: '1px solid var(--color-border)',
-                            borderLeft: synthetic
-                              ? '3px solid var(--color-sky)'
-                              : inc.resolved
-                                ? '3px solid var(--color-primary)'
-                                : inc.severity === 'critical' || inc.severity === 'high'
-                                  ? '3px solid var(--color-error)'
-                                  : '3px solid var(--color-sun)',
-                            padding: '16px 18px',
-                            borderRadius: 4,
-                            gap: 12,
+                          key={incId}
+                          className={`admin-ledger-row admin-ledger-row--selectable ${isCritical ? 'admin-ledger-row--urgent' : ''} ${isRowSelected ? 'is-selected' : ''}`}
+                          onClick={() => {
+                            const mapped = cockpitIncidentsById.get(incId);
+                            if (mapped) setInspectorSelection({ kind: 'incident', data: mapped });
                           }}
                         >
-                          <div
-                            style={{
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'flex-start',
-                              flexWrap: 'wrap',
-                              gap: 10,
-                            }}
-                          >
-                            <div style={{ flex: 1, minWidth: 240 }}>
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 8,
-                                  marginBottom: 6,
-                                  flexWrap: 'wrap',
-                                }}
-                              >
-                                <span
-                                  style={{
-                                    background:
-                                      inc.severity === 'critical'
-                                        ? 'var(--color-error)'
-                                        : inc.severity === 'high'
-                                          ? 'var(--color-earth)'
-                                          : 'var(--color-sky)',
-                                    color:
-                                      inc.severity === 'critical'
-                                        ? 'var(--color-on-danger)'
-                                        : 'var(--color-on-primary)',
-                                    fontSize: '0.68rem',
-                                    fontWeight: 700,
-                                    padding: '2px 8px',
-                                    borderRadius: 3,
-                                    letterSpacing: '0.04em',
-                                  }}
-                                >
-                                  {inc.severity?.toUpperCase() || 'HIGH'}
+                          <div className="admin-ledger-main">
+                            <div className="admin-ledger-title-line">
+                              <span className={sevTagClass}>
+                                {inc.severity?.toUpperCase() || 'HIGH'}
+                              </span>
+                              <span className="admin-ledger-title">
+                                {inc.trailName ||
+                                  (
+                                    {
+                                      landslide: 'Sạt lở đất đá',
+                                      flash_flood: 'Lũ quét / Nước dâng',
+                                      flood: 'Lũ lụt / Ngập suối',
+                                      bad_weather: 'Thời tiết cực đoan',
+                                      weather: 'Thời tiết xấu',
+                                      lost: 'Lạc đường cần hỗ trợ',
+                                      wildlife: 'Động vật hoang dã',
+                                      other: 'Sự cố thực địa',
+                                    } as Record<string, string>
+                                  )[String(inc.type || '')] ||
+                                  'Cảnh báo thực địa'}
+                              </span>
+                              {synthetic ? (
+                                <span className="admin-tag admin-tag--info">
+                                  <IconSatellite size={11} /> Vệ tinh · Chỉ đọc
                                 </span>
-                                <span
-                                  style={{
-                                    fontSize: '1rem',
-                                    fontWeight: 700,
-                                    color: 'var(--color-text-main)',
-                                  }}
-                                >
-                                  {inc.trailName ||
-                                    (
-                                      {
-                                        landslide: 'Sạt lở đất đá',
-                                        flash_flood: 'Lũ quét / Nước dâng',
-                                        flood: 'Lũ lụt / Ngập suối',
-                                        bad_weather: 'Thời tiết cực đoan',
-                                        weather: 'Thời tiết xấu',
-                                        lost: 'Lạc đường cần hỗ trợ',
-                                        wildlife: 'Động vật hoang dã',
-                                        other: 'Sự cố thực địa',
-                                      } as Record<string, string>
-                                    )[String(inc.type || '')] ||
-                                    'Cảnh báo thực địa'}
+                              ) : inc.resolved ? (
+                                <span className="admin-status">
+                                  <span className="admin-dot admin-dot--ok" aria-hidden="true" />
+                                  Đã xử lý
                                 </span>
-                                {synthetic ? (
-                                  <span
-                                    className="badge badge-info"
-                                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                                  >
-                                    <IconSatellite size={11} /> Dữ liệu vệ tinh / Tự động (Chỉ đọc)
-                                  </span>
-                                ) : inc.resolved ? (
-                                  <span className="badge badge-success">
-                                    <CheckCircle2 size={12} /> Đã an toàn
-                                  </span>
-                                ) : (
-                                  <span className="badge badge-error">
-                                    <AlertTriangle size={12} /> Đang phát cảnh báo
-                                  </span>
-                                )}
-                              </div>
-                              <p
-                                style={{
-                                  fontSize: '0.86rem',
-                                  color: 'var(--color-text-main)',
-                                  margin: 0,
-                                  lineHeight: 1.5,
-                                }}
-                              >
-                                {inc.description}
-                              </p>
+                              ) : (
+                                <span className="admin-status">
+                                  <span className="admin-dot admin-dot--danger" aria-hidden="true" />
+                                  Đang cảnh báo
+                                </span>
+                              )}
                             </div>
 
-                            {!synthetic && (
-                              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                                {!inc.resolved && (
-                                  <button
-                                    type="button"
-                                    className="btn btn-primary"
-                                    onClick={() => handleResolveIncident(inc._id || inc.id || '')}
-                                    style={{ padding: '6px 14px', fontSize: '0.78rem' }}
-                                  >
-                                    Xử Lý Xong (Gỡ Cảnh Báo)
-                                  </button>
-                                )}
+                            <p className="admin-ledger-desc">{inc.description}</p>
 
-                                {isStrictAdmin && reporterId && (
-                                  <button
-                                    type="button"
-                                    className="btn btn-outline"
-                                    onClick={() =>
-                                      handleBanUser(
-                                        reporterId,
-                                        inc.reporterEmail || inc.reporterName || 'Tài khoản báo giả'
-                                      )
-                                    }
-                                    title="Khóa tài khoản này nếu phát hiện báo động giả / spam"
-                                    style={{
-                                      color: 'var(--color-sun)',
-                                      borderColor: 'color-mix(in srgb, var(--color-sun) 40%, transparent)',
-                                      padding: '6px 12px',
-                                      fontSize: '0.78rem',
-                                    }}
-                                  >
-                                    Khóa Nick (Báo Giả)
-                                  </button>
-                                )}
+                            <div className="admin-ledger-meta">
+                              <span>
+                                {synthetic ? 'Nguồn đo:' : 'Người phát:'}{' '}
+                                <strong>
+                                  {inc.reporterName || inc.userName || inc.verifiedBy || 'Trekker'}
+                                </strong>
+                              </span>
+                              {inc.reporterEmail && <span>· {inc.reporterEmail}</span>}
+                              <span>· {formatDateVi(inc.reportedAt || inc.createdAt)}</span>
+                              {inc.locationNote && <span>· Vị trí: {inc.locationNote}</span>}
+                              {inc.confirmations && inc.confirmations > 1 && (
+                                <span className="admin-tag admin-tag--warn">
+                                  {inc.confirmations} xác thực
+                                </span>
+                              )}
+                            </div>
 
-                                <button
-                                  type="button"
-                                  className="btn btn-outline"
-                                  onClick={() => handleDeleteIncident(inc._id || inc.id || '')}
+                            {!synthetic && Array.isArray(inc.disputes) && inc.disputes.length > 0 && (
+                              <div
+                                className="admin-note-box admin-note-box--danger"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <div
                                   style={{
-                                    color: 'var(--color-error-text, var(--color-error))',
-                                    borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)',
-                                    padding: '6px 12px',
-                                    fontSize: '0.78rem',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 6,
+                                    fontWeight: 600,
+                                    marginBottom: 6,
                                   }}
                                 >
-                                  Xóa
-                                </button>
+                                  <AlertTriangle size={13} />
+                                  <span>
+                                    Khiếu nại cộng đồng: {inc.disputes.length} báo cáo tin giả
+                                  </span>
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                  {inc.disputes.map((d: AdminIncidentDispute, idx: number) => (
+                                    <div key={idx} style={{ color: 'var(--color-text-main)' }}>
+                                      · <strong>{d.userName || 'Trekker'}</strong> (
+                                      {formatDateVi(d.disputedAt)}): &ldquo;{d.reason}&rdquo;
+                                    </div>
+                                  ))}
+                                </div>
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    gap: 8,
+                                    marginTop: 10,
+                                    flexWrap: 'wrap',
+                                  }}
+                                >
+                                  <button
+                                    type="button"
+                                    className="admin-btn admin-btn--sm admin-btn--primary"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void handleResolveDispute(incId, 'dismiss_incident');
+                                    }}
+                                  >
+                                    <CheckCircle2 size={13} /> Chấp nhận khiếu nại (Gỡ cảnh báo)
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="admin-btn admin-btn--sm admin-btn--danger-ghost"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void handleResolveDispute(incId, 'reject_dispute');
+                                    }}
+                                  >
+                                    <XCircle size={13} /> Bác bỏ khiếu nại (Nguy hiểm thật)
+                                  </button>
+                                </div>
                               </div>
                             )}
                           </div>
 
-                          <div
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 12,
-                              padding: '8px 12px',
-                              background: 'var(--color-bg-card)',
-                              borderRadius: 4,
-                              border: '1px solid var(--color-border)',
-                              flexWrap: 'wrap',
-                              fontSize: '0.76rem',
-                            }}
-                          >
-                            <span style={{ color: 'var(--color-text-main)', fontWeight: 700 }}>
-                              {synthetic ? 'Nguồn đo:' : 'Người phát:'}{' '}
-                              <strong style={{ color: synthetic ? 'var(--color-sky)' : 'var(--color-primary)' }}>
-                                {inc.reporterName || inc.userName || inc.verifiedBy || 'Trekker Thực Địa'}
-                              </strong>
-                            </span>
-                            {inc.reporterEmail && (
-                              <span style={{ color: 'var(--color-text-muted)' }}>· {inc.reporterEmail}</span>
-                            )}
-                            <span style={{ color: 'var(--color-text-dim)' }}>
-                              · Thời gian: {formatDateVi(inc.reportedAt || inc.createdAt)}
-                            </span>
-                            {inc.locationNote && (
-                              <span style={{ color: 'var(--color-sky)', fontWeight: 600 }}>
-                                · Vị trí: {inc.locationNote}
-                              </span>
-                            )}
-                            {inc.confirmations && inc.confirmations > 1 && (
-                              <span className="badge badge-sun">
-                                <CheckCircle2 size={11} /> {inc.confirmations} Xác thực
-                              </span>
-                            )}
-                          </div>
-
-                          {!synthetic && Array.isArray(inc.disputes) && inc.disputes.length > 0 && (
+                          {!synthetic && (
                             <div
-                              style={{
-                                padding: '12px 16px',
-                                background: 'color-mix(in srgb, var(--color-error) 8%, transparent)',
-                                border: '1px solid color-mix(in srgb, var(--color-error) 34%, transparent)',
-                                borderRadius: 4,
-                                fontSize: '0.8rem',
-                              }}
+                              className="admin-ledger-actions"
+                              onClick={(e) => e.stopPropagation()}
                             >
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 6,
-                                  fontWeight: 700,
-                                  color: 'var(--color-error-text, var(--color-error))',
-                                  marginBottom: 6,
+                              {!inc.resolved && (
+                                <button
+                                  type="button"
+                                  className="admin-btn admin-btn--sm admin-btn--primary"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void handleResolveIncident(incId);
+                                  }}
+                                >
+                                  Gỡ cảnh báo
+                                </button>
+                              )}
+                              {isStrictAdmin && reporterId && (
+                                <button
+                                  type="button"
+                                  className="admin-btn admin-btn--sm admin-btn--warn-ghost"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleBanUser(
+                                      reporterId,
+                                      inc.reporterEmail || inc.reporterName || 'Tài khoản báo giả'
+                                    );
+                                  }}
+                                  title="Khóa tài khoản nếu phát hiện báo động giả"
+                                >
+                                  Khóa nick
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="admin-btn admin-btn--sm admin-btn--danger-ghost"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteIncident(incId);
                                 }}
                               >
-                                <AlertTriangle size={14} />
-                                <span>
-                                  KHIẾU NẠI TỪ CỘNG ĐỒNG: {inc.disputes.length} TREKKER BÁO CÁO TIN GIẢ
-                                </span>
-                              </div>
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                {inc.disputes.map((d: AdminIncidentDispute, idx: number) => (
-                                  <div
-                                    key={idx}
-                                    style={{
-                                      background: 'var(--color-bg-card)',
-                                      padding: '6px 10px',
-                                      borderRadius: 4,
-                                      color: 'var(--color-text-main)',
-                                    }}
-                                  >
-                                    · <strong>{d.userName || 'Trekker'}</strong> ({formatDateVi(d.disputedAt)}):
-                                    &ldquo;{d.reason}&rdquo;
-                                  </div>
-                                ))}
-                              </div>
-                              <div style={{ display: 'flex', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
-                                <button
-                                  type="button"
-                                  className="btn btn-primary"
-                                  onClick={() =>
-                                    handleResolveDispute(inc._id || inc.id || '', 'dismiss_incident')
-                                  }
-                                  style={{
-                                    padding: '6px 14px',
-                                    fontSize: '0.78rem',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: 6,
-                                  }}
-                                >
-                                  <CheckCircle2 size={14} /> Chấp nhận khiếu nại (Gỡ cảnh báo ảo)
-                                </button>
-                                <button
-                                  type="button"
-                                  className="btn btn-outline"
-                                  onClick={() =>
-                                    handleResolveDispute(inc._id || inc.id || '', 'reject_dispute')
-                                  }
-                                  style={{
-                                    color: 'var(--color-error-text, var(--color-error))',
-                                    borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)',
-                                    padding: '6px 14px',
-                                    fontSize: '0.78rem',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: 6,
-                                  }}
-                                >
-                                  <XCircle size={14} /> Bác bỏ khiếu nại (Nguy hiểm thật)
-                                </button>
-                              </div>
+                                Xóa
+                              </button>
                             </div>
                           )}
                         </div>
@@ -4066,922 +4026,611 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     })
                   )}
                 </div>
-              </div>
-          )}
+              </>
+            )}
 
-          {/* =========================================================================
-           * SECTION 4: QUẢN LÝ NGƯỜI DÙNG & PHÂN QUYỀN (USERS - ADMIN ONLY)
-           * ========================================================================= */}
-          {effectiveSection === 'users' && isStrictAdmin && (() => {
-            const roleCounts = userRoleCounts;
+            {/* =========================================================================
+             * SECTION 4: QUẢN LÝ NGƯỜI DÙNG & PHÂN QUYỀN (USERS - ADMIN ONLY)
+             * ========================================================================= */}
+            {effectiveSection === 'users' && isStrictAdmin && (() => {
+              const roleCounts = userRoleCounts;
+              const userFilterTabs: { id: typeof userRoleFilter; label: string; count: number }[] = [
+                { id: 'all', label: 'Tất cả', count: roleCounts.all },
+                { id: 'admin', label: 'Admin', count: roleCounts.admin },
+                { id: 'moderator', label: 'Mod', count: roleCounts.moderator },
+                { id: 'guide', label: 'Guide', count: roleCounts.guide },
+                { id: 'user', label: 'Trekker', count: roleCounts.user },
+                { id: 'banned', label: 'Đã khóa', count: roleCounts.banned },
+              ];
 
-            const userFilterPills: {
-              id: typeof userRoleFilter;
-              label: string;
-              count: number;
-              color: string;
-            }[] = [
-              { id: 'all', label: 'Tất cả', count: roleCounts.all, color: 'var(--color-sky)' },
-              { id: 'admin', label: 'Admin', count: roleCounts.admin, color: 'var(--color-sun)' },
-              { id: 'moderator', label: 'Mod', count: roleCounts.moderator, color: 'var(--color-sky)' },
-              { id: 'guide', label: 'Guide', count: roleCounts.guide, color: 'var(--color-primary)' },
-              { id: 'user', label: 'Trekker', count: roleCounts.user, color: 'var(--color-text-muted)' },
-              {
-                id: 'banned',
-                label: 'Đã khóa',
-                count: roleCounts.banned,
-                color: 'var(--color-error-text, var(--color-error))',
-              },
-            ];
-
-            return (
-              <div className="card" style={{ padding: 24, borderRadius: 6 }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    flexWrap: 'wrap',
-                    gap: 12,
-                    marginBottom: 16,
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <Users size={18} color="var(--color-primary)" />
-                    <h3
-                      style={{
-                        fontSize: '1.15rem',
-                        fontWeight: 700,
-                        color: 'var(--color-text-main)',
-                        margin: 0,
-                      }}
-                    >
-                      Danh Sách Thành Viên &amp; Phân Quyền ({filteredUsers.length}/{usersList.length})
-                    </h3>
-                  </div>
-
-                  <div className="admin-search-wrapper" style={{ maxWidth: 320 }}>
-                    <Search size={15} color="var(--color-text-dim)" />
-                    <input
-                      type="text"
-                      placeholder="Tìm theo tên, username, email..."
-                      value={userSearchQuery}
-                      onChange={(e) => setUserSearchQuery(e.target.value)}
-                      style={{
-                        border: 'none',
-                        background: 'transparent',
-                        color: 'var(--color-text-main)',
-                        fontSize: '0.82rem',
-                        width: '100%',
-                        outline: 'none',
-                      }}
-                    />
-                    {userSearchQuery && (
-                      <button
-                        type="button"
-                        onClick={() => setUserSearchQuery('')}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          color: 'var(--color-text-dim)',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          padding: 2,
-                        }}
-                        aria-label="Xóa tìm kiếm thành viên"
-                      >
-                        <IconX size={14} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div style={{ marginBottom: 16 }}>
-                  <div className="admin-segmented-control" style={{ flexWrap: 'wrap' }}>
-                    {userFilterPills.map((pill) => (
-                      <button
-                        key={pill.id}
-                        type="button"
-                        className={`admin-segmented-btn ${userRoleFilter === pill.id ? 'active' : ''}`}
-                        onClick={() => setUserRoleFilter(pill.id)}
-                      >
-                        <span>{pill.label}</span>
-                        <span
-                          style={{
-                            fontSize: '0.7rem',
-                            padding: '1px 6px',
-                            borderRadius: 4,
-                            color: pill.color,
-                            fontWeight: 800,
-                          }}
+              return (
+                <>
+                  <div className="admin-toolbar">
+                    <div className="admin-tabs" role="tablist" aria-label="Lọc vai trò thành viên">
+                      {userFilterTabs.map((tab) => (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={userRoleFilter === tab.id}
+                          className={`admin-tab-btn ${userRoleFilter === tab.id ? 'active' : ''}`}
+                          onClick={() => setUserRoleFilter(tab.id)}
                         >
-                          {pill.count}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {filteredUsers.length === 0 ? (
-                    <div
-                      style={{
-                        textAlign: 'center',
-                        padding: 32,
-                        color: 'var(--color-text-muted)',
-                        border: '1px dashed var(--color-border)',
-                        borderRadius: 4,
-                        fontSize: '0.84rem',
-                      }}
-                    >
-                      Không tìm thấy thành viên nào khớp với bộ lọc hiện tại.
+                          <span>{tab.label}</span>
+                          <span className="admin-tab-count">{tab.count}</span>
+                        </button>
+                      ))}
                     </div>
-                  ) : (
-                    filteredUsers.map((u) => {
-                      const uid = u._id || u.id;
-                      return (
-                        <div
-                          key={uid}
+
+                    <div className="admin-search">
+                      <Search size={14} color="var(--color-text-dim)" />
+                      <input
+                        type="text"
+                        placeholder="Tìm theo tên, username, email..."
+                        value={userSearchQuery}
+                        onChange={(e) => setUserSearchQuery(e.target.value)}
+                      />
+                      {userSearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setUserSearchQuery('')}
                           style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--color-text-dim)',
+                            cursor: 'pointer',
                             display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            background: u.isBanned
-                              ? 'color-mix(in srgb, var(--color-error) 6%, var(--color-bg-main))'
-                              : 'var(--color-bg-main)',
-                            border: u.isBanned
-                              ? '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)'
-                              : '1px solid var(--color-border)',
-                            padding: '12px 16px',
-                            borderRadius: 4,
-                            flexWrap: 'wrap',
-                            gap: 14,
+                            padding: 2,
                           }}
+                          aria-label="Xóa tìm kiếm thành viên"
                         >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 240 }}>
-                            <img
-                              loading="lazy"
-                              decoding="async"
-                              src={u.avatarUrl || DEFAULT_AVATAR}
-                              alt={u.fullName || u.username}
+                          <IconX size={13} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="admin-ledger">
+                    {filteredUsers.length === 0 ? (
+                      <div className="admin-empty">
+                        <div className="admin-empty-icon" aria-hidden="true">
+                          <Users size={18} />
+                        </div>
+                        <h3 className="admin-empty-title">Không tìm thấy thành viên phù hợp</h3>
+                        <p className="admin-empty-desc">
+                          Thử đổi bộ lọc vai trò hoặc nhập lại email/tên tài khoản.
+                        </p>
+                      </div>
+                    ) : (
+                      filteredUsers.map((u) => {
+                        const uid = String(u._id || u.id || '');
+                        const isRowSelected =
+                          liveInspectorSelection?.kind === 'user' &&
+                          liveInspectorSelection.data.id === uid;
+                        return (
+                          <div
+                            key={uid}
+                            className={`admin-ledger-row admin-ledger-row--center admin-ledger-row--selectable ${u.isBanned ? 'admin-ledger-row--urgent' : ''} ${isRowSelected ? 'is-selected' : ''}`}
+                            onClick={() => {
+                              const mapped = cockpitUsersById.get(uid);
+                              if (mapped) setInspectorSelection({ kind: 'user', data: mapped });
+                            }}
+                          >
+                            <div
                               style={{
-                                width: 40,
-                                height: 40,
-                                borderRadius: 4,
-                                objectFit: 'cover',
-                                border: '1px solid var(--color-border-strong)',
-                                flexShrink: 0,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 12,
+                                flex: 1,
+                                minWidth: 260,
                               }}
-                            />
-                            <div style={{ minWidth: 0 }}>
-                              <div
+                            >
+                              <img
+                                loading="lazy"
+                                decoding="async"
+                                src={u.avatarUrl || DEFAULT_AVATAR}
+                                alt={u.fullName || u.username}
+                                className="admin-avatar-sm"
+                              />
+                              <div className="admin-ledger-main">
+                                <div className="admin-ledger-title-line">
+                                  <span className="admin-ledger-title">
+                                    {u.fullName || u.username}
+                                  </span>
+                                  {u.role === 'admin' && (
+                                    <span className="admin-tag admin-tag--warn">Admin</span>
+                                  )}
+                                  {u.role === 'moderator' && (
+                                    <span className="admin-tag admin-tag--info">Mod</span>
+                                  )}
+                                  {u.role === 'guide' && (
+                                    <span className="admin-tag admin-tag--ok">
+                                      <ShieldCheck size={10} /> Guide
+                                    </span>
+                                  )}
+                                  {u.isBanned && (
+                                    <span className="admin-tag admin-tag--danger">Đã khóa</span>
+                                  )}
+                                </div>
+                                <div className="admin-ledger-meta">
+                                  <span>{u.email}</span>
+                                  <span>·</span>
+                                  <span>
+                                    Uy tín <strong>{u.reputationScore ?? 0}</strong> pts
+                                  </span>
+                                  <span>·</span>
+                                  <span>{u.badges?.join(', ') || 'Trekker mới'}</span>
+                                </div>
+                                {u.isBanned && (
+                                  <div className="admin-note-box admin-note-box--danger">
+                                    Lý do khóa:{' '}
+                                    <strong>
+                                      {u.banReason || 'Vi phạm quy định cộng đồng LOST'}
+                                    </strong>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <div
+                              className="admin-ledger-actions"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <select
+                                className="form-select"
+                                aria-label={`Phân quyền cho ${u.fullName || u.email}`}
+                                value={u.role || 'user'}
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={(e) =>
+                                  void handleUpdateRole(uid, e.target.value, u.fullName || u.email || '')
+                                }
+                                disabled={u.email === currentUser?.email}
                                 style={{
-                                  fontSize: '0.92rem',
-                                  fontWeight: 700,
-                                  color: 'var(--color-text-main)',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 8,
-                                  flexWrap: 'wrap',
+                                  height: 28,
+                                  padding: '0 8px',
+                                  fontSize: '0.75rem',
+                                  fontWeight: 500,
+                                  borderRadius: 5,
                                 }}
                               >
-                                <span>{u.fullName || u.username}</span>
-                                {u.role === 'admin' && <span className="badge badge-sun">ADMIN</span>}
-                                {u.role === 'guide' && (
-                                  <span className="badge badge-success">
-                                    <ShieldCheck size={10} /> GUIDE
-                                  </span>
-                                )}
-                                {u.role === 'moderator' && (
-                                  <span className="badge badge-info">MODERATOR</span>
-                                )}
-                                {u.isBanned && <span className="badge badge-error">ĐÃ KHÓA</span>}
-                              </div>
-                              <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-                                {u.email} · Uy tín:{' '}
-                                <strong style={{ color: 'var(--color-primary)' }}>
-                                  {u.reputationScore ?? 0} pts
-                                </strong>{' '}
-                                · Huy hiệu: {u.badges?.join(', ') || 'Trekker Mới'}
-                              </div>
-                              {u.isBanned && (
-                                <div
-                                  style={{
-                                    marginTop: 6,
-                                    fontSize: '0.75rem',
-                                    color: 'var(--color-error-text, var(--color-error))',
-                                    background: 'color-mix(in srgb, var(--color-error) 10%, transparent)',
-                                    border: '1px solid color-mix(in srgb, var(--color-error) 28%, transparent)',
-                                    padding: '4px 8px',
-                                    borderRadius: 3,
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: 6,
+                                <option value="user">Trekker</option>
+                                <option value="guide">Verified Guide</option>
+                                <option value="moderator">Moderator</option>
+                                <option value="admin">Admin</option>
+                              </select>
+
+                              {u.isBanned ? (
+                                <button
+                                  type="button"
+                                  className="admin-btn admin-btn--sm admin-btn--primary"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void handleUnbanUser(uid, u.email || '');
                                   }}
                                 >
-                                  <AlertTriangle size={12} />
-                                  <span>
-                                    Lý do khóa: <strong>{u.banReason || 'Vi phạm quy định cộng đồng LOST'}</strong>
-                                  </span>
-                                </div>
+                                  Mở khóa
+                                </button>
+                              ) : u.role !== 'admin' ? (
+                                <button
+                                  type="button"
+                                  className="admin-btn admin-btn--sm admin-btn--danger-ghost"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleBanUser(uid, u.email || u.fullName || '');
+                                  }}
+                                >
+                                  Khóa
+                                </button>
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </>
+              );
+            })()}
+
+            {/* =========================================================================
+             * SECTION 5: KIỂM DUYỆT DIỄN ĐÀN (FORUM)
+             * ========================================================================= */}
+            {effectiveSection === 'forum' && (
+              <>
+                <div className="admin-subhead">
+                  <h2 className="admin-subhead-title">
+                    <span>Bài viết diễn đàn</span>
+                    <span className="admin-subhead-count">{threadsList.length}</span>
+                  </h2>
+                </div>
+
+                <div className="admin-ledger">
+                  {threadsList.length === 0 ? (
+                    <div className="admin-empty">
+                      <div className="admin-empty-icon" aria-hidden="true">
+                        <MessageSquare size={18} />
+                      </div>
+                      <h3 className="admin-empty-title">Chưa có bài viết nào trên diễn đàn</h3>
+                      <p className="admin-empty-desc">
+                        Bài thảo luận và tìm bạn đồng hành mới sẽ hiển thị tại đây để kiểm duyệt.
+                      </p>
+                    </div>
+                  ) : (
+                    threadsList.map((t) => {
+                      const tid = t.id || t._id;
+                      return (
+                        <div key={tid} className="admin-ledger-row admin-ledger-row--center">
+                          <div className="admin-ledger-main">
+                            <div className="admin-ledger-title-line">
+                              {t.isPinned && (
+                                <span className="admin-tag admin-tag--warn">
+                                  <IconPin size={10} color="var(--color-sun)" /> Ghim
+                                </span>
                               )}
+                              {t.isLocked && (
+                                <span className="admin-tag admin-tag--danger">
+                                  <IconLock size={10} color="var(--color-error)" /> Khóa
+                                </span>
+                              )}
+                              <span className="admin-tag">{t.category || 'Thảo luận'}</span>
+                              <span className="admin-ledger-title">{t.title}</span>
+                            </div>
+                            <div className="admin-ledger-meta">
+                              <span>
+                                Tác giả: <strong>{t.authorName}</strong>
+                              </span>
+                              <span>· {t.repliesCount || 0} bình luận</span>
+                              <span>· {t.upvotes || 0} lượt thích</span>
+                              <span>· {formatDateVi(t.createdAt)}</span>
                             </div>
                           </div>
 
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <span
-                                style={{
-                                  fontSize: '0.76rem',
-                                  color: 'var(--color-text-muted)',
-                                  fontWeight: 600,
-                                }}
-                              >
-                                Phân quyền:
-                              </span>
-                              <select
-                                className="form-select"
-                                value={u.role || 'user'}
-                                onChange={(e) => handleUpdateRole(uid || '', e.target.value, u.fullName || u.email || '')}
-                                disabled={u.email === currentUser?.email}
-                                style={{ padding: '5px 10px', fontSize: '0.8rem', fontWeight: 600 }}
-                              >
-                                <option value="user">Trekker (Thành viên)</option>
-                                <option value="guide">Verified Guide (Hướng dẫn viên)</option>
-                                <option value="moderator">Kiểm duyệt viên (Mod)</option>
-                                <option value="admin">Quản trị viên (Admin)</option>
-                              </select>
-                            </div>
-
-                            {u.isBanned ? (
-                              <button
-                                type="button"
-                                className="btn btn-primary"
-                                onClick={() => handleUnbanUser(uid || '', u.email || '')}
-                                style={{ padding: '6px 14px', fontSize: '0.8rem' }}
-                              >
-                                Mở Khóa
-                              </button>
-                            ) : u.role !== 'admin' ? (
-                              <button
-                                type="button"
-                                className="btn btn-outline"
-                                onClick={() => handleBanUser(uid, u.email || u.fullName || '')}
-                                style={{
-                                  color: 'var(--color-error-text, var(--color-error))',
-                                  borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)',
-                                  padding: '6px 14px',
-                                  fontSize: '0.8rem',
-                                }}
-                              >
-                                Khóa Nick
-                              </button>
-                            ) : (
-                              <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
-                                Quản trị viên
-                              </span>
-                            )}
+                          <div className="admin-ledger-actions">
+                            <button
+                              type="button"
+                              className={`admin-btn admin-btn--sm ${t.isPinned ? 'admin-btn--primary' : ''}`}
+                              onClick={() => handlePinThread(tid || '')}
+                            >
+                              <IconPin size={12} color="currentColor" />
+                              <span>{t.isPinned ? 'Bỏ ghim' : 'Ghim'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="admin-btn admin-btn--sm admin-btn--warn-ghost"
+                              onClick={() => handleLockThread(tid || '')}
+                            >
+                              {!t.isLocked && <IconLock size={12} color="currentColor" />}
+                              <span>{t.isLocked ? 'Mở khóa' : 'Khóa'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="admin-btn admin-btn--sm admin-btn--danger-ghost"
+                              onClick={() => handleDeleteThread(tid || '', t.title || '')}
+                            >
+                              <IconTrash size={12} color="currentColor" />
+                              <span>Xóa</span>
+                            </button>
                           </div>
                         </div>
                       );
                     })
                   )}
                 </div>
-              </div>
-            );
-          })()}
+              </>
+            )}
 
-          {/* =========================================================================
-           * SECTION 5: KIỂM DUYỆT DIỄN ĐÀN (FORUM)
-           * ========================================================================= */}
-          {effectiveSection === 'forum' && (
-            <div className="card" style={{ padding: 24, borderRadius: 6 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
-                <MessageSquare size={18} color="var(--color-primary)" />
-                <h3
-                  style={{
-                    fontSize: '1.15rem',
-                    fontWeight: 700,
-                    color: 'var(--color-text-main)',
-                    margin: 0,
-                  }}
-                >
-                  Kiểm Duyệt Diễn Đàn ({threadsList.length} bài viết)
-                </h3>
-              </div>
+            {/* =========================================================================
+             * SECTION 6: THỐNG KÊ TỔNG QUAN (ALL 12 BACKEND METRICS IN 3 DOMAINS)
+             * ========================================================================= */}
+            {effectiveSection === 'stats' && (() => {
+              const statGroups: {
+                title: string;
+                items: {
+                  key: string;
+                  label: string;
+                  value: number;
+                  subtitle: string;
+                  tone?: 'default' | 'primary' | 'warn' | 'danger';
+                }[];
+              }[] = [
+                {
+                  title: 'Dữ liệu bản đồ & Thực địa',
+                  items: [
+                    {
+                      key: 'totalTrails',
+                      label: 'Cung đường công khai',
+                      value: adminStats?.totalTrails ?? trailsList.length,
+                      subtitle: 'Tuyến thực địa đã duyệt bản đồ',
+                      tone: 'primary',
+                    },
+                    {
+                      key: 'totalContributions',
+                      label: 'Tổng bài đóng góp',
+                      value: adminStats?.totalContributions ?? contributions.length,
+                      subtitle: 'Hồ sơ đóng góp từ cộng đồng',
+                    },
+                    {
+                      key: 'pendingContributions',
+                      label: 'Chờ kiểm duyệt',
+                      value: adminStats?.pendingContributions ?? pendingContributions.length,
+                      subtitle: 'Cần BQT xác thực tọa độ GPS',
+                      tone:
+                        (adminStats?.pendingContributions ?? pendingContributions.length) > 0
+                          ? 'warn'
+                          : 'default',
+                    },
+                    {
+                      key: 'totalCheckins',
+                      label: 'Lượt check-in đỉnh',
+                      value: adminStats?.totalCheckins ?? 0,
+                      subtitle: 'Hộ chiếu chinh phục thực địa',
+                    },
+                  ],
+                },
+                {
+                  title: 'Cộng đồng & Nội dung',
+                  items: [
+                    {
+                      key: 'totalUsers',
+                      label: 'Tổng thành viên',
+                      value: adminStats?.totalUsers ?? usersList.length,
+                      subtitle: 'Tài khoản đăng ký trên LOST',
+                    },
+                    {
+                      key: 'totalThreads',
+                      label: 'Chủ đề diễn đàn',
+                      value: adminStats?.totalThreads ?? threadsList.length,
+                      subtitle: 'Thảo luận cộng đồng trekking',
+                    },
+                    {
+                      key: 'totalReviews',
+                      label: 'Đánh giá cung đường',
+                      value: adminStats?.totalReviews ?? reviewsTotal,
+                      subtitle: 'Nhận xét & chấm điểm thực địa',
+                    },
+                    {
+                      key: 'totalTripReports',
+                      label: 'Nhật ký hành trình',
+                      value: adminStats?.totalTripReports ?? 0,
+                      subtitle: 'Ký sự & ảnh chuyến đi chia sẻ',
+                    },
+                  ],
+                },
+                {
+                  title: 'An toàn & Điều phối',
+                  items: [
+                    {
+                      key: 'totalIncidents',
+                      label: 'Sự cố đang cảnh báo',
+                      value: adminStats?.totalIncidents ?? activeIncidentsCount,
+                      subtitle: 'Cảnh báo thực địa chưa gỡ',
+                      tone:
+                        (adminStats?.totalIncidents ?? activeIncidentsCount) > 0
+                          ? 'danger'
+                          : 'default',
+                    },
+                    {
+                      key: 'activeSafetyTimers',
+                      label: 'Hẹn giờ an toàn chạy',
+                      value:
+                        adminStats?.activeSafetyTimers ??
+                        safetyTimersList.filter((t) => t.status === 'active').length,
+                      subtitle: 'Dead-Man Switch đang giám sát',
+                      tone:
+                        (adminStats?.activeSafetyTimers ?? 0) > 0 ? 'warn' : 'default',
+                    },
+                    {
+                      key: 'totalGuides',
+                      label: 'Porter & HDV hoạt động',
+                      value: adminStats?.totalGuides ?? 0,
+                      subtitle: 'Hướng dẫn viên bản địa xác thực',
+                    },
+                    {
+                      key: 'totalTripPlans',
+                      label: 'Kế hoạch ghép đoàn',
+                      value: adminStats?.totalTripPlans ?? 0,
+                      subtitle: 'Lịch trình tìm bạn đồng hành',
+                    },
+                  ],
+                },
+              ];
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {threadsList.length === 0 ? (
-                  <div
-                    style={{
-                      textAlign: 'center',
-                      padding: 32,
-                      color: 'var(--color-text-muted)',
-                      border: '1px dashed var(--color-border)',
-                      borderRadius: 4,
-                      fontSize: '0.84rem',
-                    }}
-                  >
-                    Chưa có bài viết nào trên diễn đàn.
-                  </div>
-                ) : (
-                  threadsList.map((t) => {
-                    const tid = t.id || t._id;
-                    return (
-                      <div
-                        key={tid}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          background: 'var(--color-bg-main)',
-                          border: '1px solid var(--color-border)',
-                          borderLeft: t.isPinned
-                            ? '3px solid var(--color-sun)'
-                            : '1px solid var(--color-border)',
-                          padding: '12px 16px',
-                          borderRadius: 4,
-                          flexWrap: 'wrap',
-                          gap: 12,
-                        }}
-                      >
-                        <div style={{ flex: 1, minWidth: 260 }}>
-                          <div
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 8,
-                              flexWrap: 'wrap',
-                              marginBottom: 6,
-                            }}
-                          >
-                            {t.isPinned && (
-                              <span className="badge badge-sun">
-                                <IconPin size={11} color="var(--color-sun)" /> ĐÃ GHIM
-                              </span>
-                            )}
-                            {t.isLocked && (
-                              <span className="badge badge-error">
-                                <IconLock size={11} color="var(--color-error)" /> ĐÃ KHÓA
-                              </span>
-                            )}
-                            <span className="badge badge-info">{t.category || 'Thảo luận'}</span>
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+                  {statGroups.map((group) => (
+                    <section key={group.title} className="admin-section-block">
+                      <div className="admin-subhead">
+                        <h2 className="admin-subhead-title">{group.title}</h2>
+                      </div>
+                      <div className="admin-stats-matrix">
+                        {group.items.map((item) => (
+                          <div key={item.key} className="admin-stats-cell">
+                            <span className="admin-stats-cell-label">{item.label}</span>
                             <span
-                              style={{
-                                fontSize: '0.94rem',
-                                fontWeight: 700,
-                                color: 'var(--color-text-main)',
-                              }}
+                              className={
+                                item.tone === 'danger'
+                                  ? 'admin-stats-cell-val admin-metric-value--danger'
+                                  : item.tone === 'warn'
+                                    ? 'admin-stats-cell-val admin-metric-value--warn'
+                                    : item.tone === 'primary'
+                                      ? 'admin-stats-cell-val admin-metric-value--primary'
+                                      : 'admin-stats-cell-val'
+                              }
                             >
-                              {t.title}
+                              {item.value.toLocaleString('vi-VN')}
                             </span>
+                            <span className="admin-stats-cell-sub">{item.subtitle}</span>
                           </div>
-                          <div
-                            style={{
-                              fontSize: '0.78rem',
-                              color: 'var(--color-text-muted)',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 10,
-                              flexWrap: 'wrap',
-                            }}
-                          >
-                            <span>
-                              Tác giả: <strong style={{ color: 'var(--color-text-main)' }}>{t.authorName}</strong>
-                            </span>
-                            <span>· {t.repliesCount || 0} bình luận</span>
-                            <span>· {t.upvotes || 0} lượt thích</span>
-                            <span>· {formatDateVi(t.createdAt)}</span>
-                          </div>
-                        </div>
-
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                          <button
-                            type="button"
-                            className={`btn ${t.isPinned ? 'btn-primary' : 'btn-outline'}`}
-                            onClick={() => handlePinThread(tid || '')}
-                            style={{
-                              padding: '6px 14px',
-                              fontSize: '0.78rem',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 6,
-                            }}
-                          >
-                            <IconPin size={12} color="currentColor" />
-                            <span>{t.isPinned ? 'Bỏ Ghim' : 'Ghim Bài'}</span>
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-outline"
-                            onClick={() => handleLockThread(tid || '')}
-                            style={{
-                              padding: '6px 14px',
-                              fontSize: '0.78rem',
-                              color: t.isLocked ? 'var(--color-primary)' : 'var(--color-sun)',
-                              borderColor: t.isLocked
-                                ? 'color-mix(in srgb, var(--color-primary) 40%, transparent)'
-                                : 'color-mix(in srgb, var(--color-sun) 40%, transparent)',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 4,
-                            }}
-                          >
-                            {t.isLocked ? (
-                              'Mở Khóa'
-                            ) : (
-                              <>
-                                <IconLock size={12} color="currentColor" /> Khóa
-                              </>
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-outline"
-                            onClick={() => handleDeleteThread(tid || '', t.title || '')}
-                            style={{
-                              padding: '6px 14px',
-                              fontSize: '0.78rem',
-                              color: 'var(--color-error-text, var(--color-error))',
-                              borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 4,
-                            }}
-                          >
-                            <IconTrash size={12} color="currentColor" /> Xóa
-                          </button>
-                        </div>
+                        ))}
                       </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* =========================================================================
-           * SECTION 6: THỐNG KÊ TỔNG QUAN (ALL 12 BACKEND METRICS)
-           * ========================================================================= */}
-          {effectiveSection === 'stats' && (() => {
-            const statCards: {
-              key: string;
-              label: string;
-              value: number;
-              subtitle: string;
-              color: string;
-            }[] = [
-              {
-                key: 'totalUsers',
-                label: 'Tổng Thành Viên',
-                value: adminStats?.totalUsers ?? usersList.length,
-                subtitle: 'Tài khoản đăng ký trên LOST',
-                color: 'var(--color-primary)',
-              },
-              {
-                key: 'totalTrails',
-                label: 'Cung Đường Công Khai',
-                value: adminStats?.totalTrails ?? trailsList.length,
-                subtitle: 'Tuyến thực địa đã duyệt bản đồ',
-                color: 'var(--color-sky)',
-              },
-              {
-                key: 'totalContributions',
-                label: 'Tổng Bài Đóng Góp',
-                value: adminStats?.totalContributions ?? contributions.length,
-                subtitle: 'Hồ sơ đóng góp từ cộng đồng',
-                color: 'var(--color-primary)',
-              },
-              {
-                key: 'pendingContributions',
-                label: 'Bài Chờ Kiểm Duyệt',
-                value: adminStats?.pendingContributions ?? pendingContributions.length,
-                subtitle: 'Cần BQT xác thực tọa độ GPS',
-                color: 'var(--color-sun)',
-              },
-              {
-                key: 'totalIncidents',
-                label: 'Sự Cố Đang Cảnh Báo',
-                value: adminStats?.totalIncidents ?? activeIncidentsCount,
-                subtitle: 'Cảnh báo thực địa chưa gỡ',
-                color: 'var(--color-error-text, var(--color-error))',
-              },
-              {
-                key: 'totalThreads',
-                label: 'Chủ Đề Diễn Đàn',
-                value: adminStats?.totalThreads ?? threadsList.length,
-                subtitle: 'Thảo luận cộng đồng trekking',
-                color: 'var(--color-earth)',
-              },
-              {
-                key: 'totalReviews',
-                label: 'Đánh Giá Cung Đường',
-                value: adminStats?.totalReviews ?? reviewsTotal,
-                subtitle: 'Nhận xét & chấm điểm thực địa',
-                color: 'var(--color-sun)',
-              },
-              {
-                key: 'totalCheckins',
-                label: 'Lượt Check-in Thực Địa',
-                value: adminStats?.totalCheckins ?? 0,
-                subtitle: 'Hộ chiếu chinh phục đỉnh núi',
-                color: 'var(--color-primary)',
-              },
-              {
-                key: 'totalTripPlans',
-                label: 'Kế Hoạch Ghép Đoàn',
-                value: adminStats?.totalTripPlans ?? 0,
-                subtitle: 'Lịch trình tìm bạn đồng hành',
-                color: 'var(--color-sky)',
-              },
-              {
-                key: 'totalTripReports',
-                label: 'Nhật Ký Hành Trình',
-                value: adminStats?.totalTripReports ?? 0,
-                subtitle: 'Ký sự & ảnh chuyến đi chia sẻ',
-                color: 'var(--color-stream)',
-              },
-              {
-                key: 'totalGuides',
-                label: 'Porter & HDV Hoạt Động',
-                value: adminStats?.totalGuides ?? 0,
-                subtitle: 'Hướng dẫn viên bản địa xác thực',
-                color: 'var(--color-earth)',
-              },
-              {
-                key: 'activeSafetyTimers',
-                label: 'Hẹn Giờ An Toàn Chạy',
-                value:
-                  adminStats?.activeSafetyTimers ??
-                  safetyTimersList.filter((t) => t.status === 'active').length,
-                subtitle: 'Dead-Man Switch đang giám sát',
-                color: 'var(--color-error-text, var(--color-error))',
-              },
-            ];
-
-            return (
-              <div className="card" style={{ padding: 24, borderRadius: 6 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
-                  <BarChart3 size={20} color="var(--color-primary)" />
-                  <div>
-                    <h3
-                      style={{
-                        fontSize: '1.2rem',
-                        fontWeight: 800,
-                        color: 'var(--color-text-main)',
-                        margin: 0,
-                      }}
-                    >
-                      Thống Kê Dữ Liệu Thực Địa &amp; Hệ Thống (12 Chỉ Số)
-                    </h3>
-                    <p style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', margin: '2px 0 0 0' }}>
-                      Tổng hợp đầy đủ 12 chỉ số thời gian thực đồng bộ trực tiếp từ MongoDB Atlas
-                    </p>
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(min(210px, 100%), 1fr))',
-                    gap: 14,
-                  }}
-                >
-                  {statCards.map((card) => (
-                    <div
-                      key={card.key}
-                      style={{
-                        background: 'var(--color-bg-main)',
-                        border: '1px solid var(--color-border)',
-                        padding: 18,
-                        borderRadius: 4,
-                      }}
-                    >
-                      <div style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>
-                        {card.label}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: '1.9rem',
-                          fontWeight: 900,
-                          color: card.color,
-                          marginTop: 6,
-                          lineHeight: 1.05,
-                          fontVariantNumeric: 'tabular-nums',
-                        }}
-                      >
-                        {card.value.toLocaleString('vi-VN')}
-                      </div>
-                      <div style={{ fontSize: '0.71rem', color: 'var(--color-text-dim)', marginTop: 6 }}>
-                        {card.subtitle}
-                      </div>
-                    </div>
+                    </section>
                   ))}
                 </div>
-              </div>
-            );
-          })()}
+              );
+            })()}
 
-          {/* =========================================================================
-           * SECTION 7: NHẬT KÝ KIỂM TOÁN (AUDIT LOGS - ADMIN ONLY)
-           * ========================================================================= */}
-          {effectiveSection === 'audit' && isStrictAdmin && (
-            <div className="card" style={{ padding: 24, borderRadius: 6 }}>
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginBottom: 18,
-                  flexWrap: 'wrap',
-                  gap: 10,
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <ShieldCheck size={20} color="var(--color-primary)" />
-                  <h3
-                    style={{
-                      fontSize: '1.15rem',
-                      fontWeight: 800,
-                      color: 'var(--color-text-main)',
-                      margin: 0,
-                    }}
-                  >
-                    Lịch Sử Thao Tác Quản Trị ({auditLogs.length})
-                  </h3>
+            {/* =========================================================================
+             * SECTION 7: NHẬT KÝ KIỂM TOÁN (AUDIT LOGS - ADMIN ONLY)
+             * ========================================================================= */}
+            {effectiveSection === 'audit' && isStrictAdmin && (
+              <>
+                <div className="admin-subhead">
+                  <h2 className="admin-subhead-title">
+                    <span>Lịch sử thao tác quản trị</span>
+                    <span className="admin-subhead-count">{auditLogs.length}</span>
+                  </h2>
                 </div>
-                <button
-                  type="button"
-                  className="btn btn-outline"
-                  onClick={() => void fetchAuditLogs()}
-                  style={{ fontSize: '0.78rem', padding: '6px 12px' }}
-                >
-                  <RefreshCw size={13} /> Tải Lại Nhật Ký
-                </button>
-              </div>
 
-              {auditLogs.length === 0 ? (
-                <div
-                  style={{
-                    textAlign: 'center',
-                    padding: 32,
-                    color: 'var(--color-text-muted)',
-                    border: '1px dashed var(--color-border)',
-                    borderRadius: 4,
-                  }}
-                >
-                  Chưa có bản ghi kiểm toán nào. Các thao tác cập nhật/xóa cung đường, khóa tài khoản
-                  và đổi quyền sẽ được ghi tự động tại đây.
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {auditLogs.map((log: AdminAuditLogItem) => (
-                    <div
-                      key={log._id}
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        flexWrap: 'wrap',
-                        gap: 10,
-                        padding: '12px 16px',
-                        background: 'var(--color-bg-main)',
-                        border: '1px solid var(--color-border)',
-                        borderRadius: 4,
-                      }}
-                    >
-                      <div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                          <span className="badge badge-info" style={{ fontSize: '0.7rem' }}>
-                            {log.action}
-                          </span>
-                          <span style={{ fontSize: '0.76rem', color: 'var(--color-text-dim)' }}>
-                            {log.targetCollection}
-                          </span>
-                          <strong style={{ fontSize: '0.84rem', color: 'var(--color-text-main)' }}>
-                            {log.details}
-                          </strong>
-                        </div>
-                        <div
-                          style={{
-                            fontSize: '0.74rem',
-                            color: 'var(--color-text-muted)',
-                            marginTop: 4,
-                          }}
-                        >
-                          Thực hiện bởi:{' '}
-                          <strong>{log.userId?.fullName || log.userId?.email || 'Hệ thống'}</strong> ·
-                          IP: {log.ipAddress || 'N/A'}
-                        </div>
+                <div className="admin-ledger">
+                  {auditLogs.length === 0 ? (
+                    <div className="admin-empty">
+                      <div className="admin-empty-icon" aria-hidden="true">
+                        <ShieldCheck size={18} />
                       </div>
-                      <div style={{ fontSize: '0.74rem', color: 'var(--color-text-dim)' }}>
-                        {formatDateVi(log.createdAt)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* =========================================================================
-           * SECTION 8: ĐƠN ĐẶT PORTER / GUIDE (INQUIRIES)
-           * ========================================================================= */}
-          {effectiveSection === 'inquiries' && (() => {
-            const statusCounts = inquiryStatusCounts;
-
-            const inquiryPills: {
-              id: typeof inquiryStatusFilter;
-              label: string;
-              count: number;
-              color: string;
-            }[] = [
-              { id: 'all', label: 'Tất cả', count: statusCounts.all, color: 'var(--color-sky)' },
-              { id: 'pending', label: 'Chờ xử lý', count: statusCounts.pending, color: 'var(--color-sun)' },
-              { id: 'contacted', label: 'Đã liên hệ', count: statusCounts.contacted, color: 'var(--color-sky)' },
-              { id: 'confirmed', label: 'Đã xác nhận', count: statusCounts.confirmed, color: 'var(--color-primary)' },
-              {
-                id: 'cancelled',
-                label: 'Đã hủy',
-                count: statusCounts.cancelled,
-                color: 'var(--color-error-text, var(--color-error))',
-              },
-            ];
-
-            return (
-              <div className="card" style={{ padding: 24, borderRadius: 6 }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    flexWrap: 'wrap',
-                    gap: 12,
-                    marginBottom: 16,
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <IconBackpack size={18} color="var(--color-primary)" />
-                    <h3
-                      style={{
-                        fontSize: '1.15rem',
-                        fontWeight: 700,
-                        color: 'var(--color-text-main)',
-                        margin: 0,
-                      }}
-                    >
-                      Đơn Yêu Cầu Thuê Porter / Guide ({filteredInquiries.length}/{inquiriesList.length})
-                    </h3>
-                  </div>
-
-                  <div className="admin-search-wrapper" style={{ maxWidth: 320 }}>
-                    <Search size={15} color="var(--color-text-dim)" />
-                    <input
-                      type="text"
-                      placeholder="Tìm theo tên khách, SĐT, Guide, cung đường..."
-                      value={inquirySearchQuery}
-                      onChange={(e) => setInquirySearchQuery(e.target.value)}
-                      style={{
-                        border: 'none',
-                        background: 'transparent',
-                        color: 'var(--color-text-main)',
-                        fontSize: '0.82rem',
-                        width: '100%',
-                        outline: 'none',
-                      }}
-                    />
-                    {inquirySearchQuery && (
-                      <button
-                        type="button"
-                        onClick={() => setInquirySearchQuery('')}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          color: 'var(--color-text-dim)',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          padding: 2,
-                        }}
-                        aria-label="Xóa tìm kiếm đơn đặt"
-                      >
-                        <IconX size={14} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div style={{ marginBottom: 16 }}>
-                  <div className="admin-segmented-control" style={{ flexWrap: 'wrap' }}>
-                    {inquiryPills.map((pill) => (
-                      <button
-                        key={pill.id}
-                        type="button"
-                        className={`admin-segmented-btn ${inquiryStatusFilter === pill.id ? 'active' : ''}`}
-                        onClick={() => setInquiryStatusFilter(pill.id)}
-                      >
-                        <span>{pill.label}</span>
-                        <span
-                          style={{
-                            fontSize: '0.7rem',
-                            padding: '1px 6px',
-                            borderRadius: 4,
-                            color: pill.color,
-                            fontWeight: 800,
-                          }}
-                        >
-                          {pill.count}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  {filteredInquiries.length === 0 ? (
-                    <div
-                      style={{
-                        textAlign: 'center',
-                        padding: 32,
-                        color: 'var(--color-text-muted)',
-                        border: '1px dashed var(--color-border)',
-                        borderRadius: 4,
-                        fontSize: '0.84rem',
-                      }}
-                    >
-                      Chưa có đơn đặt Porter/Guide nào khớp với bộ lọc hiện tại.
+                      <h3 className="admin-empty-title">Chưa có bản ghi kiểm toán</h3>
+                      <p className="admin-empty-desc">
+                        Mọi thao tác sửa/xóa cung đường, khóa tài khoản và đổi quyền sẽ được lưu vết tự động tại đây.
+                      </p>
                     </div>
                   ) : (
-                    filteredInquiries.map((inq) => {
-                      const trekkerObj = typeof inq.userId === 'object' ? inq.userId : null;
-                      const guideObj = typeof inq.guideId === 'object' ? inq.guideId : null;
-                      const trailObj = typeof inq.trailId === 'object' ? inq.trailId : null;
-                      const statusMeta = INQUIRY_STATUS_META[inq.status] || INQUIRY_STATUS_META.pending;
-                      const isBusy = updatingInquiryId === inq._id;
-
-                      return (
-                        <div
-                          key={inq._id}
-                          style={{
-                            background: 'var(--color-bg-main)',
-                            border: '1px solid var(--color-border)',
-                            borderLeft:
-                              inq.status === 'pending'
-                                ? '3px solid var(--color-sun)'
-                                : inq.status === 'confirmed'
-                                  ? '3px solid var(--color-primary)'
-                                  : inq.status === 'cancelled'
-                                    ? '3px solid var(--color-error)'
-                                    : '3px solid var(--color-sky)',
-                            padding: '16px 18px',
-                            borderRadius: 4,
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: 10,
-                          }}
+                    auditLogs.map((log: AdminAuditLogItem) => (
+                      <div key={log._id} className="admin-ledger-row admin-ledger-row--center">
+                        <div className="admin-ledger-main">
+                          <div className="admin-ledger-title-line">
+                            <code className="admin-code">{log.action}</code>
+                            <span className="admin-tag">{log.targetCollection}</span>
+                            <span className="admin-ledger-title">{log.details}</span>
+                          </div>
+                          <div className="admin-ledger-meta">
+                            <span>
+                              Thực hiện bởi:{' '}
+                              <strong>
+                                {log.userId?.fullName || log.userId?.email || 'Hệ thống'}
+                              </strong>
+                            </span>
+                            <span>· IP: {log.ipAddress || 'N/A'}</span>
+                          </div>
+                        </div>
+                        <span
+                          className="admin-ledger-meta"
+                          style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
                         >
-                          <div
-                            style={{
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'flex-start',
-                              flexWrap: 'wrap',
-                              gap: 12,
-                            }}
-                          >
-                            <div style={{ flex: 1, minWidth: 260 }}>
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 8,
-                                  flexWrap: 'wrap',
-                                  marginBottom: 6,
-                                }}
-                              >
-                                <span className={statusMeta.badgeClass}>{statusMeta.label}</span>
-                                <strong style={{ fontSize: '0.96rem', color: 'var(--color-text-main)' }}>
+                          {formatDateVi(log.createdAt)}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+
+            {/* =========================================================================
+             * SECTION 8: ĐƠN ĐẶT PORTER / GUIDE (INQUIRIES)
+             * ========================================================================= */}
+            {effectiveSection === 'inquiries' && (() => {
+              const statusCounts = inquiryStatusCounts;
+              const inquiryTabs: { id: typeof inquiryStatusFilter; label: string; count: number }[] = [
+                { id: 'all', label: 'Tất cả', count: statusCounts.all },
+                { id: 'pending', label: 'Chờ xử lý', count: statusCounts.pending },
+                { id: 'contacted', label: 'Đã liên hệ', count: statusCounts.contacted },
+                { id: 'confirmed', label: 'Đã xác nhận', count: statusCounts.confirmed },
+                { id: 'cancelled', label: 'Đã hủy', count: statusCounts.cancelled },
+              ];
+
+              return (
+                <>
+                  <div className="admin-toolbar">
+                    <div className="admin-tabs" role="tablist" aria-label="Trạng thái đơn Porter/Guide">
+                      {inquiryTabs.map((tab) => (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={inquiryStatusFilter === tab.id}
+                          className={`admin-tab-btn ${inquiryStatusFilter === tab.id ? 'active' : ''}`}
+                          onClick={() => setInquiryStatusFilter(tab.id)}
+                        >
+                          <span>{tab.label}</span>
+                          <span className="admin-tab-count">{tab.count}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="admin-search">
+                      <Search size={14} color="var(--color-text-dim)" />
+                      <input
+                        type="text"
+                        placeholder="Tìm khách, SĐT, Guide, cung đường..."
+                        value={inquirySearchQuery}
+                        onChange={(e) => setInquirySearchQuery(e.target.value)}
+                      />
+                      {inquirySearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setInquirySearchQuery('')}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--color-text-dim)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            padding: 2,
+                          }}
+                          aria-label="Xóa tìm kiếm đơn đặt"
+                        >
+                          <IconX size={13} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="admin-ledger">
+                    {filteredInquiries.length === 0 ? (
+                      <div className="admin-empty">
+                        <div className="admin-empty-icon" aria-hidden="true">
+                          <IconBackpack size={18} />
+                        </div>
+                        <h3 className="admin-empty-title">Chưa có đơn đặt Porter / Guide phù hợp</h3>
+                        <p className="admin-empty-desc">
+                          Yêu cầu thuê hướng dẫn viên bản địa từ người dùng sẽ hiển thị tại đây.
+                        </p>
+                      </div>
+                    ) : (
+                      filteredInquiries.map((inq) => {
+                        const trekkerObj = typeof inq.userId === 'object' ? inq.userId : null;
+                        const guideObj = typeof inq.guideId === 'object' ? inq.guideId : null;
+                        const trailObj = typeof inq.trailId === 'object' ? inq.trailId : null;
+                        const statusMeta = INQUIRY_STATUS_META[inq.status] || INQUIRY_STATUS_META.pending;
+                        const statusDot =
+                          inq.status === 'confirmed'
+                            ? 'admin-dot admin-dot--ok'
+                            : inq.status === 'cancelled'
+                              ? 'admin-dot admin-dot--danger'
+                              : inq.status === 'contacted'
+                                ? 'admin-dot admin-dot--info'
+                                : 'admin-dot admin-dot--warn';
+                        const isBusy = updatingInquiryId === inq._id;
+
+                        return (
+                          <div key={inq._id} className="admin-ledger-row">
+                            <div className="admin-ledger-main">
+                              <div className="admin-ledger-title-line">
+                                <span className="admin-status">
+                                  <span className={statusDot} aria-hidden="true" />
+                                  {statusMeta.label}
+                                </span>
+                                <span className="admin-ledger-title">
                                   {inq.trailName || trailObj?.name || 'Cung đường trekking'}
-                                </strong>
+                                </span>
                                 {trailObj?.province && (
-                                  <span style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)' }}>
-                                    ({trailObj.province})
-                                  </span>
+                                  <span className="admin-tag">{trailObj.province}</span>
                                 )}
                               </div>
 
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  flexWrap: 'wrap',
-                                  gap: 12,
-                                  fontSize: '0.8rem',
-                                  color: 'var(--color-text-muted)',
-                                  fontVariantNumeric: 'tabular-nums',
-                                }}
-                              >
+                              <div className="admin-ledger-meta">
                                 <span>
-                                  Khách đặt:{' '}
-                                  <strong style={{ color: 'var(--color-text-main)' }}>
+                                  Khách:{' '}
+                                  <strong>
                                     {trekkerObj?.fullName || trekkerObj?.username || 'Trekker LOST'}
                                   </strong>
                                 </span>
@@ -4993,442 +4642,237 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                       alignItems: 'center',
                                       gap: 4,
                                       color: 'var(--color-primary)',
-                                      fontWeight: 700,
+                                      fontWeight: 600,
                                       textDecoration: 'none',
                                     }}
                                   >
-                                    <IconPhone size={12} /> {inq.contactPhone}
+                                    <IconPhone size={11} /> {inq.contactPhone}
                                   </a>
                                 )}
                                 <span>
-                                  Porter / Guide:{' '}
-                                  <strong style={{ color: 'var(--color-sky)' }}>
-                                    {guideObj?.name || 'HDV bản địa'}
-                                  </strong>
+                                  · Guide: <strong>{guideObj?.name || 'HDV bản địa'}</strong>
                                   {guideObj?.phone ? ` (${guideObj.phone})` : ''}
                                 </span>
                               </div>
-                            </div>
 
-                            <div style={{ textAlign: 'right' }}>
-                              <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)' }}>
-                                Dự toán chi phí
+                              <div className="admin-ledger-meta">
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                  <IconCalendar size={11} color="var(--color-text-dim)" />
+                                  Khởi hành: <strong>{formatDateOnlyVi(inq.plannedStartDate)}</strong>
+                                </span>
+                                <span>· {inq.durationDays || 1} ngày</span>
+                                <span>· {inq.groupSize || 1} người</span>
+                                <span>· {inq.needPortersCount || 0} Porter thêm</span>
+                                <span>· Gửi {formatDateVi(inq.createdAt)}</span>
                               </div>
-                              <div
-                                style={{
-                                  fontSize: '1.05rem',
-                                  fontWeight: 800,
-                                  color: 'var(--color-primary)',
-                                  fontVariantNumeric: 'tabular-nums',
-                                }}
-                              >
-                                {(inq.estimatedTotalVnd || 0).toLocaleString('vi-VN')} đ
-                              </div>
+
+                              {inq.notes && (
+                                <div className="admin-note-box">
+                                  Ghi chú khách hàng: &ldquo;{inq.notes}&rdquo;
+                                </div>
+                              )}
                             </div>
-                          </div>
 
-                          <div
-                            style={{
-                              display: 'flex',
-                              flexWrap: 'wrap',
-                              gap: 12,
-                              padding: '8px 12px',
-                              background: 'var(--color-bg-card)',
-                              border: '1px solid var(--color-border)',
-                              borderRadius: 4,
-                              fontSize: '0.76rem',
-                              color: 'var(--color-text-muted)',
-                              fontVariantNumeric: 'tabular-nums',
-                            }}
-                          >
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                              <IconCalendar size={12} color="var(--color-sky)" />
-                              Khởi hành:{' '}
-                              <strong style={{ color: 'var(--color-text-main)' }}>
-                                {formatDateOnlyVi(inq.plannedStartDate)}
-                              </strong>
-                            </span>
-                            <span>
-                              · Thời lượng: <strong style={{ color: 'var(--color-text-main)' }}>{inq.durationDays || 1} ngày</strong>
-                            </span>
-                            <span>
-                              · Quy mô đoàn: <strong style={{ color: 'var(--color-text-main)' }}>{inq.groupSize || 1} người</strong>
-                            </span>
-                            <span>
-                              · Porter thêm:{' '}
-                              <strong style={{ color: 'var(--color-text-main)' }}>{inq.needPortersCount || 0}</strong>
-                            </span>
-                            <span>· Gửi lúc: {formatDateVi(inq.createdAt)}</span>
-                          </div>
-
-                          {inq.notes && (
-                            <div
-                              style={{
-                                fontSize: '0.8rem',
-                                color: 'var(--color-text-main)',
-                                background: 'var(--color-surface-elevated)',
-                                padding: '8px 12px',
-                                borderRadius: 4,
-                                lineHeight: 1.45,
-                              }}
-                            >
-                              Ghi chú khách hàng: &ldquo;{inq.notes}&rdquo;
-                            </div>
-                          )}
-
-                          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                            {inq.status !== 'contacted' && inq.status !== 'confirmed' && (
-                              <button
-                                type="button"
-                                className="btn btn-outline"
-                                disabled={isBusy}
-                                onClick={() => void handleUpdateInquiryStatus(inq._id, 'contacted')}
-                                style={{
-                                  padding: '6px 12px',
-                                  fontSize: '0.78rem',
-                                  color: 'var(--color-sky)',
-                                  borderColor: 'color-mix(in srgb, var(--color-sky) 45%, transparent)',
-                                }}
-                              >
-                                Đánh Dấu Đã Liên Hệ
-                              </button>
-                            )}
-                            {inq.status !== 'confirmed' && (
-                              <button
-                                type="button"
-                                className="btn btn-primary"
-                                disabled={isBusy}
-                                onClick={() => void handleUpdateInquiryStatus(inq._id, 'confirmed')}
-                                style={{ padding: '6px 14px', fontSize: '0.78rem' }}
-                              >
-                                Xác Nhận Đơn
-                              </button>
-                            )}
-                            {inq.status !== 'cancelled' && (
-                              <button
-                                type="button"
-                                className="btn btn-outline"
-                                disabled={isBusy}
-                                onClick={() => void handleUpdateInquiryStatus(inq._id, 'cancelled')}
-                                style={{
-                                  padding: '6px 12px',
-                                  fontSize: '0.78rem',
-                                  color: 'var(--color-error-text, var(--color-error))',
-                                  borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)',
-                                }}
-                              >
-                                Hủy Đơn
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-            );
-          })()}
-
-          {/* =========================================================================
-           * SECTION 9: AN TOÀN & ĐÈN HIỆU (SAFETY TIMERS + LIVE BEACONS)
-           * ========================================================================= */}
-          {effectiveSection === 'safety' && (() => {
-            const activeBeaconsCount = liveBeaconsList.filter((b) => b.status === 'active').length;
-            const activeTimersCount = safetyTimersList.filter((t) => t.status === 'active').length;
-
-            return (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-                {/* Safety KPI Grid */}
-                <div className="admin-kpi-grid">
-                  <div className="admin-kpi-card">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                      <div>
-                        <div
-                          style={{
-                            fontSize: '0.68rem',
-                            letterSpacing: '0.1em',
-                            textTransform: 'uppercase',
-                            color: 'var(--color-text-dim)',
-                            fontWeight: 700,
-                          }}
-                        >
-                          Đèn Hiệu SOS Khẩn Cấp
-                        </div>
-                        <div
-                          className="font-editorial"
-                          style={{
-                            fontSize: '2rem',
-                            fontWeight: 500,
-                            color:
-                              sosBeaconsCount > 0
-                                ? 'var(--color-error-text, var(--color-error))'
-                                : 'var(--color-primary)',
-                            marginTop: 4,
-                            fontVariantNumeric: 'tabular-nums',
-                          }}
-                        >
-                          {sosBeaconsCount}
-                        </div>
-                      </div>
-                      <IconShieldAlert
-                        size={18}
-                        color={sosBeaconsCount > 0 ? 'var(--color-error)' : 'var(--color-primary)'}
-                      />
-                    </div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 6 }}>
-                      Ưu tiên phối hợp cứu nạn ngay
-                    </div>
-                  </div>
-
-                  <div className="admin-kpi-card">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                      <div>
-                        <div
-                          style={{
-                            fontSize: '0.68rem',
-                            letterSpacing: '0.1em',
-                            textTransform: 'uppercase',
-                            color: 'var(--color-text-dim)',
-                            fontWeight: 700,
-                          }}
-                        >
-                          Hẹn Giờ Quá Hạn
-                        </div>
-                        <div
-                          className="font-editorial"
-                          style={{
-                            fontSize: '2rem',
-                            fontWeight: 500,
-                            color:
-                              overdueTimersCount > 0
-                                ? 'var(--color-error-text, var(--color-error))'
-                                : 'var(--color-primary)',
-                            marginTop: 4,
-                            fontVariantNumeric: 'tabular-nums',
-                          }}
-                        >
-                          {overdueTimersCount}
-                        </div>
-                      </div>
-                      <AlertTriangle
-                        size={18}
-                        color={overdueTimersCount > 0 ? 'var(--color-error)' : 'var(--color-primary)'}
-                      />
-                    </div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 6 }}>
-                      Chưa bấm xác nhận ra khỏi rừng
-                    </div>
-                  </div>
-
-                  <div className="admin-kpi-card">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                      <div>
-                        <div
-                          style={{
-                            fontSize: '0.68rem',
-                            letterSpacing: '0.1em',
-                            textTransform: 'uppercase',
-                            color: 'var(--color-text-dim)',
-                            fontWeight: 700,
-                          }}
-                        >
-                          Live Beacon Đang Phát
-                        </div>
-                        <div
-                          className="font-editorial"
-                          style={{
-                            fontSize: '2rem',
-                            fontWeight: 500,
-                            color: 'var(--color-sky)',
-                            marginTop: 4,
-                            fontVariantNumeric: 'tabular-nums',
-                          }}
-                        >
-                          {activeBeaconsCount}
-                        </div>
-                      </div>
-                      <Radio size={18} color="var(--color-sky)" />
-                    </div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 6 }}>
-                      Tín hiệu GPS chia sẻ trực tiếp
-                    </div>
-                  </div>
-
-                  <div className="admin-kpi-card">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                      <div>
-                        <div
-                          style={{
-                            fontSize: '0.68rem',
-                            letterSpacing: '0.1em',
-                            textTransform: 'uppercase',
-                            color: 'var(--color-text-dim)',
-                            fontWeight: 700,
-                          }}
-                        >
-                          Hẹn Giờ An Toàn Chạy
-                        </div>
-                        <div
-                          className="font-editorial"
-                          style={{
-                            fontSize: '2rem',
-                            fontWeight: 500,
-                            color: 'var(--color-primary)',
-                            marginTop: 4,
-                            fontVariantNumeric: 'tabular-nums',
-                          }}
-                        >
-                          {activeTimersCount}
-                        </div>
-                      </div>
-                      <Clock size={18} color="var(--color-primary)" />
-                    </div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 6 }}>
-                      Dead-Man Switch trong hạn an toàn
-                    </div>
-                  </div>
-                </div>
-
-                {/* BLOCK 1: LIVE BEACONS (SOS FIRST) */}
-                <div className="card" style={{ padding: 24, borderRadius: 6 }}>
-                  <div
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      flexWrap: 'wrap',
-                      gap: 10,
-                      marginBottom: 16,
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <Radio size={18} color={sosBeaconsCount > 0 ? 'var(--color-error)' : 'var(--color-sky)'} />
-                      <div>
-                        <h3
-                          style={{
-                            fontSize: '1.1rem',
-                            fontWeight: 800,
-                            color: 'var(--color-text-main)',
-                            margin: 0,
-                          }}
-                        >
-                          Đèn Hiệu GPS Trực Tiếp — Live Beacons ({liveBeaconsList.length})
-                        </h3>
-                        <p style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', margin: '2px 0 0 0' }}>
-                          Tín hiệu SOS được ưu tiên ghim đỏ trên đầu danh sách · Bấm mở bản đồ trực tiếp /beacon/:token
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {liveBeaconsList.length === 0 ? (
-                    <div
-                      style={{
-                        textAlign: 'center',
-                        padding: 28,
-                        color: 'var(--color-text-muted)',
-                        border: '1px dashed var(--color-border)',
-                        borderRadius: 4,
-                        fontSize: '0.84rem',
-                      }}
-                    >
-                      Hiện không có phiên Live Beacon nào đang phát tín hiệu.
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                      {liveBeaconsList.map((beacon) => {
-                        const isSos = beacon.status === 'sos';
-                        const userObj = typeof beacon.userId === 'object' ? beacon.userId : null;
-                        const beaconPath = beacon.sharePath || `/beacon/${beacon.token}`;
-
-                        return (
-                          <div
-                            key={beacon._id || beacon.token}
-                            style={{
-                              background: isSos
-                                ? 'color-mix(in srgb, var(--color-error) 10%, var(--color-bg-main))'
-                                : 'var(--color-bg-main)',
-                              border: isSos
-                                ? '1px solid color-mix(in srgb, var(--color-error) 50%, transparent)'
-                                : '1px solid var(--color-border)',
-                              borderLeft: isSos
-                                ? '4px solid var(--color-error)'
-                                : '3px solid var(--color-primary)',
-                              padding: '16px 18px',
-                              borderRadius: 4,
-                              display: 'flex',
-                              flexDirection: 'column',
-                              gap: 10,
-                            }}
-                          >
                             <div
                               style={{
                                 display: 'flex',
-                                justifyContent: 'space-between',
-                                alignItems: 'flex-start',
-                                flexWrap: 'wrap',
-                                gap: 12,
+                                flexDirection: 'column',
+                                alignItems: 'flex-end',
+                                gap: 10,
+                                flexShrink: 0,
                               }}
                             >
-                              <div style={{ flex: 1, minWidth: 240 }}>
+                              <div style={{ textAlign: 'right' }}>
+                                <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)' }}>
+                                  Dự toán
+                                </div>
                                 <div
                                   style={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: 8,
-                                    flexWrap: 'wrap',
-                                    marginBottom: 6,
+                                    fontSize: '0.95rem',
+                                    fontWeight: 600,
+                                    color: 'var(--color-text-main)',
+                                    fontVariantNumeric: 'tabular-nums',
                                   }}
                                 >
+                                  {(inq.estimatedTotalVnd || 0).toLocaleString('vi-VN')} đ
+                                </div>
+                              </div>
+
+                              <div className="admin-ledger-actions">
+                                {inq.status !== 'contacted' && inq.status !== 'confirmed' && (
+                                  <button
+                                    type="button"
+                                    className="admin-btn admin-btn--sm"
+                                    disabled={isBusy}
+                                    onClick={() => void handleUpdateInquiryStatus(inq._id, 'contacted')}
+                                  >
+                                    Đã liên hệ
+                                  </button>
+                                )}
+                                {inq.status !== 'confirmed' && (
+                                  <button
+                                    type="button"
+                                    className="admin-btn admin-btn--sm admin-btn--primary"
+                                    disabled={isBusy}
+                                    onClick={() => void handleUpdateInquiryStatus(inq._id, 'confirmed')}
+                                  >
+                                    Xác nhận
+                                  </button>
+                                )}
+                                {inq.status !== 'cancelled' && (
+                                  <button
+                                    type="button"
+                                    className="admin-btn admin-btn--sm admin-btn--danger-ghost"
+                                    disabled={isBusy}
+                                    onClick={() => void handleUpdateInquiryStatus(inq._id, 'cancelled')}
+                                  >
+                                    Hủy đơn
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </>
+              );
+            })()}
+
+            {/* =========================================================================
+             * SECTION 9: AN TOÀN & ĐÈN HIỆU (SAFETY TIMERS + LIVE BEACONS)
+             * ========================================================================= */}
+            {effectiveSection === 'safety' && (() => {
+              const activeBeaconsCount = liveBeaconsList.filter((b) => b.status === 'active').length;
+              const activeTimersCount = safetyTimersList.filter((t) => t.status === 'active').length;
+
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                  {/* Hairline Safety Telemetry Ribbon */}
+                  <div className="admin-metric-ribbon">
+                    <div className="admin-metric-cell">
+                      <span className="admin-metric-label">Đèn hiệu SOS khẩn cấp</span>
+                      <div className="admin-metric-value-row">
+                        <span
+                          className={`admin-metric-value ${sosBeaconsCount > 0 ? 'admin-metric-value--danger' : ''}`}
+                        >
+                          {sosBeaconsCount}
+                        </span>
+                      </div>
+                      <span className="admin-metric-caption">Ưu tiên phối hợp cứu nạn ngay</span>
+                    </div>
+
+                    <div className="admin-metric-cell">
+                      <span className="admin-metric-label">Hẹn giờ quá hạn</span>
+                      <div className="admin-metric-value-row">
+                        <span
+                          className={`admin-metric-value ${overdueTimersCount > 0 ? 'admin-metric-value--danger' : ''}`}
+                        >
+                          {overdueTimersCount}
+                        </span>
+                      </div>
+                      <span className="admin-metric-caption">Chưa xác nhận ra khỏi rừng</span>
+                    </div>
+
+                    <div className="admin-metric-cell">
+                      <span className="admin-metric-label">Live Beacon đang phát</span>
+                      <div className="admin-metric-value-row">
+                        <span className="admin-metric-value">{activeBeaconsCount}</span>
+                      </div>
+                      <span className="admin-metric-caption">Tín hiệu GPS chia sẻ trực tiếp</span>
+                    </div>
+
+                    <div className="admin-metric-cell">
+                      <span className="admin-metric-label">Hẹn giờ an toàn chạy</span>
+                      <div className="admin-metric-value-row">
+                        <span className="admin-metric-value admin-metric-value--primary">
+                          {activeTimersCount}
+                        </span>
+                      </div>
+                      <span className="admin-metric-caption">Dead-Man Switch trong hạn an toàn</span>
+                    </div>
+                  </div>
+
+                  {/* BLOCK 1: LIVE BEACONS (SOS FIRST) */}
+                  <section className="admin-section-block">
+                    <div className="admin-subhead">
+                      <h2 className="admin-subhead-title">
+                        <Radio
+                          size={15}
+                          color={sosBeaconsCount > 0 ? 'var(--color-error)' : 'var(--color-text-dim)'}
+                        />
+                        <span>Đèn hiệu GPS trực tiếp (Live Beacons)</span>
+                        <span className="admin-subhead-count">{liveBeaconsList.length}</span>
+                      </h2>
+                    </div>
+
+                    <div className="admin-ledger">
+                      {liveBeaconsList.length === 0 ? (
+                        <div className="admin-empty">
+                          <div className="admin-empty-icon" aria-hidden="true">
+                            <Radio size={18} />
+                          </div>
+                          <h3 className="admin-empty-title">Không có phiên Live Beacon đang phát</h3>
+                          <p className="admin-empty-desc">
+                            Tín hiệu SOS hoặc chia sẻ hành trình GPS trực tiếp sẽ tự động ghim lên đầu danh sách.
+                          </p>
+                        </div>
+                      ) : (
+                        liveBeaconsList.map((beacon) => {
+                          const beaconId = String(beacon._id || beacon.token || '');
+                          const isRowSelected =
+                            liveInspectorSelection?.kind === 'beacon' &&
+                            liveInspectorSelection.data.id === beaconId;
+                          const isSos = beacon.status === 'sos';
+                          const userObj = typeof beacon.userId === 'object' ? beacon.userId : null;
+                          const beaconPath = beacon.sharePath || `/beacon/${beacon.token}`;
+
+                          return (
+                            <div
+                              key={beaconId}
+                              className={`admin-ledger-row admin-ledger-row--selectable ${isSos ? 'admin-ledger-row--urgent' : ''} ${isRowSelected ? 'is-selected' : ''}`}
+                              onClick={() => {
+                                const mapped = cockpitBeaconsById.get(beaconId);
+                                if (mapped) setInspectorSelection({ kind: 'beacon', data: mapped });
+                              }}
+                            >
+                              <div className="admin-ledger-main">
+                                <div className="admin-ledger-title-line">
                                   {isSos ? (
-                                    <span
-                                      style={{
-                                        background: 'var(--color-error)',
-                                        color: 'var(--color-on-danger)',
-                                        fontSize: '0.7rem',
-                                        fontWeight: 800,
-                                        padding: '3px 9px',
-                                        borderRadius: 3,
-                                        letterSpacing: '0.05em',
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: 4,
-                                      }}
-                                    >
-                                      <IconShieldAlert size={12} /> SOS KHẨN CẤP
+                                    <span className="admin-tag admin-tag--danger">
+                                      <IconShieldAlert size={11} /> SOS Khẩn cấp
                                     </span>
                                   ) : (
-                                    <span className="badge badge-success">Đang phát GPS</span>
+                                    <span className="admin-status">
+                                      <span className="admin-dot admin-dot--ok" aria-hidden="true" />
+                                      Đang phát GPS
+                                    </span>
                                   )}
-                                  <strong style={{ fontSize: '0.96rem', color: 'var(--color-text-main)' }}>
+                                  <span className="admin-ledger-title">
                                     {beacon.displayName || userObj?.fullName || 'Trekker LOST'}
-                                  </strong>
-                                  <span style={{ fontSize: '0.8rem', color: 'var(--color-sky)', fontWeight: 600 }}>
-                                    · {beacon.trailName}
                                   </span>
+                                  <span className="admin-tag">{beacon.trailName}</span>
                                   {beacon.isSignalStale && (
-                                    <span className="badge badge-sun">
+                                    <span className="admin-tag admin-tag--warn">
                                       Mất ping {beacon.minutesSinceLastPing} phút
                                     </span>
                                   )}
                                 </div>
 
-                                <div
-                                  style={{
-                                    display: 'flex',
-                                    flexWrap: 'wrap',
-                                    gap: 12,
-                                    fontSize: '0.78rem',
-                                    color: 'var(--color-text-muted)',
-                                    fontVariantNumeric: 'tabular-nums',
-                                  }}
-                                >
+                                <div className="admin-ledger-meta">
                                   {beacon.lastPosition ? (
-                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                                      <IconMapPin size={12} color="var(--color-primary)" />
-                                      <code>
-                                        {beacon.lastPosition.lat.toFixed(5)}, {beacon.lastPosition.lng.toFixed(5)}
+                                    <span
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: 4,
+                                      }}
+                                    >
+                                      <IconMapPin size={11} color="var(--color-primary)" />
+                                      <code className="admin-code">
+                                        {beacon.lastPosition.lat.toFixed(5)},{' '}
+                                        {beacon.lastPosition.lng.toFixed(5)}
                                       </code>
                                       {beacon.lastPosition.altitudeM !== null &&
                                         beacon.lastPosition.altitudeM !== undefined && (
@@ -5438,480 +4882,328 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                   ) : (
                                     <span>Chưa nhận tọa độ GPS đầu tiên</span>
                                   )}
-                                  {beacon.batteryPercent !== null && beacon.batteryPercent !== undefined && (
-                                    <span>
-                                      · Pin:{' '}
-                                      <strong
-                                        style={{
-                                          color:
-                                            beacon.batteryPercent <= 20
-                                              ? 'var(--color-error-text, var(--color-error))'
-                                              : 'var(--color-text-main)',
-                                        }}
-                                      >
-                                        {beacon.batteryPercent}%
-                                      </strong>
-                                    </span>
-                                  )}
-                                  <span>· Quãng đường: {beacon.distanceKm ?? 0} km</span>
-                                  <span>· Ping cuối: {formatDateVi(beacon.lastPingAt)}</span>
+                                  {beacon.batteryPercent !== null &&
+                                    beacon.batteryPercent !== undefined && (
+                                      <span>
+                                        · Pin:{' '}
+                                        <strong
+                                          style={{
+                                            color:
+                                              beacon.batteryPercent <= 20
+                                                ? 'var(--color-error-text, var(--color-error))'
+                                                : undefined,
+                                          }}
+                                        >
+                                          {beacon.batteryPercent}%
+                                        </strong>
+                                      </span>
+                                    )}
+                                  <span>· {beacon.distanceKm ?? 0} km</span>
+                                  <span>· Ping cuối {formatDateVi(beacon.lastPingAt)}</span>
                                 </div>
-                              </div>
 
-                              <a
-                                href={beaconPath}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className={isSos ? 'btn btn-danger' : 'btn btn-primary'}
-                                style={{
-                                  padding: '7px 14px',
-                                  fontSize: '0.78rem',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: 6,
-                                  textDecoration: 'none',
-                                }}
-                              >
-                                <ExternalLinkIcon size={13} /> Mở Bản Đồ Live Beacon
-                              </a>
-                            </div>
-
-                            <div
-                              style={{
-                                display: 'flex',
-                                flexWrap: 'wrap',
-                                gap: 12,
-                                padding: '8px 12px',
-                                background: 'var(--color-bg-card)',
-                                border: '1px solid var(--color-border)',
-                                borderRadius: 4,
-                                fontSize: '0.76rem',
-                                color: 'var(--color-text-muted)',
-                              }}
-                            >
-                              {userObj?.phone && (
-                                <a
-                                  href={`tel:${userObj.phone}`}
-                                  style={{
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: 4,
-                                    color: 'var(--color-primary)',
-                                    fontWeight: 700,
-                                    textDecoration: 'none',
-                                  }}
-                                >
-                                  <IconPhone size={12} /> SĐT Trekker: {userObj.phone}
-                                </a>
-                              )}
-                              {userObj?.email && (
-                                <a
-                                  href={`mailto:${userObj.email}`}
-                                  style={{
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: 4,
-                                    color: 'var(--color-sky)',
-                                    textDecoration: 'none',
-                                  }}
-                                >
-                                  <IconMail size={12} /> {userObj.email}
-                                </a>
-                              )}
-                              {userObj?.emergencyContact && (
-                                <span style={{ color: 'var(--color-error-text, var(--color-error))', fontWeight: 700 }}>
-                                  · Liên hệ khẩn cấp: {userObj.emergencyContact}
-                                </span>
-                              )}
-                              <span>· Đường dẫn: <code>{beaconPath}</code></span>
-                            </div>
-
-                            {beacon.emergencyNote && (
-                              <div
-                                style={{
-                                  fontSize: '0.82rem',
-                                  color: isSos
-                                    ? 'var(--color-error-text, var(--color-error))'
-                                    : 'var(--color-text-main)',
-                                  fontWeight: isSos ? 700 : 500,
-                                  background: 'var(--color-bg-card)',
-                                  padding: '8px 12px',
-                                  borderRadius: 4,
-                                  border: isSos
-                                    ? '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)'
-                                    : '1px solid var(--color-border)',
-                                }}
-                              >
-                                Lời nhắn khẩn cấp: &ldquo;{beacon.emergencyNote}&rdquo;
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                {/* BLOCK 2: SAFETY TIMERS (OVERDUE_ALERTED FIRST) */}
-                <div className="card" style={{ padding: 24, borderRadius: 6 }}>
-                  <div
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      flexWrap: 'wrap',
-                      gap: 12,
-                      marginBottom: 16,
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <Clock
-                        size={18}
-                        color={overdueTimersCount > 0 ? 'var(--color-error)' : 'var(--color-primary)'}
-                      />
-                      <div>
-                        <h3
-                          style={{
-                            fontSize: '1.1rem',
-                            fontWeight: 800,
-                            color: 'var(--color-text-main)',
-                            margin: 0,
-                          }}
-                        >
-                          Hẹn Giờ Báo Bình An — Safety Timers ({safetyTimersList.length})
-                        </h3>
-                        <p style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', margin: '2px 0 0 0' }}>
-                          Các lịch hẹn quá hạn chưa báo bình an được đánh dấu đỏ ở đầu danh sách kèm liên hệ người thân
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="admin-segmented-control" style={{ flexWrap: 'wrap' }}>
-                      <button
-                        type="button"
-                        className={`admin-segmented-btn ${safetyTimerView === 'live' ? 'active' : ''}`}
-                        onClick={() => setSafetyTimerView('live')}
-                      >
-                        Đang chạy &amp; Quá hạn
-                      </button>
-                      <button
-                        type="button"
-                        className={`admin-segmented-btn ${safetyTimerView === 'checked_in_safe' ? 'active' : ''}`}
-                        onClick={() => setSafetyTimerView('checked_in_safe')}
-                      >
-                        Đã báo bình an
-                      </button>
-                      <button
-                        type="button"
-                        className={`admin-segmented-btn ${safetyTimerView === 'cancelled' ? 'active' : ''}`}
-                        onClick={() => setSafetyTimerView('cancelled')}
-                      >
-                        Đã hủy
-                      </button>
-                    </div>
-                  </div>
-
-                  {safetyTimersList.length === 0 ? (
-                    <div
-                      style={{
-                        textAlign: 'center',
-                        padding: 28,
-                        color: 'var(--color-text-muted)',
-                        border: '1px dashed var(--color-border)',
-                        borderRadius: 4,
-                        fontSize: '0.84rem',
-                      }}
-                    >
-                      Không có lịch hẹn báo bình an nào trong trạng thái này.
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                      {safetyTimersList.map((timer) => {
-                        const isOverdue = timer.status === 'overdue_alerted';
-                        const userObj = typeof timer.userId === 'object' ? timer.userId : null;
-                        const hasCoords =
-                          typeof timer.lastKnownLat === 'number' &&
-                          typeof timer.lastKnownLng === 'number';
-
-                        return (
-                          <div
-                            key={timer._id}
-                            style={{
-                              background: isOverdue
-                                ? 'color-mix(in srgb, var(--color-error) 10%, var(--color-bg-main))'
-                                : 'var(--color-bg-main)',
-                              border: isOverdue
-                                ? '1px solid color-mix(in srgb, var(--color-error) 50%, transparent)'
-                                : '1px solid var(--color-border)',
-                              borderLeft: isOverdue
-                                ? '4px solid var(--color-error)'
-                                : timer.status === 'active'
-                                  ? '3px solid var(--color-sky)'
-                                  : '3px solid var(--color-primary)',
-                              padding: '16px 18px',
-                              borderRadius: 4,
-                              display: 'flex',
-                              flexDirection: 'column',
-                              gap: 10,
-                            }}
-                          >
-                            <div
-                              style={{
-                                display: 'flex',
-                                justifyContent: 'space-between',
-                                alignItems: 'flex-start',
-                                flexWrap: 'wrap',
-                                gap: 10,
-                              }}
-                            >
-                              <div>
-                                <div
-                                  style={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: 8,
-                                    flexWrap: 'wrap',
-                                    marginBottom: 4,
-                                  }}
-                                >
-                                  {isOverdue ? (
-                                    <span
+                                <div className="admin-ledger-meta">
+                                  {userObj?.phone && (
+                                    <a
+                                      href={`tel:${userObj.phone}`}
+                                      onClick={(e) => e.stopPropagation()}
                                       style={{
-                                        background: 'var(--color-error)',
-                                        color: 'var(--color-on-danger)',
-                                        fontSize: '0.7rem',
-                                        fontWeight: 800,
-                                        padding: '3px 9px',
-                                        borderRadius: 3,
                                         display: 'inline-flex',
                                         alignItems: 'center',
                                         gap: 4,
+                                        color: 'var(--color-primary)',
+                                        fontWeight: 600,
+                                        textDecoration: 'none',
                                       }}
                                     >
-                                      <AlertTriangle size={12} /> QUÁ HẠN BÁO BÌNH AN
+                                      <IconPhone size={11} /> {userObj.phone}
+                                    </a>
+                                  )}
+                                  {userObj?.email && (
+                                    <a
+                                      href={`mailto:${userObj.email}`}
+                                      onClick={(e) => e.stopPropagation()}
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: 4,
+                                        color: 'var(--color-text-muted)',
+                                        textDecoration: 'none',
+                                      }}
+                                    >
+                                      <IconMail size={11} /> {userObj.email}
+                                    </a>
+                                  )}
+                                  {userObj?.emergencyContact && (
+                                    <span
+                                      style={{
+                                        color: 'var(--color-error-text, var(--color-error))',
+                                        fontWeight: 600,
+                                      }}
+                                    >
+                                      · Khẩn cấp: {userObj.emergencyContact}
+                                    </span>
+                                  )}
+                                </div>
+
+                                {beacon.emergencyNote && (
+                                  <div
+                                    className={`admin-note-box ${isSos ? 'admin-note-box--danger' : ''}`}
+                                  >
+                                    Lời nhắn khẩn cấp: &ldquo;{beacon.emergencyNote}&rdquo;
+                                  </div>
+                                )}
+                              </div>
+
+                              <div
+                                className="admin-ledger-actions"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <a
+                                  href={beaconPath}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className={`admin-btn admin-btn--sm ${isSos ? 'admin-btn--danger' : 'admin-btn--primary'}`}
+                                >
+                                  <ExternalLinkIcon size={12} />
+                                  <span>Mở bản đồ</span>
+                                </a>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </section>
+
+                  {/* BLOCK 2: SAFETY TIMERS (OVERDUE_ALERTED FIRST) */}
+                  <section className="admin-section-block">
+                    <div className="admin-toolbar">
+                      <div className="admin-subhead" style={{ paddingBottom: 9 }}>
+                        <h2 className="admin-subhead-title">
+                          <Clock
+                            size={15}
+                            color={
+                              overdueTimersCount > 0 ? 'var(--color-error)' : 'var(--color-text-dim)'
+                            }
+                          />
+                          <span>Hẹn giờ báo bình an (Safety Timers)</span>
+                          <span className="admin-subhead-count">{safetyTimersList.length}</span>
+                        </h2>
+                      </div>
+
+                      <div className="admin-tabs" role="tablist" aria-label="Trạng thái hẹn giờ an toàn">
+                        {(
+                          [
+                            { id: 'live', label: 'Đang chạy & Quá hạn' },
+                            { id: 'checked_in_safe', label: 'Đã báo bình an' },
+                            { id: 'cancelled', label: 'Đã hủy' },
+                          ] as const
+                        ).map((tab) => (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            role="tab"
+                            aria-selected={safetyTimerView === tab.id}
+                            className={`admin-tab-btn ${safetyTimerView === tab.id ? 'active' : ''}`}
+                            onClick={() => setSafetyTimerView(tab.id)}
+                          >
+                            {tab.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="admin-ledger">
+                      {safetyTimersList.length === 0 ? (
+                        <div className="admin-empty">
+                          <div className="admin-empty-icon" aria-hidden="true">
+                            <Clock size={18} />
+                          </div>
+                          <h3 className="admin-empty-title">Không có lịch hẹn trong trạng thái này</h3>
+                          <p className="admin-empty-desc">
+                            Các lịch hẹn báo bình an đang hoạt động hoặc quá hạn sẽ hiển thị tại đây.
+                          </p>
+                        </div>
+                      ) : (
+                        safetyTimersList.map((timer) => {
+                          const isOverdue = timer.status === 'overdue_alerted';
+                          const userObj = typeof timer.userId === 'object' ? timer.userId : null;
+                          const hasCoords =
+                            typeof timer.lastKnownLat === 'number' &&
+                            typeof timer.lastKnownLng === 'number';
+
+                          return (
+                            <div
+                              key={timer._id}
+                              className={`admin-ledger-row ${isOverdue ? 'admin-ledger-row--urgent' : ''}`}
+                            >
+                              <div className="admin-ledger-main">
+                                <div className="admin-ledger-title-line">
+                                  {isOverdue ? (
+                                    <span className="admin-tag admin-tag--danger">
+                                      <AlertTriangle size={11} /> Quá hạn báo bình an
                                     </span>
                                   ) : timer.status === 'active' ? (
-                                    <span className="badge badge-info">Đang giám sát</span>
+                                    <span className="admin-status">
+                                      <span className="admin-dot admin-dot--info" aria-hidden="true" />
+                                      Đang giám sát
+                                    </span>
                                   ) : timer.status === 'checked_in_safe' ? (
-                                    <span className="badge badge-success">Đã về an toàn</span>
+                                    <span className="admin-status">
+                                      <span className="admin-dot admin-dot--ok" aria-hidden="true" />
+                                      Đã về an toàn
+                                    </span>
                                   ) : (
-                                    <span className="badge">Đã hủy</span>
+                                    <span className="admin-status">
+                                      <span className="admin-dot" aria-hidden="true" />
+                                      Đã hủy
+                                    </span>
                                   )}
-                                  <strong style={{ fontSize: '0.95rem', color: 'var(--color-text-main)' }}>
+                                  <span className="admin-ledger-title">
                                     {userObj?.fullName || userObj?.username || 'Thành viên LOST'}
-                                  </strong>
-                                  <span style={{ fontSize: '0.8rem', color: 'var(--color-sky)', fontWeight: 600 }}>
-                                    · {timer.trailName}
                                   </span>
+                                  <span className="admin-tag">{timer.trailName}</span>
                                 </div>
-                                <div
-                                  style={{
-                                    fontSize: '0.78rem',
-                                    color: 'var(--color-text-muted)',
-                                    display: 'flex',
-                                    flexWrap: 'wrap',
-                                    gap: 10,
-                                  }}
-                                >
+
+                                <div className="admin-ledger-meta">
                                   <span>
                                     Dự kiến ra rừng:{' '}
                                     <strong
                                       style={{
                                         color: isOverdue
                                           ? 'var(--color-error-text, var(--color-error))'
-                                          : 'var(--color-text-main)',
+                                          : undefined,
                                       }}
                                     >
                                       {formatDateVi(timer.expectedReturnAt)}
                                     </strong>
                                   </span>
                                   {timer.alertedAt && (
-                                    <span style={{ color: 'var(--color-error-text, var(--color-error))' }}>
-                                      · Đã phát cảnh báo lúc: {formatDateVi(timer.alertedAt)}
+                                    <span
+                                      style={{ color: 'var(--color-error-text, var(--color-error))' }}
+                                    >
+                                      · Phát cảnh báo {formatDateVi(timer.alertedAt)}
                                     </span>
                                   )}
                                   {timer.checkedInSafeAt && (
                                     <span style={{ color: 'var(--color-primary)' }}>
-                                      · Báo bình an lúc: {formatDateVi(timer.checkedInSafeAt)}
+                                      · Báo bình an {formatDateVi(timer.checkedInSafeAt)}
                                     </span>
                                   )}
                                 </div>
+
+                                <div className="admin-ledger-meta">
+                                  <span>
+                                    Người thân: <strong>{timer.emergencyContactName || 'Chưa rõ'}</strong>
+                                  </span>
+                                  {timer.emergencyContactPhone && (
+                                    <a
+                                      href={`tel:${timer.emergencyContactPhone}`}
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: 4,
+                                        color: isOverdue
+                                          ? 'var(--color-error-text, var(--color-error))'
+                                          : 'var(--color-primary)',
+                                        fontWeight: 600,
+                                        textDecoration: 'none',
+                                      }}
+                                    >
+                                      <IconPhone size={11} /> {timer.emergencyContactPhone}
+                                    </a>
+                                  )}
+                                  {timer.emergencyContactEmail && (
+                                    <a
+                                      href={`mailto:${timer.emergencyContactEmail}`}
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: 4,
+                                        color: 'var(--color-text-muted)',
+                                        textDecoration: 'none',
+                                      }}
+                                    >
+                                      <IconMail size={11} /> {timer.emergencyContactEmail}
+                                    </a>
+                                  )}
+                                  {userObj?.phone && <span>· SĐT Trekker: {userObj.phone}</span>}
+                                </div>
+
+                                {timer.notes && (
+                                  <div className="admin-note-box">Ghi chú: {timer.notes}</div>
+                                )}
                               </div>
 
                               {hasCoords && (
-                                <a
-                                  href={`https://www.google.com/maps?q=${timer.lastKnownLat},${timer.lastKnownLng}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="btn btn-outline"
-                                  style={{
-                                    padding: '6px 12px',
-                                    fontSize: '0.76rem',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: 5,
-                                    textDecoration: 'none',
-                                  }}
-                                >
-                                  <IconMapPin size={12} />{' '}
-                                  <code>
-                                    {timer.lastKnownLat!.toFixed(4)}, {timer.lastKnownLng!.toFixed(4)}
-                                  </code>
-                                  <ExternalLinkIcon size={11} />
-                                </a>
+                                <div className="admin-ledger-actions">
+                                  <a
+                                    href={`https://www.google.com/maps?q=${timer.lastKnownLat},${timer.lastKnownLng}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="admin-btn admin-btn--sm"
+                                  >
+                                    <IconMapPin size={12} />
+                                    <span>
+                                      {timer.lastKnownLat!.toFixed(4)},{' '}
+                                      {timer.lastKnownLng!.toFixed(4)}
+                                    </span>
+                                    <ExternalLinkIcon size={11} />
+                                  </a>
+                                </div>
                               )}
                             </div>
-
-                            <div
-                              style={{
-                                display: 'flex',
-                                flexWrap: 'wrap',
-                                gap: 12,
-                                padding: '8px 12px',
-                                background: 'var(--color-bg-card)',
-                                border: '1px solid var(--color-border)',
-                                borderRadius: 4,
-                                fontSize: '0.76rem',
-                                color: 'var(--color-text-muted)',
-                              }}
-                            >
-                              <span>
-                                Người thân khẩn cấp:{' '}
-                                <strong style={{ color: 'var(--color-text-main)' }}>
-                                  {timer.emergencyContactName || 'Chưa rõ'}
-                                </strong>
-                              </span>
-                              {timer.emergencyContactPhone && (
-                                <a
-                                  href={`tel:${timer.emergencyContactPhone}`}
-                                  style={{
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: 4,
-                                    color: isOverdue
-                                      ? 'var(--color-error-text, var(--color-error))'
-                                      : 'var(--color-primary)',
-                                    fontWeight: 700,
-                                    textDecoration: 'none',
-                                  }}
-                                >
-                                  <IconPhone size={12} /> {timer.emergencyContactPhone}
-                                </a>
-                              )}
-                              {timer.emergencyContactEmail && (
-                                <a
-                                  href={`mailto:${timer.emergencyContactEmail}`}
-                                  style={{
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: 4,
-                                    color: 'var(--color-sky)',
-                                    textDecoration: 'none',
-                                  }}
-                                >
-                                  <IconMail size={12} /> {timer.emergencyContactEmail}
-                                </a>
-                              )}
-                              {userObj?.phone && (
-                                <span>· SĐT Trekker: {userObj.phone}</span>
-                              )}
-                            </div>
-
-                            {timer.notes && (
-                              <div
-                                style={{
-                                  fontSize: '0.78rem',
-                                  color: 'var(--color-text-muted)',
-                                }}
-                              >
-                                Ghi chú hành trình: {timer.notes}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
+                          );
+                        })
+                      )}
                     </div>
-                  )}
+                  </section>
                 </div>
-              </div>
-            );
-          })()}
+              );
+            })()}
 
-          {/* =========================================================================
-           * SECTION 10: KIỂM DUYỆT THỰC ĐỊA (TRAIL POIS & REVIEWS)
-           * ========================================================================= */}
-          {effectiveSection === 'field' && (
-              <div className="card" style={{ padding: 24, borderRadius: 6 }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    flexWrap: 'wrap',
-                    gap: 12,
-                    marginBottom: 18,
-                  }}
-                >
-                  <div className="admin-segmented-control" style={{ flexWrap: 'wrap' }}>
+            {/* =========================================================================
+             * SECTION 10: KIỂM DUYỆT THỰC ĐỊA (TRAIL POIS & REVIEWS)
+             * ========================================================================= */}
+            {effectiveSection === 'field' && (
+              <>
+                <div className="admin-toolbar">
+                  <div className="admin-tabs" role="tablist" aria-label="Phân loại dữ liệu thực địa">
                     <button
                       type="button"
-                      className={`admin-segmented-btn ${fieldSubTab === 'pois' ? 'active' : ''}`}
+                      role="tab"
+                      aria-selected={fieldSubTab === 'pois'}
+                      className={`admin-tab-btn ${fieldSubTab === 'pois' ? 'active' : ''}`}
                       onClick={() => setFieldSubTab('pois')}
                     >
-                      <IconMapPin size={14} />
-                      <span>Điểm Thực Địa (POIs)</span>
-                      <span
-                        style={{
-                          fontSize: '0.7rem',
-                          padding: '1px 6px',
-                          borderRadius: 4,
-                          color: 'var(--color-stream)',
-                          fontWeight: 800,
-                        }}
-                      >
-                        {poisTotal || poisList.length}
-                      </span>
+                      <span>Điểm thực địa (POIs)</span>
+                      <span className="admin-tab-count">{poisTotal || poisList.length}</span>
                     </button>
                     <button
                       type="button"
-                      className={`admin-segmented-btn ${fieldSubTab === 'reviews' ? 'active' : ''}`}
+                      role="tab"
+                      aria-selected={fieldSubTab === 'reviews'}
+                      className={`admin-tab-btn ${fieldSubTab === 'reviews' ? 'active' : ''}`}
                       onClick={() => setFieldSubTab('reviews')}
                     >
-                      <IconStar size={14} color="var(--color-sun)" />
-                      <span>Đánh Giá Cung Đường</span>
-                      <span
-                        style={{
-                          fontSize: '0.7rem',
-                          padding: '1px 6px',
-                          borderRadius: 4,
-                          color: 'var(--color-sun)',
-                          fontWeight: 800,
-                        }}
-                      >
-                        {reviewsTotal || reviewsList.length}
-                      </span>
+                      <span>Đánh giá cung đường</span>
+                      <span className="admin-tab-count">{reviewsTotal || reviewsList.length}</span>
                     </button>
                   </div>
 
-                  <div className="admin-search-wrapper" style={{ maxWidth: 320 }}>
-                    <Search size={15} color="var(--color-text-dim)" />
+                  <div className="admin-search">
+                    <Search size={14} color="var(--color-text-dim)" />
                     <input
                       type="text"
                       placeholder={
                         fieldSubTab === 'pois'
-                          ? 'Lọc theo tên POI, cung đường, tác giả...'
-                          : 'Lọc theo cung đường, người đánh giá, nội dung...'
+                          ? 'Lọc tên POI, cung đường, tác giả...'
+                          : 'Lọc cung đường, người đánh giá, nội dung...'
                       }
                       value={fieldSearchQuery}
                       onChange={(e) => setFieldSearchQuery(e.target.value)}
-                      style={{
-                        border: 'none',
-                        background: 'transparent',
-                        color: 'var(--color-text-main)',
-                        fontSize: '0.82rem',
-                        width: '100%',
-                        outline: 'none',
-                      }}
                     />
                     {fieldSearchQuery && (
                       <button
@@ -5927,7 +5219,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         }}
                         aria-label="Xóa lọc kiểm duyệt thực địa"
                       >
-                        <IconX size={14} />
+                        <IconX size={13} />
                       </button>
                     )}
                   </div>
@@ -5935,19 +5227,16 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
                 {/* SUB-TAB 1: TRAIL POIS */}
                 {fieldSubTab === 'pois' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div className="admin-ledger">
                     {filteredPois.length === 0 ? (
-                      <div
-                        style={{
-                          textAlign: 'center',
-                          padding: 32,
-                          color: 'var(--color-text-muted)',
-                          border: '1px dashed var(--color-border)',
-                          borderRadius: 4,
-                          fontSize: '0.84rem',
-                        }}
-                      >
-                        Không có điểm thực địa (POI) nào khớp với bộ lọc hiện tại.
+                      <div className="admin-empty">
+                        <div className="admin-empty-icon" aria-hidden="true">
+                          <IconMapPin size={18} />
+                        </div>
+                        <h3 className="admin-empty-title">Không tìm thấy điểm thực địa phù hợp</h3>
+                        <p className="admin-empty-desc">
+                          Các điểm nguồn nước, bãi trại và cảnh báo do cộng đồng đánh dấu sẽ hiển thị tại đây.
+                        </p>
                       </div>
                     ) : (
                       filteredPois.map((poi) => {
@@ -5956,83 +5245,45 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         const isBusy = togglingPoiId === poi._id;
 
                         return (
-                          <div
-                            key={poi._id}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'flex-start',
-                              justifyContent: 'space-between',
-                              flexWrap: 'wrap',
-                              gap: 12,
-                              background: 'var(--color-bg-main)',
-                              border: '1px solid var(--color-border)',
-                              borderLeft: isClosed
-                                ? '3px solid var(--color-sun)'
-                                : '3px solid var(--color-primary)',
-                              padding: '14px 16px',
-                              borderRadius: 4,
-                            }}
-                          >
-                            <div style={{ flex: 1, minWidth: 260 }}>
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 8,
-                                  flexWrap: 'wrap',
-                                  marginBottom: 6,
-                                }}
-                              >
+                          <div key={poi._id} className="admin-ledger-row">
+                            <div className="admin-ledger-main">
+                              <div className="admin-ledger-title-line">
                                 <span
                                   className={
-                                    poi.category === 'danger' ? 'badge badge-error' : 'badge badge-info'
+                                    poi.category === 'danger'
+                                      ? 'admin-tag admin-tag--danger'
+                                      : 'admin-tag'
                                   }
                                 >
                                   {POI_CATEGORY_LABELS[poi.category] || poi.category}
                                 </span>
-                                <strong style={{ fontSize: '0.94rem', color: 'var(--color-text-main)' }}>
-                                  {poi.title}
-                                </strong>
-                                <span className={isClosed ? 'badge badge-sun' : 'badge badge-success'}>
+                                <span className="admin-ledger-title">{poi.title}</span>
+                                <span className="admin-status">
+                                  <span
+                                    className={
+                                      isClosed
+                                        ? 'admin-dot admin-dot--warn'
+                                        : 'admin-dot admin-dot--ok'
+                                    }
+                                    aria-hidden="true"
+                                  />
                                   {isClosed ? 'Đã cạn / Đóng' : 'Đang hoạt động'}
                                 </span>
                               </div>
 
-                              {poi.notes && (
-                                <p
-                                  style={{
-                                    fontSize: '0.82rem',
-                                    color: 'var(--color-text-main)',
-                                    margin: '0 0 8px 0',
-                                    lineHeight: 1.45,
-                                  }}
-                                >
-                                  {poi.notes}
-                                </p>
-                              )}
+                              {poi.notes && <p className="admin-ledger-desc">{poi.notes}</p>}
 
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  flexWrap: 'wrap',
-                                  gap: 10,
-                                  fontSize: '0.76rem',
-                                  color: 'var(--color-text-muted)',
-                                  fontVariantNumeric: 'tabular-nums',
-                                }}
-                              >
+                              <div className="admin-ledger-meta">
                                 <span>
                                   Tuyến:{' '}
-                                  <strong style={{ color: 'var(--color-sky)' }}>
-                                    {poi.trail?.name || poi.trailName || poi.trailId}
-                                  </strong>
+                                  <strong>{poi.trail?.name || poi.trailName || poi.trailId}</strong>
                                   {poi.trail?.province || poi.trailProvince
                                     ? ` (${poi.trail?.province || poi.trailProvince})`
                                     : ''}
                                 </span>
                                 <span>
-                                  · Tọa độ:{' '}
-                                  <code>
+                                  ·{' '}
+                                  <code className="admin-code">
                                     {Number(poi.lat).toFixed(5)}, {Number(poi.lng).toFixed(5)}
                                   </code>
                                   {poi.elevationM !== null && poi.elevationM !== undefined
@@ -6040,7 +5291,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                     : ''}
                                 </span>
                                 <span>
-                                  · Người đăng: <strong>{poi.authorName || authorObj?.fullName || 'Trekker'}</strong>
+                                  ·{' '}
+                                  <strong>
+                                    {poi.authorName || authorObj?.fullName || 'Trekker'}
+                                  </strong>
                                   {authorObj?.email ? ` (${authorObj.email})` : ''}
                                 </span>
                                 <span>· {poi.upvoteCount || 0} xác nhận</span>
@@ -6048,38 +5302,22 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                               </div>
                             </div>
 
-                            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <div className="admin-ledger-actions">
                               <button
                                 type="button"
-                                className="btn btn-outline"
+                                className="admin-btn admin-btn--sm"
                                 disabled={isBusy}
                                 onClick={() => void handleTogglePoiStatus(poi)}
-                                style={{
-                                  padding: '6px 12px',
-                                  fontSize: '0.78rem',
-                                  color: isClosed ? 'var(--color-primary)' : 'var(--color-sun)',
-                                  borderColor: isClosed
-                                    ? 'color-mix(in srgb, var(--color-primary) 45%, transparent)'
-                                    : 'color-mix(in srgb, var(--color-sun) 45%, transparent)',
-                                }}
                               >
-                                {isClosed ? 'Đánh Dấu Hoạt Động' : 'Đánh Dấu Cạn / Đóng'}
+                                {isClosed ? 'Mở hoạt động' : 'Đánh dấu cạn/đóng'}
                               </button>
                               <button
                                 type="button"
-                                className="btn btn-outline"
+                                className="admin-btn admin-btn--sm admin-btn--danger-ghost"
                                 onClick={() => handleDeletePoi(poi)}
-                                style={{
-                                  padding: '6px 12px',
-                                  fontSize: '0.78rem',
-                                  color: 'var(--color-error-text, var(--color-error))',
-                                  borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)',
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: 4,
-                                }}
                               >
-                                <IconTrash size={12} /> Xóa
+                                <IconTrash size={12} />
+                                <span>Xóa</span>
                               </button>
                             </div>
                           </div>
@@ -6091,19 +5329,16 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
                 {/* SUB-TAB 2: TRAIL REVIEWS */}
                 {fieldSubTab === 'reviews' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div className="admin-ledger">
                     {filteredReviews.length === 0 ? (
-                      <div
-                        style={{
-                          textAlign: 'center',
-                          padding: 32,
-                          color: 'var(--color-text-muted)',
-                          border: '1px dashed var(--color-border)',
-                          borderRadius: 4,
-                          fontSize: '0.84rem',
-                        }}
-                      >
-                        Không có đánh giá cung đường nào khớp với bộ lọc hiện tại.
+                      <div className="admin-empty">
+                        <div className="admin-empty-icon" aria-hidden="true">
+                          <IconStar size={18} />
+                        </div>
+                        <h3 className="admin-empty-title">Không tìm thấy đánh giá phù hợp</h3>
+                        <p className="admin-empty-desc">
+                          Đánh giá thực địa của người dùng sẽ hiển thị tại đây để kiểm duyệt.
+                        </p>
                       </div>
                     ) : (
                       filteredReviews.map((rev) => {
@@ -6113,52 +5348,24 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         const reviewerAvatar = userObj?.avatarUrl || rev.userAvatar || DEFAULT_AVATAR;
 
                         return (
-                          <div
-                            key={rev._id}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'flex-start',
-                              justifyContent: 'space-between',
-                              flexWrap: 'wrap',
-                              gap: 12,
-                              background: 'var(--color-bg-main)',
-                              border: '1px solid var(--color-border)',
-                              padding: '14px 16px',
-                              borderRadius: 4,
-                            }}
-                          >
-                            <div style={{ flex: 1, minWidth: 260 }}>
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 10,
-                                  flexWrap: 'wrap',
-                                  marginBottom: 8,
-                                }}
-                              >
+                          <div key={rev._id} className="admin-ledger-row">
+                            <div className="admin-ledger-main">
+                              <div className="admin-ledger-title-line">
                                 <img
                                   loading="lazy"
                                   decoding="async"
                                   src={reviewerAvatar}
                                   alt={reviewerName}
-                                  style={{
-                                    width: 30,
-                                    height: 30,
-                                    borderRadius: '50%',
-                                    objectFit: 'cover',
-                                    border: '1px solid var(--color-border-strong)',
-                                  }}
+                                  className="admin-avatar-sm"
+                                  style={{ width: 24, height: 24 }}
                                 />
-                                <strong style={{ fontSize: '0.9rem', color: 'var(--color-text-main)' }}>
-                                  {reviewerName}
-                                </strong>
+                                <span className="admin-ledger-title">{reviewerName}</span>
                                 {userObj?.email && (
-                                  <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-                                    ({userObj.email})
+                                  <span style={{ fontSize: '0.74rem', color: 'var(--color-text-dim)' }}>
+                                    {userObj.email}
                                   </span>
                                 )}
-                                <span className="badge badge-info">
+                                <span className="admin-tag">
                                   {trailObj?.name || 'Cung đường'}
                                   {trailObj?.province ? ` · ${trailObj.province}` : ''}
                                 </span>
@@ -6168,95 +5375,96 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                     alignItems: 'center',
                                     gap: 2,
                                     color: 'var(--color-sun)',
-                                    fontSize: '0.78rem',
-                                    fontWeight: 800,
+                                    fontSize: '0.75rem',
+                                    fontWeight: 600,
+                                    fontVariantNumeric: 'tabular-nums',
                                   }}
                                   aria-label={`Đánh giá ${rev.rating} trên 5 sao`}
                                 >
                                   {[1, 2, 3, 4, 5].map((star) => (
                                     <IconStar
                                       key={star}
-                                      size={12}
+                                      size={11}
                                       color="var(--color-sun)"
                                       fill={star <= Math.round(rev.rating) ? 'var(--color-sun)' : 'none'}
                                     />
                                   ))}
-                                  <span style={{ marginLeft: 4 }}>{rev.rating}/5</span>
+                                  <span style={{ marginLeft: 3 }}>{rev.rating}/5</span>
                                 </span>
                               </div>
 
                               <p
-                                style={{
-                                  fontSize: '0.84rem',
-                                  color: 'var(--color-text-main)',
-                                  margin: '0 0 8px 0',
-                                  lineHeight: 1.5,
-                                  whiteSpace: 'pre-line',
-                                }}
+                                className="admin-ledger-desc"
+                                style={{ color: 'var(--color-text-main)', whiteSpace: 'pre-line' }}
                               >
                                 {rev.content}
                               </p>
 
                               {rev.safetyNote && (
-                                <div
-                                  style={{
-                                    fontSize: '0.78rem',
-                                    color: 'var(--color-sun)',
-                                    background: 'color-mix(in srgb, var(--color-sun) 10%, transparent)',
-                                    border: '1px solid color-mix(in srgb, var(--color-sun) 30%, transparent)',
-                                    padding: '6px 10px',
-                                    borderRadius: 4,
-                                    marginBottom: 8,
-                                  }}
-                                >
+                                <div className="admin-note-box admin-note-box--warn">
                                   Lưu ý an toàn: {rev.safetyNote}
                                 </div>
                               )}
 
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  flexWrap: 'wrap',
-                                  gap: 10,
-                                  fontSize: '0.74rem',
-                                  color: 'var(--color-text-dim)',
-                                }}
-                              >
+                              <div className="admin-ledger-meta">
                                 {rev.difficultyRating && (
                                   <span>Độ khó cảm nhận: {rev.difficultyRating}/5</span>
                                 )}
                                 {rev.tripDate && <span>· Ngày đi: {rev.tripDate}</span>}
-                                <span>· {rev.helpfulCount || 0} lượt thấy hữu ích</span>
-                                <span>· Đăng lúc: {formatDateVi(rev.createdAt)}</span>
+                                <span>· {rev.helpfulCount || 0} hữu ích</span>
+                                <span>· {formatDateVi(rev.createdAt)}</span>
                               </div>
                             </div>
 
-                            <button
-                              type="button"
-                              className="btn btn-outline"
-                              onClick={() => handleDeleteReview(rev)}
-                              style={{
-                                padding: '6px 12px',
-                                fontSize: '0.78rem',
-                                color: 'var(--color-error-text, var(--color-error))',
-                                borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: 4,
-                              }}
-                            >
-                              <IconTrash size={12} /> Xóa Spam
-                            </button>
+                            <div className="admin-ledger-actions">
+                              <button
+                                type="button"
+                                className="admin-btn admin-btn--sm admin-btn--danger-ghost"
+                                onClick={() => handleDeleteReview(rev)}
+                              >
+                                <IconTrash size={12} />
+                                <span>Xóa</span>
+                              </button>
+                            </div>
                           </div>
                         );
                       })
                     )}
                   </div>
                 )}
+              </>
+            )}
               </div>
+            </div>
+          </div>
+
+          {liveInspectorSelection && (
+            <AdminSpatialInspector
+              selection={liveInspectorSelection}
+              isStrictAdmin={isStrictAdmin}
+              onClose={handleCloseInspector}
+              onEditTrail={handleInspectorEditTrail}
+              onDeleteTrail={handleDeleteTrail}
+              onApproveContribution={handleApprove}
+              onRejectContribution={handleReject}
+              onInspectContributionModal={handleInspectorOpenContribModal}
+              onResolveIncident={handleResolveIncident}
+              onNavigateSection={handleSelectSection}
+            />
           )}
         </div>
-      </main>
+
+        {/* Bottom 30px Tactile Instrument Status Bar (isolated 1Hz Vietnam ICT clock) */}
+        <AdminStatusBar
+          readiness={statusReadiness}
+          readinessDetail={statusReadinessDetail}
+          activeCoords={hoverCoords ?? lockedCoords}
+          isCoordLocked={!hoverCoords && Boolean(lockedCoords)}
+          dbStatus={dbHealth.status}
+          dbLabel={dbHealth.label}
+          isSocketConnected={isSocketConnected}
+        />
+      </div>
 
       {/* =========================================================================
        * CONTRIBUTION DETAIL INSPECTION MODAL
@@ -6753,13 +5961,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   liveContrib.authorEmail || matchedUser?.email || 'Chưa cập nhật email';
 
                 const displayAuthorAvatar =
-                  liveContrib.authorAvatar &&
-                  !liveContrib.authorAvatar.includes('ui-avatars.com/api/?name=Trekker')
-                    ? liveContrib.authorAvatar
-                    : matchedUser?.avatarUrl ||
-                      matchedUser?.avatar ||
-                      liveContrib.authorAvatar ||
-                      DEFAULT_AVATAR;
+                  liveContrib.authorAvatar ||
+                  matchedUser?.avatarUrl ||
+                  matchedUser?.avatar ||
+                  DEFAULT_AVATAR;
 
                 const handleOpenAuthorProfile = () => {
                   const authorContribs = contributions.filter(
@@ -7638,7 +6843,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   <label className="form-label">URL Ảnh bìa (https://...)</label>
                   <input
                     className="form-input"
-                    placeholder="https://res.cloudinary.com/..."
+                    placeholder="/covers/trail-fansipan.svg hoặc URL ảnh thực địa"
                     value={editTrailForm.coverImage}
                     onChange={(e) =>
                       setEditTrailForm({ ...editTrailForm, coverImage: e.target.value })
@@ -8199,7 +7404,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   <label className="form-label">URL Ảnh bìa (tùy chọn, https://...)</label>
                   <input
                     className="form-input"
-                    placeholder="https://res.cloudinary.com/..."
+                    placeholder="/covers/trail-fansipan.svg hoặc URL ảnh thực địa"
                     value={createTrailForm.coverImage}
                     onChange={(e) =>
                       setCreateTrailForm({ ...createTrailForm, coverImage: e.target.value })

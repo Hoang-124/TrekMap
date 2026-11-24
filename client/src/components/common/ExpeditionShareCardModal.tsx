@@ -255,7 +255,7 @@ export const ExpeditionShareCardModal: React.FC<ExpeditionShareCardModalProps> =
       // Fallback on desktop browsers without Web Share file support: trigger clean PNG download with single toast
       if (handleDownloadPng(true)) {
         onShowToastRef.current?.(
-          'Trình duyệt máy tính chưa hỗ trợ chia sẻ tệp trực tiếp — đã tải sẵn ảnh PNG để bạn đăng Zalo/Facebook!',
+          'Trình duyệt máy tính chưa hỗ trợ chia sẻ tệp trực tiếp — đã tải sẵn ảnh PNG để bạn chia sẻ ngay!',
           'info'
         );
       }
@@ -539,7 +539,7 @@ export const ExpeditionShareCardModal: React.FC<ExpeditionShareCardModalProps> =
             >
               <IconCheckCircle size={15} color="var(--color-primary)" style={{ flexShrink: 0, marginTop: 1 }} />
               <span>
-                Vẽ 100% ngoại tuyến bằng Canvas (không cần 4G, không lỗi CORS) — sẵn sàng gửi Zalo, Facebook hoặc Instagram Story.
+                Vẽ 100% ngoại tuyến bằng Canvas (không cần 4G, không lỗi CORS) — sẵn sàng chia sẻ qua nhóm chat hoặc mạng xã hội.
               </span>
             </div>
 
@@ -564,7 +564,7 @@ export const ExpeditionShareCardModal: React.FC<ExpeditionShareCardModalProps> =
                 style={{ width: '100%', justifyContent: 'center', padding: '9px 14px', fontSize: '0.82rem' }}
               >
                 <IconShare size={15} />
-                <span>{isSharing ? 'Đang mở bảng chia sẻ...' : 'Chia Sẻ Nhanh (Zalo / Story)'}</span>
+                <span>{isSharing ? 'Đang mở bảng chia sẻ...' : 'Chia Sẻ Nhanh (Ảnh / Tin Nhắn)'}</span>
               </button>
             </div>
           </div>

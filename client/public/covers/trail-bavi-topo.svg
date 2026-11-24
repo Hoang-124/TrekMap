@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 750" width="1200" height="750" role="img" aria-label="Bản đồ địa hình VQG Ba Vì — Hành Trình 3 Đỉnh Vua (1.296m), Tản Viên &amp; Ngọc Hoa">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1310"/>
+      <stop offset="100%" stop-color="#13211c"/>
+    </linearGradient>
+    <linearGradient id="epFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#74c69d" stop-opacity="0.42"/>
+      <stop offset="100%" stop-color="#74c69d" stop-opacity="0.02"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="750" fill="url(#bg)"/>
+
+  <!-- Precision Metric Grid -->
+  <g stroke="#d8e6df" stroke-opacity="0.06" stroke-width="1">
+    <line x1="100" y1="0" x2="100" y2="750"/><line x1="200" y1="0" x2="200" y2="750"/><line x1="300" y1="0" x2="300" y2="750"/><line x1="400" y1="0" x2="400" y2="750"/><line x1="500" y1="0" x2="500" y2="750"/><line x1="600" y1="0" x2="600" y2="750"/><line x1="700" y1="0" x2="700" y2="750"/><line x1="800" y1="0" x2="800" y2="750"/><line x1="900" y1="0" x2="900" y2="750"/><line x1="1000" y1="0" x2="1000" y2="750"/><line x1="1100" y1="0" x2="1100" y2="750"/>
+    <line x1="0" y1="100" x2="1200" y2="100"/><line x1="0" y1="200" x2="1200" y2="200"/><line x1="0" y1="300" x2="1200" y2="300"/><line x1="0" y1="400" x2="1200" y2="400"/><line x1="0" y1="500" x2="1200" y2="500"/><line x1="0" y1="600" x2="1200" y2="600"/><line x1="0" y1="700" x2="1200" y2="700"/>
+  </g>
+
+  <!-- Topographic Contours -->
+  <g><ellipse cx="483.1" cy="319.9" rx="81" ry="55" transform="rotate(1 483.1 319.9)" fill="none" stroke="#74c69d" stroke-opacity="0.20" stroke-width="0.8"/><ellipse cx="483.1" cy="319.9" rx="159" ry="97" transform="rotate(1 483.1 319.9)" fill="none" stroke="#74c69d" stroke-opacity="0.18" stroke-width="0.8"/><ellipse cx="483.1" cy="319.9" rx="237" ry="139" transform="rotate(1 483.1 319.9)" fill="none" stroke="#74c69d" stroke-opacity="0.16" stroke-width="1.4"/><ellipse cx="483.1" cy="319.9" rx="315" ry="181" transform="rotate(1 483.1 319.9)" fill="none" stroke="#74c69d" stroke-opacity="0.14" stroke-width="0.8"/><ellipse cx="483.1" cy="319.9" rx="393" ry="223" transform="rotate(1 483.1 319.9)" fill="none" stroke="#74c69d" stroke-opacity="0.12" stroke-width="0.8"/><ellipse cx="483.1" cy="319.9" rx="471" ry="265" transform="rotate(1 483.1 319.9)" fill="none" stroke="#74c69d" stroke-opacity="0.10" stroke-width="1.4"/><ellipse cx="483.1" cy="319.9" rx="549" ry="307" transform="rotate(1 483.1 319.9)" fill="none" stroke="#74c69d" stroke-opacity="0.08" stroke-width="0.8"/><ellipse cx="483.1" cy="319.9" rx="627" ry="349" transform="rotate(1 483.1 319.9)" fill="none" stroke="#74c69d" stroke-opacity="0.06" stroke-width="0.8"/></g>
+
+  <!-- Real Normalized GPX Track -->
+  <path d="M 1040.0 145.0 L 868.5 178.2 L 688.0 215.6 L 498.5 254.1 L 417.2 300.8 L 340.5 352.8 L 245.7 396.4 L 160.0 438.0 L 245.7 452.5 L 327.0 465.0" fill="none" stroke="#74c69d" stroke-opacity="0.25" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 1040.0 145.0 L 868.5 178.2 L 688.0 215.6 L 498.5 254.1 L 417.2 300.8 L 340.5 352.8 L 245.7 396.4 L 160.0 438.0 L 245.7 452.5 L 327.0 465.0" fill="none" stroke="#74c69d" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Start & Summit Waypoints -->
+  <circle cx="1040.0" cy="145.0" r="8" fill="#0b1310" stroke="#74c69d" stroke-width="3"/>
+  <circle cx="327.0" cy="465.0" r="9" fill="#e8dfba" stroke="#0b1310" stroke-width="2.5"/>
+  <circle cx="327.0" cy="465.0" r="18" fill="none" stroke="#e8dfba" stroke-opacity="0.55" stroke-width="1.3"/>
+
+  <!-- Elevation Profile Strip -->
+  <rect x="76" y="520" width="1048" height="175" rx="6" fill="#09100d" fill-opacity="0.72" stroke="#74c69d" stroke-opacity="0.28" stroke-width="1"/>
+  <path d="M 110.0 660.0 L 436.7 606.2 L 763.3 569.6 L 1090.0 550.0 L 1090.0 670 L 110.0 670 Z" fill="url(#epFill)"/>
+  <path d="M 110.0 660.0 L 436.7 606.2 L 763.3 569.6 L 1090.0 550.0" fill="none" stroke="#74c69d" stroke-width="2.6" stroke-linejoin="round"/>
+
+  <!-- Header Cartographic Bar -->
+  <rect x="24" y="24" width="1152" height="702" rx="4" fill="none" stroke="#f4f3ee" stroke-opacity="0.16" stroke-width="1"/>
+  <g font-family="'Plus Jakarta Sans','Inter',system-ui,sans-serif">
+    <text x="56" y="68" fill="#74c69d" font-size="12" font-weight="800" letter-spacing="3">LOST VIETNAM · TOPOGRAPHIC GPX SHEET</text>
+    <text x="56" y="102" fill="#f4f3ee" font-size="28" font-weight="800">VQG Ba Vì — Hành Trình 3 Đỉnh Vua …</text>
+    <text x="56" y="128" fill="#b7c7be" font-size="13" font-weight="600" letter-spacing="1">Hà Nội · 14.0 KM · +1.120M GAIN · ĐỈNH 1.296M</text>
+    <text x="1144" y="68" text-anchor="end" fill="#b7c7be" font-size="12" font-weight="700" letter-spacing="1.4">21.0890°N 105.3830°E  →  21.0582°N 105.3672°E</text>
+    <text x="108" y="544" fill="#b7c7be" font-size="11" font-weight="700" letter-spacing="2">MẶT CẮT ĐỘ CAO THỰC ĐỊA (186M → 1296M)</text>
+  </g>
+</svg>

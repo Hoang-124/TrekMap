@@ -84,7 +84,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const notificationAudioRef = useRef<HTMLAudioElement | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
   const sentMessageIds = useRef<Set<string>>(new Set());
   const currentUserRef = useRef(currentUser);
   const activeChannelRef = useRef<RadioChannelId>(activeChannel);
@@ -101,15 +101,14 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
   const currentUserId = String(currentUser?._id || currentUser?.id || '');
   const isStaff = currentUser?.role === 'admin' || currentUser?.role === 'moderator';
 
-  // Preload notification sound
+  // Clean up synthesized Web Audio context on unmount
   useEffect(() => {
-    try {
-      notificationAudioRef.current = new Audio('/audio/notification.mp3');
-      notificationAudioRef.current.volume = 0.75;
-      notificationAudioRef.current.load();
-    } catch {
-      // ignore audio init restrictions
-    }
+    return () => {
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close().catch(() => {});
+        audioCtxRef.current = null;
+      }
+    };
   }, []);
 
   // 10-Second Rate Limit Cooldown Interval
@@ -121,14 +120,40 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
     return () => clearInterval(timer);
   }, [cooldown]);
 
+  // Original Web Audio API 2-tone alpine radio chime (zero external audio files)
   const playIncomingNotificationSound = () => {
     try {
-      if (notificationAudioRef.current) {
-        notificationAudioRef.current.currentTime = 0;
-        notificationAudioRef.current.play().catch(() => {});
+      const AudioCtor =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtor) return;
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new AudioCtor();
+      }
+      const ctx = audioCtxRef.current;
+      if (ctx.state === 'suspended') {
+        void ctx.resume().catch(() => {});
+      }
+      const now = ctx.currentTime;
+      const notes = [
+        { freq: 783.99, start: 0, dur: 0.11 }, // G5
+        { freq: 1046.5, start: 0.1, dur: 0.18 }, // C6
+      ];
+      for (const n of notes) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(n.freq, now + n.start);
+        gain.gain.setValueAtTime(0.0001, now + n.start);
+        gain.gain.exponentialRampToValueAtTime(0.14, now + n.start + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + n.start + n.dur);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now + n.start);
+        osc.stop(now + n.start + n.dur + 0.02);
       }
     } catch {
-      // ignore autoplay block
+      // ignore autoplay / audio device restrictions
     }
   };
 
@@ -250,8 +275,8 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
       const activeUid = String(activeUser?._id || activeUser?.id || '');
       const isFromMe = Boolean(
         (msg.clientTempId && sentMessageIds.current.has(msg.clientTempId)) ||
-          sentMessageIds.current.has(msg.id) ||
-          (activeUid && msg.senderId && String(msg.senderId) === activeUid)
+        sentMessageIds.current.has(msg.id) ||
+        (activeUid && msg.senderId && String(msg.senderId) === activeUid)
       );
 
       if (!isFromMe) {
@@ -288,8 +313,8 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
         typeof payload === 'string'
           ? payload
           : (typeof errObj?.message === 'string' && errObj.message) ||
-            (typeof errObj?.error === 'string' && errObj.error) ||
-            'Tin nhắn không được chấp nhận bởi máy chủ.';
+          (typeof errObj?.error === 'string' && errObj.error) ||
+          'Tin nhắn không được chấp nhận bởi máy chủ.';
       setChatErrorMsg(msg);
       setCooldown(0);
       window.dispatchEvent(
@@ -727,8 +752,6 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
               >
                 {msg.senderAvatar && msg.senderAvatar.startsWith('http') ? (
                   <img
-                    loading="lazy"
-                    decoding="async"
                     src={msg.senderAvatar}
                     alt={msg.senderName}
                     referrerPolicy="no-referrer"

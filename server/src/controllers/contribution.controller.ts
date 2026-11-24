@@ -20,8 +20,7 @@ const inMemoryContributions: any[] = [];
 const VALID_REGIONS = new Set(['Miền Bắc', 'Miền Trung', 'Miền Nam']);
 const VALID_STATUSES = new Set(['pending', 'approved', 'rejected']);
 const VALID_WAYPOINT_TYPES = new Set(['campsite', 'water', 'viewpoint', 'danger', 'charging', 'rest']);
-const DEFAULT_CONTRIB_COVER =
-  'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329097/trekmap/trails/trail_cover_trail-fansipan.jpg';
+const DEFAULT_CONTRIB_COVER = '/covers/trail-fansipan.svg';
 
 const ALLOWED_UPDATE_FIELDS = [
   'name',

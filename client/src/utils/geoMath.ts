@@ -176,15 +176,14 @@ export function latLngToTile(lat: number, lng: number, zoom: number): { x: numbe
 }
 
 /**
- * Generates bounded tile URLs covering a trail's GPX route across zoom levels (default z12..z14)
- * for 1-click Offline Trail Pack caching.
- * Coarse overview zooms (<=13) cover the padded bounding box; high-detail zooms (>=14) prioritize
- * the exact GPX polyline corridor first (then adjacent neighbors) so 30-42km routes stay 100% covered
- * within the tile budget instead of truncating half-way across a rectangle.
+ * Generates bounded AWS Open Data Terrarium DEM tile URLs covering a trail's GPX route across zoom
+ * levels (default z10..z12) for 1-click Offline Trail Pack terrain caching (100% legal AWS Open Data).
+ * Coarse overview zooms (<=12) cover the padded bounding box; higher zooms (>=13) prioritize the
+ * exact GPX polyline corridor first (then adjacent neighbors) within the tile budget.
  */
 export function buildOfflineTileUrls(
   track: [number, number][],
-  zooms: number[] = [12, 13, 14],
+  zooms: number[] = [10, 11, 12],
   maxTiles = 90
 ): string[] {
   if (!Array.isArray(track) || track.length === 0) return [];
@@ -209,7 +208,7 @@ export function buildOfflineTileUrls(
   const pushTile = (z: number, x: number, y: number): boolean => {
     const maxCoord = Math.pow(2, z) - 1;
     if (x < 0 || y < 0 || x > maxCoord || y > maxCoord) return false;
-    const url = `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+    const url = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
     if (seen.has(url)) return false;
     seen.add(url);
     urls.push(url);

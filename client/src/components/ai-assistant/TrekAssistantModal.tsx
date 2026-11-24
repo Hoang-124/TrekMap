@@ -1471,8 +1471,6 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
             position: 'fixed',
             inset: 0,
             background: 'var(--overlay-bg)',
-            backdropFilter: 'blur(8px)',
-            WebkitBackdropFilter: 'blur(8px)',
             zIndex: 'calc(var(--z-modal, 3000) - 1)',
           }}
         />
@@ -1848,8 +1846,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
               position: 'absolute',
               inset: 0,
               zIndex: 38,
-              background: 'color-mix(in srgb, var(--color-bg-main) 88%, transparent)',
-              backdropFilter: 'blur(6px)',
+              background: 'color-mix(in srgb, var(--color-bg-main) 92%, transparent)',
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
@@ -1876,7 +1873,6 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
               inset: 0,
               zIndex: 35,
               background: 'var(--overlay-bg)',
-              backdropFilter: 'blur(8px)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',

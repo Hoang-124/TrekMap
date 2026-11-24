@@ -23,8 +23,7 @@ import { recordAuditLog } from '../utils/audit.js';
 const VALID_REACTIONS = new Set(['like', 'love', 'haha', 'wow', 'buon', 'huhu', 'sad', 'angry', 'dislike']);
 const VALID_CATEGORIES = new Set(['Hỏi Đáp', 'Kinh Nghiệm', 'Tìm Đồng Đội', 'Cảnh Báo']);
 const VALID_CHAT_CHANNELS = new Set(['general', 'north', 'central', 'south', 'sos']);
-const DEFAULT_AVATAR =
-  'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
+const DEFAULT_AVATAR = '/covers/avatar-default.svg';
 
 function escapeXml(unsafe: string): string {
   return String(unsafe || '').replace(/[<>&'"]/g, (c) => {

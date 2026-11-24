@@ -1,5 +1,6 @@
 {
   "name": "lost-server",
+  "private": true,
   "version": "2.6.0",
   "main": "dist/index.js",
   "scripts": {
@@ -11,7 +12,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "UNLICENSED",
   "description": "LOST Vietnam - Backend API & Realtime Server",
   "dependencies": {
     "cloudinary": "^2.10.0",

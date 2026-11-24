@@ -39,8 +39,7 @@ import { calculateHaversineDistanceKm as spatialHaversineKm } from '../utils/spa
 const inMemoryTrails: Trail[] = [...mockTrails];
 const VALID_REGIONS = new Set(['Miền Bắc', 'Miền Trung', 'Miền Nam']);
 const VALID_WAYPOINT_TYPES = new Set(['campsite', 'water', 'viewpoint', 'danger', 'charging', 'rest']);
-const DEFAULT_TRAIL_COVER =
-  'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329097/trekmap/trails/trail_cover_trail-fansipan.jpg';
+const DEFAULT_TRAIL_COVER = '/covers/trail-fansipan.svg';
 
 const ALLOWED_TRAIL_UPDATE_FIELDS = [
   'name',

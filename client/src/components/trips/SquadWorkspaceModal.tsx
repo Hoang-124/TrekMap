@@ -1446,7 +1446,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       copiedGearTimerRef.current = window.setTimeout(() => {
         setCopiedGear(false);
       }, 2400);
-      onShowToastRef.current?.('Đã sao chép bảng phân công trang bị chung để dán gửi Zalo!', 'success');
+      onShowToastRef.current?.('Đã sao chép bảng phân công trang bị chung để chia sẻ nhóm!', 'success');
     } else {
       onShowToastRef.current?.('Trình duyệt không cho phép sao chép tự động. Vui lòng thử lại.', 'error');
     }
@@ -1612,7 +1612,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       copiedTimerRef.current = window.setTimeout(() => {
         setCopiedSettlement(false);
       }, 2400);
-      onShowToastRef.current?.('Đã sao chép bảng quyết toán chi phí để dán gửi Zalo!', 'success');
+      onShowToastRef.current?.('Đã sao chép bảng quyết toán chi phí để chia sẻ nhóm!', 'success');
     } else {
       onShowToastRef.current?.('Trình duyệt không cho phép sao chép tự động. Vui lòng thử lại.', 'error');
     }
@@ -2712,11 +2712,11 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                         const isBusy = processingApplicantId === applicantId;
                         const reqDate = reqItem.requestedAt
                           ? new Date(reqItem.requestedAt).toLocaleString('vi-VN', {
-                              day: '2-digit',
-                              month: '2-digit',
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })
+                            day: '2-digit',
+                            month: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })
                           : '';
 
                         return (
@@ -2736,8 +2736,6 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                                 {userObj?.avatarUrl ? (
                                   <img
-                                    loading="lazy"
-                                    decoding="async"
                                     src={userObj.avatarUrl}
                                     alt={applicantName}
                                     referrerPolicy="no-referrer"
@@ -2859,8 +2857,6 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                             {member.avatarUrl ? (
                               <img
-                                loading="lazy"
-                                decoding="async"
                                 src={member.avatarUrl}
                                 alt={member.name}
                                 referrerPolicy="no-referrer"
@@ -2954,7 +2950,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
               </div>
             ) : activeTab === 'gear' ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                {/* Shared Gear Telemetry KPIs + Cloud Sync Badge + 1-Click Zalo Export */}
+                {/* Shared Gear Telemetry KPIs + Cloud Sync Badge + 1-Click Share Export */}
                 <div
                   style={{
                     display: 'flex',
@@ -3058,7 +3054,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                       }}
                     >
                       {copiedGear ? <IconCheck size={13} color="var(--color-primary)" /> : <IconCopy size={13} />}
-                      <span>{copiedGear ? 'Đã sao chép!' : 'Sao Chép Phân Công Gửi Zalo'}</span>
+                      <span>{copiedGear ? 'Đã sao chép!' : 'Sao Chép Chia Sẻ Nhóm'}</span>
                     </button>
                   </div>
                 </div>
@@ -3488,7 +3484,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     {expenses.map((exp) => {
                       const canManageExpense = Boolean(
                         effectiveIsCreator ||
-                          (effectiveUserId && exp.paidByUserId && String(exp.paidByUserId) === effectiveUserId)
+                        (effectiveUserId && exp.paidByUserId && String(exp.paidByUserId) === effectiveUserId)
                       );
                       const isEditingThis = editingExpenseId === exp.id;
 
@@ -3615,7 +3611,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                       gap: 12,
                     }}
                   >
-                    {/* Settlement Header + 1-Click Zalo Export */}
+                    {/* Settlement Header + 1-Click Share Export */}
                     <div
                       style={{
                         display: 'flex',
@@ -3683,7 +3679,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                         ) : (
                           <IconCopy size={13} />
                         )}
-                        <span>{copiedSettlement ? 'Đã sao chép!' : 'Sao Chép Bảng Quyết Toán Gửi Zalo'}</span>
+                        <span>{copiedSettlement ? 'Đã sao chép!' : 'Sao Chép Chia Sẻ Nhóm'}</span>
                       </button>
                     </div>
 

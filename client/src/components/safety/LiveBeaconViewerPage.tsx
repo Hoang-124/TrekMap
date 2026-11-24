@@ -1,14 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CircleMarker,
+  FreeBasemapLayer,
   MapContainer,
   Marker,
   Polyline,
   Popup,
-  TileLayer,
   useMap,
-} from 'react-leaflet';
+} from '../map/LeafletPrimitives.js';
 import L from 'leaflet';
+import { FREE_BASEMAPS, FREE_BASEMAP_ORDER, type BasemapKey } from '../../utils/mapTiles.js';
 import type { Trail } from '../../types.js';
 import { VIETNAM_RANGER_STATIONS, type RangerStationSeed } from '../../data/vietnamDirectory.js';
 import { calculateHaversineKm, decimalToDms } from '../../utils/solarMath.js';
@@ -38,7 +39,7 @@ export interface LiveBeaconViewerPageProps {
 }
 
 type BeaconStatus = 'active' | 'paused' | 'safe' | 'sos';
-type TileLayerKey = 'topo' | 'satellite' | 'osm';
+type TileLayerKey = BasemapKey;
 
 interface BeaconPoint {
   lat: number;
@@ -83,27 +84,6 @@ interface NormalizedLiveBeacon {
 
 const POLL_INTERVAL_MS = 15_000;
 const STALE_SIGNAL_THRESHOLD_MIN = 45;
-
-const TILE_LAYERS: Record<TileLayerKey, { label: string; url: string; attribution: string; maxZoom: number }> = {
-  topo: {
-    label: 'Địa Hình Topo',
-    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
-    attribution: '&copy; OpenStreetMap, SRTM | OpenTopoMap',
-    maxZoom: 17,
-  },
-  satellite: {
-    label: 'Vệ Tinh',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    attribution: '&copy; Esri World Imagery',
-    maxZoom: 18,
-  },
-  osm: {
-    label: 'Bản Đồ Chuẩn',
-    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: '&copy; OpenStreetMap contributors',
-    maxZoom: 19,
-  },
-};
 
 const IconBatterySvg: React.FC<{ percent: number | null; size?: number }> = ({ percent, size = 18 }) => {
   const safe = typeof percent === 'number' && Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
@@ -721,8 +701,6 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
     });
   };
 
-  const activeTile = TILE_LAYERS[tileKey];
-
   // Loading Skeleton View
   if (effectiveLoadState === 'loading') {
     return (
@@ -1167,7 +1145,7 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
         <div className="card" style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {(Object.keys(TILE_LAYERS) as TileLayerKey[]).map((key) => (
+              {FREE_BASEMAP_ORDER.map((key) => (
                 <button
                   key={key}
                   type="button"
@@ -1175,7 +1153,7 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
                   style={{ padding: '5px 10px', fontSize: '0.75rem' }}
                   onClick={() => setTileKey(key)}
                 >
-                  {TILE_LAYERS[key].label}
+                  {FREE_BASEMAPS[key].shortLabel}
                 </button>
               ))}
             </div>
@@ -1237,12 +1215,7 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
               style={{ height: '100%', width: '100%' }}
               scrollWheelZoom
             >
-              <TileLayer
-                key={tileKey}
-                url={activeTile.url}
-                attribution={activeTile.attribution}
-                maxZoom={activeTile.maxZoom}
-              />
+              <FreeBasemapLayer basemap={tileKey} />
               <BeaconMapViewportController
                 token={beacon.token}
                 boundsPoints={mapBoundsPoints}

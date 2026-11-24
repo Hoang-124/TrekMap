@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import type { Trail, User } from '../../types.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
+import { getParkEmblemSvg } from '../../utils/avatarSvg.js';
 import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
 import { useSlidingIndicator } from '../../hooks/useSlidingIndicator.js';
 import {
@@ -1174,7 +1175,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
   const handleCopyBudget = async () => {
     const copied = await copyTextSafe(buildBudgetShareText());
     if (copied) {
-      onShowToast?.('Đã sao chép bảng dự trù chi phí gửi nhóm Zalo!', 'success');
+      onShowToast?.('Đã sao chép bảng dự trù chi phí để chia sẻ nhóm!', 'success');
     } else {
       onShowToast?.('Không thể tự động sao chép bảng dự trù.', 'info');
     }
@@ -1776,6 +1777,29 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
       {/* ==================================================================== */}
       {activeTab === 'guides' && (
         <div className="tab-content-slide" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Independent National Park Directory Disclaimer */}
+          <div
+            role="note"
+            style={{
+              background: 'color-mix(in srgb, var(--color-sky) 8%, var(--color-bg-card))',
+              border: '1px solid color-mix(in srgb, var(--color-sky) 28%, var(--color-border))',
+              borderRadius: 6,
+              padding: '11px 14px',
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 10,
+              fontSize: '0.78rem',
+              lineHeight: 1.55,
+              color: 'var(--color-text-muted)',
+            }}
+          >
+            <IconShieldCheck size={16} color="var(--color-sky)" style={{ flexShrink: 0, marginTop: 2 }} />
+            <div>
+              <strong style={{ color: 'var(--color-text-main)' }}>Danh bạ tham khảo độc lập:</strong>{' '}
+              Thông tin liên hệ, đầu mối hướng dẫn viên và mức phí tham khảo được tổng hợp từ cổng thông tin công khai của các Ban Quản Lý Vườn Quốc Gia / Khu Bảo Tồn Thiên Nhiên tại Việt Nam. LOST không phải đơn vị đại diện hay đối tác chính thức của các cơ quan quản lý rừng — vui lòng xác nhận trực tiếp hotline, lệ phí và thủ tục giấy phép trước khi khởi hành.
+            </div>
+          </div>
+
           {/* Guide Filter Controls */}
           <div
             style={{
@@ -1911,7 +1935,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                       <img
                         loading="lazy"
                         decoding="async"
-                        src={guide.avatarUrl || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329095/trekmap/avatars/avatar_guide_1.jpg'}
+                        src={guide.avatarUrl || getParkEmblemSvg(guide.name, guide.region)}
                         alt={guide.name}
                         style={{
                           width: 50,
@@ -2456,7 +2480,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                 style={{ flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '9px 12px', borderRadius: 4 }}
               >
                 <IconCopy size={14} />
-                <span>Sao Chép Gửi Nhóm Zalo</span>
+                <span>Sao Chép Chia Sẻ Nhóm</span>
               </button>
               <button
                 type="button"
@@ -2874,7 +2898,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                   <img
                     loading="lazy"
                     decoding="async"
-                    src={detailGuide.avatarUrl || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329095/trekmap/avatars/avatar_guide_1.jpg'}
+                    src={detailGuide.avatarUrl || getParkEmblemSvg(detailGuide.name, detailGuide.region)}
                     alt={detailGuide.name}
                     style={{
                       width: 54,

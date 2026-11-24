@@ -392,7 +392,7 @@ export const VERIFIED_VIETNAM_EMERGENCY_CONTACTS: Record<string, VerifiedEmergen
     name: 'Ban Quản lý Khu BTTN Pù Luông',
     phone: '02373.880.671',
     dialNumber: '02373880671',
-    rangerContact: '0988.945.236 / 112',
+    rangerContact: '112 / 114',
     region: 'Thanh Hóa - Bắc Trung Bộ',
     address: 'Huyện Bá Thước, Tỉnh Thanh Hóa',
   },
