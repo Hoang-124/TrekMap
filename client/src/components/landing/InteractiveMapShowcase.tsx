@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import type { Trail, Incident } from '../../types.js';
 import { MapView } from '../map/MapView.js';
 import { IconLightbulb, IconCalendar, IconX, IconStar } from '../common/SvgIcons.js';
@@ -171,15 +171,7 @@ const InteractiveMapShowcaseBase: React.FC<InteractiveMapShowcaseProps> = ({
 
   const activeDiff = activeTrail ? getDifficultyBadge(activeTrail.difficultyLevel) : null;
 
-  const escapeXml = (str: string) =>
-    String(str || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&apos;');
-
-  const handleDownloadGpx = (trail: Trail) => {
+  const handleDownloadGpx = useCallback((trail: Trail) => {
     if (!trail.gpxTrack || trail.gpxTrack.length === 0) {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
@@ -188,6 +180,13 @@ const InteractiveMapShowcaseBase: React.FC<InteractiveMapShowcaseProps> = ({
       );
       return;
     }
+    const escapeXml = (str: string) =>
+      String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
     const trackPointsXml = trail.gpxTrack
       .map(([lat, lng]) => `      <trkpt lat="${Number(lat)}" lon="${Number(lng)}"></trkpt>`)
       .join('\n');
@@ -220,7 +219,7 @@ ${trackPointsXml}
         detail: { message: `Đã tải xuống file GPX của ${trail.name}!`, type: 'success' },
       })
     );
-  };
+  }, []);
 
   return (
     <section
@@ -422,7 +421,7 @@ ${trackPointsXml}
               allTrails={trails}
               onSelectRegion={onSelectRegion}
               selectedTrail={focusedTrail || selectedTrail}
-              onFocusTrail={(t) => setFocusedTrail(t)}
+              onFocusTrail={setFocusedTrail}
               onSelectTrail={onSelectTrail}
               incidents={incidents}
               height="100%"
@@ -463,6 +462,7 @@ ${trackPointsXml}
                   src={activeTrail.coverImage || VERIFIED_TRAIL_FALLBACK}
                   alt={activeTrail.name}
                   loading="lazy"
+                  decoding="async"
                   onError={(e) => {
                     const img = e.currentTarget;
                     if (img.src !== VERIFIED_TRAIL_FALLBACK) {
@@ -526,14 +526,13 @@ ${trackPointsXml}
 
                     <span
                       style={{
-                        background: 'var(--color-bg-glass)',
+                        background: 'var(--color-bg-hud)',
                         border: '1px solid var(--color-border-strong)',
                         color: 'var(--color-sky)',
                         fontSize: '0.68rem',
                         fontWeight: 700,
                         padding: '3px 8px',
                         borderRadius: 4,
-                        backdropFilter: 'blur(8px)',
                       }}
                     >
                       {activeTrail.region}
@@ -542,14 +541,13 @@ ${trackPointsXml}
 
                   <span
                     style={{
-                      background: 'var(--color-bg-glass)',
+                      background: 'var(--color-bg-hud)',
                       border: '1px solid color-mix(in srgb, var(--color-sun) 45%, transparent)',
                       color: 'var(--color-sun)',
                       fontSize: '0.72rem',
                       fontWeight: 800,
                       padding: '3px 9px',
                       borderRadius: 4,
-                      backdropFilter: 'blur(8px)',
                       display: 'inline-flex',
                       alignItems: 'center',
                       gap: 4,
@@ -969,6 +967,7 @@ ${trackPointsXml}
                             src={t.coverImage || VERIFIED_TRAIL_FALLBACK}
                             alt={t.name}
                             loading="lazy"
+                            decoding="async"
                             onError={(e) => {
                               const img = e.currentTarget;
                               if (img.src !== VERIFIED_TRAIL_FALLBACK) {

@@ -30,13 +30,14 @@ interface ItineraryStep {
 
 interface SharedItineraryData {
   _id?: string;
-  trailId?: string | { id?: string; _id?: string } | null;
+  trailId?: string | { id?: string; _id?: string; name?: string } | null;
   rawTrailId?: string;
   trailName?: string;
   title: string;
   startDate: string;
   endDate?: string;
   memberCount: number;
+  notes?: string;
   timelineSteps?: ItineraryStep[];
   steps?: ItineraryStep[];
   shareToken: string;
@@ -133,6 +134,14 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
   const rawSteps: ItineraryStep[] = itinerary?.timelineSteps || itinerary?.steps || [];
   const steps = [...rawSteps].sort((a, b) => a.day - b.day || (a.time || '').localeCompare(b.time || ''));
 
+  const resolvedTrailName =
+    (typeof itinerary?.trailName === 'string' && itinerary.trailName.trim()) ||
+    (typeof itinerary?.trailId === 'object' &&
+      itinerary?.trailId !== null &&
+      typeof itinerary.trailId.name === 'string' &&
+      itinerary.trailId.name.trim()) ||
+    'Núi Việt Nam';
+
   const handleCopyLink = () => {
     navigator.clipboard
       .writeText(window.location.href)
@@ -179,7 +188,7 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
     ctx.fillStyle = '#a8b0aa';
     ctx.font = `15px ${canvasFont}`;
     ctx.fillText(
-      `Cung đường: ${itinerary.trailName || 'Núi Việt Nam'} | Khởi hành: ${
+      `Cung đường: ${resolvedTrailName} | Khởi hành: ${
         itinerary.startDate ? new Date(itinerary.startDate).toLocaleDateString('vi-VN') : 'Chưa ấn định'
       }`,
       50,
@@ -245,8 +254,6 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
         position: 'fixed',
         inset: 0,
         background: 'var(--overlay-bg)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
         zIndex: 'var(--z-modal, 3000)' as unknown as number,
         display: 'flex',
         alignItems: 'center',
@@ -375,7 +382,7 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
                     CUNG ĐƯỜNG
                   </div>
                   <div style={{ fontSize: '0.94rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 4 }}>
-                    {itinerary.trailName || 'Núi Việt Nam'}
+                    {resolvedTrailName}
                   </div>
                 </div>
 

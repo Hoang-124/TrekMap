@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import type { Trail, Incident, LocalGuide } from '../../types.js';
 import { mockTrails } from '../../data/seedData.js';
 import { VERIFIED_GUIDES_EXTENDED, VIETNAM_RANGER_STATIONS } from '../../data/vietnamDirectory.js';
@@ -489,42 +489,54 @@ function extractPrimaryDialNumber(phone?: string): string {
   return primary.replace(/[^0-9+]/g, '') || '112';
 }
 
-export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
+const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
   incidents: propIncidents,
   trails,
   onOpenIncidentModal,
   onNavigateToForum,
+  onSelectTrail,
   onShowToast,
 }) => {
   // 1. Basecamp Radio State
   const [activeTrack, setActiveTrack] = useState<AudioTrack>(AMBIENT_CHANNELS[0]);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [volume, setVolume] = useState<number>(0.6);
+  const volumeRef = useRef<number>(volume);
   const soundEngineRef = useRef<SoundEngine | null>(null);
 
-  const startTrack = (track: AudioTrack) => {
-    stopTrack();
-    setIsPlaying(true);
-    setActiveTrack(track);
-    const engine = playRealisticNatureAmbient(track.type, volume);
-    soundEngineRef.current = engine;
-  };
+  useEffect(() => {
+    volumeRef.current = volume;
+  }, [volume]);
 
-  const stopTrack = () => {
+  const stopTrack = useCallback(() => {
     if (soundEngineRef.current) {
       soundEngineRef.current.stop();
       soundEngineRef.current = null;
     }
     setIsPlaying(false);
-  };
+  }, []);
 
-  const togglePlay = (track: AudioTrack) => {
-    if (isPlaying && activeTrack.id === track.id) {
+  const startTrack = useCallback(
+    (track: AudioTrack) => {
       stopTrack();
-    } else {
-      startTrack(track);
-    }
-  };
+      setIsPlaying(true);
+      setActiveTrack(track);
+      const engine = playRealisticNatureAmbient(track.type, volumeRef.current);
+      soundEngineRef.current = engine;
+    },
+    [stopTrack]
+  );
+
+  const togglePlay = useCallback(
+    (track: AudioTrack) => {
+      if (isPlaying && activeTrack.id === track.id) {
+        stopTrack();
+      } else {
+        startTrack(track);
+      }
+    },
+    [isPlaying, activeTrack.id, stopTrack, startTrack]
+  );
 
   useEffect(() => {
     if (soundEngineRef.current) {
@@ -536,7 +548,7 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
     return () => {
       stopTrack();
     };
-  }, []);
+  }, [stopTrack]);
 
   // 2. Live Safety Radar Incidents Data (Avoids duplicate /api/incidents fetch when parent passes incidents prop)
   const [fetchedIncidents, setFetchedIncidents] = useState<Incident[]>([]);
@@ -559,9 +571,27 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
     };
   }, [propIncidents]);
 
-  const incidents = (propIncidents !== undefined ? propIncidents : fetchedIncidents)
-    .filter((i) => !i.resolved)
-    .slice(0, 4);
+  const incidents = useMemo(
+    () =>
+      (propIncidents !== undefined ? propIncidents : fetchedIncidents)
+        .filter((i) => !i.resolved)
+        .slice(0, 4),
+    [propIncidents, fetchedIncidents]
+  );
+
+  const trailLookup = useMemo(() => {
+    const byId = new Map<string, Trail>();
+    const byName = new Map<string, Trail>();
+    if (Array.isArray(trails)) {
+      for (const t of trails) {
+        if (t.id) byId.set(t.id, t);
+        const mongoId = (t as Trail & { _id?: string })._id;
+        if (mongoId) byId.set(mongoId, t);
+        if (t.name) byName.set(t.name.toLowerCase(), t);
+      }
+    }
+    return { byId, byName };
+  }, [trails]);
 
   // 3. Certified Mountain Porters & Official VQG Guiding Centers
   const [porters, setPorters] = useState<LocalGuide[]>(() => FALLBACK_OFFICIAL_GUIDES.slice(0, 4));
@@ -914,15 +944,34 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
                   const dateStr = rawDate ? new Date(rawDate).toLocaleDateString('vi-VN') : 'Gần đây';
                   const isHigh = inc.severity === 'high' || inc.severity === 'critical';
 
+                  const matchedTrail =
+                    (inc.trailId ? trailLookup.byId.get(inc.trailId) : undefined) ||
+                    (inc.trailName ? trailLookup.byName.get(inc.trailName.toLowerCase()) : undefined) ||
+                    null;
+
                   return (
                     <div
                       key={inc.id || incExt._id}
+                      role={matchedTrail && onSelectTrail ? 'button' : undefined}
+                      tabIndex={matchedTrail && onSelectTrail ? 0 : undefined}
+                      onClick={matchedTrail && onSelectTrail ? () => onSelectTrail(matchedTrail) : undefined}
+                      onKeyDown={
+                        matchedTrail && onSelectTrail
+                          ? (e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                onSelectTrail(matchedTrail);
+                              }
+                            }
+                          : undefined
+                      }
                       style={{
                         background: 'var(--color-bg-main)',
                         border: '1px solid var(--color-border)',
                         borderLeft: `3px solid ${isHigh ? 'var(--color-error)' : 'var(--color-earth)'}`,
                         borderRadius: 4,
                         padding: '10px 12px',
+                        cursor: matchedTrail && onSelectTrail ? 'pointer' : 'default',
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4, gap: 6 }}>
@@ -1163,3 +1212,5 @@ export const BentoCommandHub: React.FC<BentoCommandHubProps> = ({
     </section>
   );
 };
+
+export const BentoCommandHub = React.memo(BentoCommandHubBase);

@@ -13,6 +13,7 @@ import {
   IconTrees,
   IconShieldCheck,
 } from './SvgIcons.js';
+import type { Trail, UserProfile } from '../../types.js';
 import { VIETNAM_RANGER_STATIONS, type RangerStationSeed } from '../../data/vietnamDirectory.js';
 
 const SafetyTimerModal = lazy(() =>
@@ -22,6 +23,8 @@ const SafetyTimerModal = lazy(() =>
 interface EmergencyContactsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  currentUser?: (UserProfile & { _id?: string }) | null;
+  trails?: Trail[];
 }
 
 type RegionFilter = 'Tất Cả' | 'Miền Bắc' | 'Miền Trung' | 'Miền Nam';
@@ -82,7 +85,12 @@ function getAuthorityMeta(type: RangerStationSeed['authorityType']): {
   }
 }
 
-export const EmergencyContactsModal: React.FC<EmergencyContactsModalProps> = ({ isOpen, onClose }) => {
+export const EmergencyContactsModal: React.FC<EmergencyContactsModalProps> = ({
+  isOpen,
+  onClose,
+  currentUser = null,
+  trails = [],
+}) => {
   const [isSafetyTimerOpen, setIsSafetyTimerOpen] = useState(false);
   const [selectedRegion, setSelectedRegion] = useState<RegionFilter>('Tất Cả');
   const [searchQuery, setSearchQuery] = useState('');
@@ -173,9 +181,7 @@ export const EmergencyContactsModal: React.FC<EmergencyContactsModalProps> = ({ 
             style={{
               position: 'fixed',
               inset: 0,
-              background: 'color-mix(in srgb, var(--color-bg-main) 84%, transparent)',
-              backdropFilter: 'blur(14px)',
-              WebkitBackdropFilter: 'blur(14px)',
+              background: 'var(--overlay-bg)',
               zIndex: 'var(--z-modal, 3000)' as unknown as number,
               display: 'flex',
               alignItems: 'center',
@@ -689,6 +695,8 @@ export const EmergencyContactsModal: React.FC<EmergencyContactsModalProps> = ({ 
           <SafetyTimerModal
             isOpen={isSafetyTimerOpen}
             onClose={() => setIsSafetyTimerOpen(false)}
+            currentUser={currentUser}
+            trails={trails}
             onShowToast={(message, type) => {
               window.dispatchEvent(new CustomEvent('lost:show-toast', { detail: { message, type } }));
             }}

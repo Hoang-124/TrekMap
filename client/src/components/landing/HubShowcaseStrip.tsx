@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { mockTrails } from '../../data/seedData.js';
 import {
   VIETNAM_SUMMIT_CHALLENGES,
@@ -63,79 +63,85 @@ export const HubShowcaseStrip: React.FC<HubShowcaseStripProps> = React.memo(
     const challengesCount = VIETNAM_SUMMIT_CHALLENGES.length;
     const rangersCount = VIETNAM_RANGER_STATIONS.length;
 
-    const primaryHubs: PrimaryHubCard[] = [
-      {
-        id: 'passport',
-        index: '01',
-        title: `Hộ Chiếu Đỉnh & ${challengesCount} Thử Thách`,
-        subtitle:
-          'Ghi nhận dấu tem chinh phục các đỉnh 3.000m, theo dõi mốc độ cao tích lũy và bảng xếp hạng Trekker Việt Nam.',
-        metric: `${trailsCount} đỉnh DEM · ${challengesCount} thử thách`,
-        accent: 'var(--color-sun)',
-        icon: <IconMountain size={20} color="var(--color-sun)" />,
-      },
-      {
-        id: 'almanac',
-        index: '02',
-        title: 'Lịch Mùa 12 Tháng & Săn Mây',
-        subtitle:
-          'Ma trận khí hậu thực địa 12 tháng: nhận diện mùa săn biển mây Tây Bắc, hoa đỗ quyên và mùa bão lũ cần tránh.',
-        metric: '12 tháng · 3 vùng khí hậu',
-        accent: 'var(--color-sky)',
-        icon: <IconCalendar size={20} color="var(--color-sky)" />,
-      },
-      {
-        id: 'planner',
-        index: '03',
-        title: 'Thiết Kế GPX & Phân Tích Độ Dốc',
-        subtitle:
-          'Tự chấm cung trên bản đồ địa hình, lấy cao độ DEM thật, đo dốc từng chặng, tính Naismith/Tobler ETA và xuất GPX 1.1.',
-        metric: 'DEM thật · GPX 1.1',
-        accent: 'var(--color-primary)',
-        icon: <IconCompass size={20} color="var(--color-primary)" />,
-      },
-      {
-        id: 'toolkit',
-        index: '04',
-        title: 'Công Cụ Sinh Tồn Offline & La Bàn',
-        subtitle:
-          'La bàn GPS, giờ mặt trời NOAA, tính nước & calo, còi cứu nạn 3.1kHz, SOS 2G và các tình huống sơ cứu thực địa WFA.',
-        metric: '100% hoạt động ngoại tuyến',
-        accent: 'var(--color-earth)',
-        icon: <IconSatellite size={20} color="var(--color-earth)" />,
-      },
-    ];
+    const primaryHubs = useMemo<PrimaryHubCard[]>(
+      () => [
+        {
+          id: 'passport',
+          index: '01',
+          title: `Hộ Chiếu Đỉnh & ${challengesCount} Thử Thách`,
+          subtitle:
+            'Ghi nhận dấu tem chinh phục các đỉnh 3.000m, theo dõi mốc độ cao tích lũy và bảng xếp hạng Trekker Việt Nam.',
+          metric: `${trailsCount} đỉnh DEM · ${challengesCount} thử thách`,
+          accent: 'var(--color-sun)',
+          icon: <IconMountain size={20} color="var(--color-sun)" />,
+        },
+        {
+          id: 'almanac',
+          index: '02',
+          title: 'Lịch Mùa 12 Tháng & Săn Mây',
+          subtitle:
+            'Ma trận khí hậu thực địa 12 tháng: nhận diện mùa săn biển mây Tây Bắc, hoa đỗ quyên và mùa bão lũ cần tránh.',
+          metric: '12 tháng · 3 vùng khí hậu',
+          accent: 'var(--color-sky)',
+          icon: <IconCalendar size={20} color="var(--color-sky)" />,
+        },
+        {
+          id: 'planner',
+          index: '03',
+          title: 'Thiết Kế GPX & Phân Tích Độ Dốc',
+          subtitle:
+            'Tự chấm cung trên bản đồ địa hình, lấy cao độ DEM thật, đo dốc từng chặng, tính Naismith/Tobler ETA và xuất GPX 1.1.',
+          metric: 'DEM thật · GPX 1.1',
+          accent: 'var(--color-primary)',
+          icon: <IconCompass size={20} color="var(--color-primary)" />,
+        },
+        {
+          id: 'toolkit',
+          index: '04',
+          title: 'Công Cụ Sinh Tồn Offline & La Bàn',
+          subtitle:
+            'La bàn GPS, giờ mặt trời NOAA, tính nước & calo, còi cứu nạn 3.1kHz, SOS 2G và các tình huống sơ cứu thực địa WFA.',
+          metric: '100% hoạt động ngoại tuyến',
+          accent: 'var(--color-earth)',
+          icon: <IconSatellite size={20} color="var(--color-earth)" />,
+        },
+      ],
+      [trailsCount, challengesCount]
+    );
 
-    const quickLaunchHubs: QuickLaunchHub[] = [
-      {
-        id: 'training',
-        title: 'Giáo Án Thể Lực',
-        caption: 'Lộ trình 4–8 tuần & điểm sẵn sàng',
-        accent: 'var(--color-primary)',
-        icon: <IconHiking size={16} color="var(--color-primary)" />,
-      },
-      {
-        id: 'directory',
-        title: 'Kiểm Lâm, Porter & Chi Phí',
-        caption: `${rangersCount} trạm VQG & dự toán VNĐ`,
-        accent: 'var(--color-stream)',
-        icon: <IconShieldAlert size={16} color="var(--color-stream)" />,
-      },
-      {
-        id: 'gear',
-        title: 'Tủ Đồ & Tối Ưu Balo',
-        caption: 'Phân tích Base Weight & tỉ lệ cơ thể',
-        accent: 'var(--color-sun)',
-        icon: <IconBackpack size={16} color="var(--color-sun)" />,
-      },
-      {
-        id: 'radar',
-        title: 'Radar An Toàn',
-        caption: 'Cảnh báo sạt lở & tình trạng đường 7 ngày',
-        accent: 'var(--color-error)',
-        icon: <IconRadar size={16} color="var(--color-error)" />,
-      },
-    ];
+    const quickLaunchHubs = useMemo<QuickLaunchHub[]>(
+      () => [
+        {
+          id: 'training',
+          title: 'Giáo Án Thể Lực',
+          caption: 'Lộ trình 4–8 tuần & điểm sẵn sàng',
+          accent: 'var(--color-primary)',
+          icon: <IconHiking size={16} color="var(--color-primary)" />,
+        },
+        {
+          id: 'directory',
+          title: 'Kiểm Lâm, Porter & Chi Phí',
+          caption: `${rangersCount} trạm VQG & dự toán VNĐ`,
+          accent: 'var(--color-stream)',
+          icon: <IconShieldAlert size={16} color="var(--color-stream)" />,
+        },
+        {
+          id: 'gear',
+          title: 'Tủ Đồ & Tối Ưu Balo',
+          caption: 'Phân tích Base Weight & tỉ lệ cơ thể',
+          accent: 'var(--color-sun)',
+          icon: <IconBackpack size={16} color="var(--color-sun)" />,
+        },
+        {
+          id: 'radar',
+          title: 'Radar An Toàn',
+          caption: 'Cảnh báo sạt lở & tình trạng đường 7 ngày',
+          accent: 'var(--color-error)',
+          icon: <IconRadar size={16} color="var(--color-error)" />,
+        },
+      ],
+      [rangersCount]
+    );
 
     return (
       <section

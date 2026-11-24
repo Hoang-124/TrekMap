@@ -1,13 +1,49 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { Trail, ItineraryStep } from '../../types.js';
-import { createExpeditionItinerary } from '../../services/api.js';
+import { createExpeditionItinerary, deleteSharedItinerary } from '../../services/api.js';
+import { scopedStorageKey } from '../../utils/storageScope.js';
+import { getApiHeaders } from '../../utils/sessionHeaders.js';
+import {
+  IconCalendar,
+  IconEdit,
+  IconMapPin,
+  IconShare,
+  IconTrash,
+  IconCheck,
+  IconX,
+} from '../common/SvgIcons.js';
+
+interface SavedItineraryRecord {
+  _id?: string;
+  shareToken: string;
+  title: string;
+  trailId?: string | { id?: string; _id?: string; name?: string } | null;
+  trailName?: string;
+  startDate: string;
+  endDate?: string;
+  totalDays?: number;
+  memberCount: number;
+  notes?: string;
+  timelineSteps?: Array<{
+    day?: number;
+    time?: string;
+    title?: string;
+    activity?: string;
+    description?: string;
+    notes?: string;
+    location?: string;
+    locationNote?: string;
+  }>;
+  createdAt?: string;
+  updatedAt?: string;
+}
 
 interface ItineraryTabProps {
   trail: Trail;
 }
 
 export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
-  const storageKey = `lost_itinerary_${trail.id}`;
+  const storageKey = scopedStorageKey(`lost_itinerary_${trail.id}`);
 
   const [title, setTitle] = useState(() => {
     const saved = localStorage.getItem(storageKey);
@@ -46,8 +82,75 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
   });
 
   const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [editingShareToken, setEditingShareToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+
+  // Saved Cloud Itineraries ("Lịch Trình Đã Lưu Của Tôi")
+  const [isSavedListOpen, setIsSavedListOpen] = useState(false);
+  const [savedItineraries, setSavedItineraries] = useState<SavedItineraryRecord[]>([]);
+  const [loadingSavedList, setLoadingSavedList] = useState(false);
+  const [confirmDeleteToken, setConfirmDeleteToken] = useState<string | null>(null);
+  const [deletingToken, setDeletingToken] = useState<string | null>(null);
+
+  const loadMyItineraries = useCallback(async (signal?: AbortSignal) => {
+    const token = localStorage.getItem('lost_token');
+    if (!token) {
+      setSavedItineraries([]);
+      return;
+    }
+    setLoadingSavedList(true);
+    try {
+      const res = await fetch('/api/itineraries/me', {
+        headers: getApiHeaders(),
+        signal,
+      });
+      if (!res.ok) {
+        setSavedItineraries([]);
+        return;
+      }
+      const json = await res.json();
+      if (!signal?.aborted && json?.success && Array.isArray(json.data)) {
+        setSavedItineraries(json.data as SavedItineraryRecord[]);
+      }
+    } catch {
+      // Ignore abort or offline error cleanly
+    } finally {
+      if (!signal?.aborted) setLoadingSavedList(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    if (localStorage.getItem('lost_token')) {
+      fetch('/api/itineraries/me', {
+        headers: getApiHeaders(),
+        signal: controller.signal,
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((json) => {
+          if (!controller.signal.aborted && json?.success && Array.isArray(json.data)) {
+            setSavedItineraries(json.data as SavedItineraryRecord[]);
+          }
+        })
+        .catch(() => {
+          // Ignore abort or offline error cleanly
+        });
+    }
+    const handleAuthChanged = () => {
+      if (localStorage.getItem('lost_token')) {
+        void loadMyItineraries();
+      } else {
+        setSavedItineraries([]);
+        setEditingShareToken(null);
+      }
+    };
+    window.addEventListener('lost:auth-changed', handleAuthChanged);
+    return () => {
+      controller.abort();
+      window.removeEventListener('lost:auth-changed', handleAuthChanged);
+    };
+  }, [loadMyItineraries]);
 
   const defaultSteps = useCallback((): ItineraryStep[] => {
     const baseSteps: ItineraryStep[] = [
@@ -210,29 +313,67 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
     setSubmitting(true);
 
     const effectiveStartDate = startDate || new Date().toISOString().split('T')[0];
+    const computedTotalDays = Math.max(1, ...steps.map((s) => Number(s.day) || 1));
+    const canonicalSteps = steps.map((s) => ({
+      day: s.day,
+      time: s.time,
+      title: s.title,
+      activity: s.title,
+      location: s.locationNote || '',
+      locationNote: s.locationNote || '',
+      description: s.description,
+      notes: s.description,
+    }));
+
     const payload = {
       trailId: trail.id,
       title: title || `Kế Hoạch Khám Phá ${trail.name}`,
       startDate: effectiveStartDate,
+      totalDays: computedTotalDays,
       memberCount: memberCount || 4,
-      timelineSteps: steps.map((s) => ({
-        day: s.day,
-        time: s.time,
-        activity: s.title,
-        location: s.locationNote,
-        notes: s.description,
-      })),
+      timelineSteps: canonicalSteps,
     };
 
     try {
-      const res = await createExpeditionItinerary(payload);
-      if (res && res.shareUrl) {
-        setShareUrl(res.shareUrl);
+      if (editingShareToken) {
+        const res = await fetch(`/api/itineraries/${encodeURIComponent(editingShareToken)}`, {
+          method: 'PUT',
+          headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify(payload),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || !json.success) {
+          throw new Error(json.message || 'Không thể cập nhật lịch trình lúc này.');
+        }
+        const nextUrl = `${window.location.origin}/#itinerary/${editingShareToken}`;
+        setShareUrl(nextUrl);
+        try {
+          const cached = JSON.parse(localStorage.getItem('lost_local_itineraries') || '{}');
+          cached[editingShareToken] = { ...payload, ...(json.data || {}), shareToken: editingShareToken };
+          localStorage.setItem('lost_local_itineraries', JSON.stringify(cached));
+        } catch {
+          // ignore storage quota errors
+        }
+        void loadMyItineraries();
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
-            detail: { message: 'Đã lưu lịch trình và tạo liên kết chia sẻ thành công!', type: 'success' },
+            detail: { message: json.message || 'Đã cập nhật lịch trình đã lưu thành công!', type: 'success' },
           })
         );
+      } else {
+        const res = await createExpeditionItinerary(payload);
+        if (res && res.shareUrl) {
+          setShareUrl(res.shareUrl);
+          if (res.data?.shareToken) {
+            setEditingShareToken(String(res.data.shareToken));
+          }
+          void loadMyItineraries();
+          window.dispatchEvent(
+            new CustomEvent('lost:show-toast', {
+              detail: { message: 'Đã lưu lịch trình và tạo liên kết chia sẻ thành công!', type: 'success' },
+            })
+          );
+        }
       }
     } catch (err: unknown) {
       window.dispatchEvent(
@@ -245,6 +386,64 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
       );
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleLoadSavedForEdit = (item: SavedItineraryRecord) => {
+    setTitle(item.title || `Hành trình thám hiểm ${trail.name}`);
+    if (item.startDate) {
+      const parsed = new Date(item.startDate);
+      if (!Number.isNaN(parsed.getTime())) {
+        setStartDate(parsed.toISOString().split('T')[0]);
+      }
+    }
+    setMemberCount(Math.max(1, Number(item.memberCount) || 4));
+    const loadedSteps: ItineraryStep[] = (item.timelineSteps || []).map((s, idx) => ({
+      day: Math.max(1, Number(s.day) || 1),
+      time: String(s.time || '08:00'),
+      title: String(s.activity || s.title || `Chặng ${idx + 1}`),
+      description: String(s.notes || s.description || ''),
+      locationNote: String(s.location || s.locationNote || ''),
+    }));
+    if (loadedSteps.length > 0) {
+      setSteps(loadedSteps);
+    }
+    setEditingShareToken(item.shareToken);
+    setShareUrl(`${window.location.origin}/#itinerary/${item.shareToken}`);
+    window.dispatchEvent(
+      new CustomEvent('lost:show-toast', {
+        detail: { message: `Đã nạp lịch trình "${item.title}" để chỉnh sửa.`, type: 'info' },
+      })
+    );
+  };
+
+  const handleDeleteSaved = async (token: string) => {
+    if (!token || deletingToken) return;
+    setDeletingToken(token);
+    try {
+      await deleteSharedItinerary(token);
+      setSavedItineraries((prev) => prev.filter((it) => it.shareToken !== token));
+      setConfirmDeleteToken(null);
+      if (editingShareToken === token) {
+        setEditingShareToken(null);
+        setShareUrl(null);
+      }
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: { message: 'Đã xóa lịch trình đã lưu thành công!', type: 'success' },
+        })
+      );
+    } catch (err: unknown) {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: {
+            message: err instanceof Error ? err.message : 'Không thể xóa lịch trình lúc này.',
+            type: 'error',
+          },
+        })
+      );
+    } finally {
+      setDeletingToken(null);
     }
   };
 
@@ -412,6 +611,16 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
                       style={{ flex: '1 1 180px', fontSize: '0.85rem', fontWeight: 700, padding: '5px 8px' }}
                     />
 
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={step.locationNote || ''}
+                      onChange={(e) => handleUpdateStep(idx, 'locationNote', e.target.value)}
+                      placeholder="Địa điểm / Mốc (VD: Lán 2.800m, Suối...)"
+                      aria-label="Địa điểm chặng"
+                      style={{ flex: '1 1 160px', fontSize: '0.78rem', padding: '5px 8px' }}
+                    />
+
                     <button
                       type="button"
                       onClick={() => handleRemoveStep(idx)}
@@ -453,15 +662,279 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
             </button>
           </div>
         </div>
+
+        {/* Saved Cloud Itineraries Collapsible Panel */}
+        <div className="card" style={{ marginTop: 18 }}>
+          <button
+            type="button"
+            onClick={() => {
+              const next = !isSavedListOpen;
+              setIsSavedListOpen(next);
+              if (next && localStorage.getItem('lost_token')) {
+                void loadMyItineraries();
+              }
+            }}
+            aria-expanded={isSavedListOpen}
+            style={{
+              width: '100%',
+              background: 'transparent',
+              border: 'none',
+              padding: 0,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+              textAlign: 'left',
+              color: 'var(--color-text-main)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <IconCalendar size={18} color="var(--color-primary)" />
+              <div>
+                <div style={{ fontSize: '0.96rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                  Lịch Trình Đã Lưu Của Tôi ({savedItineraries.length})
+                </div>
+                <div style={{ fontSize: '0.76rem', color: 'var(--color-text-dim)' }}>
+                  Mở để tải lại lên chỉnh sửa, mở link chia sẻ hoặc xóa các lịch trình đã lưu trên đám mây
+                </div>
+              </div>
+            </div>
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="var(--color-text-muted)"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{
+                transform: isSavedListOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+                transition: 'transform 0.2s ease',
+                flexShrink: 0,
+              }}
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+
+          {isSavedListOpen && (
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {!localStorage.getItem('lost_token') ? (
+                <div style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)', textAlign: 'center', padding: '16px 10px' }}>
+                  Vui lòng đăng nhập để xem và quản lý danh sách lịch trình đã lưu của bạn.
+                </div>
+              ) : loadingSavedList ? (
+                <div style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)', textAlign: 'center', padding: '16px 10px' }}>
+                  Đang tải danh sách lịch trình đã lưu...
+                </div>
+              ) : savedItineraries.length === 0 ? (
+                <div style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)', textAlign: 'center', padding: '16px 10px', border: '1px dashed var(--color-border)', borderRadius: 4 }}>
+                  Bạn chưa lưu lịch trình nào lên đám mây. Hãy bấm &ldquo;Lưu Lịch Trình &amp; Tạo Link Chia Sẻ&rdquo; ở khung bên phải!
+                </div>
+              ) : (
+                savedItineraries.map((item) => {
+                  const itemTrailName =
+                    item.trailName ||
+                    (typeof item.trailId === 'object' && item.trailId !== null ? item.trailId.name : '') ||
+                    'Núi Việt Nam';
+                  const isEditingThis = editingShareToken === item.shareToken;
+                  const isConfirming = confirmDeleteToken === item.shareToken;
+                  const isDeletingThis = deletingToken === item.shareToken;
+
+                  return (
+                    <div
+                      key={item.shareToken}
+                      style={{
+                        background: 'var(--color-bg-main)',
+                        border: isEditingThis ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+                        borderRadius: 4,
+                        padding: '12px 14px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 8,
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                            {item.title}
+                          </div>
+                          <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 3 }}>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--color-primary)', fontWeight: 700 }}>
+                              <IconMapPin size={12} color="var(--color-primary)" />
+                              {itemTrailName}
+                            </span>
+                            <span>· Khởi hành: {item.startDate ? new Date(item.startDate).toLocaleDateString('vi-VN') : 'Chưa rõ'}</span>
+                            <span>· {item.memberCount || 1} người</span>
+                            <span>· {(item.timelineSteps || []).length} chặng</span>
+                          </div>
+                        </div>
+
+                        {isEditingThis && (
+                          <span className="badge badge-success" style={{ fontSize: '0.68rem' }}>
+                            Đang chỉnh sửa
+                          </span>
+                        )}
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          onClick={() => handleLoadSavedForEdit(item)}
+                          style={{ padding: '5px 10px', fontSize: '0.74rem', borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                        >
+                          <IconEdit size={12} color="var(--color-primary)" />
+                          <span>Tải lên chỉnh sửa</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          onClick={() => {
+                            window.location.hash = `#itinerary/${item.shareToken}`;
+                          }}
+                          style={{ padding: '5px 10px', fontSize: '0.74rem', borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                        >
+                          <IconShare size={12} color="var(--color-sky)" />
+                          <span>Mở link chia sẻ</span>
+                        </button>
+
+                        {isConfirming ? (
+                          <div
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 6,
+                              padding: '3px 8px',
+                              borderRadius: 4,
+                              background: 'color-mix(in srgb, var(--color-error) 12%, transparent)',
+                              border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)',
+                            }}
+                          >
+                            <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-error-text, var(--color-error))' }}>
+                              Xóa lịch trình này?
+                            </span>
+                            <button
+                              type="button"
+                              disabled={isDeletingThis}
+                              onClick={() => void handleDeleteSaved(item.shareToken)}
+                              style={{
+                                padding: '3px 8px',
+                                borderRadius: 4,
+                                border: 'none',
+                                background: 'var(--color-error)',
+                                color: 'var(--color-on-danger)',
+                                fontSize: '0.72rem',
+                                fontWeight: 700,
+                                cursor: isDeletingThis ? 'wait' : 'pointer',
+                              }}
+                            >
+                              {isDeletingThis ? 'Đang xóa...' : 'Xác nhận'}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={isDeletingThis}
+                              onClick={() => setConfirmDeleteToken(null)}
+                              style={{
+                                padding: '3px 8px',
+                                borderRadius: 4,
+                                border: '1px solid var(--color-border-strong)',
+                                background: 'var(--color-bg-card)',
+                                color: 'var(--color-text-muted)',
+                                fontSize: '0.72rem',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Hủy
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteToken(item.shareToken)}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              padding: '5px 10px',
+                              borderRadius: 4,
+                              border: '1px solid color-mix(in srgb, var(--color-error) 28%, transparent)',
+                              background: 'color-mix(in srgb, var(--color-error) 8%, transparent)',
+                              color: 'var(--color-error-text, var(--color-error))',
+                              fontSize: '0.74rem',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <IconTrash size={12} color="var(--color-error)" />
+                            <span>Xóa</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Right Column: Form Settings & Zalo Share Export */}
       <div>
         <div className="card" style={{ position: 'sticky', top: 84 }}>
           <div className="section-eyebrow" style={{ marginBottom: 6 }}>Xuất bản lịch trình</div>
-          <h3 className="font-editorial" style={{ fontSize: '1.35rem', fontWeight: 500, color: 'var(--color-text-main)', marginBottom: 16 }}>
+          <h3 className="font-editorial" style={{ fontSize: '1.35rem', fontWeight: 500, color: 'var(--color-text-main)', marginBottom: 14 }}>
             Thông Tin Lịch Trình Đoàn
           </h3>
+
+          {editingShareToken && (
+            <div
+              style={{
+                marginBottom: 14,
+                padding: '9px 11px',
+                borderRadius: 4,
+                background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--color-primary) 35%, transparent)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 8,
+                fontSize: '0.76rem',
+              }}
+            >
+              <span style={{ color: 'var(--color-primary)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <IconCheck size={13} color="var(--color-primary)" />
+                <span>Đang sửa bản #{editingShareToken.slice(-6)}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingShareToken(null);
+                  setShareUrl(null);
+                }}
+                style={{
+                  background: 'var(--color-bg-card)',
+                  border: '1px solid var(--color-border)',
+                  borderRadius: 4,
+                  color: 'var(--color-text-muted)',
+                  fontSize: '0.72rem',
+                  fontWeight: 700,
+                  padding: '2px 7px',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
+              >
+                <IconX size={11} /> Tạo bản mới
+              </button>
+            </div>
+          )}
 
           <form onSubmit={handleSaveItinerary}>
             <div className="form-group">
@@ -505,7 +978,11 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
               disabled={submitting}
               style={{ width: '100%', justifyContent: 'center', marginBottom: 10, borderRadius: 4 }}
             >
-              {submitting ? 'Đang lưu...' : 'Lưu Lịch Trình & Tạo Link Chia Sẻ'}
+              {submitting
+                ? 'Đang lưu...'
+                : editingShareToken
+                ? 'Cập Nhật Lịch Trình Đã Lưu'
+                : 'Lưu Lịch Trình & Tạo Link Chia Sẻ'}
             </button>
 
             <button

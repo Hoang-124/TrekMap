@@ -175,8 +175,6 @@ export const Toast: React.FC<ToastProps> = ({
         padding: '12px 16px 14px 14px',
         color: 'var(--color-text-main)',
         boxShadow: 'var(--shadow-3d)',
-        backdropFilter: 'blur(20px)',
-        WebkitBackdropFilter: 'blur(20px)',
         maxWidth: 440,
         minWidth: 300,
         overflow: 'hidden',

@@ -8,6 +8,7 @@ import { VIETNAM_RANGER_STATIONS, type RangerStationSeed } from '../../data/viet
 import { buildOfflineSosSmsUri } from '../../utils/geoMath.js';
 import { computeClientBioMetrics } from '../../utils/gpxParser.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
+import { scopedStorageKey } from '../../utils/storageScope.js';
 import {
   calculateBearingDeg,
   calculateHaversineKm,
@@ -294,7 +295,8 @@ const VIETNAM_SURVIVAL_DRILLS: SurvivalDrillScenario[] = [
 
 function loadSavedDrillAnswers(): Record<string, string> {
   try {
-    const raw = localStorage.getItem(SURVIVAL_DRILLS_STORAGE_KEY);
+    const scopedKey = scopedStorageKey(SURVIVAL_DRILLS_STORAGE_KEY);
+    const raw = localStorage.getItem(scopedKey) ?? localStorage.getItem(SURVIVAL_DRILLS_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as { answers?: Record<string, string> };
     return parsed && typeof parsed.answers === 'object' && parsed.answers !== null ? parsed.answers : {};
@@ -306,7 +308,7 @@ function loadSavedDrillAnswers(): Record<string, string> {
 function saveDrillAnswers(answers: Record<string, string>) {
   try {
     localStorage.setItem(
-      SURVIVAL_DRILLS_STORAGE_KEY,
+      scopedStorageKey(SURVIVAL_DRILLS_STORAGE_KEY),
       JSON.stringify({ answers, updatedAt: new Date().toISOString() })
     );
   } catch {
@@ -5019,6 +5021,8 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   >
                     {icePreviewUrl ? (
                       <img
+                        loading="lazy"
+                        decoding="async"
                         src={icePreviewUrl}
                         alt="Xem trước ảnh màn hình khóa y tế khẩn cấp ICE 1080x1920"
                         style={{

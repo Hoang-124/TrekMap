@@ -18,6 +18,7 @@ const NOTIFICATION_TABS: Array<{ id: NotificationCategory | 'all'; label: string
   { id: 'safety', label: 'An toàn' },
   { id: 'moderation', label: 'Duyệt bài' },
   { id: 'social', label: 'Cộng đồng' },
+  { id: 'system', label: 'Hệ thống' },
 ];
 
 const navigateNotificationLink = (link: string, onNavigate?: (view: string) => void) => {
@@ -59,6 +60,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
   const [refreshTick, setRefreshTick] = useState(0);
   const [nowTs, setNowTs] = useState<number>(() => Date.now());
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const seenNotifIdsRef = useRef<Set<string>>(new Set());
   const { socket } = useSocket();
   const currentUserId = currentUser?.id || currentUser?._id || null;
 
@@ -80,7 +82,9 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
     fetchNotifications(1, 30, activeCategory)
       .then((res) => {
         if (cancelled) return;
-        setNotifications(res.notifications || []);
+        const list = res.notifications || [];
+        seenNotifIdsRef.current = new Set(list.map((n) => n._id));
+        setNotifications(list);
         setUnreadCount(res.unreadCount || 0);
         setCategoryCounts(res.categoryCounts || {});
         setNowTs(Date.now());
@@ -108,29 +112,31 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
     return () => window.removeEventListener('lost:notifications-synced', handleSynced);
   }, [triggerReload]);
 
-  // Realtime Socket.io Notification Listener (respects activeCategory tab filter)
+  // Realtime Socket.io Notification Listener (deduplicated so repeats never inflate unread counts)
   useEffect(() => {
     if (!socket || !currentUserId) return;
 
     const handleNewNotification = (newNotif: NotificationItem) => {
+      const isDuplicate = Boolean(newNotif._id && seenNotifIdsRef.current.has(newNotif._id));
+      if (newNotif._id) seenNotifIdsRef.current.add(newNotif._id);
       if (activeCategory === 'all' || newNotif.category === activeCategory) {
         setNotifications((prev) => [newNotif, ...prev.filter((n) => n._id !== newNotif._id)]);
       }
-      setUnreadCount((prev) => prev + 1);
-      const catKey = newNotif.category || 'system';
-      setCategoryCounts((prev) => ({
-        ...prev,
-        [catKey]: (prev[catKey] || 0) + 1,
-        all: (prev.all || 0) + 1,
-      }));
+      if (!isDuplicate) {
+        setUnreadCount((prev) => prev + 1);
+        const catKey = newNotif.category || 'system';
+        setCategoryCounts((prev) => ({
+          ...prev,
+          [catKey]: (prev[catKey] || 0) + 1,
+          all: (prev.all || 0) + 1,
+        }));
+      }
     };
 
     socket.on('newNotification', handleNewNotification);
-    socket.on('newSafetyAlert', handleNewNotification);
 
     return () => {
       socket.off('newNotification', handleNewNotification);
-      socket.off('newSafetyAlert', handleNewNotification);
     };
   }, [socket, currentUserId, activeCategory]);
 
@@ -380,7 +386,6 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
             width: 380,
             maxWidth: '92vw',
             background: 'var(--color-bg-card)',
-            backdropFilter: 'blur(20px)',
             border: '1px solid var(--color-border-strong)',
             borderRadius: 6,
             boxShadow: 'var(--shadow-3d)',
@@ -472,7 +477,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
                   border: 'none',
                   cursor: 'pointer',
                   whiteSpace: 'nowrap',
-                  transition: 'all 0.15s ease',
+                  transition: 'background-color 0.15s ease, color 0.15s ease',
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: 4,

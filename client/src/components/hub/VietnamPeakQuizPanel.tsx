@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Trail } from '../../types.js';
 import { mockTrails } from '../../data/seedData.js';
 import { VIETNAM_RANGER_STATIONS, type RangerStationSeed } from '../../data/vietnamDirectory.js';
+import { scopedStorageKey } from '../../utils/storageScope.js';
 import {
   IconAlertTriangle,
   IconArrowRight,
@@ -278,7 +279,8 @@ function readBestRecord(): QuizBestRecord {
   };
   if (typeof window === 'undefined') return fallback;
   try {
-    const raw = localStorage.getItem(QUIZ_STORAGE_KEY);
+    const scopedKey = scopedStorageKey(QUIZ_STORAGE_KEY);
+    const raw = localStorage.getItem(scopedKey) ?? localStorage.getItem(QUIZ_STORAGE_KEY);
     if (!raw) return fallback;
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -305,7 +307,7 @@ function readBestRecord(): QuizBestRecord {
 function saveBestRecord(record: QuizBestRecord): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(QUIZ_STORAGE_KEY, JSON.stringify(record));
+    localStorage.setItem(scopedStorageKey(QUIZ_STORAGE_KEY), JSON.stringify(record));
   } catch {
     // Ignore storage quota errors
   }

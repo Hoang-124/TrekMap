@@ -1,13 +1,18 @@
-import React, { useEffect, useState } from 'react';
-import { triggerSmoothThemeTransition } from '../../utils/themeTransition.js';
+import React, { memo, useEffect, useId, useRef, useState } from 'react';
+import { applyDocumentTheme, type ThemeMode } from '../../utils/themeTransition.js';
 
-const resolveInitialTheme = (): 'dark' | 'light' => {
+interface ThemeToggleEventDetail {
+  theme?: ThemeMode;
+  sourceId?: string;
+}
+
+const resolveInitialTheme = (): ThemeMode => {
   if (typeof window === 'undefined') return 'dark';
   try {
-    const saved = localStorage.getItem('theme');
+    const saved = window.localStorage.getItem('theme');
     if (saved === 'light' || saved === 'dark') return saved;
   } catch {
-    // ignore storage access errors
+    // Ignore storage access errors
   }
   const attr = document.documentElement.getAttribute('data-theme');
   if (attr === 'light' || attr === 'dark') return attr;
@@ -17,37 +22,52 @@ const resolveInitialTheme = (): 'dark' | 'light' => {
   return 'dark';
 };
 
-export const ThemeToggle: React.FC = () => {
-  const [theme, setTheme] = useState<'dark' | 'light'>(resolveInitialTheme);
+export const ThemeToggle: React.FC = memo(() => {
+  const instanceId = useId();
+  const [theme, setTheme] = useState<ThemeMode>(resolveInitialTheme);
+  const themeRef = useRef<ThemeMode>(theme);
 
+  // Ensure initial mount aligns `data-theme` and `color-scheme` (no-op if already aligned)
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-    try {
-      localStorage.setItem('theme', theme);
-    } catch {
-      // ignore storage errors
-    }
+    themeRef.current = theme;
+    applyDocumentTheme(theme);
   }, [theme]);
 
   useEffect(() => {
     const handleExternalToggle = (event: Event) => {
-      const detail = (event as CustomEvent<{ theme?: 'dark' | 'light' }>)?.detail;
-      triggerSmoothThemeTransition();
-      if (detail?.theme === 'light' || detail?.theme === 'dark') {
-        setTheme(detail.theme);
-      } else {
-        setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+      const detail = (event as CustomEvent<ThemeToggleEventDetail>)?.detail;
+      // Ignore self-dispatched events to prevent double-toggle feedback loops
+      if (detail?.sourceId && detail.sourceId === instanceId) {
+        return;
       }
+
+      const next: ThemeMode =
+        detail?.theme === 'light' || detail?.theme === 'dark'
+          ? detail.theme
+          : themeRef.current === 'dark'
+            ? 'light'
+            : 'dark';
+
+      applyDocumentTheme(next);
+      themeRef.current = next;
+      setTheme((prev) => (prev === next ? prev : next));
     };
+
     window.addEventListener('lost:toggle-theme', handleExternalToggle);
     return () => window.removeEventListener('lost:toggle-theme', handleExternalToggle);
-  }, []);
+  }, [instanceId]);
 
   const toggleTheme = () => {
-    const next: 'dark' | 'light' = theme === 'dark' ? 'light' : 'dark';
-    triggerSmoothThemeTransition();
+    const next: ThemeMode = themeRef.current === 'dark' ? 'light' : 'dark';
+    // Flip DOM attribute + color-scheme synchronously in 1 frame before React commits
+    applyDocumentTheme(next);
+    themeRef.current = next;
     setTheme(next);
-    window.dispatchEvent(new CustomEvent('lost:toggle-theme', { detail: { theme: next } }));
+    window.dispatchEvent(
+      new CustomEvent<ThemeToggleEventDetail>('lost:toggle-theme', {
+        detail: { theme: next, sourceId: instanceId },
+      })
+    );
   };
 
   return (
@@ -86,6 +106,7 @@ export const ThemeToggle: React.FC = () => {
           strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
+          aria-hidden="true"
         >
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
         </svg>
@@ -101,6 +122,7 @@ export const ThemeToggle: React.FC = () => {
           strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
+          aria-hidden="true"
         >
           <circle cx="12" cy="12" r="5" />
           <line x1="12" y1="1" x2="12" y2="3" />
@@ -115,4 +137,6 @@ export const ThemeToggle: React.FC = () => {
       )}
     </button>
   );
-};
+});
+
+ThemeToggle.displayName = 'ThemeToggle';

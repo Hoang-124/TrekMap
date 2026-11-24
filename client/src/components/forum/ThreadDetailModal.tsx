@@ -4,6 +4,7 @@ import type { ForumThread, UserProfile } from '../../types.js';
 import { FacebookReactionPicker } from './FacebookReactionPicker.js';
 import type { ReactionType } from './FacebookReactionPicker.js';
 import { getApiHeaders, notifyForumUpdated } from '../../utils/sessionHeaders.js';
+import { uploadImageToCloudinary } from '../../services/api.js';
 import { useSocket } from '../../hooks/useSocket.js';
 import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
 import {
@@ -13,37 +14,14 @@ import {
   IconEdit,
   IconEye,
   IconImage,
+  IconLock,
+  IconMountain,
+  IconPin,
   IconPinOff,
   IconTrash,
 } from '../common/SvgIcons.js';
 
-const BEST_COMMENT_STORAGE_KEY = 'lost_best_comment_v1';
-
-function readBestCommentMap(): Record<string, string> {
-  try {
-    const raw = localStorage.getItem(BEST_COMMENT_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    const clean: Record<string, string> = {};
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof value === 'string' && value.trim()) {
-        clean[key] = value.trim();
-      }
-    }
-    return clean;
-  } catch {
-    return {};
-  }
-}
-
-function writeBestCommentMap(map: Record<string, string>): void {
-  try {
-    localStorage.setItem(BEST_COMMENT_STORAGE_KEY, JSON.stringify(map));
-  } catch {
-    // Ignore storage quota / privacy mode failures
-  }
-}
+type ForumThreadWithTrail = ForumThread & { trailId?: string; trailName?: string };
 
 const THREAD_CATEGORIES: Array<ForumThread['category']> = [
   'Kinh Nghiệm',
@@ -86,21 +64,41 @@ export interface CommentItem {
   authorName: string;
   authorAvatar?: string;
   content: string;
+  isBestAnswer?: boolean;
   createdAt: string;
   reactions?: CommentReactions;
   userReaction?: ReactionType;
   replies?: CommentItem[];
 }
 
+function findBestCommentIdInTree(list: CommentItem[]): string | null {
+  for (const item of list) {
+    if (item.isBestAnswer) return item.id;
+    if (item.replies && item.replies.length > 0) {
+      const nested = findBestCommentIdInTree(item.replies);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+function applyBestCommentInTree(list: CommentItem[], bestId: string | null): CommentItem[] {
+  return list.map((c) => ({
+    ...c,
+    isBestAnswer: Boolean(bestId && c.id === bestId),
+    replies: c.replies ? applyBestCommentInTree(c.replies, bestId) : [],
+  }));
+}
+
 interface ThreadDetailModalProps {
-  thread: ForumThread | null;
+  thread: ForumThreadWithTrail | null;
   currentUser?: UserProfile | null;
   onClose: () => void;
   onOpenAuthorProfile: (author: { name: string; avatar: string; userId?: string }) => void;
   onUpdateCommentCount?: (threadId: string, count: number) => void;
   onUpdateThreadUpvotes?: (threadId: string, upvotes: number) => void;
   onUpdateThreadReaction?: (threadId: string, newReaction: ReactionType, newReactionsSummary: Record<string, number>, newUpvotes: number) => void;
-  onThreadUpdated?: (updated: ForumThread) => void;
+  onThreadUpdated?: (updated: ForumThreadWithTrail) => void;
   onThreadDeleted?: (threadId: string) => void;
   onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
 }
@@ -125,24 +123,6 @@ function formatDisplayDate(dateStr?: string): string {
   });
 }
 
-function commentSubtreeContainsId(list: CommentItem[], rootId: string, targetId: string): boolean {
-  const containsInNode = (node: CommentItem): boolean => {
-    if (node.id === targetId) return true;
-    if (!node.replies || node.replies.length === 0) return false;
-    return node.replies.some((sub) => containsInNode(sub));
-  };
-
-  for (const item of list) {
-    if (item.id === rootId) {
-      return containsInNode(item);
-    }
-    if (item.replies && item.replies.length > 0 && commentSubtreeContainsId(item.replies, rootId, targetId)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function isEditableKeyboardTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
@@ -160,7 +140,7 @@ export const ThreadDetailModal: React.FC<ThreadDetailModalProps> = (props) => {
   return <ThreadDetailModalInner key={props.thread.id} {...props} thread={props.thread} />;
 };
 
-const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & { thread: ForumThread }> = ({
+const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & { thread: ForumThreadWithTrail }> = ({
   thread,
   currentUser,
   onClose,
@@ -175,7 +155,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
   const currentUserId = String(currentUser?.id || (currentUser as (UserProfile & { _id?: string }) | null)?._id || '');
   const isStaff = currentUser?.role === 'admin' || currentUser?.role === 'moderator';
 
-  const [liveThread, setLiveThread] = useState<ForumThread>(thread);
+  const [liveThread, setLiveThread] = useState<ForumThreadWithTrail>(thread);
   const activeThread = liveThread.id === thread.id ? liveThread : thread;
 
   const [reaction, setReaction] = useState<ReactionType>((thread.userReaction as ReactionType) || null);
@@ -194,25 +174,29 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
   const [replyInputText, setReplyInputText] = useState<string>('');
   const [isSubmittingReply, setIsSubmittingReply] = useState<boolean>(false);
 
-  // Owner / Admin inline thread edit & delete state (zero native dialogs)
+  // Owner / Admin inline thread edit, delete, pin & lock state (zero native dialogs)
   const [isEditingThread, setIsEditingThread] = useState(false);
   const [editThreadTitle, setEditThreadTitle] = useState('');
   const [editThreadContent, setEditThreadContent] = useState('');
   const [editThreadCategory, setEditThreadCategory] = useState<ForumThread['category']>('Kinh Nghiệm');
+  const [editThreadImages, setEditThreadImages] = useState<string[]>([]);
+  const [editImageUrlInput, setEditImageUrlInput] = useState('');
   const [isSavingThread, setIsSavingThread] = useState(false);
   const [confirmDeleteThread, setConfirmDeleteThread] = useState(false);
   const [isDeletingThread, setIsDeletingThread] = useState(false);
+  const [isTogglingPin, setIsTogglingPin] = useState(false);
+  const [isTogglingLock, setIsTogglingLock] = useState(false);
 
-  // Owner / Admin inline comment edit & delete state
+  // Owner / Admin inline comment edit & delete & best-answer state
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editCommentDraft, setEditCommentDraft] = useState('');
   const [isSavingComment, setIsSavingComment] = useState(false);
   const [confirmDeleteCommentId, setConfirmDeleteCommentId] = useState<string | null>(null);
   const [deletingCommentId, setDeletingCommentId] = useState<string | null>(null);
+  const [togglingBestId, setTogglingBestId] = useState<string | null>(null);
 
-  // Per comment reaction state map & local best-answer highlight map
+  // Per comment reaction state map
   const [commentReactionsState, setCommentReactionsState] = useState<{ [commentId: string]: ReactionType }>({});
-  const [bestCommentMap, setBestCommentMap] = useState<Record<string, string>>(() => readBestCommentMap());
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const lightboxRef = useRef<HTMLDivElement | null>(null);
@@ -229,13 +213,17 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
     isSubmitting ||
     isSubmittingReply ||
     isSavingComment ||
-    Boolean(deletingCommentId);
+    isTogglingPin ||
+    isTogglingLock ||
+    Boolean(deletingCommentId) ||
+    Boolean(togglingBestId);
 
   // LIFO Focus Traps: main dialog + nested fullscreen gallery lightbox
   useFocusTrap(true, dialogRef);
   useFocusTrap(isLightboxOpen, lightboxRef, { initialFocusRef: lightboxCloseBtnRef });
 
-  const bestCommentId = bestCommentMap[activeThread.id] || null;
+  // Derive DB-persisted best answer directly from server comments tree (no localStorage!)
+  const bestCommentId = useMemo(() => findBestCommentIdInTree(comments), [comments]);
 
   const orderedComments = useMemo(() => {
     if (!bestCommentId || comments.length === 0) return comments;
@@ -471,15 +459,38 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
       }
     };
 
-    const handleThreadReaction = (data: { threadId?: string; upvotes?: number }) => {
-      if (String(data.threadId) === String(threadId) && data.upvotes !== undefined) {
-        setThreadUpvotes(data.upvotes);
+    const handleThreadReaction = (data: {
+      threadId?: string;
+      upvotes?: number;
+      reactions?: Record<string, number>;
+    }) => {
+      if (String(data.threadId) === String(threadId)) {
+        if (data.upvotes !== undefined) setThreadUpvotes(data.upvotes);
+        if (data.reactions) setThreadReactionsSummary(data.reactions);
       }
     };
 
-    const handleThreadUpdated = (data: { threadId?: string; thread?: ForumThread }) => {
+    const handleThreadUpdated = (data: { threadId?: string; thread?: ForumThreadWithTrail }) => {
       if (String(data.threadId) === String(threadId) && data.thread) {
         setLiveThread(data.thread);
+      }
+    };
+
+    const handleThreadPinned = (data: { threadId?: string; isPinned?: boolean }) => {
+      if (String(data.threadId) === String(threadId) && typeof data.isPinned === 'boolean') {
+        setLiveThread((prev) => ({ ...prev, isPinned: data.isPinned }));
+      }
+    };
+
+    const handleThreadLocked = (data: { threadId?: string; isLocked?: boolean }) => {
+      if (String(data.threadId) === String(threadId) && typeof data.isLocked === 'boolean') {
+        setLiveThread((prev) => ({ ...prev, isLocked: data.isLocked }));
+      }
+    };
+
+    const handleCommentBestUpdated = (data: { threadId?: string; bestCommentId?: string | null }) => {
+      if (String(data.threadId) === String(threadId)) {
+        setComments((prev) => applyBestCommentInTree(prev, data.bestCommentId || null));
       }
     };
 
@@ -493,8 +504,11 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
     socket.on('commentReactionUpdate', handleCommentReaction);
     socket.on('commentUpdated', handleCommentUpdated);
     socket.on('commentDeleted', handleCommentDeleted);
+    socket.on('commentBestAnswerUpdated', handleCommentBestUpdated);
     socket.on('threadReactionUpdate', handleThreadReaction);
     socket.on('threadUpdated', handleThreadUpdated);
+    socket.on('threadPinned', handleThreadPinned);
+    socket.on('threadLocked', handleThreadLocked);
     socket.on('threadDeleted', handleThreadDeleted);
 
     return () => {
@@ -502,8 +516,11 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
       socket.off('commentReactionUpdate', handleCommentReaction);
       socket.off('commentUpdated', handleCommentUpdated);
       socket.off('commentDeleted', handleCommentDeleted);
+      socket.off('commentBestAnswerUpdated', handleCommentBestUpdated);
       socket.off('threadReactionUpdate', handleThreadReaction);
       socket.off('threadUpdated', handleThreadUpdated);
+      socket.off('threadPinned', handleThreadPinned);
+      socket.off('threadLocked', handleThreadLocked);
       socket.off('threadDeleted', handleThreadDeleted);
     };
   }, [socket, threadId, fetchRealComments, onClose]);
@@ -533,25 +550,6 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
     }
   };
 
-  const handleToggleBestComment = (commentId: string) => {
-    if (!canPinBestAnswer) return;
-    const isAlreadyBest = bestCommentId === commentId;
-    setBestCommentMap((prev) => {
-      const next = { ...prev };
-      if (isAlreadyBest) {
-        delete next[activeThread.id];
-      } else {
-        next[activeThread.id] = commentId;
-      }
-      writeBestCommentMap(next);
-      return next;
-    });
-    showToast(
-      isAlreadyBest ? 'Đã bỏ ghim câu trả lời hữu ích nhất.' : 'Đã ghim Câu Trả Lời Hữu Ích Nhất lên đầu!',
-      isAlreadyBest ? 'info' : 'success'
-    );
-  };
-
   const ensureAuthenticated = (actionLabel: string): boolean => {
     const token = localStorage.getItem('lost_token');
     if (!currentUser && !token) {
@@ -562,13 +560,163 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
     return true;
   };
 
-  // Owner / Admin: Edit & Delete Thread handlers
+  const handleToggleBestComment = async (commentId: string) => {
+    if (!canPinBestAnswer || togglingBestId) return;
+    if (!ensureAuthenticated('chọn câu trả lời hữu ích nhất')) return;
+    setTogglingBestId(commentId);
+    try {
+      const res = await fetch(
+        `/api/forum/threads/${encodeURIComponent(activeThread.id)}/comments/${encodeURIComponent(commentId)}/best`,
+        {
+          method: 'PATCH',
+          headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        }
+      );
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.success) {
+        const nextBestId: string | null = json.bestCommentId || null;
+        setComments((prev) => applyBestCommentInTree(prev, nextBestId));
+        showToast(
+          json.message ||
+            (nextBestId
+              ? 'Đã ghim Câu Trả Lời Hữu Ích Nhất lên đầu!'
+              : 'Đã bỏ ghim câu trả lời hữu ích nhất.'),
+          nextBestId ? 'success' : 'info'
+        );
+      } else {
+        showToast(json.message || 'Không thể cập nhật câu trả lời hữu ích nhất.', 'error');
+      }
+    } catch {
+      showToast('Lỗi kết nối máy chủ khi cập nhật câu trả lời hữu ích nhất.', 'error');
+    } finally {
+      setTogglingBestId(null);
+    }
+  };
+
+  // Admin / Mod: Toggle Pin & Lock directly inside ThreadDetailModal
+  const handleTogglePinThread = async () => {
+    if (!isStaff || isTogglingPin) return;
+    setIsTogglingPin(true);
+    try {
+      const res = await fetch(`/api/admin/threads/${encodeURIComponent(activeThread.id)}/pin`, {
+        method: 'PUT',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.success) {
+        const nextPinned = Boolean(json.data?.isPinned);
+        const updated: ForumThreadWithTrail = { ...activeThread, isPinned: nextPinned };
+        setLiveThread(updated);
+        onThreadUpdated?.(updated);
+        notifyForumUpdated({ threadId: updated.id, updatedThread: updated });
+        showToast(json.message || (nextPinned ? 'Đã ghim bài viết!' : 'Đã gỡ ghim bài viết.'), 'success');
+      } else {
+        showToast(json.message || 'Không thể thay đổi trạng thái ghim.', 'error');
+      }
+    } catch {
+      showToast('Lỗi kết nối máy chủ khi ghim bài viết.', 'error');
+    } finally {
+      setIsTogglingPin(false);
+    }
+  };
+
+  const handleToggleLockThread = async () => {
+    if (!isStaff || isTogglingLock) return;
+    setIsTogglingLock(true);
+    try {
+      const res = await fetch(`/api/admin/threads/${encodeURIComponent(activeThread.id)}/lock`, {
+        method: 'PUT',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.success) {
+        const nextLocked = Boolean(json.data?.isLocked);
+        const updated: ForumThreadWithTrail = { ...activeThread, isLocked: nextLocked };
+        setLiveThread(updated);
+        onThreadUpdated?.(updated);
+        notifyForumUpdated({ threadId: updated.id, updatedThread: updated });
+        showToast(json.message || (nextLocked ? 'Đã khóa bình luận!' : 'Đã mở khóa bình luận.'), 'success');
+      } else {
+        showToast(json.message || 'Không thể thay đổi trạng thái khóa.', 'error');
+      }
+    } catch {
+      showToast('Lỗi kết nối máy chủ khi khóa bài viết.', 'error');
+    } finally {
+      setIsTogglingLock(false);
+    }
+  };
+
+  // Owner / Admin: Edit & Delete Thread handlers (with image management)
   const openEditThread = () => {
     setEditThreadTitle(activeThread.title || '');
     setEditThreadContent(activeThread.content || '');
     setEditThreadCategory(activeThread.category || 'Kinh Nghiệm');
+    setEditThreadImages(Array.isArray(activeThread.images) ? [...activeThread.images] : []);
+    setEditImageUrlInput('');
     setConfirmDeleteThread(false);
     setIsEditingThread(true);
+  };
+
+  const handleEditImageFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const availableSlots = Math.max(0, 8 - editThreadImages.length);
+    if (availableSlots === 0) {
+      showToast('Tối đa 8 hình ảnh đính kèm cho mỗi bài viết.', 'info');
+      e.target.value = '';
+      return;
+    }
+    Array.from(files)
+      .slice(0, availableSlots)
+      .forEach((file) => {
+        if (!file.type.startsWith('image/')) {
+          showToast('Chỉ chấp nhận định dạng ảnh (JPG, PNG, WebP).', 'error');
+          return;
+        }
+        if (file.size > 5 * 1024 * 1024) {
+          showToast('Kích thước ảnh tối đa 5MB.', 'error');
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const result = ev.target?.result as string;
+          if (!result) return;
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const MAX_W = 1280;
+            const scale = Math.min(1, MAX_W / img.width);
+            canvas.width = img.width * scale;
+            canvas.height = img.height * scale;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              const compressed = canvas.toDataURL('image/jpeg', 0.82);
+              setEditThreadImages((prev) => (prev.length < 8 ? [...prev, compressed] : prev));
+            } else {
+              setEditThreadImages((prev) => (prev.length < 8 ? [...prev, result] : prev));
+            }
+          };
+          img.src = result;
+        };
+        reader.readAsDataURL(file);
+      });
+    e.target.value = '';
+  };
+
+  const handleAddEditImageUrl = () => {
+    const trimmed = editImageUrlInput.trim();
+    if (!trimmed) return;
+    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+      showToast('Vui lòng nhập đường link ảnh hợp lệ (https://...).', 'error');
+      return;
+    }
+    if (editThreadImages.length >= 8) {
+      showToast('Tối đa 8 hình ảnh cho mỗi bài viết.', 'info');
+      return;
+    }
+    setEditThreadImages((prev) => [...prev, trimmed]);
+    setEditImageUrlInput('');
   };
 
   const handleSaveThreadEdit = async (e: React.FormEvent) => {
@@ -582,6 +730,21 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
     }
     setIsSavingThread(true);
     try {
+      const uploadedImages: string[] = [];
+      for (let i = 0; i < editThreadImages.length; i += 1) {
+        const img = editThreadImages[i];
+        if (img.startsWith('data:image/')) {
+          try {
+            const cloudUrl = await uploadImageToCloudinary(img, `forum_edit_${Date.now()}_${i}.jpg`, 'forum');
+            uploadedImages.push(cloudUrl);
+          } catch {
+            showToast(`Không thể tải ảnh #${i + 1} lên máy chủ ảnh.`, 'error');
+          }
+        } else {
+          uploadedImages.push(img);
+        }
+      }
+
       const res = await fetch(`/api/forum/threads/${encodeURIComponent(activeThread.id)}`, {
         method: 'PATCH',
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
@@ -589,11 +752,12 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
           title: cleanTitle,
           content: cleanContent,
           category: editThreadCategory,
+          images: uploadedImages,
         }),
       });
       const json = await res.json().catch(() => ({}));
       if (res.ok && json.success && json.data) {
-        const updated = json.data as ForumThread;
+        const updated = json.data as ForumThreadWithTrail;
         setLiveThread(updated);
         setIsEditingThread(false);
         onThreadUpdated?.(updated);
@@ -688,14 +852,6 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
       const json = await res.json().catch(() => ({}));
       if (res.ok && json.success) {
         setConfirmDeleteCommentId(null);
-        if (bestCommentId && (bestCommentId === commentId || commentSubtreeContainsId(comments, commentId, bestCommentId))) {
-          setBestCommentMap((prev) => {
-            const next = { ...prev };
-            delete next[activeThread.id];
-            writeBestCommentMap(next);
-            return next;
-          });
-        }
         await fetchRealComments(true);
         showToast(json.message || 'Đã xóa bình luận!', 'success');
       } else {
@@ -788,29 +944,38 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
     });
   };
 
-  // Handle Comment Reaction (server derives previous state from DB)
+  // Handle Comment Reaction (auth-guarded; server derives previous state from DB)
   const handleCommentReaction = async (commentId: string, reactionType: ReactionType) => {
+    if (!ensureAuthenticated('thả cảm xúc bình luận')) return;
     try {
       const res = await fetch(`/api/forum/comments/${encodeURIComponent(commentId)}/reaction`, {
         method: 'POST',
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ reactionType }),
       });
-      const json = await res.json();
-      if (json.success && json.data) {
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.success && json.data) {
         setComments((prevComments) => updateCommentReactionsInTree(prevComments, commentId, json.data));
         if (json.userReaction !== undefined) {
           setCommentReactionsState((prev) => ({ ...prev, [commentId]: json.userReaction }));
         }
+      } else if (res.status === 401) {
+        showToast(json.message || 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.', 'info');
+        window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
+      } else if (json.message) {
+        showToast(json.message, 'error');
       }
     } catch (err) {
       console.error('[Comment Reaction Error]:', err);
     }
   };
 
-  // Handle Main Discussion Thread Reaction (server derives previous state from DB)
+  // Handle Main Discussion Thread Reaction (auth-guarded + rollback on error)
   const handleThreadReaction = async (r: ReactionType) => {
+    if (!ensureAuthenticated('thả cảm xúc cho bài viết')) return;
+
     const prev = reaction;
+    const prevSummarySnapshot = { ...threadReactionsSummary };
     const next = prev === r ? null : r;
 
     setReaction(next);
@@ -840,8 +1005,8 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ reactionType: r }),
       });
-      const json = await res.json();
-      if (json.success && json.upvotes !== undefined) {
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.success && json.upvotes !== undefined) {
         setThreadUpvotes(json.upvotes);
         if (json.userReaction !== undefined) {
           setReaction(json.userReaction);
@@ -856,8 +1021,19 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
           onUpdateThreadReaction(activeThread.id, json.userReaction, json.data, json.upvotes);
         }
         notifyForumUpdated({ threadId: activeThread.id, userReaction: json.userReaction, reactionsSummary: json.data, upvotes: json.upvotes });
+      } else {
+        setReaction(prev);
+        setThreadReactionsSummary(prevSummarySnapshot);
+        if (res.status === 401) {
+          showToast(json.message || 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.', 'info');
+          window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
+        } else if (json.message) {
+          showToast(json.message, 'error');
+        }
       }
     } catch (err) {
+      setReaction(prev);
+      setThreadReactionsSummary(prevSummarySnapshot);
       console.error('[Thread Reaction Error]:', err);
     }
   };
@@ -971,6 +1147,8 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                 >
                   {commentEffectiveAvatar ? (
                     <img
+                      loading="lazy"
+                      decoding="async"
                       src={commentEffectiveAvatar}
                       alt={cleanCommentAuthor}
                       referrerPolicy="no-referrer"
@@ -1281,8 +1459,6 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
             position: 'fixed',
             inset: 0,
             background: 'var(--overlay-bg)',
-            backdropFilter: 'blur(12px)',
-            WebkitBackdropFilter: 'blur(12px)',
             zIndex: 'var(--z-modal, 3000)',
             display: 'flex',
             alignItems: 'center',
@@ -1324,6 +1500,27 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                   {activeThread.category}
                 </span>
 
+                {activeThread.trailName && (
+                  <span className="badge badge-info" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <IconMountain size={11} color="var(--color-sky)" />
+                    {activeThread.trailName}
+                  </span>
+                )}
+
+                {activeThread.isPinned && (
+                  <span className="badge badge-sun" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <IconPin size={11} color="var(--color-sun)" />
+                    Đã ghim
+                  </span>
+                )}
+
+                {activeThread.isLocked && (
+                  <span className="badge badge-error" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <IconLock size={11} color="var(--color-error)" />
+                    Đã khóa
+                  </span>
+                )}
+
                 {/* Post Author Clickable Header */}
                 {(() => {
                   const cleanName = activeThread.authorName.replace(/\(.*\)/, '').trim();
@@ -1350,6 +1547,8 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                     >
                       {effectiveAvatar ? (
                         <img
+                          loading="lazy"
+                          decoding="async"
                           src={effectiveAvatar}
                           alt={cleanName}
                           referrerPolicy="no-referrer"
@@ -1387,6 +1586,58 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                {isStaff && !isEditingThread && (
+                  <>
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      disabled={isTogglingPin}
+                      onClick={handleTogglePinThread}
+                      title={activeThread.isPinned ? 'Gỡ ghim bài viết' : 'Ghim bài viết lên đầu'}
+                      style={{
+                        padding: '4px 8px',
+                        fontSize: '0.72rem',
+                        fontWeight: 700,
+                        borderRadius: 4,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        color: activeThread.isPinned ? 'var(--color-sun)' : 'var(--color-text-muted)',
+                        borderColor: activeThread.isPinned
+                          ? 'color-mix(in srgb, var(--color-sun) 45%, transparent)'
+                          : 'var(--color-border)',
+                      }}
+                    >
+                      {activeThread.isPinned ? <IconPinOff size={12} /> : <IconPin size={12} />}
+                      <span>{activeThread.isPinned ? 'Bỏ ghim' : 'Ghim'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      disabled={isTogglingLock}
+                      onClick={handleToggleLockThread}
+                      title={activeThread.isLocked ? 'Mở khóa bình luận' : 'Khóa bình luận bài viết'}
+                      style={{
+                        padding: '4px 8px',
+                        fontSize: '0.72rem',
+                        fontWeight: 700,
+                        borderRadius: 4,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        color: activeThread.isLocked ? 'var(--color-error-text, var(--color-error))' : 'var(--color-text-muted)',
+                        borderColor: activeThread.isLocked
+                          ? 'color-mix(in srgb, var(--color-error) 45%, transparent)'
+                          : 'var(--color-border)',
+                      }}
+                    >
+                      <IconLock size={12} />
+                      <span>{activeThread.isLocked ? 'Mở khóa' : 'Khóa'}</span>
+                    </button>
+                  </>
+                )}
+
                 {canManageThread && !isEditingThread && (
                   <>
                     <button
@@ -1527,6 +1778,107 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                     style={{ width: '100%', padding: '8px 12px', fontSize: '0.85rem', borderRadius: 4, resize: 'vertical', lineHeight: 1.55 }}
                   />
 
+                  {/* Edit Thread Images Manager (Max 8) */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--color-text-main)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                        <IconImage size={13} color="var(--color-primary)" /> Hình ảnh đính kèm
+                      </span>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>
+                        {editThreadImages.length}/8 ảnh
+                      </span>
+                    </div>
+
+                    {editThreadImages.length > 0 && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(84px, 1fr))', gap: 8 }}>
+                        {editThreadImages.map((src, idx) => (
+                          <div
+                            key={idx}
+                            style={{
+                              position: 'relative',
+                              height: 68,
+                              borderRadius: 4,
+                              overflow: 'hidden',
+                              border: '1px solid var(--color-border)',
+                              background: 'var(--color-bg-card)',
+                            }}
+                          >
+                            <img loading="lazy" decoding="async" src={src} alt={`Ảnh ${idx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                            <button
+                              type="button"
+                              onClick={() => setEditThreadImages((prev) => prev.filter((_, i) => i !== idx))}
+                              aria-label="Xóa ảnh"
+                              style={{
+                                position: 'absolute',
+                                top: 3,
+                                right: 3,
+                                width: 20,
+                                height: 20,
+                                borderRadius: 4,
+                                background: 'var(--overlay-bg)',
+                                border: '1px solid var(--color-border-strong)',
+                                color: 'var(--color-on-media)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                cursor: 'pointer',
+                                padding: 0,
+                              }}
+                            >
+                              <X size={11} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {editThreadImages.length < 8 && (
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <label
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 5,
+                            padding: '6px 10px',
+                            borderRadius: 4,
+                            background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
+                            border: '1px dashed var(--color-primary)',
+                            color: 'var(--color-primary)',
+                            fontSize: '0.74rem',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <IconImage size={13} color="var(--color-primary)" />
+                          <span>Tải ảnh</span>
+                          <input type="file" accept="image/*" multiple onChange={handleEditImageFilesChange} style={{ display: 'none' }} />
+                        </label>
+                        <input
+                          type="url"
+                          className="form-input"
+                          placeholder="Hoặc dán link ảnh (https://...)"
+                          value={editImageUrlInput}
+                          onChange={(e) => setEditImageUrlInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddEditImageUrl();
+                            }
+                          }}
+                          style={{ flex: 1, minWidth: 160, padding: '6px 10px', fontSize: '0.76rem', borderRadius: 4 }}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          onClick={handleAddEditImageUrl}
+                          style={{ padding: '6px 10px', fontSize: '0.74rem', fontWeight: 700, borderRadius: 4 }}
+                        >
+                          + Thêm
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
                   <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                     <button
                       type="button"
@@ -1600,6 +1952,8 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                         title="Bấm để xem ảnh phóng to"
                       >
                         <img
+                          loading="lazy"
+                          decoding="async"
                           src={imgSrc}
                           alt={`Ảnh hành trình ${idx + 1}`}
                           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
@@ -1610,7 +1964,6 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                             bottom: 8,
                             right: 8,
                             background: 'var(--overlay-bg)',
-                            backdropFilter: 'blur(6px)',
                             color: 'var(--color-on-media)',
                             fontSize: '0.7rem',
                             fontWeight: 700,
@@ -1755,8 +2108,6 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
             inset: 0,
             zIndex: 'var(--z-lightbox, 4000)',
             background: 'var(--overlay-bg)',
-            backdropFilter: 'blur(20px)',
-            WebkitBackdropFilter: 'blur(20px)',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
@@ -1869,6 +2220,8 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
             )}
 
             <img
+              loading="lazy"
+              decoding="async"
               src={activeImages[lightboxIndex]}
               alt={`Ảnh ${lightboxIndex + 1}`}
               onClick={(e) => e.stopPropagation()}
@@ -1955,6 +2308,8 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                     title={`Chuyển sang ảnh ${idx + 1}`}
                   >
                     <img
+                      loading="lazy"
+                      decoding="async"
                       src={imgSrc}
                       alt={`Thumbnail ${idx + 1}`}
                       style={{ width: '100%', height: '100%', objectFit: 'cover' }}

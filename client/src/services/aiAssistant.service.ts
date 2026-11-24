@@ -1,6 +1,7 @@
 import { mockTrails } from '../data/seedData.js';
 import { VIETNAM_RANGER_STATIONS } from '../data/vietnamDirectory.js';
 import { getApiHeaders } from '../utils/sessionHeaders.js';
+import { scopedStorageKey } from '../utils/storageScope.js';
 import { haversineMeters } from '../utils/geoMath.js';
 import { computeClientBioMetrics } from '../utils/gpxParser.js';
 import type { Trail } from '../types.js';
@@ -221,8 +222,9 @@ function resolveAiStorageScope(userId?: string | null): string {
       const token = localStorage.getItem('lost_token');
       if (token) {
         const parts = token.split('.');
-        if (parts.length >= 2 && parts[1]) {
-          const normalized = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        const payloadSegment = parts.length === 2 ? parts[0] : parts[1];
+        if (parts.length >= 2 && payloadSegment) {
+          const normalized = payloadSegment.replace(/-/g, '+').replace(/_/g, '/');
           const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
           const payload = JSON.parse(atob(padded)) as Record<string, unknown>;
           const rawId = payload.id ?? payload.userId ?? payload._id ?? payload.sub;
@@ -790,7 +792,8 @@ export async function analyzeGpxApi(params: {
   bodyWeightKg?: number;
   packWeightKg?: number;
   fitnessLevel?: AiFitnessLevel;
-}): Promise<{ analysis: GpxAnalysisResult; reply: string; actions: RichAiAction[] } | null> {
+  threadId?: string;
+}): Promise<{ analysis: GpxAnalysisResult; reply: string; actions: RichAiAction[]; threadId?: string } | null> {
   try {
     const res = await fetch(`${API_BASE}/analyze-gpx`, {
       method: 'POST',
@@ -857,6 +860,8 @@ export async function assessGoNoGoApi(
 
 /**
  * 1-Click Apply Gear Checklist items into trail's GearChecklistTab localStorage + Cloud PUT sync.
+ * When logged in, ALWAYS fetches GET /api/gear-checklists/:trailId FIRST and merges with existing cloud items
+ * before issuing PUT so an existing cloud checklist is NEVER wiped!
  */
 export async function applyGearItemsToTrailChecklist(
   trailId: string,
@@ -870,16 +875,68 @@ export async function applyGearItemsToTrailChecklist(
   }>,
   options?: { bodyWeightKg?: number; durationDays?: number }
 ): Promise<{ addedCount: number; cloudSynced: boolean }> {
-  const storageKey = `lost_checklist_${trailId}`;
-  let existing: Array<Record<string, unknown>> = [];
-  try {
-    const raw = localStorage.getItem(storageKey);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) existing = parsed;
+  const legacyKey = `lost_checklist_${trailId}`;
+  const storageKey = scopedStorageKey(legacyKey);
+  const hasAuthToken = typeof window !== 'undefined' && Boolean(localStorage.getItem('lost_token'));
+
+  const readLocalChecklist = (): Array<Record<string, unknown>> => {
+    try {
+      const raw = localStorage.getItem(storageKey) ?? localStorage.getItem(legacyKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // ignore storage errors
     }
-  } catch {
-    existing = [];
+    return [];
+  };
+
+  let existing: Array<Record<string, unknown>>;
+  let canSafePutCloud = false;
+  let existingCloudTitle: string | undefined;
+  let existingCloudBodyWeight: number | undefined;
+  let existingCloudDays: number | undefined;
+
+  if (hasAuthToken) {
+    try {
+      const getRes = await fetch(`/api/gear-checklists/${encodeURIComponent(trailId)}`, {
+        headers: getApiHeaders(),
+        signal: AbortSignal.timeout(6000),
+      });
+      if (getRes.ok) {
+        const getJson = await getRes.json().catch(() => ({}));
+        const cloudDoc = getJson?.success && getJson?.data ? getJson.data : null;
+        if (cloudDoc && Array.isArray(cloudDoc.items)) {
+          existing = cloudDoc.items as Array<Record<string, unknown>>;
+          if (typeof cloudDoc.title === 'string' && cloudDoc.title.trim()) existingCloudTitle = cloudDoc.title.trim();
+          if (typeof cloudDoc.bodyWeightKg === 'number' && Number.isFinite(cloudDoc.bodyWeightKg)) {
+            existingCloudBodyWeight = cloudDoc.bodyWeightKg;
+          }
+          if (typeof cloudDoc.createdForDays === 'number' && Number.isFinite(cloudDoc.createdForDays)) {
+            existingCloudDays = cloudDoc.createdForDays;
+          }
+          canSafePutCloud = true;
+        } else {
+          // Authenticated GET returned empty/no checklist yet — safe to seed from local + new
+          existing = readLocalChecklist();
+          canSafePutCloud = true;
+        }
+      } else if (getRes.status === 404) {
+        existing = readLocalChecklist();
+        canSafePutCloud = true;
+      } else {
+        // Server/auth error: never blindly PUT over potentially existing cloud data
+        existing = readLocalChecklist();
+        canSafePutCloud = false;
+      }
+    } catch {
+      // Offline / timeout: preserve local merge only, skip PUT to avoid wiping cloud checklist
+      existing = readLocalChecklist();
+      canSafePutCloud = false;
+    }
+  } else {
+    existing = readLocalChecklist();
   }
 
   const existingNames = new Set(existing.map((it) => normalizeAscii(String(it?.name || ''))));
@@ -915,8 +972,8 @@ export async function applyGearItemsToTrailChecklist(
   }
 
   let cloudSynced = false;
-  if (localStorage.getItem('lost_token')) {
-    let resolvedBodyWeight = 65;
+  if (hasAuthToken && canSafePutCloud) {
+    let resolvedBodyWeight = existingCloudBodyWeight ?? 65;
     if (options?.bodyWeightKg && Number.isFinite(options.bodyWeightKg) && options.bodyWeightKg >= 30 && options.bodyWeightKg <= 180) {
       resolvedBodyWeight = Math.round(options.bodyWeightKg);
     }
@@ -924,14 +981,14 @@ export async function applyGearItemsToTrailChecklist(
     const resolvedDays =
       options?.durationDays && Number.isFinite(options.durationDays) && options.durationDays >= 1
         ? Math.min(10, Math.round(options.durationDays))
-        : matchedTrail?.durationDays || 2;
+        : existingCloudDays || matchedTrail?.durationDays || 2;
 
     try {
       const res = await fetch(`/api/gear-checklists/${encodeURIComponent(trailId)}`, {
         method: 'PUT',
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
-          title: `Checklist ${trailName}`,
+          title: existingCloudTitle || `Checklist ${trailName}`,
           bodyWeightKg: resolvedBodyWeight,
           createdForDays: resolvedDays,
           items: merged,
@@ -947,14 +1004,16 @@ export async function applyGearItemsToTrailChecklist(
 }
 
 /**
- * 1-Click Apply Structured Itinerary into trail's ItineraryTab localStorage (+ optional cloud share).
+ * 1-Click Apply Structured Itinerary into trail's ItineraryTab scoped localStorage (+ optional startDate & memberCount).
  */
 export function applyItineraryToTrail(
   trailId: string,
   title: string,
-  steps: Array<{ day: number; time: string; title: string; description: string; locationNote?: string }>
+  steps: Array<{ day: number; time: string; title: string; description: string; locationNote?: string }>,
+  options?: { startDate?: string; memberCount?: number } | string
 ): void {
-  const storageKey = `lost_itinerary_${trailId}`;
+  const legacyKey = `lost_itinerary_${trailId}`;
+  const storageKey = scopedStorageKey(legacyKey);
   const todayVn = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Ho_Chi_Minh',
     year: 'numeric',
@@ -965,7 +1024,7 @@ export function applyItineraryToTrail(
   let prevStartDate = todayVn;
   let prevMemberCount = 4;
   try {
-    const raw = localStorage.getItem(storageKey);
+    const raw = localStorage.getItem(storageKey) ?? localStorage.getItem(legacyKey);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed?.startDate) prevStartDate = parsed.startDate;
@@ -975,10 +1034,21 @@ export function applyItineraryToTrail(
     // ignore
   }
 
+  const explicitStartDate =
+    typeof options === 'string'
+      ? options.trim()
+      : typeof options?.startDate === 'string'
+        ? options.startDate.trim()
+        : '';
+  const explicitMembers =
+    typeof options === 'object' && options?.memberCount && Number.isFinite(options.memberCount)
+      ? Math.max(1, Math.min(30, Math.round(options.memberCount)))
+      : undefined;
+
   const payload = {
     title,
-    startDate: prevStartDate,
-    memberCount: prevMemberCount,
+    startDate: explicitStartDate || prevStartDate,
+    memberCount: explicitMembers ?? prevMemberCount,
     steps,
   };
   try {

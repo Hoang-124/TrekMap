@@ -95,7 +95,11 @@ export const ConversationList: React.FC<ConversationListProps> = ({
               : other?.fullName || other?.username || 'Thành viên LOST';
             const avatar = other?.avatarUrl || '';
 
-            const lastMsgContent = conv.lastMessage?.content || (isGroup ? `Nhóm đoàn • ${conv.participants?.length || 1} thành viên` : 'Bắt đầu cuộc trò chuyện...');
+            const lastMsgContent =
+              conv.lastMessage?.content ||
+              (isGroup
+                ? `Nhóm đoàn • ${conv.participants?.length || 1} thành viên`
+                : 'Bắt đầu cuộc trò chuyện...');
             const unread = conv.unreadCount || 0;
             const isOnline = !isGroup && isUserOnline(other?._id, other?.email);
 
@@ -151,6 +155,8 @@ export const ConversationList: React.FC<ConversationListProps> = ({
                     <>
                       {avatar ? (
                         <img
+                          loading="lazy"
+                          decoding="async"
                           src={avatar}
                           alt={name}
                           referrerPolicy="no-referrer"

@@ -373,18 +373,51 @@ export const initSocketServer = (httpServer: HttpServer): Server => {
               }
             : undefined;
 
+        const VALID_CHAT_CHANNELS = new Set(['general', 'north', 'central', 'south', 'sos']);
+        const channel =
+          typeof msgData.channel === 'string' && VALID_CHAT_CHANNELS.has(msgData.channel.trim())
+            ? msgData.channel.trim()
+            : 'general';
+        const rawLat = typeof msgData.gpsLat === 'number' ? msgData.gpsLat : Number(msgData.gpsLat);
+        const rawLng = typeof msgData.gpsLng === 'number' ? msgData.gpsLng : Number(msgData.gpsLng);
+        const rawAlt = typeof msgData.altitudeM === 'number' ? msgData.altitudeM : Number(msgData.altitudeM);
+        const hasValidGps =
+          msgData.gpsLat !== undefined &&
+          msgData.gpsLng !== undefined &&
+          Number.isFinite(rawLat) &&
+          Number.isFinite(rawLng) &&
+          rawLat >= -90 &&
+          rawLat <= 90 &&
+          rawLng >= -180 &&
+          rawLng <= 180;
+        const gpsLat = hasValidGps ? Number(rawLat.toFixed(6)) : undefined;
+        const gpsLng = hasValidGps ? Number(rawLng.toFixed(6)) : undefined;
+        const altitudeM =
+          hasValidGps &&
+          msgData.altitudeM !== undefined &&
+          Number.isFinite(rawAlt) &&
+          rawAlt >= -500 &&
+          rawAlt <= 9000
+            ? Math.round(rawAlt)
+            : undefined;
+
         const savedDoc = await CommunityMessageModel.create({
+          channel,
           senderId: trustedSenderId,
           senderName: trustedSenderName,
           senderAvatar: trustedSenderAvatar,
           senderBadge: trustedSenderBadge,
           nameColor: trustedNameColor,
           text: cleanText,
+          gpsLat,
+          gpsLng,
+          altitudeM,
           quote: validQuote,
         });
 
         const newMsg = {
           id: savedDoc._id.toString(),
+          channel: savedDoc.channel || 'general',
           clientTempId: typeof msgData.id === 'string' ? msgData.id.slice(0, 64) : undefined,
           senderId: trustedSenderId.toString(),
           senderName: savedDoc.senderName,
@@ -392,6 +425,9 @@ export const initSocketServer = (httpServer: HttpServer): Server => {
           senderBadge: savedDoc.senderBadge,
           nameColor: savedDoc.nameColor,
           text: savedDoc.text,
+          gpsLat: savedDoc.gpsLat,
+          gpsLng: savedDoc.gpsLng,
+          altitudeM: savedDoc.altitudeM,
           quote: validQuote,
           createdAt: savedDoc.createdAt ? new Date(savedDoc.createdAt).toISOString() : new Date().toISOString(),
         };
@@ -453,4 +489,27 @@ export const broadcastEvent = (event: string, payload: any) => {
 export const isUserOnline = (userId: string): boolean => {
   const set = userSockets.get(String(userId));
   return !!set && set.size > 0;
+};
+
+/**
+ * Evicts all live sockets belonging to a specific user from a room (e.g., when leaving/kicked from squad chat).
+ */
+export const evictUserFromRoom = (userId: string, roomName: string): void => {
+  if (!io || !userId || !roomName) return;
+  const socketIds = userSockets.get(String(userId));
+  if (!socketIds) return;
+  for (const sid of socketIds) {
+    const sock = io.sockets.sockets.get(sid);
+    if (sock && sock.rooms.has(roomName)) {
+      sock.leave(roomName);
+    }
+  }
+};
+
+/**
+ * Evicts all live sockets from a room (e.g., when a squad trip & group conversation are deleted).
+ */
+export const evictAllFromRoom = (roomName: string): void => {
+  if (!io || !roomName) return;
+  io.in(roomName).socketsLeave(roomName);
 };

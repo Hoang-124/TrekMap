@@ -22,6 +22,7 @@ import { recordAuditLog } from '../utils/audit.js';
 
 const VALID_REACTIONS = new Set(['like', 'love', 'haha', 'wow', 'buon', 'huhu', 'sad', 'angry', 'dislike']);
 const VALID_CATEGORIES = new Set(['Hỏi Đáp', 'Kinh Nghiệm', 'Tìm Đồng Đội', 'Cảnh Báo']);
+const VALID_CHAT_CHANNELS = new Set(['general', 'north', 'central', 'south', 'sos']);
 const DEFAULT_AVATAR =
   'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg';
 
@@ -77,6 +78,8 @@ function formatThreadResponse(t: any, userKeys: string[]) {
     authorAvatar: liveAvatar,
     userId: authorUserId,
     category: t.category,
+    trailId: t.trailId || '',
+    trailName: t.trailName || '',
     content: t.content,
     images: t.images || [],
     upvotes: t.upvotes,
@@ -101,10 +104,21 @@ export const getThreads = async (req: Request, res: Response) => {
     if (typeof req.query.category === 'string' && VALID_CATEGORIES.has(req.query.category)) {
       filter.category = req.query.category;
     }
+    if (typeof req.query.trailId === 'string' && req.query.trailId.trim()) {
+      filter.trailId = sanitizeInput(req.query.trailId).slice(0, 100);
+    }
     if (typeof req.query.search === 'string' && req.query.search.trim()) {
       const escaped = req.query.search.trim().slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const rx = new RegExp(escaped, 'i');
-      filter.$or = [{ title: rx }, { content: rx }, { authorName: rx }];
+      filter.$or = [{ title: rx }, { content: rx }, { authorName: rx }, { trailName: rx }];
+    }
+
+    const sortParam = typeof req.query.sort === 'string' ? req.query.sort : 'newest';
+    let sortSpec: Record<string, 1 | -1> = { isPinned: -1, createdAt: -1 };
+    if (sortParam === 'popular') {
+      sortSpec = { isPinned: -1, upvotes: -1, viewsCount: -1, createdAt: -1 };
+    } else if (sortParam === 'most_commented') {
+      sortSpec = { isPinned: -1, repliesCount: -1, createdAt: -1 };
     }
 
     let mongoThreads: any[] = [];
@@ -113,7 +127,7 @@ export const getThreads = async (req: Request, res: Response) => {
       [mongoThreads, total] = await Promise.all([
         ThreadModel.find(filter)
           .populate('userId', 'fullName username avatarUrl')
-          .sort({ isPinned: -1, createdAt: -1 })
+          .sort(sortSpec)
           .skip(skip)
           .limit(limit)
           .lean(),
@@ -121,10 +135,13 @@ export const getThreads = async (req: Request, res: Response) => {
       ]);
     }
 
+    const totalPages = Math.ceil(total / limit);
+    const hasMore = skip + mongoThreads.length < total;
+
     return res.json({
       success: true,
       data: mongoThreads.map((t) => formatThreadResponse(t, userKeys)),
-      pagination: { total, page, limit },
+      pagination: { total, page, limit, totalPages, hasMore },
     });
   } catch (err) {
     console.error('[Forum DB Query Error]:', err);
@@ -162,7 +179,7 @@ export const getThreadById = async (req: Request, res: Response) => {
 };
 
 export const createThread = async (req: AuthRequest, res: Response) => {
-  const { title, category, content, images } = req.body || {};
+  const { title, category, content, images, trailId, trailName } = req.body || {};
   const currentUserId = req.user?.userId;
 
   if (!currentUserId) {
@@ -212,6 +229,19 @@ export const createThread = async (req: AuthRequest, res: Response) => {
       ? images.filter((img): img is string => typeof img === 'string' && isSafeHttpUrl(img)).slice(0, 8)
       : [];
 
+    let safeTrailId = typeof trailId === 'string' ? sanitizeInput(trailId).slice(0, 100) : '';
+    let safeTrailName = typeof trailName === 'string' ? sanitizeInput(trailName).slice(0, 160) : '';
+    if (safeTrailId && !safeTrailName) {
+      const resolved = await resolveTrailByIdOrSlug(safeTrailId).catch(() => null);
+      if (resolved) {
+        safeTrailId = resolved.id || String(resolved._id);
+        safeTrailName = resolved.name || '';
+      } else {
+        const seedMatch = mockTrails.find((mt) => mt.id === safeTrailId);
+        if (seedMatch) safeTrailName = seedMatch.name;
+      }
+    }
+
     const threadId = `thread-${crypto.randomUUID().slice(0, 12)}`;
     const createdDoc = await ThreadModel.create({
       id: threadId,
@@ -220,6 +250,8 @@ export const createThread = async (req: AuthRequest, res: Response) => {
       authorAvatar,
       userId: user?._id || undefined,
       category: safeCategory,
+      trailId: safeTrailId,
+      trailName: safeTrailName,
       content: cleanContent,
       images: safeImages,
       upvotes: 0,
@@ -245,6 +277,8 @@ export const createThread = async (req: AuthRequest, res: Response) => {
         authorAvatar: createdDoc.authorAvatar,
         userId: createdDoc.userId ? createdDoc.userId.toString() : currentUserId,
         category: createdDoc.category,
+        trailId: createdDoc.trailId || '',
+        trailName: createdDoc.trailName || '',
         content: createdDoc.content,
         images: createdDoc.images || [],
         upvotes: 0,
@@ -286,7 +320,7 @@ export const updateThread = async (req: AuthRequest, res: Response) => {
       return res.status(403).json({ success: false, message: 'Bạn không có quyền chỉnh sửa bài viết này.' });
     }
 
-    const { title, content, category, images } = req.body || {};
+    const { title, content, category, images, trailId, trailName } = req.body || {};
     const nextTitle = title !== undefined ? sanitizeInput(String(title)).slice(0, 200) : thread.title;
     const nextContent = content !== undefined ? sanitizeInput(String(content)).slice(0, 8000) : thread.content;
 
@@ -317,6 +351,20 @@ export const updateThread = async (req: AuthRequest, res: Response) => {
       thread.images = Array.isArray(images)
         ? images.filter((img): img is string => typeof img === 'string' && isSafeHttpUrl(img)).slice(0, 8)
         : [];
+    }
+    if (trailId !== undefined) {
+      const nextTrailId = typeof trailId === 'string' ? sanitizeInput(trailId).slice(0, 100) : '';
+      thread.trailId = nextTrailId;
+      if (trailName !== undefined) {
+        thread.trailName = typeof trailName === 'string' ? sanitizeInput(trailName).slice(0, 160) : '';
+      } else if (!nextTrailId) {
+        thread.trailName = '';
+      } else {
+        const resolved = await resolveTrailByIdOrSlug(nextTrailId).catch(() => null);
+        thread.trailName = resolved?.name || mockTrails.find((mt) => mt.id === nextTrailId)?.name || '';
+      }
+    } else if (trailName !== undefined) {
+      thread.trailName = typeof trailName === 'string' ? sanitizeInput(trailName).slice(0, 160) : '';
     }
 
     await thread.save();
@@ -571,36 +619,106 @@ ${gpxPoints}
   }
 };
 
-export const getCommunityChatMessages = async (_req: Request, res: Response) => {
+export const getCommunityChatMessages = async (req: Request, res: Response) => {
   try {
     if (mongoose.connection.readyState !== 1) {
-      return res.json({ success: true, data: [] });
+      return res.json({ success: true, data: [], hasMore: false });
     }
-    const rawMessages = await CommunityMessageModel.find()
+
+    const rawChannel = typeof req.query.channel === 'string' ? req.query.channel.trim() : 'general';
+    const channel = VALID_CHAT_CHANNELS.has(rawChannel) ? rawChannel : 'general';
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '40'), 10) || 40, 1), 100);
+
+    const filter: Record<string, any> =
+      channel === 'general'
+        ? { $or: [{ channel: 'general' }, { channel: { $exists: false } }, { channel: '' }] }
+        : { channel };
+
+    if (typeof req.query.before === 'string' && req.query.before.trim()) {
+      const beforeRaw = req.query.before.trim();
+      if (isValidObjectId(beforeRaw)) {
+        filter._id = { $lt: new Types.ObjectId(beforeRaw) };
+      } else {
+        const beforeDate = new Date(beforeRaw);
+        if (!Number.isNaN(beforeDate.getTime())) {
+          filter.createdAt = { $lt: beforeDate };
+        }
+      }
+    }
+
+    const rawMessages = await CommunityMessageModel.find(filter)
       .populate('senderId', 'fullName username avatarUrl')
       .sort({ createdAt: -1 })
-      .limit(60)
+      .limit(limit + 1)
       .lean();
 
-    const formatted = rawMessages.reverse().map((m: any) => {
+    const hasMore = rawMessages.length > limit;
+    const pageDocs = hasMore ? rawMessages.slice(0, limit) : rawMessages;
+
+    const formatted = pageDocs.reverse().map((m: any) => {
       const liveSender = m.senderId && typeof m.senderId === 'object' ? m.senderId : null;
       return {
         id: m._id.toString(),
+        channel: m.channel || 'general',
         senderId: liveSender?._id?.toString() || (m.senderId ? m.senderId.toString() : undefined),
         senderName: liveSender?.fullName || m.senderName,
         senderAvatar: liveSender?.avatarUrl || m.senderAvatar,
         senderBadge: m.senderBadge,
         nameColor: m.nameColor,
         text: m.text,
+        gpsLat: typeof m.gpsLat === 'number' ? m.gpsLat : undefined,
+        gpsLng: typeof m.gpsLng === 'number' ? m.gpsLng : undefined,
+        altitudeM: typeof m.altitudeM === 'number' ? m.altitudeM : undefined,
         quote: m.quote && m.quote.author && m.quote.text ? { author: m.quote.author, text: m.quote.text } : undefined,
         createdAt: m.createdAt ? new Date(m.createdAt).toISOString() : new Date().toISOString(),
       };
     });
 
-    return res.json({ success: true, data: formatted });
+    return res.json({ success: true, data: formatted, hasMore, channel });
   } catch (err) {
     console.error('[Get Community Chat Messages Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi tải lịch sử tin nhắn cộng đồng' });
+  }
+};
+
+export const deleteCommunityChatMessage = async (req: AuthRequest, res: Response) => {
+  try {
+    const currentUserId = req.user?.userId;
+    const isStaff = req.user?.role === 'admin' || req.user?.role === 'moderator';
+    const { id } = req.params;
+
+    if (!currentUserId || !isValidObjectId(currentUserId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: 'Mã tin nhắn không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const msg = await CommunityMessageModel.findById(id).select('_id senderId channel').lean();
+    if (!msg) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy tin nhắn.' });
+    }
+
+    const isOwner = Boolean(msg.senderId && String(msg.senderId) === String(currentUserId));
+    if (!isStaff && !isOwner) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền xóa tin nhắn này.' });
+    }
+
+    await CommunityMessageModel.deleteOne({ _id: msg._id });
+    await recordAuditLog(req, 'DELETE_COMMUNITY_MESSAGE', 'community_messages', `Xóa tin nhắn thực địa ${msg._id}`);
+
+    broadcastEvent('communityMessageDeleted', {
+      id: msg._id.toString(),
+      channel: msg.channel || 'general',
+    });
+
+    return res.json({ success: true, id: msg._id.toString(), message: 'Đã xóa tin nhắn.' });
+  } catch (err) {
+    console.error('[Delete Community Chat Message Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi xóa tin nhắn.' });
   }
 };
 

@@ -11,6 +11,7 @@ import {
   IconMessageSquare,
 } from '../common/SvgIcons.js';
 import type { AiChatThreadSummary } from './ai.types.js';
+import { searchMatchVietnamese } from '../../utils/textUtils.js';
 
 interface AiThreadSidebarProps {
   threads: AiChatThreadSummary[];
@@ -55,8 +56,8 @@ export const AiThreadSidebar: React.FC<AiThreadSidebarProps> = ({
 
   const filtered = threads.filter((t) => {
     if (!search.trim()) return true;
-    const q = search.toLowerCase();
-    return t.title.toLowerCase().includes(q) || (t.trailContextName || '').toLowerCase().includes(q);
+    const q = search.trim();
+    return searchMatchVietnamese(t.title, q) || searchMatchVietnamese(t.trailContextName || '', q);
   });
 
   const sorted = [...filtered].sort((a, b) => {

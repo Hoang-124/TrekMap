@@ -9,8 +9,11 @@ import {
   deleteTrailReview,
   fetchNearbyTrailsForTrail,
   fetchMyWeatherAlerts,
+  fetchTrailPois,
+  uploadImageToCloudinary,
   type NearbyTrailMatch,
   type WeatherAlertSubItem,
+  type TrailPoiItem,
 } from '../../services/api.js';
 import { mockTrails } from '../../data/seedData.js';
 import { haversineMeters } from '../../utils/geoMath.js';
@@ -52,11 +55,20 @@ import {
   IconHiking,
   IconX,
   IconTrash,
+  IconEdit,
+  IconCamera,
+  IconCheck,
 } from '../common/SvgIcons.js';
 
 type DetailIncident = Incident & { _id?: string; active?: boolean };
 type DetailUser = UserProfile & { _id?: string };
 type DetailGuide = Guide & { _id?: string };
+type DetailReview = Review & {
+  _id?: string;
+  helpfulCount?: number;
+  hasMarkedHelpful?: boolean;
+  helpful?: boolean;
+};
 type DetailTabId = 'overview' | 'map' | 'weather' | 'checklist' | 'itinerary' | 'guides' | 'reviews' | 'conditions' | 'pois';
 
 interface TrailDetailViewProps {
@@ -114,18 +126,47 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
   const [activeTab, setActiveTab] = useState<DetailTabId>('overview');
   const { trackRef: detailTabTrackRef, indicatorStyle: detailTabIndicatorStyle } =
     useSlidingIndicator<DetailTabId>(activeTab);
-  const [reviewsList, setReviewsList] = useState<Review[]>(trail.reviews || []);
+  const [reviewsList, setReviewsList] = useState<DetailReview[]>(trail.reviews || []);
   const [guidesList, setGuidesList] = useState<DetailGuide[]>(trail.guides || []);
   const [newRating, setNewRating] = useState(5);
   const [newDiffRating, setNewDiffRating] = useState(trail.difficultyLevel || 3);
   const [newContent, setNewContent] = useState('');
   const [newSafetyNote, setNewSafetyNote] = useState('');
+  const [newReviewPhotos, setNewReviewPhotos] = useState<string[]>([]);
+  const [uploadingReviewPhoto, setUploadingReviewPhoto] = useState(false);
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
   const [confirmDeleteReviewId, setConfirmDeleteReviewId] = useState<string | null>(null);
   const [deletingReviewId, setDeletingReviewId] = useState<string | null>(null);
+  const [editingReviewId, setEditingReviewId] = useState<string | null>(null);
+  const [editReviewRating, setEditReviewRating] = useState(5);
+  const [editReviewContent, setEditReviewContent] = useState('');
+  const [editReviewSafetyNote, setEditReviewSafetyNote] = useState('');
+  const [editReviewPhotos, setEditReviewPhotos] = useState<string[]>([]);
+  const [uploadingEditReviewPhoto, setUploadingEditReviewPhoto] = useState(false);
+  const [savingEditReviewId, setSavingEditReviewId] = useState<string | null>(null);
+  const [busyHelpfulIds, setBusyHelpfulIds] = useState<Record<string, boolean>>({});
   const [ratingOverride, setRatingOverride] = useState<{ rating: number; reviewCount: number } | null>(null);
   const [selectedEvidencePhoto, setSelectedEvidencePhoto] = useState<string | null>(null);
   const [hoveredElevationCoord, setHoveredElevationCoord] = useState<[number, number] | null>(null);
+  const [hoveredTrackIndex, setHoveredTrackIndex] = useState<number | null>(null);
+  const singleTrailList = useMemo(() => [trail], [trail]);
+  const [trailPoisState, setTrailPoisState] = useState<{ trailId: string; items: TrailPoiItem[] }>({
+    trailId: '',
+    items: [],
+  });
+
+  // Direct "Check-in Đỉnh" modal state
+  const [isCheckinModalOpen, setIsCheckinModalOpen] = useState(false);
+  const [checkinDate, setCheckinDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [checkinHours, setCheckinHours] = useState<number>(() => Math.max(2, (trail.durationDays || 1) * 6));
+  const [checkinWeather, setCheckinWeather] = useState('');
+  const [checkinNotes, setCheckinNotes] = useState('');
+  const [checkinIsPublic, setCheckinIsPublic] = useState(true);
+  const [checkinGps, setCheckinGps] = useState<{ lat: number; lng: number; distKm: number; verified: boolean } | null>(null);
+  const [checkinLocating, setCheckinLocating] = useState(false);
+  const [checkinSubmitting, setCheckinSubmitting] = useState(false);
+  const checkinDialogRef = useRef<HTMLDivElement | null>(null);
+  useFocusTrap(isCheckinModalOpen, checkinDialogRef);
   const [reviewingGuideId, setReviewingGuideId] = useState<string | null>(null);
   const [guideRating, setGuideRating] = useState(5);
   const [guideComment, setGuideComment] = useState('');
@@ -253,12 +294,17 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
     setNewDiffRating(trail.difficultyLevel || 3);
     setNewContent('');
     setNewSafetyNote('');
+    setNewReviewPhotos([]);
     setIsSubmittingReview(false);
     setConfirmDeleteReviewId(null);
     setDeletingReviewId(null);
+    setEditingReviewId(null);
+    setSavingEditReviewId(null);
+    setBusyHelpfulIds({});
     setRatingOverride(null);
     setSelectedEvidencePhoto(null);
     setHoveredElevationCoord(null);
+    setHoveredTrackIndex(null);
     setReviewingGuideId(null);
     setGuideRating(5);
     setGuideComment('');
@@ -267,7 +313,302 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
     setIsWeatherAlertOpen(false);
     setShowOverviewClimateChart(false);
     setWeatherAlertSub(null);
+    setIsCheckinModalOpen(false);
+    setCheckinGps(null);
+    setCheckinHours(Math.max(2, (trail.durationDays || 1) * 6));
   }
+
+  // Escape key closes Check-in Đỉnh modal cleanly (LIFO topmost + IME safe)
+  useEffect(() => {
+    if (!isCheckinModalOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      if (e.key === 'Escape') {
+        if (!isTopmostFocusTrap(checkinDialogRef.current)) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setIsCheckinModalOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isCheckinModalOpen]);
+
+  const handleUploadReviewPhotos = async (
+    files: FileList | null,
+    target: 'create' | 'edit'
+  ) => {
+    if (!files || files.length === 0) return;
+    if (!currentUser && !localStorage.getItem('lost_token')) {
+      onRequireLogin?.('tải ảnh đánh giá');
+      return;
+    }
+    const existing = target === 'create' ? newReviewPhotos : editReviewPhotos;
+    const slots = Math.max(0, 6 - existing.length);
+    if (slots === 0) {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: { message: 'Tối đa 6 ảnh đính kèm cho mỗi đánh giá.', type: 'info' },
+        })
+      );
+      return;
+    }
+    const batch = Array.from(files).slice(0, slots);
+    if (target === 'create') setUploadingReviewPhoto(true);
+    else setUploadingEditReviewPhoto(true);
+
+    try {
+      const urls: string[] = [];
+      for (const file of batch) {
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ''));
+          reader.onerror = () => reject(new Error('Không thể đọc tệp ảnh.'));
+          reader.readAsDataURL(file);
+        });
+        const uploadedUrl = await uploadImageToCloudinary(base64, file.name, 'reviews');
+        urls.push(uploadedUrl);
+      }
+      if (target === 'create') {
+        setNewReviewPhotos((prev) => [...prev, ...urls].slice(0, 6));
+      } else {
+        setEditReviewPhotos((prev) => [...prev, ...urls].slice(0, 6));
+      }
+    } catch (err) {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: {
+            message: err instanceof Error ? err.message : 'Không thể tải ảnh lên máy chủ.',
+            type: 'error',
+          },
+        })
+      );
+    } finally {
+      if (target === 'create') setUploadingReviewPhoto(false);
+      else setUploadingEditReviewPhoto(false);
+    }
+  };
+
+  const handleStartEditReview = (rev: DetailReview, revId: string) => {
+    setConfirmDeleteReviewId(null);
+    setEditingReviewId(revId);
+    setEditReviewRating(Number(rev.rating) || 5);
+    setEditReviewContent(rev.content || '');
+    setEditReviewSafetyNote(rev.safetyNote || '');
+    setEditReviewPhotos(Array.isArray(rev.photos) ? rev.photos.slice(0, 6) : []);
+  };
+
+  const handleSaveEditReview = async (e: React.FormEvent, revId: string) => {
+    e.preventDefault();
+    if (!revId || savingEditReviewId) return;
+    if (editReviewContent.trim().length < 5) {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: { message: 'Nội dung đánh giá phải có ít nhất 5 ký tự.', type: 'error' },
+        })
+      );
+      return;
+    }
+    setSavingEditReviewId(revId);
+    try {
+      const res = await fetch(
+        `/api/trails/${encodeURIComponent(trail.id)}/reviews/${encodeURIComponent(revId)}`,
+        {
+          method: 'PUT',
+          headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            rating: editReviewRating,
+            comment: editReviewContent.trim(),
+            content: editReviewContent.trim(),
+            safetyNote: editReviewSafetyNote.trim(),
+            photos: editReviewPhotos.slice(0, 6),
+          }),
+        }
+      );
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success || !json.data) {
+        throw new Error(json.message || 'Không thể cập nhật đánh giá.');
+      }
+      setReviewsList((prev) =>
+        prev.map((r) => {
+          const idKey = String(r.id || r._id || '');
+          return idKey === revId ? { ...r, ...json.data } : r;
+        })
+      );
+      if (json.ratingSummary) {
+        setRatingOverride({
+          rating: Number(json.ratingSummary.rating) || 0,
+          reviewCount: Number(json.ratingSummary.reviewCount) || 0,
+        });
+      }
+      setEditingReviewId(null);
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: { message: json.message || 'Đã cập nhật đánh giá thành công!', type: 'success' },
+        })
+      );
+    } catch (err) {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: {
+            message: err instanceof Error ? err.message : 'Không thể cập nhật đánh giá lúc này.',
+            type: 'error',
+          },
+        })
+      );
+    } finally {
+      setSavingEditReviewId(null);
+    }
+  };
+
+  const handleToggleReviewHelpful = async (revId: string) => {
+    if (!revId || busyHelpfulIds[revId]) return;
+    if (!currentUser && !localStorage.getItem('lost_token')) {
+      onRequireLogin?.('bình chọn đánh giá hữu ích');
+      return;
+    }
+    setBusyHelpfulIds((prev) => ({ ...prev, [revId]: true }));
+    try {
+      const res = await fetch(
+        `/api/trails/${encodeURIComponent(trail.id)}/reviews/${encodeURIComponent(revId)}/helpful`,
+        {
+          method: 'POST',
+          headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({}),
+        }
+      );
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        throw new Error(json.message || 'Không thể cập nhật bình chọn hữu ích.');
+      }
+      setReviewsList((prev) =>
+        prev.map((r) => {
+          const idKey = String(r.id || r._id || '');
+          if (idKey !== revId) return r;
+          return {
+            ...r,
+            helpfulCount: Number(json.helpfulCount) || 0,
+            hasMarkedHelpful: Boolean(json.helpful),
+            helpful: Boolean(json.helpful),
+          };
+        })
+      );
+    } catch (err) {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: {
+            message: err instanceof Error ? err.message : 'Không thể cập nhật bình chọn hữu ích.',
+            type: 'error',
+          },
+        })
+      );
+    } finally {
+      setBusyHelpfulIds((prev) => {
+        const next = { ...prev };
+        delete next[revId];
+        return next;
+      });
+    }
+  };
+
+  const handleLocateCheckinGps = () => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: { message: 'Thiết bị không hỗ trợ định vị GPS.', type: 'error' },
+        })
+      );
+      return;
+    }
+    setCheckinLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = Number(pos.coords.latitude.toFixed(6));
+        const lng = Number(pos.coords.longitude.toFixed(6));
+        const refs: [number, number][] = [
+          [trail.startLat, trail.startLng],
+          ...(Number.isFinite(trail.endLat) && Number.isFinite(trail.endLng)
+            ? [[trail.endLat, trail.endLng] as [number, number]]
+            : []),
+          ...(Array.isArray(trail.gpxTrack) ? trail.gpxTrack.slice(0, 60) : []),
+        ];
+        let minM = Infinity;
+        for (const [rLat, rLng] of refs) {
+          if (Number.isFinite(rLat) && Number.isFinite(rLng)) {
+            const d = haversineMeters(lat, lng, rLat, rLng);
+            if (d < minM) minM = d;
+          }
+        }
+        const distKm = Number.isFinite(minM) ? Math.round((minM / 1000) * 100) / 100 : 999;
+        setCheckinGps({ lat, lng, distKm, verified: distKm <= 1.5 });
+        setCheckinLocating(false);
+      },
+      () => {
+        setCheckinLocating(false);
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: 'Không thể lấy tọa độ GPS lúc này. Bạn vẫn có thể check-in nhật ký bình thường.', type: 'info' },
+          })
+        );
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  const handleSubmitCheckin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (checkinSubmitting) return;
+    if (!currentUser && !localStorage.getItem('lost_token')) {
+      setIsCheckinModalOpen(false);
+      onRequireLogin?.('check-in chinh phục đỉnh');
+      return;
+    }
+    setCheckinSubmitting(true);
+    try {
+      const res = await fetch('/api/checkins', {
+        method: 'POST',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          trailId: trail.id,
+          checkinDate,
+          completionTimeHours: Math.max(0.5, Number(checkinHours) || 6),
+          weatherObserved: checkinWeather.trim() || undefined,
+          notes: checkinNotes.trim() || undefined,
+          isPublic: checkinIsPublic,
+          ...(checkinGps ? { lat: checkinGps.lat, lng: checkinGps.lng } : {}),
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        throw new Error(json.message || 'Không thể lưu check-in đỉnh lúc này.');
+      }
+      const badgeList = Array.isArray(json.unlockedBadges) && json.unlockedBadges.length > 0
+        ? ` · Mở khóa huy hiệu: ${json.unlockedBadges.join(', ')}`
+        : '';
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: {
+            message: `${json.message || `Check-in đỉnh ${trail.name} thành công!`}${badgeList}`,
+            type: 'success',
+          },
+        })
+      );
+      setIsCheckinModalOpen(false);
+      setCheckinNotes('');
+      setCheckinWeather('');
+    } catch (err) {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: {
+            message: err instanceof Error ? err.message : 'Lỗi khi ghi nhận check-in đỉnh.',
+            type: 'error',
+          },
+        })
+      );
+    } finally {
+      setCheckinSubmitting(false);
+    }
+  };
 
   const handleDeleteReview = async (reviewId: string) => {
     if (!reviewId || deletingReviewId) return;
@@ -495,6 +836,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
     const fetchReviews = async () => {
       try {
         const res = await fetch(`/api/trails/${encodeURIComponent(trail.id)}/reviews`, {
+          headers: getApiHeaders(),
           signal: controller.signal,
         });
         const data = await res.json();
@@ -518,12 +860,44 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
         // Offline fallback kept from trail.guides
       }
     };
+    const loadPoisForMap = async () => {
+      try {
+        const res = await fetchTrailPois(trail.id, 'all', controller.signal);
+        if (!controller.signal.aborted && Array.isArray(res.data)) {
+          setTrailPoisState({ trailId: trail.id, items: res.data });
+        }
+      } catch {
+        // Ignore abort / offline
+      }
+    };
     void fetchReviews();
     void fetchGuides();
+    void loadPoisForMap();
+    const handlePoisChanged = (e: Event) => {
+      const detail = (e as CustomEvent<{ trailId?: string }>)?.detail;
+      if (!detail?.trailId || detail.trailId === trail.id) {
+        void loadPoisForMap();
+      }
+    };
+    window.addEventListener('lost:trail-pois-changed', handlePoisChanged);
     return () => {
       controller.abort();
+      window.removeEventListener('lost:trail-pois-changed', handlePoisChanged);
     };
   }, [trail.id]);
+
+  const mapFieldPois = useMemo(() => {
+    if (trailPoisState.trailId !== trail.id) return [];
+    return trailPoisState.items.map((poi) => ({
+      id: poi._id,
+      title: poi.title,
+      category: poi.category,
+      lat: poi.lat,
+      lng: poi.lng,
+      status: poi.status,
+      notes: poi.notes,
+    }));
+  }, [trailPoisState, trail.id]);
 
   const steepnessPercent =
     trail.distanceKm > 0 ? Math.round((trail.elevationGainM / (trail.distanceKm * 1000)) * 100) : 0;
@@ -536,13 +910,8 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&apos;');
 
-  // GPX 1.1 Download Generator (Safe DOM attach & delayed Blob URL revoke)
+  // GPX 1.1 Download Generator (Open to guests + includes <wpt> waypoint markers)
   const handleDownloadGpx = () => {
-    if (!currentUser && !localStorage.getItem('lost_token')) {
-      if (onRequireLogin) onRequireLogin('tải file GPX Offline');
-      return;
-    }
-
     if (!trail.gpxTrack || trail.gpxTrack.length === 0) {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
@@ -551,6 +920,20 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       );
       return;
     }
+
+    const waypointsXml = (trail.waypoints || [])
+      .filter((wp) => Number.isFinite(Number(wp.lat)) && Number.isFinite(Number(wp.lng)))
+      .map((wp) => {
+        const eleTag =
+          typeof wp.elevationM === 'number' && Number.isFinite(wp.elevationM)
+            ? `<ele>${Math.round(wp.elevationM)}</ele>`
+            : '';
+        const nameTag = `<name>${escapeXml(wp.name || 'Mốc tọa độ')}</name>`;
+        const descTag = wp.description ? `<desc>${escapeXml(wp.description)}</desc>` : '';
+        const typeTag = wp.type ? `<type>${escapeXml(wp.type)}</type>` : '';
+        return `  <wpt lat="${Number(wp.lat)}" lon="${Number(wp.lng)}">${eleTag}${nameTag}${descTag}${typeTag}</wpt>`;
+      })
+      .join('\n');
 
     const trackPointsXml = (trail.gpxTrack || [])
       .map((pt: [number, number] | [number, number, number] | { lat?: number; lng?: number; elevationM?: number }) => {
@@ -566,12 +949,12 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
     const safeName = escapeXml(trail.name);
     const safeDesc = escapeXml(trail.description || '');
     const gpxXml = `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="LOST Vietnam - https://lost.vn">
+<gpx version="1.1" creator="LOST Vietnam - https://lost.vn" xmlns="http://www.topografix.com/GPX/1/1">
   <metadata>
     <name>${safeName}</name>
     <desc>${safeDesc}</desc>
     <author><name>LOST Community</name></author>
-  </metadata>
+  </metadata>${waypointsXml ? `\n${waypointsXml}` : ''}
   <trk>
     <name>${safeName} Trail Track</name>
     <trkseg>
@@ -606,15 +989,17 @@ ${trackPointsXml}
       difficultyRating: newDiffRating,
       content: newContent.trim(),
       safetyNote: newSafetyNote.trim() || undefined,
+      photos: newReviewPhotos.slice(0, 6),
     };
 
     setIsSubmittingReview(true);
     try {
-      const savedReview: Review = await submitReview(trail.id, payload);
-      setReviewsList((prev) => [savedReview, ...prev]);
+      const savedReview: DetailReview = await submitReview(trail.id, payload);
+      setReviewsList((prev) => [{ ...savedReview, helpfulCount: 0, hasMarkedHelpful: false }, ...prev]);
       setRatingOverride(null);
       setNewContent('');
       setNewSafetyNote('');
+      setNewReviewPhotos([]);
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
           detail: { message: 'Đã gửi đánh giá thực địa thành công!', type: 'success' },
@@ -671,6 +1056,21 @@ ${trackPointsXml}
         </button>
 
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => {
+              if (!currentUser && !localStorage.getItem('lost_token')) {
+                onRequireLogin?.('check-in chinh phục đỉnh');
+                return;
+              }
+              setIsCheckinModalOpen(true);
+            }}
+            style={{ gap: 7, display: 'inline-flex', alignItems: 'center' }}
+          >
+            <IconCheckCircle size={15} color="var(--color-on-primary)" />
+            <span>Check-in Đỉnh</span>
+          </button>
           <button
             type="button"
             className="btn btn-outline"
@@ -981,7 +1381,7 @@ ${trackPointsXml}
                         boxShadow: 'var(--shadow-card)',
                       }}
                     >
-                      <img src={img} alt={`Hiện trường ${idx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                      <img loading="lazy" decoding="async" src={img} alt={`Hiện trường ${idx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
                     </button>
                   ))}
                 </div>
@@ -1136,7 +1536,6 @@ ${trackPointsXml}
           <div
             style={{
               background: 'var(--overlay-bg)',
-              backdropFilter: 'blur(12px)',
               padding: '12px 18px',
               borderRadius: 4,
               border: '1px solid color-mix(in srgb, var(--color-on-media) 16%, transparent)',
@@ -1172,12 +1571,15 @@ ${trackPointsXml}
                       ({reviewsList.length} bài)
                     </span>
                   </>
-                ) : trail.reviewCount && trail.reviewCount > 0 && trail.rating && trail.rating > 0 && trail.reviewCount !== 1 ? (
+                ) : Number(trail.reviewCount) > 0 || Number(trail.rating) > 0 ? (
                   <>
-                    <IconStar size={16} color="var(--color-sun)" fill="var(--color-sun)" /> {Number(trail.rating).toFixed(1)}{' '}
-                    <span style={{ fontSize: '0.8rem', color: 'color-mix(in srgb, var(--color-on-media) 72%, transparent)', fontWeight: 500 }}>
-                      ({trail.reviewCount} bài)
-                    </span>
+                    <IconStar size={16} color="var(--color-sun)" fill="var(--color-sun)" />{' '}
+                    {Number(trail.rating || 0).toFixed(1)}{' '}
+                    {Number(trail.reviewCount) > 0 && (
+                      <span style={{ fontSize: '0.8rem', color: 'color-mix(in srgb, var(--color-on-media) 72%, transparent)', fontWeight: 500 }}>
+                        ({trail.reviewCount} bài)
+                      </span>
+                    )}
                   </>
                 ) : (
                   <span style={{ fontSize: '0.84rem', color: 'color-mix(in srgb, var(--color-on-media) 78%, transparent)', fontWeight: 500 }}>
@@ -1652,11 +2054,13 @@ ${trackPointsXml}
             </div>
 
             <MapView
-              trails={[trail]}
+              trails={singleTrailList}
               selectedTrail={trail}
               incidents={incidents}
               height="550px"
               highlightedPoint={hoveredElevationCoord}
+              trailPois={mapFieldPois}
+              onHoverTrackIndex={setHoveredTrackIndex}
             />
 
             <div style={{ marginTop: 18 }}>
@@ -1669,6 +2073,7 @@ ${trackPointsXml}
                 waypoints={trail.waypoints}
                 height={155}
                 onHoverCoordinate={setHoveredElevationCoord}
+                externalHoverIndex={hoveredTrackIndex}
               />
             </div>
 
@@ -1888,8 +2293,13 @@ ${trackPointsXml}
                     const isPrivileged = currentUser?.role === 'admin' || currentUser?.role === 'moderator';
                     const isDbObjectId = /^[0-9a-fA-F]{24}$/.test(revId);
                     const canDelete = Boolean(isDbObjectId && currentUser && (isSelfReview || isPrivileged));
+                    const canEdit = Boolean(isDbObjectId && currentUser && isSelfReview);
                     const isConfirmingDelete = confirmDeleteReviewId === revId;
                     const isDeletingThis = deletingReviewId === revId;
+                    const isEditingThis = editingReviewId === revId;
+                    const isMarkedHelpful = Boolean(rev.hasMarkedHelpful ?? rev.helpful);
+                    const helpfulCount = Number(rev.helpfulCount) || 0;
+                    const isHelpfulBusy = Boolean(busyHelpfulIds[revId]);
                     const effectiveRevAvatar =
                       isSelfReview && (currentUser?.avatarUrl || currentUser?.avatar)
                         ? currentUser.avatarUrl || currentUser.avatar
@@ -1897,118 +2307,373 @@ ${trackPointsXml}
 
                     return (
                       <div key={revId || rev.id} className="card">
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, gap: 8, flexWrap: 'wrap' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            <img
-                              src={effectiveRevAvatar}
-                              alt={rev.userName}
-                              style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--color-border)' }}
-                            />
+                        {isEditingThis ? (
+                          <form onSubmit={(e) => void handleSaveEditReview(e, revId)} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                              <strong style={{ fontSize: '0.9rem', color: 'var(--color-primary)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                <IconEdit size={15} color="var(--color-primary)" />
+                                <span>Chỉnh sửa đánh giá của bạn</span>
+                              </strong>
+                            </div>
+
+                            <div className="form-group" style={{ marginBottom: 0 }}>
+                              <label className="form-label" style={{ fontSize: '0.78rem' }}>Đánh giá (1 - 5 sao)</label>
+                              <select
+                                className="form-select"
+                                value={editReviewRating}
+                                onChange={(e) => setEditReviewRating(Number(e.target.value))}
+                                style={{ fontSize: '0.84rem' }}
+                              >
+                                <option value={5}>5 sao - Tuyệt vời</option>
+                                <option value={4}>4 sao - Rất tốt</option>
+                                <option value={3}>3 sao - Trung bình</option>
+                                <option value={2}>2 sao - Khó</option>
+                                <option value={1}>1 sao - Nguy hiểm</option>
+                              </select>
+                            </div>
+
+                            <div className="form-group" style={{ marginBottom: 0 }}>
+                              <label className="form-label" style={{ fontSize: '0.78rem' }}>Nội dung đánh giá</label>
+                              <textarea
+                                className="form-textarea"
+                                rows={3}
+                                required
+                                value={editReviewContent}
+                                onChange={(e) => setEditReviewContent(e.target.value)}
+                                style={{ fontSize: '0.86rem' }}
+                              />
+                            </div>
+
+                            <div className="form-group" style={{ marginBottom: 0 }}>
+                              <label className="form-label" style={{ fontSize: '0.78rem' }}>Cảnh báo an toàn (tùy chọn)</label>
+                              <input
+                                type="text"
+                                className="form-input"
+                                value={editReviewSafetyNote}
+                                onChange={(e) => setEditReviewSafetyNote(e.target.value)}
+                                style={{ fontSize: '0.84rem' }}
+                              />
+                            </div>
+
                             <div>
-                              <strong style={{ color: 'var(--color-text-main)', fontSize: '0.95rem' }}>{rev.userName}</strong>
-                              <div style={{ fontSize: '0.75rem', color: 'var(--color-text-dim)' }}>
-                                Ngày đi: {formatVnDate(rev.tripDate || rev.createdAt)}
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                                <span style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>
+                                  Ảnh chuyến đi ({editReviewPhotos.length}/6)
+                                </span>
+                                <label
+                                  htmlFor={`review-edit-photo-${revId}`}
+                                  className="btn btn-outline"
+                                  style={{
+                                    padding: '4px 10px',
+                                    fontSize: '0.72rem',
+                                    borderRadius: 4,
+                                    cursor: uploadingEditReviewPhoto || editReviewPhotos.length >= 6 ? 'not-allowed' : 'pointer',
+                                    opacity: uploadingEditReviewPhoto || editReviewPhotos.length >= 6 ? 0.6 : 1,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: 5,
+                                  }}
+                                >
+                                  <IconCamera size={12} color="var(--color-primary)" />
+                                  <span>{uploadingEditReviewPhoto ? 'Đang tải...' : 'Thêm ảnh'}</span>
+                                </label>
+                                <input
+                                  id={`review-edit-photo-${revId}`}
+                                  type="file"
+                                  accept="image/*"
+                                  multiple
+                                  disabled={uploadingEditReviewPhoto || editReviewPhotos.length >= 6}
+                                  onChange={(e) => {
+                                    void handleUploadReviewPhotos(e.target.files, 'edit');
+                                    e.target.value = '';
+                                  }}
+                                  style={{ display: 'none' }}
+                                />
+                              </div>
+                              {editReviewPhotos.length > 0 && (
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                                  {editReviewPhotos.map((url, pIdx) => (
+                                    <div
+                                      key={`${url}-${pIdx}`}
+                                      style={{
+                                        position: 'relative',
+                                        width: 72,
+                                        height: 54,
+                                        borderRadius: 4,
+                                        overflow: 'hidden',
+                                        border: '1px solid var(--color-border-strong)',
+                                      }}
+                                    >
+                                      <img loading="lazy" decoding="async" src={url} alt={`Ảnh đánh giá ${pIdx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                                      <button
+                                        type="button"
+                                        onClick={() => setEditReviewPhotos((prev) => prev.filter((_, i) => i !== pIdx))}
+                                        aria-label={`Xóa ảnh ${pIdx + 1}`}
+                                        style={{
+                                          position: 'absolute',
+                                          top: 2,
+                                          right: 2,
+                                          width: 18,
+                                          height: 18,
+                                          borderRadius: '50%',
+                                          border: 'none',
+                                          background: 'var(--overlay-bg)',
+                                          color: 'var(--color-on-media)',
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          justifyContent: 'center',
+                                          cursor: 'pointer',
+                                          padding: 0,
+                                        }}
+                                      >
+                                        <IconX size={10} />
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                              <button
+                                type="button"
+                                className="btn btn-outline"
+                                disabled={savingEditReviewId === revId}
+                                onClick={() => setEditingReviewId(null)}
+                                style={{ padding: '6px 14px', fontSize: '0.78rem', borderRadius: 4 }}
+                              >
+                                Hủy
+                              </button>
+                              <button
+                                type="submit"
+                                className="btn btn-primary"
+                                disabled={savingEditReviewId === revId || uploadingEditReviewPhoto}
+                                style={{ padding: '6px 16px', fontSize: '0.78rem', borderRadius: 4 }}
+                              >
+                                {savingEditReviewId === revId ? 'Đang lưu...' : 'Lưu Thay Đổi'}
+                              </button>
+                            </div>
+                          </form>
+                        ) : (
+                          <>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, gap: 8, flexWrap: 'wrap' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <img
+                                  loading="lazy"
+                                  decoding="async"
+                                  src={effectiveRevAvatar}
+                                  alt={rev.userName}
+                                  style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--color-border)' }}
+                                />
+                                <div>
+                                  <strong style={{ color: 'var(--color-text-main)', fontSize: '0.95rem' }}>{rev.userName}</strong>
+                                  <div style={{ fontSize: '0.75rem', color: 'var(--color-text-dim)' }}>
+                                    Ngày đi: {formatVnDate(rev.tripDate || rev.createdAt)}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                <div style={{ color: 'var(--color-sun)', fontWeight: 700, fontSize: '0.88rem', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                  <IconStar size={13} color="var(--color-sun)" fill="var(--color-sun)" />
+                                  <span>{rev.rating}/5</span>
+                                </div>
+
+                                {canEdit && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleStartEditReview(rev, revId)}
+                                    title="Chỉnh sửa đánh giá này"
+                                    style={{
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: 4,
+                                      padding: '4px 8px',
+                                      borderRadius: 4,
+                                      border: '1px solid var(--color-border-strong)',
+                                      background: 'var(--color-bg-main)',
+                                      color: 'var(--color-text-main)',
+                                      fontSize: '0.74rem',
+                                      fontWeight: 700,
+                                      cursor: 'pointer',
+                                    }}
+                                  >
+                                    <IconEdit size={12} color="var(--color-primary)" />
+                                    <span>Chỉnh sửa</span>
+                                  </button>
+                                )}
+
+                                {canDelete && (
+                                  isConfirmingDelete ? (
+                                    <div
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: 6,
+                                        padding: '3px 8px',
+                                        borderRadius: 4,
+                                        background: 'color-mix(in srgb, var(--color-error) 12%, transparent)',
+                                        border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)',
+                                      }}
+                                    >
+                                      <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-error-text, var(--color-error))' }}>
+                                        Xóa đánh giá?
+                                      </span>
+                                      <button
+                                        type="button"
+                                        disabled={isDeletingThis}
+                                        onClick={() => handleDeleteReview(revId)}
+                                        style={{
+                                          padding: '3px 8px',
+                                          borderRadius: 4,
+                                          border: 'none',
+                                          background: 'var(--color-error)',
+                                          color: 'var(--color-on-danger)',
+                                          fontSize: '0.72rem',
+                                          fontWeight: 700,
+                                          cursor: isDeletingThis ? 'wait' : 'pointer',
+                                          opacity: isDeletingThis ? 0.7 : 1,
+                                        }}
+                                      >
+                                        {isDeletingThis ? 'Đang xóa...' : 'Xác nhận'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={isDeletingThis}
+                                        onClick={() => setConfirmDeleteReviewId(null)}
+                                        style={{
+                                          padding: '3px 8px',
+                                          borderRadius: 4,
+                                          border: '1px solid var(--color-border-strong)',
+                                          background: 'var(--color-bg-card)',
+                                          color: 'var(--color-text-muted)',
+                                          fontSize: '0.72rem',
+                                          fontWeight: 600,
+                                          cursor: 'pointer',
+                                        }}
+                                      >
+                                        Hủy
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteReviewId(revId)}
+                                      title="Xóa đánh giá này"
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: 4,
+                                        padding: '4px 8px',
+                                        borderRadius: 4,
+                                        border: '1px solid color-mix(in srgb, var(--color-error) 28%, transparent)',
+                                        background: 'color-mix(in srgb, var(--color-error) 8%, transparent)',
+                                        color: 'var(--color-error-text, var(--color-error))',
+                                        fontSize: '0.74rem',
+                                        fontWeight: 700,
+                                        cursor: 'pointer',
+                                      }}
+                                    >
+                                      <IconTrash size={12} color="var(--color-error)" />
+                                      <span>Xóa đánh giá</span>
+                                    </button>
+                                  )
+                                )}
                               </div>
                             </div>
-                          </div>
 
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                            <div style={{ color: 'var(--color-sun)', fontWeight: 700, fontSize: '0.88rem', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                              <IconStar size={13} color="var(--color-sun)" fill="var(--color-sun)" />
-                              <span>{rev.rating}/5</span>
-                            </div>
+                            <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem', lineHeight: 1.6, marginBottom: 10 }}>
+                              {rev.content}
+                            </p>
 
-                            {canDelete && (
-                              isConfirmingDelete ? (
-                                <div
+                            {/* Review Photos Grid -> Lightbox */}
+                            {Array.isArray(rev.photos) && rev.photos.length > 0 && (
+                              <div
+                                style={{
+                                  display: 'grid',
+                                  gridTemplateColumns: 'repeat(auto-fill, minmax(92px, 1fr))',
+                                  gap: 8,
+                                  marginBottom: 10,
+                                }}
+                              >
+                                {rev.photos.slice(0, 6).map((photoUrl, pIdx) => (
+                                  <button
+                                    key={`${photoUrl}-${pIdx}`}
+                                    type="button"
+                                    onClick={() => setSelectedEvidencePhoto(photoUrl)}
+                                    aria-label={`Xem ảnh đánh giá ${pIdx + 1}`}
+                                    style={{
+                                      height: 76,
+                                      borderRadius: 4,
+                                      overflow: 'hidden',
+                                      padding: 0,
+                                      border: '1px solid var(--color-border)',
+                                      background: 'var(--color-bg-main)',
+                                      cursor: 'pointer',
+                                    }}
+                                  >
+                                    <img
+                                      loading="lazy"
+                                      decoding="async"
+                                      src={photoUrl}
+                                      alt={`Ảnh đánh giá ${pIdx + 1}`}
+                                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                                    />
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+
+                            {rev.safetyNote && (
+                              <div style={{ background: 'var(--banner-danger-bg)', borderLeft: '3px solid var(--color-error)', border: '1px solid var(--banner-danger-border)', padding: '10px 14px', fontSize: '0.85rem', color: 'var(--banner-danger-text)', borderRadius: 4, marginTop: 8, marginBottom: 8 }}>
+                                <strong style={{ color: 'var(--color-error-text, var(--color-error))', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                                  <IconAlertTriangle size={15} color="var(--color-error-text, var(--color-error))" />
+                                  CẢNH BÁO AN TOÀN TỪ TREKKER:
+                                </strong>
+                                {rev.safetyNote}
+                              </div>
+                            )}
+
+                            {/* Helpful Vote Footer */}
+                            {isDbObjectId && (
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--color-border)' }}>
+                                <button
+                                  type="button"
+                                  disabled={isHelpfulBusy}
+                                  onClick={() => void handleToggleReviewHelpful(revId)}
+                                  aria-pressed={isMarkedHelpful}
                                   style={{
                                     display: 'inline-flex',
                                     alignItems: 'center',
                                     gap: 6,
-                                    padding: '3px 8px',
+                                    padding: '5px 11px',
                                     borderRadius: 4,
-                                    background: 'color-mix(in srgb, var(--color-error) 12%, transparent)',
-                                    border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)',
-                                  }}
-                                >
-                                  <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-error-text, var(--color-error))' }}>
-                                    Xóa đánh giá?
-                                  </span>
-                                  <button
-                                    type="button"
-                                    disabled={isDeletingThis}
-                                    onClick={() => handleDeleteReview(revId)}
-                                    style={{
-                                      padding: '3px 8px',
-                                      borderRadius: 4,
-                                      border: 'none',
-                                      background: 'var(--color-error)',
-                                      color: 'var(--color-on-danger)',
-                                      fontSize: '0.72rem',
-                                      fontWeight: 700,
-                                      cursor: isDeletingThis ? 'wait' : 'pointer',
-                                      opacity: isDeletingThis ? 0.7 : 1,
-                                    }}
-                                  >
-                                    {isDeletingThis ? 'Đang xóa...' : 'Xác nhận'}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={isDeletingThis}
-                                    onClick={() => setConfirmDeleteReviewId(null)}
-                                    style={{
-                                      padding: '3px 8px',
-                                      borderRadius: 4,
-                                      border: '1px solid var(--color-border-strong)',
-                                      background: 'var(--color-bg-card)',
-                                      color: 'var(--color-text-muted)',
-                                      fontSize: '0.72rem',
-                                      fontWeight: 600,
-                                      cursor: 'pointer',
-                                    }}
-                                  >
-                                    Hủy
-                                  </button>
-                                </div>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => setConfirmDeleteReviewId(revId)}
-                                  title="Xóa đánh giá này"
-                                  style={{
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: 4,
-                                    padding: '4px 8px',
-                                    borderRadius: 4,
-                                    border: '1px solid color-mix(in srgb, var(--color-error) 28%, transparent)',
-                                    background: 'color-mix(in srgb, var(--color-error) 8%, transparent)',
-                                    color: 'var(--color-error-text, var(--color-error))',
-                                    fontSize: '0.74rem',
+                                    border: isMarkedHelpful
+                                      ? '1px solid var(--color-primary)'
+                                      : '1px solid var(--color-border)',
+                                    background: isMarkedHelpful
+                                      ? 'color-mix(in srgb, var(--color-primary) 15%, transparent)'
+                                      : 'var(--color-bg-main)',
+                                    color: isMarkedHelpful ? 'var(--color-primary)' : 'var(--color-text-muted)',
+                                    fontSize: '0.76rem',
                                     fontWeight: 700,
-                                    cursor: 'pointer',
+                                    cursor: isHelpfulBusy ? 'wait' : 'pointer',
                                   }}
                                 >
-                                  <IconTrash size={12} color="var(--color-error)" />
-                                  <span>Xóa đánh giá</span>
+                                  <svg width="13" height="13" viewBox="0 0 24 24" fill={isMarkedHelpful ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M7 10v12" />
+                                    <path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2h0a3.13 3.13 0 0 1 3 3.88Z" />
+                                  </svg>
+                                  <span>
+                                    Hữu ích{helpfulCount > 0 ? ` (+${helpfulCount})` : ''}
+                                  </span>
                                 </button>
-                              )
+                                <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)' }}>
+                                  Độ khó thực tế: {rev.difficultyRating || 3}/5
+                                </span>
+                              </div>
                             )}
-                          </div>
-                        </div>
-
-                        <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem', lineHeight: 1.6, marginBottom: 10 }}>
-                          {rev.content}
-                        </p>
-
-                        {rev.safetyNote && (
-                          <div style={{ background: 'var(--banner-danger-bg)', borderLeft: '3px solid var(--color-error)', border: '1px solid var(--banner-danger-border)', padding: '10px 14px', fontSize: '0.85rem', color: 'var(--banner-danger-text)', borderRadius: 4, marginTop: 8 }}>
-                            <strong style={{ color: 'var(--color-error-text, var(--color-error))', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                              <IconAlertTriangle size={15} color="var(--color-error-text, var(--color-error))" />
-                              CẢNH BÁO AN TOÀN TỪ TREKKER:
-                            </strong>
-                            {rev.safetyNote}
-                          </div>
+                          </>
                         )}
                       </div>
                     );
@@ -2070,11 +2735,90 @@ ${trackPointsXml}
                   />
                 </div>
 
+                <div className="form-group">
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                    <label className="form-label" style={{ margin: 0 }}>
+                      Ảnh chuyến đi ({newReviewPhotos.length}/6)
+                    </label>
+                    <label
+                      htmlFor="trail-review-photo-upload"
+                      className="btn btn-outline"
+                      style={{
+                        padding: '4px 10px',
+                        fontSize: '0.74rem',
+                        borderRadius: 4,
+                        cursor: uploadingReviewPhoto || newReviewPhotos.length >= 6 ? 'not-allowed' : 'pointer',
+                        opacity: uploadingReviewPhoto || newReviewPhotos.length >= 6 ? 0.6 : 1,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 5,
+                      }}
+                    >
+                      <IconCamera size={13} color="var(--color-primary)" />
+                      <span>{uploadingReviewPhoto ? 'Đang tải...' : 'Thêm ảnh'}</span>
+                    </label>
+                    <input
+                      id="trail-review-photo-upload"
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      disabled={uploadingReviewPhoto || newReviewPhotos.length >= 6}
+                      onChange={(e) => {
+                        void handleUploadReviewPhotos(e.target.files, 'create');
+                        e.target.value = '';
+                      }}
+                      style={{ display: 'none' }}
+                    />
+                  </div>
+                  {newReviewPhotos.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {newReviewPhotos.map((url, idx) => (
+                        <div
+                          key={`${url}-${idx}`}
+                          style={{
+                            position: 'relative',
+                            width: 64,
+                            height: 50,
+                            borderRadius: 4,
+                            overflow: 'hidden',
+                            border: '1px solid var(--color-border-strong)',
+                          }}
+                        >
+                          <img loading="lazy" decoding="async" src={url} alt={`Ảnh tải lên ${idx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                          <button
+                            type="button"
+                            onClick={() => setNewReviewPhotos((prev) => prev.filter((_, i) => i !== idx))}
+                            aria-label={`Xóa ảnh ${idx + 1}`}
+                            style={{
+                              position: 'absolute',
+                              top: 2,
+                              right: 2,
+                              width: 18,
+                              height: 18,
+                              borderRadius: '50%',
+                              border: 'none',
+                              background: 'var(--overlay-bg)',
+                              color: 'var(--color-on-media)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              cursor: 'pointer',
+                              padding: 0,
+                            }}
+                          >
+                            <IconX size={10} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <button
                   type="submit"
                   className="btn btn-primary"
-                  disabled={isSubmittingReview}
-                  style={{ width: '100%', justifyContent: 'center', borderRadius: 4, opacity: isSubmittingReview ? 0.7 : 1 }}
+                  disabled={isSubmittingReview || uploadingReviewPhoto}
+                  style={{ width: '100%', justifyContent: 'center', borderRadius: 4, opacity: isSubmittingReview || uploadingReviewPhoto ? 0.7 : 1 }}
                 >
                   {isSubmittingReview ? 'Đang gửi đánh giá...' : 'Gửi đánh giá cho cộng đồng'}
                 </button>
@@ -2199,8 +2943,7 @@ ${trackPointsXml}
                         position: 'absolute',
                         top: 8,
                         left: 8,
-                        background: 'var(--color-bg-glass)',
-                        backdropFilter: 'blur(8px)',
+                        background: 'var(--color-bg-hud)',
                         border: '1px solid var(--color-border)',
                         borderRadius: 4,
                         padding: '2px 7px',
@@ -2372,7 +3115,238 @@ ${trackPointsXml}
         </Suspense>
       )}
 
-      {/* Evidence Photo Lightbox rendered cleanly via createPortal to document.body */}
+      {/* Direct "Check-in Đỉnh" Lightweight Modal */}
+      {isCheckinModalOpen &&
+        createPortal(
+          <div
+            onClick={() => setIsCheckinModalOpen(false)}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'var(--overlay-bg)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 'var(--z-modal, 3000)' as unknown as number,
+              padding: 16,
+            }}
+          >
+            <div
+              ref={checkinDialogRef}
+              role="dialog"
+              aria-modal="true"
+              aria-label={`Check-in đỉnh ${trail.name}`}
+              tabIndex={-1}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: '100%',
+                maxWidth: 500,
+                maxHeight: '90vh',
+                overflowY: 'auto',
+                background: 'var(--color-bg-card)',
+                border: '1px solid var(--color-border-strong)',
+                borderRadius: 6,
+                boxShadow: 'var(--shadow-3d)',
+                outline: 'none',
+              }}
+            >
+              <div
+                style={{
+                  padding: '16px 20px',
+                  borderBottom: '1px solid var(--color-border)',
+                  background: 'var(--color-bg-main)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: 4,
+                      background: 'color-mix(in srgb, var(--color-primary) 14%, transparent)',
+                      border: '1px solid var(--color-border-glow)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <IconMountain size={18} color="var(--color-primary)" />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '0.68rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--color-primary)' }}>
+                      Ghi Nhận Chinh Phục Thực Địa
+                    </div>
+                    <h3 style={{ margin: '2px 0 0 0', fontSize: '1.05rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                      Check-in Đỉnh · {trail.name}
+                    </h3>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsCheckinModalOpen(false)}
+                  aria-label="Đóng hộp thoại Check-in (Esc)"
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 4,
+                    background: 'var(--color-surface-elevated)',
+                    border: '1px solid var(--color-border)',
+                    color: 'var(--color-text-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <IconX size={16} />
+                </button>
+              </div>
+
+              <form onSubmit={(e) => void handleSubmitCheckin(e)} style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {/* Optional GPS Proximity Verification Block */}
+                <div
+                  style={{
+                    padding: '12px 14px',
+                    borderRadius: 4,
+                    background: checkinGps?.verified
+                      ? 'color-mix(in srgb, var(--color-primary) 12%, var(--color-bg-main))'
+                      : 'var(--color-bg-main)',
+                    border: checkinGps?.verified
+                      ? '1px solid var(--color-primary)'
+                      : '1px solid var(--color-border)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--color-text-main)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <IconCompass size={15} color="var(--color-primary)" />
+                      <span>Xác thực GPS thực địa (tùy chọn)</span>
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      disabled={checkinLocating}
+                      onClick={handleLocateCheckinGps}
+                      style={{ padding: '5px 10px', fontSize: '0.74rem', borderRadius: 4 }}
+                    >
+                      {checkinLocating ? 'Đang lấy GPS...' : checkinGps ? 'Cập nhật GPS' : 'Lấy tọa độ GPS hiện tại'}
+                    </button>
+                  </div>
+
+                  {checkinGps ? (
+                    <div style={{ fontSize: '0.76rem', color: checkinGps.verified ? 'var(--color-primary)' : 'var(--color-text-muted)', fontWeight: 600 }}>
+                      {checkinGps.verified ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                          <IconCheck size={13} color="var(--color-primary)" />
+                          <span>
+                            Đủ điều kiện Huy hiệu Xác Thực GPS (cách tuyến ~{checkinGps.distKm} km · +30 điểm uy tín)!
+                          </span>
+                        </span>
+                      ) : (
+                        <span>
+                          GPS hiện tại ({checkinGps.lat.toFixed(4)}, {checkinGps.lng.toFixed(4)}) cách cung ~{checkinGps.distKm} km (&gt; 1.5 km) — sẽ lưu dạng nhật ký check-in tiêu chuẩn (+15 điểm uy tín).
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '0.74rem', color: 'var(--color-text-dim)' }}>
+                      Nếu bạn đang đứng trong bán kính 1.5 km quanh đỉnh hoặc tuyến GPX, hệ thống sẽ tự động gắn Huy hiệu Xác Thực GPS (+30 điểm uy tín).
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label" style={{ fontSize: '0.78rem' }}>Ngày chinh phục</label>
+                    <input
+                      type="date"
+                      className="form-input"
+                      max={new Date().toISOString().split('T')[0]}
+                      value={checkinDate}
+                      onChange={(e) => setCheckinDate(e.target.value)}
+                      required
+                    />
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label" style={{ fontSize: '0.78rem' }}>Thời gian hoàn thành (giờ)</label>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min={0.5}
+                      max={240}
+                      className="form-input"
+                      value={checkinHours}
+                      onChange={(e) => setCheckinHours(Number(e.target.value))}
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label" style={{ fontSize: '0.78rem' }}>Thời tiết ghi nhận (tùy chọn)</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="VD: Biển mây dày buổi sáng, 11°C, nắng nhẹ"
+                    value={checkinWeather}
+                    onChange={(e) => setCheckinWeather(e.target.value)}
+                  />
+                </div>
+
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label" style={{ fontSize: '0.78rem' }}>Ghi chú hành trình (tùy chọn)</label>
+                  <textarea
+                    rows={3}
+                    className="form-textarea"
+                    placeholder="Cảm xúc chạm đỉnh, thể trạng, đồng đội..."
+                    value={checkinNotes}
+                    onChange={(e) => setCheckinNotes(e.target.value)}
+                  />
+                </div>
+
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: '0.8rem', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={checkinIsPublic}
+                    onChange={(e) => setCheckinIsPublic(e.target.checked)}
+                    style={{ accentColor: 'var(--color-primary)' }}
+                  />
+                  <span>Chia sẻ cột mốc chinh phục lên bảng tin cộng đồng</span>
+                </label>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 6, borderTop: '1px solid var(--color-border)' }}>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={checkinSubmitting}
+                    onClick={() => setIsCheckinModalOpen(false)}
+                    style={{ padding: '8px 16px', fontSize: '0.82rem', borderRadius: 4 }}
+                  >
+                    Hủy
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={checkinSubmitting}
+                    style={{ padding: '8px 20px', fontSize: '0.82rem', fontWeight: 800, borderRadius: 4 }}
+                  >
+                    {checkinSubmitting ? 'Đang ghi nhận...' : 'Xác Nhận Check-in Đỉnh'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* Photo Lightbox rendered cleanly via createPortal to document.body */}
       {selectedEvidencePhoto &&
         createPortal(
           <div
@@ -2381,8 +3355,6 @@ ${trackPointsXml}
               position: 'fixed',
               inset: 0,
               background: 'var(--overlay-bg)',
-              backdropFilter: 'blur(8px)',
-              WebkitBackdropFilter: 'blur(8px)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -2394,7 +3366,7 @@ ${trackPointsXml}
               ref={evidenceLightboxRef}
               role="dialog"
               aria-modal="true"
-              aria-label="Ảnh hiện trường sự cố"
+              aria-label="Xem ảnh thực địa"
               tabIndex={-1}
               onClick={(e) => e.stopPropagation()}
               style={{
@@ -2404,7 +3376,7 @@ ${trackPointsXml}
                 background: 'var(--color-bg-card)',
                 borderRadius: 6,
                 overflow: 'hidden',
-                border: '1px solid var(--banner-danger-border)',
+                border: '1px solid var(--color-border-strong)',
                 boxShadow: 'var(--shadow-3d)',
                 outline: 'none',
               }}
@@ -2433,8 +3405,10 @@ ${trackPointsXml}
                 <IconX size={16} />
               </button>
               <img
+                loading="lazy"
+                decoding="async"
                 src={selectedEvidencePhoto}
-                alt="Hiện trường sự cố"
+                alt="Ảnh thực địa"
                 style={{
                   width: '100%',
                   maxHeight: '88vh',

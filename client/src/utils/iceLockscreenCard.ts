@@ -188,7 +188,8 @@ function decodeJwtUserIdFromToken(token: string | null): string | null {
   const parts = token.split('.');
   if (parts.length < 2) return null;
   try {
-    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const payloadSegment = parts.length === 2 ? parts[0] : parts[1];
+    const b64 = payloadSegment.replace(/-/g, '+').replace(/_/g, '/');
     const padded = b64.padEnd(Math.ceil(b64.length / 4) * 4, '=');
     const decoded = JSON.parse(atob(padded)) as Record<string, unknown>;
     const candidate = decoded.id ?? decoded.userId ?? decoded._id ?? decoded.sub;

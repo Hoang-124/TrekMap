@@ -6,6 +6,10 @@ export interface ICommunityMessage extends Document {
   senderAvatar: string;
   senderBadge?: string;
   nameColor?: string;
+  channel?: string;
+  gpsLat?: number;
+  gpsLng?: number;
+  altitudeM?: number;
   text: string;
   quote?: {
     author: string;
@@ -22,6 +26,10 @@ const CommunityMessageSchema = new Schema<ICommunityMessage>(
     senderAvatar: { type: String, required: true },
     senderBadge: { type: String, default: 'Trekker' },
     nameColor: { type: String, default: '' },
+    channel: { type: String, default: 'general', index: true },
+    gpsLat: { type: Number },
+    gpsLng: { type: Number },
+    altitudeM: { type: Number },
     text: { type: String, required: true, maxlength: 1000 },
     quote: {
       type: {
@@ -39,6 +47,7 @@ const CommunityMessageSchema = new Schema<ICommunityMessage>(
 );
 
 CommunityMessageSchema.index({ createdAt: -1 });
+CommunityMessageSchema.index({ channel: 1, createdAt: -1 });
 
 export const CommunityMessageModel = mongoose.model<ICommunityMessage>(
   'CommunityMessage',

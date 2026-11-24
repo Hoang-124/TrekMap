@@ -197,7 +197,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
   },
 ];
 
-export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
+const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
   trails,
   compact = false,
   onSelectTrail,
@@ -564,6 +564,7 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
                 src={selectedSummit.imageUrl || TOP_10_SUMMITS[0].imageUrl}
                 alt={selectedSummit.name}
                 loading="lazy"
+                decoding="async"
                 onError={(e) => {
                   const img = e.currentTarget;
                   if (img.src !== TOP_10_SUMMITS[0].imageUrl) {
@@ -608,7 +609,6 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
                 <div
                   style={{
                     background: 'var(--overlay-bg)',
-                    backdropFilter: 'blur(8px)',
                     border: '1px solid color-mix(in srgb, var(--color-on-media) 22%, transparent)',
                     borderRadius: 4,
                     padding: '2px 8px',
@@ -800,3 +800,5 @@ export const SummitAltitudeLadder: React.FC<SummitAltitudeLadderProps> = ({
     </section>
   );
 };
+
+export const SummitAltitudeLadder = React.memo(SummitAltitudeLadderBase);

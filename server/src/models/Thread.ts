@@ -20,6 +20,8 @@ export interface IThread extends Document {
   authorBadge?: string;
   userId?: Types.ObjectId;
   category: string;
+  trailId?: string;
+  trailName?: string;
   content: string;
   images?: string[];
   upvotes: number;
@@ -42,6 +44,8 @@ const threadSchema = new Schema<IThread>(
     authorBadge: { type: String, default: 'Verified Trekker' },
     userId: { type: Schema.Types.ObjectId, ref: 'User' },
     category: { type: String, default: 'Kinh Nghiệm' },
+    trailId: { type: String, default: '', index: true },
+    trailName: { type: String, default: '' },
     content: { type: String, required: true },
     images: { type: [String], default: [] },
     upvotes: { type: Number, default: 0, min: 0 },

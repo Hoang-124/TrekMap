@@ -162,8 +162,8 @@ function buildThreadBriefingMarkdown(
     `- **Thời điểm xuất**: ${timeNow} (Giờ Việt Nam)`,
     ...(activeTrail
       ? [
-          `- **Cung đường đang xem**: ${activeTrail.name} (${activeTrail.province} — Đỉnh ${activeTrail.maxAltitudeM.toLocaleString()}m, ${activeTrail.distanceKm} km, +${activeTrail.elevationGainM}m)`,
-        ]
+        `- **Cung đường đang xem**: ${activeTrail.name} (${activeTrail.province} — Đỉnh ${activeTrail.maxAltitudeM.toLocaleString()}m, ${activeTrail.distanceKm} km, +${activeTrail.elevationGainM}m)`,
+      ]
       : []),
     `- **Tổng số lượt trao đổi**: ${msgs.length}`,
     '',
@@ -334,18 +334,18 @@ Em có thể hỗ trợ bạn ngay:
         type: 'quick_reply',
         suggestions: currentTrail
           ? [
-              `Đánh giá Go/No-Go hôm nay cho ${currentTrail.name}`,
-              `Tính giờ quay đầu & kế hoạch tốc độ leo ${currentTrail.name}`,
-              `Lịch trình chi tiết leo ${currentTrail.name}`,
-              `Checklist trang bị cho ${currentTrail.name}`,
-            ]
+            `Đánh giá Go/No-Go hôm nay cho ${currentTrail.name}`,
+            `Tính giờ quay đầu & kế hoạch tốc độ leo ${currentTrail.name}`,
+            `Lịch trình chi tiết leo ${currentTrail.name}`,
+            `Checklist trang bị cho ${currentTrail.name}`,
+          ]
           : [
-              'Gợi ý cung săn mây cho người mới',
-              'Tính giờ quay đầu & kịp xuống trước tối leo Fansipan',
-              'Tính thời gian Naismith & lượng nước leo núi 15km',
-              'Checklist Balo & Trang bị 2N1Đ',
-              'Cấp cứu khẩn cấp: Sốc độ cao & Lạc đường',
-            ],
+            'Gợi ý cung săn mây cho người mới',
+            'Tính giờ quay đầu & kịp xuống trước tối leo Fansipan',
+            'Tính thời gian Naismith & lượng nước leo núi 15km',
+            'Checklist Balo & Trang bị 2N1Đ',
+            'Cấp cứu khẩn cấp: Sốc độ cao & Lạc đường',
+          ],
       },
     ],
   };
@@ -399,8 +399,8 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
     currentUser?.id
       ? String(currentUser.id)
       : (currentUser as { _id?: string } | null | undefined)?._id
-      ? String((currentUser as { _id?: string })._id)
-      : null;
+        ? String((currentUser as { _id?: string })._id)
+        : null;
   const [prevStorageUserId, setPrevStorageUserId] = useState<string | null>(storageUserId);
 
   const [lastModelUsed, setLastModelUsed] = useState<AiModelUsed>('lost-knowledge-engine');
@@ -472,7 +472,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
       threadLoadReqIdRef.current += 1;
     };
   }, [storageUserId]);
-  const handleSendMessageRef = useRef<(textToSend?: string, overrideTrailId?: string) => Promise<void>>(async () => {});
+  const handleSendMessageRef = useRef<(textToSend?: string, overrideTrailId?: string) => Promise<void>>(async () => { });
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -783,7 +783,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
       (pos) => {
         if (active) setUserCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
       },
-      () => {},
+      () => { },
       { timeout: 5000, maximumAge: 600_000 }
     );
     return () => {
@@ -1030,12 +1030,12 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
             },
             currentTrailContext: effectiveTrail
               ? {
-                  trailId: effectiveTrail.id,
-                  trailName: effectiveTrail.name,
-                  province: effectiveTrail.province,
-                  maxAltitudeM: effectiveTrail.maxAltitudeM,
-                  difficultyLevel: effectiveTrail.difficultyLevel,
-                }
+                trailId: effectiveTrail.id,
+                trailName: effectiveTrail.name,
+                province: effectiveTrail.province,
+                maxAltitudeM: effectiveTrail.maxAltitudeM,
+                difficultyLevel: effectiveTrail.difficultyLevel,
+              }
               : undefined,
           },
           {
@@ -1119,10 +1119,10 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
     const queued = consumeQueuedAiAssistantPrompt();
     const timer = queued?.prompt
       ? setTimeout(() => {
-          setActiveSuiteTab('chat');
-          setShowSettings(false);
-          void handleSendMessageRef.current(queued.prompt, queued.trailId);
-        }, 0)
+        setActiveSuiteTab('chat');
+        setShowSettings(false);
+        void handleSendMessageRef.current(queued.prompt, queued.trailId);
+      }, 0)
       : null;
     const handleLiveOpen = (ev: Event) => {
       const detail = (ev as CustomEvent)?.detail;
@@ -1177,9 +1177,12 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
       const withUser = [...baseMessages, userMsg];
       setMessages(withUser);
 
+      const cloudThreadId =
+        activeThreadId && !activeThreadId.startsWith('local-') ? activeThreadId : undefined;
       const serverRes = await analyzeGpxApi({
         fileName: `${currentTrail.id}.gpx`,
         points,
+        threadId: cloudThreadId,
       });
 
       if (serverRes) {
@@ -1193,7 +1196,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
         };
         const finalMsgs = [...withUser, assistantMsg];
         setMessages(finalMsgs);
-        const tid = activeThreadId || `local-${Date.now()}`;
+        const tid = serverRes.threadId || activeThreadId || `local-${Date.now()}`;
         setActiveThreadId(tid);
         persistLocalThreadSnapshot(tid, finalMsgs, `GPX: ${currentTrail.name}`);
         triggerToast(`Đã hoàn tất phân tích GPX ${currentTrail.name}!`);
@@ -1226,9 +1229,12 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
       setMessages(withUser);
 
       // Enrich on server (Open-Meteo DEM + live weather + nearest LOST trail), fallback to instant client offlineAnalysis
+      const cloudThreadId =
+        activeThreadId && !activeThreadId.startsWith('local-') ? activeThreadId : undefined;
       const serverRes = await analyzeGpxApi({
         fileName: parsed.fileName,
         points: parsed.points,
+        threadId: cloudThreadId,
       });
 
       const analysis = serverRes?.analysis || parsed.offlineAnalysis;
@@ -1253,7 +1259,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
 
       const finalMsgs = [...withUser, assistantMsg];
       setMessages(finalMsgs);
-      const tid = activeThreadId || `local-${Date.now()}`;
+      const tid = serverRes?.threadId || activeThreadId || `local-${Date.now()}`;
       setActiveThreadId(tid);
       persistLocalThreadSnapshot(tid, finalMsgs, `GPX: ${parsed.fileName}`);
       triggerToast(`Đã phân tích xong ${parsed.fileName}!`);
@@ -2370,14 +2376,14 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                             background: isUser
                               ? 'var(--color-primary)'
                               : msg.isError
-                              ? 'color-mix(in srgb, var(--color-error) 8%, var(--color-bg-main))'
-                              : 'var(--color-bg-main)',
+                                ? 'color-mix(in srgb, var(--color-error) 8%, var(--color-bg-main))'
+                                : 'var(--color-bg-main)',
                             color: isUser ? 'var(--color-on-primary)' : 'var(--color-text-muted)',
                             border: isUser
                               ? 'none'
                               : msg.isError
-                              ? '1px solid color-mix(in srgb, var(--color-error) 40%, transparent)'
-                              : '1px solid var(--color-border)',
+                                ? '1px solid color-mix(in srgb, var(--color-error) 40%, transparent)'
+                                : '1px solid var(--color-border)',
                             boxShadow: 'var(--shadow-card)',
                             wordBreak: 'break-word',
                           }}

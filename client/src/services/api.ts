@@ -1,6 +1,7 @@
 import type { Trail, Incident, User, Review, NotificationCategory } from '../types.js';
 import { mockTrails, mockIncidents } from '../data/seedData.js';
-import { getApiHeaders } from '../utils/sessionHeaders.js';
+import { getApiHeaders, getClientSessionId } from '../utils/sessionHeaders.js';
+import { getOfflineTrailPack } from '../utils/offlinePack.js';
 import {
   fetchNotifications,
   markNotificationAsRead,
@@ -11,10 +12,187 @@ import {
 
 const API_BASE = '/api';
 
+// ============================================================================
+// IN-FLIGHT REQUEST DEDUPLICATION & BOUNDED SHORT-TTL READ CACHE
+// Collapses duplicate concurrent GET requests across components into 1 network
+// call and serves instant back-navigation hits with automatic write invalidation.
+// ============================================================================
+
+interface ReadCacheEntry {
+  value: unknown;
+  expiresAt: number;
+}
+
+interface CacheableReadResult<T> {
+  value: T;
+  cacheable: boolean;
+}
+
+const MAX_READ_CACHE_ENTRIES = 120;
+const readCache = new Map<string, ReadCacheEntry>();
+const inflightReads = new Map<string, Promise<unknown>>();
+let readCacheEpoch = 0;
+
+function createAbortError(): Error {
+  if (typeof DOMException !== 'undefined') {
+    return new DOMException('The operation was aborted.', 'AbortError');
+  }
+  const err = new Error('The operation was aborted.');
+  err.name = 'AbortError';
+  return err;
+}
+
+function withAbortSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(createAbortError());
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(createAbortError());
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (val) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(val);
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(err);
+      }
+    );
+  });
+}
+
+function cloneCachedValue<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return [...value] as unknown as T;
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    if (Array.isArray(record.data)) {
+      return { ...record, data: [...record.data] } as T;
+    }
+  }
+  return value;
+}
+
+function getAuthCacheScope(): string {
+  try {
+    if (typeof localStorage === 'undefined') return 'anon';
+    const token = localStorage.getItem('lost_token');
+    if (!token) return 'anon';
+    return `auth:${token.length}:${token.slice(-12)}`;
+  } catch {
+    return 'anon';
+  }
+}
+
+/** Public read headers omit Authorization so logged-in users still hit server routeCache & 304 ETag */
+function getPublicReadHeaders(): Record<string, string> {
+  return { 'X-Client-Session-Id': getClientSessionId() };
+}
+
+export function invalidateApiReadCache(prefix?: string): void {
+  readCacheEpoch += 1;
+  if (!prefix) {
+    readCache.clear();
+    inflightReads.clear();
+    return;
+  }
+  for (const key of readCache.keys()) {
+    if (key.startsWith(prefix)) {
+      readCache.delete(key);
+    }
+  }
+  for (const key of inflightReads.keys()) {
+    if (key.startsWith(prefix)) {
+      inflightReads.delete(key);
+    }
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('lost:auth-changed', () => {
+    invalidateApiReadCache();
+  });
+}
+
+function cachedRead<T>(
+  key: string,
+  ttlMs: number,
+  fetcher: () => Promise<CacheableReadResult<T>>,
+  signal?: AbortSignal
+): Promise<T> {
+  if (signal?.aborted) {
+    return Promise.reject(createAbortError());
+  }
+
+  const now = Date.now();
+  const cached = readCache.get(key);
+  if (cached) {
+    if (cached.expiresAt > now) {
+      readCache.delete(key);
+      readCache.set(key, cached);
+      return Promise.resolve(cloneCachedValue(cached.value as T));
+    }
+    readCache.delete(key);
+  }
+
+  const existing = inflightReads.get(key) as Promise<T> | undefined;
+  if (existing) {
+    return withAbortSignal(
+      existing.then((val) => cloneCachedValue(val)),
+      signal
+    );
+  }
+
+  const startEpoch = readCacheEpoch;
+  const task: Promise<T> = fetcher()
+    .then(({ value, cacheable }) => {
+      if (cacheable && readCacheEpoch === startEpoch) {
+        if (readCache.size >= MAX_READ_CACHE_ENTRIES) {
+          const ts = Date.now();
+          for (const [k, entry] of readCache.entries()) {
+            if (entry.expiresAt <= ts) readCache.delete(k);
+          }
+          if (readCache.size >= MAX_READ_CACHE_ENTRIES) {
+            const oldestKey = readCache.keys().next().value;
+            if (oldestKey !== undefined) readCache.delete(oldestKey);
+          }
+        }
+        readCache.set(key, {
+          value,
+          expiresAt: Date.now() + ttlMs,
+        });
+      }
+      return value;
+    })
+    .finally(() => {
+      if (inflightReads.get(key) === task) {
+        inflightReads.delete(key);
+      }
+    });
+
+  inflightReads.set(key, task);
+  return withAbortSignal(
+    task.then((val) => cloneCachedValue(val)),
+    signal
+  );
+}
+
 export async function uploadImageToCloudinary(
   imageBase64: string,
   filename?: string,
-  category: 'avatars' | 'trails' | 'forum' | 'reviews' = 'trails'
+  category:
+    | 'avatars'
+    | 'trails'
+    | 'forum'
+    | 'reviews'
+    | 'covers'
+    | 'incidents'
+    | 'trip-reports'
+    | 'checkins'
+    | 'guides'
+    | 'custom-routes' = 'trails'
 ): Promise<string> {
   const res = await fetch(`${API_BASE}/upload`, {
     method: 'POST',
@@ -38,183 +216,197 @@ export async function fetchTrails(params?: {
   kidFriendly?: boolean;
   sortBy?: string;
 }): Promise<Trail[]> {
-  let list: Trail[];
-  let usedOfflineFallback = false;
+  const queryEntries: Array<[string, string]> = [];
+  if (params?.region && params.region !== 'All') queryEntries.push(['region', params.region]);
+  if (params?.difficulty) queryEntries.push(['difficulty', String(params.difficulty)]);
+  if (params?.search) queryEntries.push(['search', params.search]);
+  if (params?.duration) queryEntries.push(['duration', String(params.duration)]);
+  if (params?.season) queryEntries.push(['season', String(params.season)]);
+  if (params?.campsite) queryEntries.push(['campsite', 'true']);
+  if (params?.kidFriendly) queryEntries.push(['kidFriendly', 'true']);
+  if (params?.sortBy) queryEntries.push(['sortBy', params.sortBy]);
+  queryEntries.sort(([a], [b]) => a.localeCompare(b));
 
-  try {
-    const query = new URLSearchParams();
-    if (params?.region && params.region !== 'All') query.append('region', params.region);
-    if (params?.difficulty) query.append('difficulty', String(params.difficulty));
-    if (params?.search) query.append('search', params.search);
-    if (params?.duration) query.append('duration', String(params.duration));
-    if (params?.season) query.append('season', String(params.season));
-    if (params?.campsite) query.append('campsite', 'true');
-    if (params?.kidFriendly) query.append('kidFriendly', 'true');
-    if (params?.sortBy) query.append('sortBy', params.sortBy);
+  const query = new URLSearchParams(queryEntries);
+  const queryString = query.toString();
+  const cacheKey = `trails:${queryString}`;
 
-    const res = await fetch(`${API_BASE}/trails?${query.toString()}`);
-    if (res.ok) {
-      const json = await res.json();
-      list = Array.isArray(json.data) ? json.data : [];
-    } else {
+  return cachedRead<Trail[]>(cacheKey, 30_000, async () => {
+    let list: Trail[];
+    let usedOfflineFallback = false;
+
+    try {
+      const url = queryString ? `${API_BASE}/trails?${queryString}` : `${API_BASE}/trails`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const json = await res.json();
+        list = Array.isArray(json.data) ? json.data : [];
+      } else {
+        usedOfflineFallback = true;
+        list = [...mockTrails];
+      }
+    } catch {
       usedOfflineFallback = true;
       list = [...mockTrails];
     }
-  } catch {
-    usedOfflineFallback = true;
-    list = [...mockTrails];
-  }
 
-  // Only merge local cached contributions when server is unreachable (approved DB contributions are already in /api/trails)
-  if (usedOfflineFallback) {
-    try {
-      interface LocalContributionCacheItem {
-        id?: string;
-        _id?: string;
-        status?: string;
-        name?: string;
-        altNames?: string[];
-        region?: Trail['region'];
-        province?: string;
-        district?: string;
-        hamlet?: string;
-        distanceKm?: number;
-        elevationGainM?: number;
-        maxAltitudeM?: number;
-        durationDays?: number;
-        durationHoursNote?: string;
-        difficultyLevel?: number;
-        difficultyNote?: string;
-        bestMonths?: number[];
-        avoidMonths?: number[];
-        startLat?: number;
-        startLng?: number;
-        endLat?: number;
-        endLng?: number;
-        description?: string;
-        transportationInfo?: string;
-        coverImage?: string;
-        permitRequired?: boolean;
-        permitInfo?: string;
-        hasCampsite?: boolean;
-        hasWaterSource?: boolean;
-        kidFriendly?: boolean;
-        gpxTrack?: [number, number][];
-        waypoints?: Trail['waypoints'];
-        createdAt?: string;
-        updatedAt?: string;
-        rescueContact?: Trail['rescueContact'];
-        rating?: number;
-        reviewCount?: number;
+    // Only merge local cached contributions when server is unreachable (approved DB contributions are already in /api/trails)
+    if (usedOfflineFallback) {
+      try {
+        interface LocalContributionCacheItem {
+          id?: string;
+          _id?: string;
+          status?: string;
+          name?: string;
+          altNames?: string[];
+          region?: Trail['region'];
+          province?: string;
+          district?: string;
+          hamlet?: string;
+          distanceKm?: number;
+          elevationGainM?: number;
+          maxAltitudeM?: number;
+          durationDays?: number;
+          durationHoursNote?: string;
+          difficultyLevel?: number;
+          difficultyNote?: string;
+          bestMonths?: number[];
+          avoidMonths?: number[];
+          startLat?: number;
+          startLng?: number;
+          endLat?: number;
+          endLng?: number;
+          description?: string;
+          transportationInfo?: string;
+          coverImage?: string;
+          permitRequired?: boolean;
+          permitInfo?: string;
+          hasCampsite?: boolean;
+          hasWaterSource?: boolean;
+          kidFriendly?: boolean;
+          gpxTrack?: [number, number][];
+          waypoints?: Trail['waypoints'];
+          createdAt?: string;
+          updatedAt?: string;
+          rescueContact?: Trail['rescueContact'];
+          rating?: number;
+          reviewCount?: number;
+        }
+        const localContribs: unknown = JSON.parse(localStorage.getItem('lost_contributions') || '[]');
+        const approvedContribs: LocalContributionCacheItem[] = Array.isArray(localContribs)
+          ? (localContribs as LocalContributionCacheItem[]).filter((c) => c?.status === 'approved')
+          : [];
+
+        const approvedTrails: Trail[] = approvedContribs.map((c) => ({
+          id: c.id || `contrib-${c._id || Date.now()}`,
+          name: c.name || 'Cung đường đóng góp',
+          altNames: c.altNames || [],
+          region: c.region || 'Miền Bắc',
+          province: c.province || '',
+          district: c.district || '',
+          hamlet: c.hamlet || '',
+          distanceKm: Number(c.distanceKm) || 0,
+          elevationGainM: Number(c.elevationGainM) || 0,
+          maxAltitudeM: Number(c.maxAltitudeM) || 0,
+          durationDays: Number(c.durationDays) || Math.max(1, Math.ceil((Number(c.distanceKm) || 10) / 10)),
+          durationHoursNote: c.durationHoursNote || '1 ngày',
+          difficultyLevel: Number(c.difficultyLevel) || 3,
+          difficultyNote: c.difficultyNote || ((Number(c.difficultyLevel) || 3) >= 4 ? 'Thử thách cao' : 'Trung bình'),
+          bestMonths: Array.isArray(c.bestMonths) && c.bestMonths.length > 0 ? c.bestMonths : [10, 11, 12, 1, 2, 3, 4],
+          avoidMonths: Array.isArray(c.avoidMonths) ? c.avoidMonths : [],
+          startLat: Number(c.startLat) || 22.3364,
+          startLng: Number(c.startLng) || 103.8438,
+          endLat: Number(c.endLat) || Number(c.startLat) || 22.3364,
+          endLng: Number(c.endLng) || Number(c.startLng) || 103.8438,
+          description: c.description || '',
+          transportationInfo: c.transportationInfo || '',
+          coverImage: c.coverImage || '',
+          galleryImages: c.coverImage ? [c.coverImage] : [],
+          permitRequired: !!c.permitRequired,
+          permitInfo: c.permitInfo || '',
+          hasCampsite: !!c.hasCampsite,
+          hasWaterSource: !!c.hasWaterSource,
+          kidFriendly: !!c.kidFriendly,
+          gpxTrack: Array.isArray(c.gpxTrack) && c.gpxTrack.length > 0
+            ? c.gpxTrack
+            : [[Number(c.startLat) || 22.3364, Number(c.startLng) || 103.8438]],
+          waypoints: Array.isArray(c.waypoints) ? c.waypoints : [],
+          status: 'approved',
+          createdAt: c.createdAt || new Date().toISOString(),
+          updatedAt: c.updatedAt || new Date().toISOString(),
+          rescueContact: c.rescueContact || {
+            name: 'Tổng đài Tìm kiếm Cứu nạn & PCCC Quốc gia',
+            phone: '112 / 114',
+            rangerContact: 'Hạt Kiểm Lâm địa phương',
+          },
+          rating: Number(c.rating) || 0,
+          reviewCount: Number(c.reviewCount) || 0,
+        }));
+
+        const existingIds = new Set(list.map((t) => t.id));
+        const newApproved = approvedTrails.filter((t) => !existingIds.has(t.id));
+        list = [...newApproved, ...list];
+      } catch {
+        // ignore corrupted local storage
       }
-      const localContribs: unknown = JSON.parse(localStorage.getItem('lost_contributions') || '[]');
-      const approvedContribs: LocalContributionCacheItem[] = Array.isArray(localContribs)
-        ? (localContribs as LocalContributionCacheItem[]).filter((c) => c?.status === 'approved')
-        : [];
-
-      const approvedTrails: Trail[] = approvedContribs.map((c) => ({
-        id: c.id || `contrib-${c._id || Date.now()}`,
-        name: c.name || 'Cung đường đóng góp',
-        altNames: c.altNames || [],
-        region: c.region || 'Miền Bắc',
-        province: c.province || '',
-        district: c.district || '',
-        hamlet: c.hamlet || '',
-        distanceKm: Number(c.distanceKm) || 0,
-        elevationGainM: Number(c.elevationGainM) || 0,
-        maxAltitudeM: Number(c.maxAltitudeM) || 0,
-        durationDays: Number(c.durationDays) || Math.max(1, Math.ceil((Number(c.distanceKm) || 10) / 10)),
-        durationHoursNote: c.durationHoursNote || '1 ngày',
-        difficultyLevel: Number(c.difficultyLevel) || 3,
-        difficultyNote: c.difficultyNote || ((Number(c.difficultyLevel) || 3) >= 4 ? 'Thử thách cao' : 'Trung bình'),
-        bestMonths: Array.isArray(c.bestMonths) && c.bestMonths.length > 0 ? c.bestMonths : [10, 11, 12, 1, 2, 3, 4],
-        avoidMonths: Array.isArray(c.avoidMonths) ? c.avoidMonths : [],
-        startLat: Number(c.startLat) || 22.3364,
-        startLng: Number(c.startLng) || 103.8438,
-        endLat: Number(c.endLat) || Number(c.startLat) || 22.3364,
-        endLng: Number(c.endLng) || Number(c.startLng) || 103.8438,
-        description: c.description || '',
-        transportationInfo: c.transportationInfo || '',
-        coverImage: c.coverImage || '',
-        galleryImages: c.coverImage ? [c.coverImage] : [],
-        permitRequired: !!c.permitRequired,
-        permitInfo: c.permitInfo || '',
-        hasCampsite: !!c.hasCampsite,
-        hasWaterSource: !!c.hasWaterSource,
-        kidFriendly: !!c.kidFriendly,
-        gpxTrack: Array.isArray(c.gpxTrack) && c.gpxTrack.length > 0
-          ? c.gpxTrack
-          : [[Number(c.startLat) || 22.3364, Number(c.startLng) || 103.8438]],
-        waypoints: Array.isArray(c.waypoints) ? c.waypoints : [],
-        status: 'approved',
-        createdAt: c.createdAt || new Date().toISOString(),
-        updatedAt: c.updatedAt || new Date().toISOString(),
-        rescueContact: c.rescueContact || {
-          name: 'Tổng đài Tìm kiếm Cứu nạn & PCCC Quốc gia',
-          phone: '112 / 114',
-          rangerContact: 'Hạt Kiểm Lâm địa phương',
-        },
-        rating: Number(c.rating) || 0,
-        reviewCount: Number(c.reviewCount) || 0,
-      }));
-
-      const existingIds = new Set(list.map((t) => t.id));
-      const newApproved = approvedTrails.filter((t) => !existingIds.has(t.id));
-      list = [...newApproved, ...list];
-    } catch {
-      // ignore corrupted local storage
     }
-  }
 
-  // Client-side filter/sort guarantee (also covers offline fallback mode)
-  if (params?.region && params.region !== 'All') {
-    list = list.filter((t) => (t?.region || '').toLowerCase() === params.region!.toLowerCase());
-  }
-  if (params?.difficulty) {
-    list = list.filter((t) => t?.difficultyLevel === Number(params.difficulty));
-  }
-  if (params?.duration) {
-    const dur = Number(params.duration);
-    list = list.filter((t) => (dur >= 3 ? (t?.durationDays || 0) >= 3 : t?.durationDays === dur));
-  }
-  if (params?.season) {
-    const m = Number(params.season);
-    list = list.filter((t) => Array.isArray(t?.bestMonths) && t.bestMonths.includes(m));
-  }
-  if (params?.campsite) {
-    list = list.filter((t) => !!t?.hasCampsite);
-  }
-  if (params?.kidFriendly) {
-    list = list.filter((t) => !!t?.kidFriendly);
-  }
-  if (params?.search && typeof params.search === 'string' && params.search.trim().length > 0) {
-    const q = params.search.trim().toLowerCase();
-    list = list.filter(
-      (t) =>
-        (t?.name || '').toLowerCase().includes(q) ||
-        (t?.province || '').toLowerCase().includes(q) ||
-        (t?.district || '').toLowerCase().includes(q) ||
-        (t?.region || '').toLowerCase().includes(q) ||
-        (t?.description || '').toLowerCase().includes(q)
-    );
-  }
+    // Single-pass client-side filter/sort guarantee (also covers offline fallback mode)
+    const regionLower = params?.region && params.region !== 'All' ? params.region.toLowerCase() : null;
+    const diffNum = params?.difficulty ? Number(params.difficulty) : null;
+    const durNum = params?.duration ? Number(params.duration) : null;
+    const seasonNum = params?.season ? Number(params.season) : null;
+    const searchLower =
+      params?.search && typeof params.search === 'string' && params.search.trim().length > 0
+        ? params.search.trim().toLowerCase()
+        : null;
 
-  if (params?.sortBy) {
-    const s = params.sortBy;
-    if (s === 'rating_desc' || s === 'rating') {
-      list.sort((a, b) => (b?.rating || 0) - (a?.rating || 0));
-    } else if (s === 'distance_asc') {
-      list.sort((a, b) => (a?.distanceKm || 0) - (b?.distanceKm || 0));
-    } else if (s === 'distance_desc') {
-      list.sort((a, b) => (b?.distanceKm || 0) - (a?.distanceKm || 0));
-    } else if (s === 'difficulty_asc') {
-      list.sort((a, b) => (a?.difficultyLevel || 0) - (b?.difficultyLevel || 0));
-    } else if (s === 'difficulty_desc') {
-      list.sort((a, b) => (b?.difficultyLevel || 0) - (a?.difficultyLevel || 0));
+    if (
+      regionLower ||
+      diffNum !== null ||
+      durNum !== null ||
+      seasonNum !== null ||
+      params?.campsite ||
+      params?.kidFriendly ||
+      searchLower
+    ) {
+      list = list.filter((t) => {
+        if (regionLower && (t?.region || '').toLowerCase() !== regionLower) return false;
+        if (diffNum !== null && t?.difficultyLevel !== diffNum) return false;
+        if (durNum !== null && (durNum >= 3 ? (t?.durationDays || 0) < 3 : t?.durationDays !== durNum)) return false;
+        if (seasonNum !== null && (!Array.isArray(t?.bestMonths) || !t.bestMonths.includes(seasonNum))) return false;
+        if (params?.campsite && !t?.hasCampsite) return false;
+        if (params?.kidFriendly && !t?.kidFriendly) return false;
+        if (searchLower) {
+          const matched =
+            (t?.name || '').toLowerCase().includes(searchLower) ||
+            (t?.province || '').toLowerCase().includes(searchLower) ||
+            (t?.district || '').toLowerCase().includes(searchLower) ||
+            (t?.region || '').toLowerCase().includes(searchLower) ||
+            (t?.description || '').toLowerCase().includes(searchLower);
+          if (!matched) return false;
+        }
+        return true;
+      });
     }
-  }
 
-  return list;
+    if (params?.sortBy) {
+      const s = params.sortBy;
+      if (s === 'rating_desc' || s === 'rating') {
+        list.sort((a, b) => (b?.rating || 0) - (a?.rating || 0));
+      } else if (s === 'distance_asc') {
+        list.sort((a, b) => (a?.distanceKm || 0) - (b?.distanceKm || 0));
+      } else if (s === 'distance_desc') {
+        list.sort((a, b) => (b?.distanceKm || 0) - (a?.distanceKm || 0));
+      } else if (s === 'difficulty_asc') {
+        list.sort((a, b) => (a?.difficultyLevel || 0) - (b?.difficultyLevel || 0));
+      } else if (s === 'difficulty_desc') {
+        list.sort((a, b) => (b?.difficultyLevel || 0) - (a?.difficultyLevel || 0));
+      }
+    }
+
+    return { value: list, cacheable: !usedOfflineFallback };
+  });
 }
 
 export async function fetchNearbyTrails(lat: number, lng: number, limit = 5): Promise<Trail[]> {
@@ -258,15 +450,29 @@ export async function fetchNearbyTrails(lat: number, lng: number, limit = 5): Pr
 }
 
 export async function fetchTrailById(id: string): Promise<Trail | null> {
-  try {
-    const res = await fetch(`${API_BASE}/trails/${encodeURIComponent(id)}`);
-    if (res.status === 404) return null;
-    if (!res.ok) throw new Error('Trail fetch failed');
-    const json = await res.json();
-    return json.data || null;
-  } catch {
-    return mockTrails.find((t) => t.id === id) || null;
-  }
+  const cleanId = String(id || '').trim();
+  if (!cleanId) return null;
+
+  return cachedRead<Trail | null>(`trail:${cleanId}`, 30_000, async () => {
+    try {
+      const res = await fetch(`${API_BASE}/trails/${encodeURIComponent(cleanId)}`);
+      if (res.status === 404) return { value: null, cacheable: false };
+      if (!res.ok) throw new Error('Trail fetch failed');
+      const json = await res.json();
+      const trail = json.data || null;
+      return { value: trail, cacheable: Boolean(trail) };
+    } catch {
+      try {
+        const offlinePack = await getOfflineTrailPack(cleanId);
+        if (offlinePack?.trailData) {
+          return { value: offlinePack.trailData, cacheable: false };
+        }
+      } catch {
+        // IndexedDB unavailable
+      }
+      return { value: mockTrails.find((t) => t.id === cleanId) || null, cacheable: false };
+    }
+  });
 }
 
 export async function submitTrailContribution(trailData: Partial<Trail>): Promise<Trail> {
@@ -279,6 +485,10 @@ export async function submitTrailContribution(trailData: Partial<Trail>): Promis
   if (!res.ok || !json.success) {
     throw new Error(json.message || 'Không thể gửi hồ sơ đóng góp cung đường.');
   }
+  invalidateApiReadCache('trails:');
+  invalidateApiReadCache('trail:');
+  invalidateApiReadCache('stats:');
+  invalidateApiReadCache('analytics:');
   return json.data;
 }
 
@@ -292,6 +502,10 @@ export async function updateTrailContribution(id: string, trailData: Partial<Tra
   if (!res.ok || !json.success) {
     throw new Error(json.message || 'Không thể cập nhật hồ sơ đóng góp cung đường.');
   }
+  invalidateApiReadCache('trails:');
+  invalidateApiReadCache('trail:');
+  invalidateApiReadCache('stats:');
+  invalidateApiReadCache('analytics:');
   return json.data;
 }
 
@@ -305,18 +519,24 @@ export async function submitReview(trailId: string, reviewData: Partial<Review>)
   if (!res.ok || !json.success || !json.data) {
     throw new Error(json.message || 'Không thể gửi đánh giá cung đường. Vui lòng đăng nhập và thử lại.');
   }
+  invalidateApiReadCache('trails:');
+  invalidateApiReadCache('trail:');
+  invalidateApiReadCache('stats:');
+  invalidateApiReadCache('analytics:');
   return json.data;
 }
 
 export async function fetchIncidents(): Promise<Incident[]> {
-  try {
-    const res = await fetch(`${API_BASE}/incidents`);
-    if (!res.ok) throw new Error('Failed to fetch incidents');
-    const json = await res.json();
-    return Array.isArray(json.data) ? json.data : [];
-  } catch {
-    return mockIncidents as Incident[];
-  }
+  return cachedRead<Incident[]>('incidents:all', 20_000, async () => {
+    try {
+      const res = await fetch(`${API_BASE}/incidents`);
+      if (!res.ok) throw new Error('Failed to fetch incidents');
+      const json = await res.json();
+      return { value: Array.isArray(json.data) ? json.data : [], cacheable: true };
+    } catch {
+      return { value: mockIncidents as Incident[], cacheable: false };
+    }
+  });
 }
 
 export async function submitIncident(incidentData: Partial<Incident>): Promise<Incident> {
@@ -329,6 +549,9 @@ export async function submitIncident(incidentData: Partial<Incident>): Promise<I
   if (!res.ok || !json.success || !json.data) {
     throw new Error(json.message || 'Không thể gửi cảnh báo sự cố. Vui lòng kiểm tra đăng nhập và thử lại.');
   }
+  invalidateApiReadCache('incidents:');
+  invalidateApiReadCache('stats:');
+  invalidateApiReadCache('analytics:');
   return json.data;
 }
 
@@ -360,6 +583,11 @@ export async function confirmIncidentApi(
   if (!res.ok && json.success !== false) {
     return { ...json, success: false };
   }
+  if (res.ok && json.success !== false) {
+    invalidateApiReadCache('incidents:');
+    invalidateApiReadCache('stats:');
+    invalidateApiReadCache('analytics:');
+  }
   return json;
 }
 
@@ -377,31 +605,42 @@ export async function fetchUserProfile(userId: string): Promise<User | null> {
 }
 
 export async function fetchWeatherForecast(trailId: string, signal?: AbortSignal) {
-  try {
-    const res = await fetch(`${API_BASE}/weather/${encodeURIComponent(trailId)}`, { signal });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok || !json.success) {
-      return {
-        success: false,
-        data: [],
-        hasWarning: false,
-        warningMessage: null,
-        error: json.message || 'Không thể tải dữ liệu thời tiết thực tế lúc này.',
-      };
-    }
-    return json;
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw err;
-    }
-    return {
-      success: false,
-      data: [],
-      hasWarning: false,
-      warningMessage: null,
-      error: 'Không thể kết nối máy chủ thời tiết. Vui lòng thử lại sau.',
-    };
-  }
+  const cleanId = String(trailId || '').trim();
+  return cachedRead(
+    `weather:forecast:${cleanId}`,
+    60_000,
+    async () => {
+      try {
+        const res = await fetch(`${API_BASE}/weather/${encodeURIComponent(cleanId)}`);
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || !json.success) {
+          return {
+            value: {
+              success: false,
+              data: [],
+              hasWarning: false,
+              warningMessage: null,
+              error: json.message || 'Không thể tải dữ liệu thời tiết thực tế lúc này.',
+            },
+            cacheable: false,
+          };
+        }
+        return { value: json, cacheable: true };
+      } catch {
+        return {
+          value: {
+            success: false,
+            data: [],
+            hasWarning: false,
+            warningMessage: null,
+            error: 'Không thể kết nối máy chủ thời tiết. Vui lòng thử lại sau.',
+          },
+          cacheable: false,
+        };
+      }
+    },
+    signal
+  );
 }
 
 export async function createExpeditionItinerary(itineraryData: Record<string, unknown>) {
@@ -817,11 +1056,13 @@ async function parseJsonSafe<T = unknown>(res: Response): Promise<ApiJsonEnvelop
 function buildQuery(params?: Record<string, string | number | boolean | undefined | null>): string {
   if (!params) return '';
   const query = new URLSearchParams();
-  Object.entries(params).forEach(([k, v]) => {
-    if (v !== undefined && v !== null && v !== '' && v !== 'All') {
-      query.append(k, String(v));
-    }
-  });
+  Object.entries(params)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '' && v !== 'All') {
+        query.append(k, String(v));
+      }
+    });
   const str = query.toString();
   return str ? `?${str}` : '';
 }
@@ -829,16 +1070,23 @@ function buildQuery(params?: Record<string, string | number | boolean | undefine
 // --- Challenges & Peak Passport ---
 
 export async function fetchSummitChallenges(params?: { region?: string }): Promise<SummitChallengeItem[]> {
-  try {
-    const res = await fetch(`${API_BASE}/challenges${buildQuery(params)}`, {
-      headers: getApiHeaders(),
-    });
-    const json = await parseJsonSafe<SummitChallengeItem[]>(res);
-    if (!res.ok || !json.success) return [];
-    return Array.isArray(json.data) ? json.data : [];
-  } catch {
-    return [];
-  }
+  const qs = buildQuery(params);
+  return cachedRead<SummitChallengeItem[]>(
+    `challenges:${getAuthCacheScope()}:${qs}`,
+    30_000,
+    async () => {
+      try {
+        const res = await fetch(`${API_BASE}/challenges${qs}`, {
+          headers: getApiHeaders(),
+        });
+        const json = await parseJsonSafe<SummitChallengeItem[]>(res);
+        if (!res.ok || !json.success) return { value: [], cacheable: false };
+        return { value: Array.isArray(json.data) ? json.data : [], cacheable: true };
+      } catch {
+        return { value: [], cacheable: false };
+      }
+    }
+  );
 }
 
 export async function fetchPeakPassport(): Promise<PeakPassportData | null> {
@@ -858,16 +1106,23 @@ export async function fetchChallengeLeaderboard(params?: {
   region?: string;
   limit?: number;
 }): Promise<ChallengeLeaderboardEntry[]> {
-  try {
-    const res = await fetch(`${API_BASE}/challenges/leaderboard${buildQuery(params)}`, {
-      headers: getApiHeaders(),
-    });
-    const json = await parseJsonSafe<ChallengeLeaderboardEntry[]>(res);
-    if (!res.ok || !json.success) return [];
-    return Array.isArray(json.data) ? json.data : [];
-  } catch {
-    return [];
-  }
+  const qs = buildQuery(params);
+  return cachedRead<ChallengeLeaderboardEntry[]>(
+    `challenges:leaderboard:${qs}`,
+    30_000,
+    async () => {
+      try {
+        const res = await fetch(`${API_BASE}/challenges/leaderboard${qs}`, {
+          headers: getPublicReadHeaders(),
+        });
+        const json = await parseJsonSafe<ChallengeLeaderboardEntry[]>(res);
+        if (!res.ok || !json.success) return { value: [], cacheable: false };
+        return { value: Array.isArray(json.data) ? json.data : [], cacheable: true };
+      } catch {
+        return { value: [], cacheable: false };
+      }
+    }
+  );
 }
 
 export async function claimSummitChallenge(slug: string): Promise<{
@@ -884,6 +1139,8 @@ export async function claimSummitChallenge(slug: string): Promise<{
   if (!res.ok || !json.success) {
     throw new Error(json.message || 'Không thể nhận huy hiệu thử thách lúc này.');
   }
+  invalidateApiReadCache('challenges:');
+  invalidateApiReadCache('stats:');
   return {
     success: true,
     data: json.data,
@@ -1002,19 +1259,29 @@ export async function fetchDirectoryGuides(params?: {
   page?: number;
   limit?: number;
 }): Promise<{ data: DirectoryGuideItem[]; pagination?: ApiPagination }> {
-  try {
-    const res = await fetch(`${API_BASE}/directory/guides${buildQuery(params)}`, {
-      headers: getApiHeaders(),
-    });
-    const json = await parseJsonSafe<DirectoryGuideItem[]>(res);
-    if (!res.ok || !json.success) return { data: [] };
-    return {
-      data: Array.isArray(json.data) ? json.data : [],
-      pagination: json.pagination,
-    };
-  } catch {
-    return { data: [] };
-  }
+  const qs = buildQuery(params);
+  return cachedRead<{ data: DirectoryGuideItem[]; pagination?: ApiPagination }>(
+    `directory:guides:${qs}`,
+    45_000,
+    async () => {
+      try {
+        const res = await fetch(`${API_BASE}/directory/guides${qs}`, {
+          headers: getPublicReadHeaders(),
+        });
+        const json = await parseJsonSafe<DirectoryGuideItem[]>(res);
+        if (!res.ok || !json.success) return { value: { data: [] }, cacheable: false };
+        return {
+          value: {
+            data: Array.isArray(json.data) ? json.data : [],
+            pagination: json.pagination,
+          },
+          cacheable: true,
+        };
+      } catch {
+        return { value: { data: [] }, cacheable: false };
+      }
+    }
+  );
 }
 
 export async function createGuideInquiry(
@@ -1039,6 +1306,7 @@ export async function createGuideInquiry(
   if (!res.ok || !json.success || !json.data) {
     throw new Error(json.message || 'Không thể gửi yêu cầu đặt Porter/HDV.');
   }
+  invalidateApiReadCache('directory:guides:');
   return json.data;
 }
 
@@ -1063,16 +1331,23 @@ export async function fetchRangerStations(params?: {
   permitRequired?: boolean;
   search?: string;
 }): Promise<RangerStationItem[]> {
-  try {
-    const res = await fetch(`${API_BASE}/directory/rangers${buildQuery(params)}`, {
-      headers: getApiHeaders(),
-    });
-    const json = await parseJsonSafe<RangerStationItem[]>(res);
-    if (!res.ok || !json.success) return [];
-    return Array.isArray(json.data) ? json.data : [];
-  } catch {
-    return [];
-  }
+  const qs = buildQuery(params);
+  return cachedRead<RangerStationItem[]>(
+    `directory:rangers:${qs}`,
+    60_000,
+    async () => {
+      try {
+        const res = await fetch(`${API_BASE}/directory/rangers${qs}`, {
+          headers: getPublicReadHeaders(),
+        });
+        const json = await parseJsonSafe<RangerStationItem[]>(res);
+        if (!res.ok || !json.success) return { value: [], cacheable: false };
+        return { value: Array.isArray(json.data) ? json.data : [], cacheable: true };
+      } catch {
+        return { value: [], cacheable: false };
+      }
+    }
+  );
 }
 
 export async function fetchTripCostEstimate(params: {
@@ -1154,6 +1429,9 @@ export async function updateLogbookEntry(
   if (!res.ok || !json.success || !json.data) {
     throw new Error(json.message || 'Không thể cập nhật nhật ký chuyến đi.');
   }
+  invalidateApiReadCache('stats:');
+  invalidateApiReadCache('analytics:');
+  invalidateApiReadCache('challenges:');
   return json.data;
 }
 
@@ -1166,6 +1444,9 @@ export async function deleteLogbookEntry(checkinId: string): Promise<{ success: 
   if (!res.ok || !json.success) {
     throw new Error(json.message || 'Không thể xóa mục nhật ký chuyến đi.');
   }
+  invalidateApiReadCache('stats:');
+  invalidateApiReadCache('analytics:');
+  invalidateApiReadCache('challenges:');
   return { success: true, message: json.message };
 }
 
@@ -1347,6 +1628,8 @@ export async function approveTripMember(
   if (!res.ok || !json.success) {
     throw new Error(json.message || 'Không thể duyệt thành viên vào đoàn.');
   }
+  invalidateApiReadCache('stats:');
+  invalidateApiReadCache('analytics:');
   return (json.data ?? json) as Record<string, unknown>;
 }
 
@@ -1363,6 +1646,8 @@ export async function rejectTripMember(
   if (!res.ok || !json.success) {
     throw new Error(json.message || 'Không thể từ chối yêu cầu tham gia đoàn.');
   }
+  invalidateApiReadCache('stats:');
+  invalidateApiReadCache('analytics:');
   return (json.data ?? json) as Record<string, unknown>;
 }
 
@@ -1376,6 +1661,8 @@ export async function leaveTrip(tripId: string): Promise<Record<string, unknown>
   if (!res.ok || !json.success) {
     throw new Error(json.message || 'Không thể rời khỏi đoàn trekking.');
   }
+  invalidateApiReadCache('stats:');
+  invalidateApiReadCache('analytics:');
   return (json.data ?? json) as Record<string, unknown>;
 }
 
@@ -1392,6 +1679,8 @@ export async function updateTripStatus(
   if (!res.ok || !json.success) {
     throw new Error(json.message || 'Không thể cập nhật trạng thái chuyến đi.');
   }
+  invalidateApiReadCache('stats:');
+  invalidateApiReadCache('analytics:');
   return (json.data ?? json) as Record<string, unknown>;
 }
 
@@ -1404,6 +1693,8 @@ export async function deleteTrip(tripId: string): Promise<{ success: boolean; me
   if (!res.ok || !json.success) {
     throw new Error(json.message || 'Không thể xóa kế hoạch đoàn trekking.');
   }
+  invalidateApiReadCache('stats:');
+  invalidateApiReadCache('analytics:');
   return { success: true, message: json.message };
 }
 
@@ -1518,28 +1809,33 @@ export interface GearPackRecord {
 }
 
 export async function fetchPlatformStatsSummary(): Promise<PlatformStatsSummary | null> {
-  try {
-    const res = await fetch(`${API_BASE}/trails/stats/summary`, {
-      headers: getApiHeaders(),
-    });
-    const json = await parseJsonSafe<Record<string, unknown>>(res);
-    if (!res.ok || !json.success || !json.data) return null;
-    return {
-      totalTrails: Number(json.data.totalTrails) || 0,
-      totalKm: Number(json.data.totalKm) || 0,
-      highestPeakM: Number(json.data.highestPeakM) || 0,
-      totalUsers: Number(json.data.totalUsers) || 0,
-      totalCheckins: Number(json.data.totalCheckins) || 0,
-      verifiedCheckins: Number(json.data.verifiedCheckins) || 0,
-      activeTrips: Number(json.data.activeTrips) || 0,
-      openIncidents: Number(json.data.openIncidents) || 0,
-      totalChallenges: Number(json.data.totalChallenges) || 0,
-      totalRangers: Number(json.data.totalRangers) || 0,
-      source: json.source,
-    };
-  } catch {
-    return null;
-  }
+  return cachedRead<PlatformStatsSummary | null>('stats:summary', 30_000, async () => {
+    try {
+      const res = await fetch(`${API_BASE}/trails/stats/summary`, {
+        headers: getPublicReadHeaders(),
+      });
+      const json = await parseJsonSafe<Record<string, unknown>>(res);
+      if (!res.ok || !json.success || !json.data) return { value: null, cacheable: false };
+      return {
+        value: {
+          totalTrails: Number(json.data.totalTrails) || 0,
+          totalKm: Number(json.data.totalKm) || 0,
+          highestPeakM: Number(json.data.highestPeakM) || 0,
+          totalUsers: Number(json.data.totalUsers) || 0,
+          totalCheckins: Number(json.data.totalCheckins) || 0,
+          verifiedCheckins: Number(json.data.verifiedCheckins) || 0,
+          activeTrips: Number(json.data.activeTrips) || 0,
+          openIncidents: Number(json.data.openIncidents) || 0,
+          totalChallenges: Number(json.data.totalChallenges) || 0,
+          totalRangers: Number(json.data.totalRangers) || 0,
+          source: json.source,
+        },
+        cacheable: true,
+      };
+    } catch {
+      return { value: null, cacheable: false };
+    }
+  });
 }
 
 export async function fetchMyGearPacks(): Promise<{
@@ -1717,6 +2013,10 @@ export async function deleteTrailReview(
   if (!res.ok || !json.success) {
     throw new Error(json.message || 'Không thể xóa đánh giá cung đường.');
   }
+  invalidateApiReadCache('trails:');
+  invalidateApiReadCache('trail:');
+  invalidateApiReadCache('stats:');
+  invalidateApiReadCache('analytics:');
   return { success: true, message: json.message, data: json.data };
 }
 
@@ -1724,14 +2024,18 @@ export async function updateTripReport(
   reportId: string,
   payload: Partial<{
     title: string;
-    notes: string;
+    summary: string;
+    content: string;
+    tripDate: string;
+    durationHours: number;
+    groupSize: number;
+    totalCostVnd: number;
     rating: number;
-    difficultyRating: number;
+    difficultyActual: number;
     weatherCondition: string;
-    trailCondition: string;
     highlights: string[];
     warnings: string[];
-    recommendations: string;
+    recommendations: string[];
     photos: string[];
   }>
 ): Promise<Record<string, unknown>> {
@@ -1831,23 +2135,30 @@ export async function fetchLiveSummitsWeather(
   region?: string,
   signal?: AbortSignal
 ): Promise<LiveSummitsWeatherResponse | null> {
-  try {
-    const query = region && region !== 'All' ? `?region=${encodeURIComponent(region)}` : '';
-    const res = await fetch(`${API_BASE}/weather/summits-live${query}`, {
-      headers: getApiHeaders(),
-      signal,
-    });
-    const json = await parseJsonSafe<SummitLiveTelemetry[]>(res);
-    if (!res.ok || !json.success || !Array.isArray(json.data)) {
-      return null;
-    }
-    return json as unknown as LiveSummitsWeatherResponse;
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw err;
-    }
-    return null;
-  }
+  const normalizedRegion = region && region !== 'All' ? region : '';
+  return cachedRead<LiveSummitsWeatherResponse | null>(
+    `weather:summits:${normalizedRegion || 'all'}`,
+    45_000,
+    async () => {
+      try {
+        const query = normalizedRegion ? `?region=${encodeURIComponent(normalizedRegion)}` : '';
+        const res = await fetch(`${API_BASE}/weather/summits-live${query}`, {
+          headers: getPublicReadHeaders(),
+        });
+        const json = await parseJsonSafe<SummitLiveTelemetry[]>(res);
+        if (!res.ok || !json.success || !Array.isArray(json.data)) {
+          return { value: null, cacheable: false };
+        }
+        return {
+          value: json as unknown as LiveSummitsWeatherResponse,
+          cacheable: true,
+        };
+      } catch {
+        return { value: null, cacheable: false };
+      }
+    },
+    signal
+  );
 }
 
 // ============================================================================
@@ -1864,40 +2175,47 @@ export async function fetchNearbyTrailsForTrail(
   trailId: string,
   signal?: AbortSignal
 ): Promise<NearbyTrailMatch[]> {
-  try {
-    const res = await fetch(
-      `${API_BASE}/trails/${encodeURIComponent(trailId)}/nearby-trails`,
-      {
-        headers: getApiHeaders(),
-        signal,
+  const cleanId = String(trailId || '').trim();
+  if (!cleanId) return [];
+
+  return cachedRead<NearbyTrailMatch[]>(
+    `trail:nearby:${cleanId}`,
+    60_000,
+    async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/trails/${encodeURIComponent(cleanId)}/nearby-trails`,
+          {
+            headers: getPublicReadHeaders(),
+          }
+        );
+        const json = await parseJsonSafe(res);
+        if (!res.ok || !json.success || !Array.isArray(json.data)) {
+          return { value: [], cacheable: false };
+        }
+        const matches = json.data
+          .filter((item: unknown): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+          .map((item: Record<string, unknown>) => {
+            const rawTrail = (item.trail && typeof item.trail === 'object' ? item.trail : item) as Trail;
+            const distVal = Number(item.distanceKm ?? item.distanceFromTrailKm ?? 0);
+            const altDelta = Number(item.altitudeDeltaM ?? 0);
+            return {
+              trail: {
+                ...rawTrail,
+                id: String(rawTrail.id || (rawTrail as unknown as { _id?: string })._id || ''),
+              },
+              distanceKm: Number.isFinite(distVal) ? Math.round(distVal * 10) / 10 : 0,
+              altitudeDeltaM: Number.isFinite(altDelta) ? Math.round(altDelta) : 0,
+            };
+          })
+          .filter((m: NearbyTrailMatch) => Boolean(m.trail && m.trail.id && m.trail.name));
+        return { value: matches, cacheable: true };
+      } catch {
+        return { value: [], cacheable: false };
       }
-    );
-    const json = await parseJsonSafe(res);
-    if (!res.ok || !json.success || !Array.isArray(json.data)) {
-      return [];
-    }
-    return json.data
-      .filter((item: unknown): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
-      .map((item: Record<string, unknown>) => {
-        const rawTrail = (item.trail && typeof item.trail === 'object' ? item.trail : item) as Trail;
-        const distVal = Number(item.distanceKm ?? item.distanceFromTrailKm ?? 0);
-        const altDelta = Number(item.altitudeDeltaM ?? 0);
-        return {
-          trail: {
-            ...rawTrail,
-            id: String(rawTrail.id || (rawTrail as unknown as { _id?: string })._id || ''),
-          },
-          distanceKm: Number.isFinite(distVal) ? Math.round(distVal * 10) / 10 : 0,
-          altitudeDeltaM: Number.isFinite(altDelta) ? Math.round(altDelta) : 0,
-        };
-      })
-      .filter((m: NearbyTrailMatch) => Boolean(m.trail && m.trail.id && m.trail.name));
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw err;
-    }
-    return [];
-  }
+    },
+    signal
+  );
 }
 
 export interface CommunityActivityUser {
@@ -2898,46 +3216,57 @@ export async function fetchTrailPois(
   const cleanId = String(trailId || '').trim();
   if (!cleanId) return { success: false, data: [], maxPerTrail: 50 };
 
-  const qs =
-    category && category !== 'all'
-      ? `?category=${encodeURIComponent(category)}`
-      : '';
-  try {
-    const res = await fetch(
-      `${API_BASE}/trail-pois/trail/${encodeURIComponent(cleanId)}${qs}`,
-      {
-        headers: getApiHeaders(),
-        signal,
+  const catKey = category && category !== 'all' ? category : 'all';
+  const qs = catKey !== 'all' ? `?category=${encodeURIComponent(catKey)}` : '';
+
+  return cachedRead<{
+    success: boolean;
+    data: TrailPoiItem[];
+    maxPerTrail: number;
+    offline?: boolean;
+    error?: string;
+  }>(
+    `trail-pois:${getAuthCacheScope()}:${cleanId}:${catKey}`,
+    20_000,
+    async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/trail-pois/trail/${encodeURIComponent(cleanId)}${qs}`,
+          {
+            headers: getApiHeaders(),
+          }
+        );
+        const json = await parseJsonSafe<unknown[]>(res);
+        const maxPerTrail =
+          typeof json.maxPerTrail === 'number' &&
+          Number.isFinite(json.maxPerTrail) &&
+          json.maxPerTrail > 0
+            ? Math.round(json.maxPerTrail)
+            : 50;
+        if (!res.ok || !json.success) {
+          return {
+            value: {
+              success: false,
+              data: [],
+              maxPerTrail,
+              error:
+                typeof json.message === 'string' && json.message.trim()
+                  ? json.message.trim()
+                  : undefined,
+            },
+            cacheable: false,
+          };
+        }
+        const items = (Array.isArray(json.data) ? json.data : [])
+          .map((row) => normalizeTrailPoiItem(row))
+          .filter((row): row is TrailPoiItem => row !== null);
+        return { value: { success: true, data: items, maxPerTrail }, cacheable: true };
+      } catch {
+        return { value: { success: false, data: [], maxPerTrail: 50, offline: true }, cacheable: false };
       }
-    );
-    const json = await parseJsonSafe<unknown[]>(res);
-    const maxPerTrail =
-      typeof json.maxPerTrail === 'number' &&
-      Number.isFinite(json.maxPerTrail) &&
-      json.maxPerTrail > 0
-        ? Math.round(json.maxPerTrail)
-        : 50;
-    if (!res.ok || !json.success) {
-      return {
-        success: false,
-        data: [],
-        maxPerTrail,
-        error:
-          typeof json.message === 'string' && json.message.trim()
-            ? json.message.trim()
-            : undefined,
-      };
-    }
-    const items = (Array.isArray(json.data) ? json.data : [])
-      .map((row) => normalizeTrailPoiItem(row))
-      .filter((row): row is TrailPoiItem => row !== null);
-    return { success: true, data: items, maxPerTrail };
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw err;
-    }
-    return { success: false, data: [], maxPerTrail: 50, offline: true };
-  }
+    },
+    signal
+  );
 }
 
 export async function createTrailPoi(
@@ -2967,6 +3296,8 @@ export async function createTrailPoi(
   if (!normalized) {
     throw new Error('Phản hồi dữ liệu điểm thực địa không hợp lệ.');
   }
+  invalidateApiReadCache('trail-pois:');
+  invalidateApiReadCache('analytics:');
   return normalized;
 }
 
@@ -3011,6 +3342,9 @@ export async function toggleConfirmTrailPoi(
       ? nested.lastConfirmedAt
       : null;
 
+  invalidateApiReadCache('trail-pois:');
+  invalidateApiReadCache('analytics:');
+
   return {
     success: true,
     hasUpvoted,
@@ -3047,6 +3381,8 @@ export async function updateTrailPoiStatus(
   if (!normalized) {
     throw new Error('Phản hồi trạng thái điểm thực địa không hợp lệ.');
   }
+  invalidateApiReadCache('trail-pois:');
+  invalidateApiReadCache('analytics:');
   return normalized;
 }
 
@@ -3072,51 +3408,59 @@ export async function deleteTrailPoi(
       res.status
     );
   }
+  invalidateApiReadCache('trail-pois:');
+  invalidateApiReadCache('analytics:');
   return { success: true };
 }
 
 export async function fetchPlatformPulse(
   signal?: AbortSignal
 ): Promise<PlatformPulseData | null> {
-  try {
-    const res = await fetch(`${API_BASE}/analytics/platform-pulse`, {
-      headers: getApiHeaders(),
-      signal,
-    });
-    const json = await parseJsonSafe<Record<string, unknown>>(res);
-    if (!res.ok || !json.success || !json.data || typeof json.data !== 'object') {
-      return null;
-    }
-    const d = json.data;
-    const rawTrending = Array.isArray(d.trendingTrails) ? d.trendingTrails : [];
-    const trendingTrails: PlatformPulseTrendingTrail[] = rawTrending
-      .filter((t): t is Record<string, unknown> => Boolean(t && typeof t === 'object'))
-      .map((t) => ({
-        id: String(t.id ?? t._id ?? '').trim(),
-        name: String(t.name ?? '').trim(),
-        province: String(t.province ?? '').trim(),
-        maxAltitudeM: Math.max(0, Math.round(Number(t.maxAltitudeM ?? 0) || 0)),
-        activityScore: Math.max(0, Math.round(Number(t.activityScore ?? 0) || 0)),
-      }))
-      .filter((t) => Boolean(t.id && t.name));
+  return cachedRead<PlatformPulseData | null>(
+    'analytics:pulse',
+    25_000,
+    async () => {
+      try {
+        const res = await fetch(`${API_BASE}/analytics/platform-pulse`, {
+          headers: getPublicReadHeaders(),
+        });
+        const json = await parseJsonSafe<Record<string, unknown>>(res);
+        if (!res.ok || !json.success || !json.data || typeof json.data !== 'object') {
+          return { value: null, cacheable: false };
+        }
+        const d = json.data;
+        const rawTrending = Array.isArray(d.trendingTrails) ? d.trendingTrails : [];
+        const trendingTrails: PlatformPulseTrendingTrail[] = rawTrending
+          .filter((t): t is Record<string, unknown> => Boolean(t && typeof t === 'object'))
+          .map((t) => ({
+            id: String(t.id ?? t._id ?? '').trim(),
+            name: String(t.name ?? '').trim(),
+            province: String(t.province ?? '').trim(),
+            maxAltitudeM: Math.max(0, Math.round(Number(t.maxAltitudeM ?? 0) || 0)),
+            activityScore: Math.max(0, Math.round(Number(t.activityScore ?? 0) || 0)),
+          }))
+          .filter((t) => Boolean(t.id && t.name));
 
-    return {
-      fetchedAt: typeof json.fetchedAt === 'string' ? json.fetchedAt : undefined,
-      totalTrails: Math.max(0, Math.round(Number(d.totalTrails ?? 0) || 0)),
-      activeIncidentsCount: Math.max(0, Math.round(Number(d.activeIncidentsCount ?? 0) || 0)),
-      openTripsCount: Math.max(0, Math.round(Number(d.openTripsCount ?? 0) || 0)),
-      verifiedPoisCount: Math.max(0, Math.round(Number(d.verifiedPoisCount ?? 0) || 0)),
-      totalCommunityDistanceKm:
-        Math.max(0, Math.round((Number(d.totalCommunityDistanceKm ?? 0) || 0) * 10) / 10),
-      totalCheckinsCount: Math.max(0, Math.round(Number(d.totalCheckinsCount ?? 0) || 0)),
-      trendingTrails,
-    };
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw err;
-    }
-    return null;
-  }
+        return {
+          value: {
+            fetchedAt: typeof json.fetchedAt === 'string' ? json.fetchedAt : undefined,
+            totalTrails: Math.max(0, Math.round(Number(d.totalTrails ?? 0) || 0)),
+            activeIncidentsCount: Math.max(0, Math.round(Number(d.activeIncidentsCount ?? 0) || 0)),
+            openTripsCount: Math.max(0, Math.round(Number(d.openTripsCount ?? 0) || 0)),
+            verifiedPoisCount: Math.max(0, Math.round(Number(d.verifiedPoisCount ?? 0) || 0)),
+            totalCommunityDistanceKm:
+              Math.max(0, Math.round((Number(d.totalCommunityDistanceKm ?? 0) || 0) * 10) / 10),
+            totalCheckinsCount: Math.max(0, Math.round(Number(d.totalCheckinsCount ?? 0) || 0)),
+            trendingTrails,
+          },
+          cacheable: true,
+        };
+      } catch {
+        return { value: null, cacheable: false };
+      }
+    },
+    signal
+  );
 }
 
 // --- Wave 16B: ERA5 3-Year Summit Climate Normals & Cloud Annual Goals ---
@@ -3210,82 +3554,94 @@ export async function fetchTrailClimateNormals(
     return { ...emptyBase, error: 'Thiếu mã cung đường để tải dữ liệu khí hậu ERA5.' };
   }
 
-  try {
-    const res = await fetch(
-      `${API_BASE}/weather/climate/${encodeURIComponent(cleanId)}`,
-      {
-        headers: getApiHeaders(),
-        signal,
+  return cachedRead<TrailClimateResponse>(
+    `weather:climate:${cleanId}`,
+    120_000,
+    async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/weather/climate/${encodeURIComponent(cleanId)}`,
+          {
+            headers: getPublicReadHeaders(),
+          }
+        );
+        const json = await parseJsonSafe<unknown>(res);
+        const rawJson = json as Record<string, unknown>;
+        const rawSource = typeof rawJson.source === 'string' ? rawJson.source : '';
+        const rawMonths = Array.isArray(json.months)
+          ? json.months
+          : Array.isArray(json.data)
+          ? json.data
+          : [];
+
+        const dedupMap = new Map<number, TrailClimateMonth>();
+        for (const row of rawMonths) {
+          const normalized = normalizeClimateMonth(row);
+          if (normalized) {
+            dedupMap.set(normalized.month, normalized);
+          }
+        }
+        const months = Array.from(dedupMap.values()).sort((a, b) => a.month - b.month);
+
+        if (!res.ok || !json.success || months.length === 0) {
+          const fallbackError =
+            res.status === 503
+              ? 'Trạm lưu trữ khí hậu lịch sử Open-Meteo ERA5 tạm thời quá tải (503). Vui lòng thử lại sau ít phút.'
+              : res.status === 429
+              ? 'Bạn đã tra cứu khí hậu quá nhanh. Vui lòng đợi ít phút rồi thử lại.'
+              : 'Không thể tải dữ liệu khí hậu 12 tháng cho cung đường này lúc này.';
+          return {
+            value: {
+              ...emptyBase,
+              source: rawSource,
+              status: res.status,
+              error:
+                typeof json.message === 'string' && json.message.trim()
+                  ? json.message.trim()
+                  : fallbackError,
+            },
+            cacheable: false,
+          };
+        }
+
+        const parsedAlt = parseFiniteNum(json.maxAltitudeM);
+        const parsedGridEle = parseFiniteNum(rawJson.gridElevationM);
+        const parsedLapse = parseFiniteNum(rawJson.lapseDropC);
+        const period =
+          typeof rawJson.period === 'string' && rawJson.period.trim()
+            ? rawJson.period.trim()
+            : undefined;
+
+        return {
+          value: {
+            success: true,
+            cached: Boolean(json.cached),
+            source: rawSource || 'open-meteo-era5-3yr',
+            trailId: typeof json.trailId === 'string' && json.trailId.trim() ? json.trailId.trim() : cleanId,
+            trailName: typeof json.trailName === 'string' ? json.trailName.trim() : '',
+            maxAltitudeM: parsedAlt !== null ? Math.max(0, Math.round(parsedAlt)) : 0,
+            gridElevationM: parsedGridEle !== null ? Math.max(0, Math.round(parsedGridEle)) : null,
+            lapseDropC: parsedLapse !== null ? Math.round(parsedLapse * 10) / 10 : null,
+            period,
+            fetchedAt: typeof json.fetchedAt === 'string' ? json.fetchedAt : new Date().toISOString(),
+            months,
+            status: res.status,
+          },
+          cacheable: true,
+        };
+      } catch {
+        return {
+          value: {
+            ...emptyBase,
+            offline: true,
+            error: 'Không thể kết nối máy chủ khí hậu ERA5 lúc này (ngoại tuyến).',
+          },
+          cacheable: false,
+        };
       }
-    );
-    const json = await parseJsonSafe<unknown>(res);
-    const rawJson = json as Record<string, unknown>;
-    const rawSource = typeof rawJson.source === 'string' ? rawJson.source : '';
-    const rawMonths = Array.isArray(json.months)
-      ? json.months
-      : Array.isArray(json.data)
-      ? json.data
-      : [];
-
-    const dedupMap = new Map<number, TrailClimateMonth>();
-    for (const row of rawMonths) {
-      const normalized = normalizeClimateMonth(row);
-      if (normalized) {
-        dedupMap.set(normalized.month, normalized);
-      }
-    }
-    const months = Array.from(dedupMap.values()).sort((a, b) => a.month - b.month);
-
-    if (!res.ok || !json.success || months.length === 0) {
-      const fallbackError =
-        res.status === 503
-          ? 'Trạm lưu trữ khí hậu lịch sử Open-Meteo ERA5 tạm thời quá tải (503). Vui lòng thử lại sau ít phút.'
-          : res.status === 429
-          ? 'Bạn đã tra cứu khí hậu quá nhanh. Vui lòng đợi ít phút rồi thử lại.'
-          : 'Không thể tải dữ liệu khí hậu 12 tháng cho cung đường này lúc này.';
-      return {
-        ...emptyBase,
-        source: rawSource,
-        status: res.status,
-        error:
-          typeof json.message === 'string' && json.message.trim()
-            ? json.message.trim()
-            : fallbackError,
-      };
-    }
-
-    const parsedAlt = parseFiniteNum(json.maxAltitudeM);
-    const parsedGridEle = parseFiniteNum(rawJson.gridElevationM);
-    const parsedLapse = parseFiniteNum(rawJson.lapseDropC);
-    const period =
-      typeof rawJson.period === 'string' && rawJson.period.trim()
-        ? rawJson.period.trim()
-        : undefined;
-
-    return {
-      success: true,
-      cached: Boolean(json.cached),
-      source: rawSource || 'open-meteo-era5-3yr',
-      trailId: typeof json.trailId === 'string' && json.trailId.trim() ? json.trailId.trim() : cleanId,
-      trailName: typeof json.trailName === 'string' ? json.trailName.trim() : '',
-      maxAltitudeM: parsedAlt !== null ? Math.max(0, Math.round(parsedAlt)) : 0,
-      gridElevationM: parsedGridEle !== null ? Math.max(0, Math.round(parsedGridEle)) : null,
-      lapseDropC: parsedLapse !== null ? Math.round(parsedLapse * 10) / 10 : null,
-      period,
-      fetchedAt: typeof json.fetchedAt === 'string' ? json.fetchedAt : new Date().toISOString(),
-      months,
-      status: res.status,
-    };
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw err;
-    }
-    return {
-      ...emptyBase,
-      offline: true,
-      error: 'Không thể kết nối máy chủ khí hậu ERA5 lúc này (ngoại tuyến).',
-    };
-  }
+    },
+    signal
+  );
 }
 
 export interface AnnualGoalsData {

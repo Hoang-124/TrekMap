@@ -252,6 +252,151 @@ export const cancelSafetyTimer = async (req: AuthRequest, res: Response) => {
   }
 };
 
+// PATCH /api/safety-timers/:id/extend - Extend an active timer's expectedReturnAt (owner-only)
+export const extendSafetyTimer = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    const { id } = req.params;
+    if (!userId || !Types.ObjectId.isValid(userId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: 'Mã lịch hẹn không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const uid = new Types.ObjectId(userId);
+    const existing = await SafetyTimerModel.findOne({ _id: id, userId: uid }).lean();
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy lịch hẹn an toàn.' });
+    }
+    if (existing.status !== 'active') {
+      return res.status(400).json({
+        success: false,
+        message: 'Chỉ có thể gia hạn lịch hẹn đang ở trạng thái hoạt động.',
+      });
+    }
+
+    const { extendMinutes, expectedReturnAt } = req.body || {};
+    const nowMs = Date.now();
+    const maxAllowedMs = nowMs + 30 * 24 * 60 * 60 * 1000;
+    const baseMs = Math.max(nowMs, new Date(existing.expectedReturnAt).getTime());
+
+    let nextReturnDate: Date;
+    if (extendMinutes !== undefined && extendMinutes !== null && extendMinutes !== '') {
+      const mins = Number(extendMinutes);
+      if (!Number.isFinite(mins) || mins < 30 || mins > 1440) {
+        return res.status(400).json({
+          success: false,
+          message: 'Thời lượng gia hạn phải từ 30 đến 1440 phút (30 phút đến 24 giờ).',
+        });
+      }
+      nextReturnDate = new Date(baseMs + Math.round(mins) * 60 * 1000);
+    } else if (typeof expectedReturnAt === 'string' && expectedReturnAt.trim()) {
+      const parsed = new Date(expectedReturnAt.trim());
+      if (Number.isNaN(parsed.getTime())) {
+        return res.status(400).json({ success: false, message: 'Thời điểm dự kiến trở về không hợp lệ.' });
+      }
+      if (parsed.getTime() <= baseMs + 60 * 1000) {
+        return res.status(400).json({
+          success: false,
+          message: 'Thời điểm gia hạn phải muộn hơn lịch hẹn hiện tại ít nhất 1 phút.',
+        });
+      }
+      nextReturnDate = parsed;
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Vui lòng cung cấp số phút gia hạn (extendMinutes) hoặc thời điểm mới (expectedReturnAt).',
+      });
+    }
+
+    if (nextReturnDate.getTime() > maxAllowedMs) {
+      return res.status(400).json({
+        success: false,
+        message: 'Thời điểm dự kiến trở về sau gia hạn không được vượt quá 30 ngày tính từ hiện tại.',
+      });
+    }
+
+    const updated = await SafetyTimerModel.findOneAndUpdate(
+      { _id: id, userId: uid, status: 'active' },
+      { $set: { expectedReturnAt: nextReturnDate } },
+      { new: true }
+    );
+
+    if (!updated) {
+      return res.status(409).json({
+        success: false,
+        message: 'Lịch hẹn đã chuyển trạng thái trước khi gia hạn.',
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Đã gia hạn lịch hẹn báo bình an thành công!',
+      data: updated,
+    });
+  } catch (err) {
+    console.error('[Extend Safety Timer Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi gia hạn lịch hẹn.' });
+  }
+};
+
+// GET /api/safety-timers/admin - Active & overdue safety timers monitor for Admin/Moderator Dashboard
+export const getAdminSafetyTimers = async (req: AuthRequest, res: Response) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.json({ success: true, count: 0, overdueCount: 0, activeCount: 0, data: [] });
+    }
+
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '100'), 10) || 100, 1), 200);
+    const statusFilter =
+      typeof req.query.status === 'string' && ['active', 'overdue_alerted', 'checked_in_safe', 'cancelled'].includes(req.query.status)
+        ? req.query.status
+        : null;
+
+    const query: Record<string, any> = statusFilter
+      ? { status: statusFilter }
+      : { status: { $in: ['overdue_alerted', 'active'] } };
+
+    const timers = await SafetyTimerModel.find(query)
+      .populate('userId', 'fullName username email avatarUrl phone role')
+      .sort({ status: -1, expectedReturnAt: 1 })
+      .limit(limit)
+      .lean();
+
+    // Sort overdue_alerted strictly ahead of active, then earliest expectedReturnAt first
+    const statusPriority: Record<string, number> = {
+      overdue_alerted: 0,
+      active: 1,
+      checked_in_safe: 2,
+      cancelled: 3,
+    };
+    timers.sort((a: any, b: any) => {
+      const pa = statusPriority[a.status] ?? 9;
+      const pb = statusPriority[b.status] ?? 9;
+      if (pa !== pb) return pa - pb;
+      return new Date(a.expectedReturnAt).getTime() - new Date(b.expectedReturnAt).getTime();
+    });
+
+    const overdueCount = timers.filter((t: any) => t.status === 'overdue_alerted').length;
+    const activeCount = timers.filter((t: any) => t.status === 'active').length;
+
+    return res.json({
+      success: true,
+      count: timers.length,
+      overdueCount,
+      activeCount,
+      data: timers,
+    });
+  } catch (err) {
+    console.error('[Get Admin Safety Timers Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi tải danh sách hẹn giờ an toàn quản trị.' });
+  }
+};
+
 /**
  * Background sweeper: atomically claims overdue active safety timers one-by-one via findOneAndUpdate
  * so concurrent instances/ticks NEVER send duplicate emergency emails. Processes up to 100 per sweep.
@@ -311,7 +456,7 @@ export async function processOverdueSafetyTimers(): Promise<number> {
       category: 'safety',
       title: `Quá hạn Hẹn Giờ An Toàn: ${trekkerName}`,
       message: `Trekker ${trekkerName} quá hạn báo bình an tại ${timer.trailName}. Liên hệ khẩn cấp: ${timer.emergencyContactName} (${timer.emergencyContactPhone}).`,
-      link: '/admin',
+      link: '/admin?tab=safety',
       relatedId: timer._id.toString(),
       includeModerators: true,
     });

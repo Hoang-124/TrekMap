@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import type { HubViewId, UserProfile } from '../../types.js';
 import { mockTrails } from '../../data/seedData.js';
@@ -10,7 +10,7 @@ import { isHubView } from '../../utils/routing.js';
 import { ThemeToggle } from '../common/ThemeToggle.js';
 import { NotificationBell } from '../notifications/NotificationBell.js';
 import { fetchConversations } from '../../services/messageService.js';
-import { useSocket } from '../../hooks/useSocket.js';
+import { useSocketConnection } from '../../context/SocketContext.js';
 import { isTopmostFocusTrap, useFocusTrap } from '../../hooks/useFocusTrap.js';
 import { useSlidingIndicator } from '../../hooks/useSlidingIndicator.js';
 import {
@@ -115,7 +115,7 @@ function buildFieldSafetyHubItems(rangersCount: number): readonly HubMenuItem[] 
   ];
 }
 
-export const Navbar: React.FC<NavbarProps> = ({
+const NavbarBase: React.FC<NavbarProps> = ({
   currentView,
   currentUser,
   searchQuery,
@@ -174,7 +174,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const userMenuRef = useRef<HTMLDivElement>(null);
   const hubMenuRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const { socket, isConnected } = useSocket();
+  const { socket, isConnected } = useSocketConnection();
 
   const currentUserId = currentUser?.id || '';
   const effectiveSearch = searchQuery !== undefined ? searchQuery : internalSearch;
@@ -210,21 +210,23 @@ export const Navbar: React.FC<NavbarProps> = ({
 
     void refreshUnread();
 
-    if (!socket || !currentUserId) {
-      return () => {
-        active = false;
-      };
-    }
-
     const handleSocketUpdate = () => {
       void refreshUnread();
     };
-    socket.on('newMessage', handleSocketUpdate);
-    socket.on('messagesRead', handleSocketUpdate);
+    window.addEventListener('lost:messages-unread-changed', handleSocketUpdate);
+    if (socket) {
+      socket.on('newMessage', handleSocketUpdate);
+      socket.on('messageRead', handleSocketUpdate);
+      socket.on('messagesRead', handleSocketUpdate);
+    }
     return () => {
       active = false;
-      socket.off('newMessage', handleSocketUpdate);
-      socket.off('messagesRead', handleSocketUpdate);
+      window.removeEventListener('lost:messages-unread-changed', handleSocketUpdate);
+      if (socket) {
+        socket.off('newMessage', handleSocketUpdate);
+        socket.off('messageRead', handleSocketUpdate);
+        socket.off('messagesRead', handleSocketUpdate);
+      }
     };
   }, [socket, currentUserId]);
 
@@ -297,12 +299,15 @@ export const Navbar: React.FC<NavbarProps> = ({
     }
   };
 
-  const handleNavigateAndClose = (target: string) => {
-    setIsHubMenuOpen(false);
-    setIsUserMenuOpen(false);
-    setIsMobileDrawerOpen(false);
-    onNavigate(target);
-  };
+  const handleNavigateAndClose = useCallback(
+    (target: string) => {
+      setIsHubMenuOpen(false);
+      setIsUserMenuOpen(false);
+      setIsMobileDrawerOpen(false);
+      onNavigate(target);
+    },
+    [onNavigate]
+  );
 
   const isAdmin = Boolean(currentUser && (currentUser.role === 'admin' || currentUser.role === 'moderator'));
   const isHubActive = isHubView(currentView);
@@ -329,10 +334,9 @@ export const Navbar: React.FC<NavbarProps> = ({
         height: 62,
         display: 'flex',
         alignItems: 'center',
-        background: 'var(--color-bg-glass)',
-        backdropFilter: 'blur(16px)',
-        WebkitBackdropFilter: 'blur(16px)',
+        background: 'var(--color-bg-hud)',
         borderBottom: '1px solid var(--color-border)',
+        boxShadow: 'var(--shadow-header)',
       }}
     >
       <div
@@ -552,7 +556,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                                 display: 'flex',
                                 alignItems: 'flex-start',
                                 gap: 10,
-                                transition: 'background 0.14s ease',
+                                transition: 'background-color 0.14s ease',
                               }}
                               onMouseEnter={(e) => {
                                 if (!active) e.currentTarget.style.background = 'var(--color-surface-elevated)';
@@ -648,7 +652,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                                 display: 'flex',
                                 alignItems: 'flex-start',
                                 gap: 10,
-                                transition: 'background 0.14s ease',
+                                transition: 'background-color 0.14s ease',
                               }}
                               onMouseEnter={(e) => {
                                 if (!active) e.currentTarget.style.background = 'var(--color-surface-elevated)';
@@ -1094,6 +1098,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <img
                       src={currentUser.avatarUrl || currentUser.avatar}
                       alt={currentUser.fullName}
+                      decoding="async"
                       style={{
                         width: 28,
                         height: 28,
@@ -1160,6 +1165,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                           <img
                             src={currentUser.avatarUrl || currentUser.avatar}
                             alt={currentUser.fullName}
+                            decoding="async"
                             style={{
                               width: 42,
                               height: 42,
@@ -1306,7 +1312,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                               display: 'flex',
                               alignItems: 'center',
                               gap: 10,
-                              transition: 'background 0.16s ease',
+                              transition: 'background-color 0.16s ease',
                             }}
                             onMouseEnter={(e) => {
                               e.currentTarget.style.background =
@@ -1360,7 +1366,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                               display: 'flex',
                               alignItems: 'center',
                               gap: 10,
-                              transition: 'background 0.16s ease',
+                              transition: 'background-color 0.16s ease',
                             }}
                           >
                             <IconShieldCheck size={15} color="var(--color-sun)" />
@@ -1393,7 +1399,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                             display: 'flex',
                             alignItems: 'center',
                             gap: 10,
-                            transition: 'background 0.16s ease',
+                            transition: 'background-color 0.16s ease',
                           }}
                           onMouseEnter={(e) => {
                             e.currentTarget.style.background =
@@ -1502,7 +1508,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               inset: 0,
               zIndex: 'var(--z-drawer, 2000)' as unknown as number,
               background: 'var(--overlay-bg)',
-              backdropFilter: 'blur(6px)',
               display: 'flex',
               justifyContent: 'flex-end',
             }}
@@ -1911,3 +1916,5 @@ export const Navbar: React.FC<NavbarProps> = ({
     </header>
   );
 };
+
+export const Navbar = React.memo(NavbarBase);

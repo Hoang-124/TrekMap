@@ -10,6 +10,8 @@ export interface IReview extends Document {
   content: string;
   safetyNote?: string;
   photos?: string[];
+  helpfulBy?: Types.ObjectId[];
+  helpfulCount: number;
   tripDate: string;
   createdAt: Date;
   updatedAt: Date;
@@ -26,6 +28,8 @@ const reviewSchema = new Schema<IReview>(
     content: { type: String, required: true },
     safetyNote: { type: String, default: '' },
     photos: [{ type: String }],
+    helpfulBy: [{ type: Schema.Types.ObjectId, ref: 'User' }],
+    helpfulCount: { type: Number, default: 0, min: 0 },
     tripDate: { type: String, required: true },
   },
   { timestamps: true }

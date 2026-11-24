@@ -20,6 +20,7 @@ export interface IComment extends Document {
   authorBadge?: string;
   userId?: Types.ObjectId;
   content: string;
+  isBestAnswer?: boolean;
   reactions: ICommentReactions;
   userReactionsMap?: Map<string, string>;
   createdAt: Date;
@@ -35,6 +36,7 @@ const commentSchema = new Schema<IComment>(
     authorBadge: { type: String, default: 'Verified Trekker' },
     userId: { type: Schema.Types.ObjectId, ref: 'User', index: true },
     content: { type: String, required: true },
+    isBestAnswer: { type: Boolean, default: false },
     reactions: {
       like: { type: Number, default: 0, min: 0 },
       love: { type: Number, default: 0, min: 0 },

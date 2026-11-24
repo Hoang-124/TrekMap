@@ -502,7 +502,11 @@ export const AiExpeditionBriefTab: React.FC<AiExpeditionBriefTabProps> = ({
     applyItineraryToTrail(
       brief.trail.id,
       `Lịch trình ${brief.trail.name} (${brief.departureDate})`,
-      brief.itinerarySteps
+      brief.itinerarySteps,
+      {
+        startDate: brief.departureDate,
+        memberCount: brief.groupSize,
+      }
     );
     setAppliedItinerary(true);
     onToast(`Đã áp dụng ${brief.itinerarySteps.length} mốc lịch trình cho ${brief.trail.name}!`);

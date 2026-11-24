@@ -1,5 +1,14 @@
 import { Schema, model, Document, Types } from 'mongoose';
 
+export interface ITripReportComment {
+  _id?: Types.ObjectId;
+  authorId: Types.ObjectId;
+  authorName: string;
+  authorAvatar?: string;
+  content: string;
+  createdAt: Date;
+}
+
 export interface ITripReport extends Document {
   authorId: Types.ObjectId;
   trailId: Types.ObjectId;
@@ -25,6 +34,7 @@ export interface ITripReport extends Document {
     wow: number;
   };
   userReactionsMap: Map<string, string>;
+  comments: ITripReportComment[];
   commentsCount: number;
   viewsCount: number;
   isFeatured: boolean;
@@ -58,6 +68,15 @@ const tripReportSchema = new Schema<ITripReport>(
       wow: { type: Number, default: 0, min: 0 },
     },
     userReactionsMap: { type: Map, of: String, default: () => new Map() },
+    comments: [
+      {
+        authorId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+        authorName: { type: String, required: true, trim: true, maxlength: 100 },
+        authorAvatar: { type: String, default: '' },
+        content: { type: String, required: true, trim: true, maxlength: 2000 },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
     commentsCount: { type: Number, default: 0, min: 0 },
     viewsCount: { type: Number, default: 1, min: 0 },
     isFeatured: { type: Boolean, default: false },

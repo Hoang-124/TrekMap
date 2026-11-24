@@ -53,6 +53,11 @@ const CLOUD_HUNTING_SLUGS = new Set([
   'trail-puluong',
   'trail-bidoup',
   'trail-tanangphandung',
+  'trail-talienson',
+  'trail-khangsuvan',
+  'trail-namkanghotao',
+  'trail-phaluong',
+  'trail-binhlieu',
 ]);
 
 const FLOWERS_FOLIAGE_SLUGS = new Set([
@@ -63,6 +68,11 @@ const FLOWERS_FOLIAGE_SLUGS = new Set([
   'trail-tayconlinh',
   'trail-bachma',
   'trail-chuyangsin',
+  'trail-talienson',
+  'trail-khangsuvan',
+  'trail-namkanghotao',
+  'trail-phaluong',
+  'trail-binhlieu',
 ]);
 
 const MONTHLY_CLIMATE_BRIEFINGS: Record<number, MonthlyBriefing> = {

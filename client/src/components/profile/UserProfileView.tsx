@@ -1,11 +1,12 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import type { UserProfile, Trail, ForumThread } from '../../types.js';
-import { fetchTrails, updateSavedTrailMeta, uploadImageToCloudinary } from '../../services/api.js';
+import { fetchTrails, updateSavedTrailMeta } from '../../services/api.js';
 import { ThreadDetailModal } from '../forum/ThreadDetailModal.js';
 import { AuthorProfileModal } from '../forum/AuthorProfileModal.js';
 import { ProfileAnalyticsPanel, type RawCheckinInput } from './ProfileAnalyticsPanel.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
+import { clearSensitiveSessionStorage } from '../../utils/storageScope.js';
 import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
 import { useSlidingIndicator } from '../../hooks/useSlidingIndicator.js';
 import { DEFAULT_VIETNAM_TRAIL_COVER } from '../../utils/cloudinary.js';
@@ -49,6 +50,11 @@ const BarChart3 = createSvgIcon(<><line x1="18" y1="20" x2="18" y2="10" /><line 
 const Folder = createSvgIcon(<><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></>);
 const CalendarIcon = createSvgIcon(<><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></>);
 const DownloadIcon = createSvgIcon(<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></>);
+const UsersIcon = createSvgIcon(<><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>);
+const KeyRoundIcon = createSvgIcon(<><circle cx="7.5" cy="15.5" r="5.5" /><path d="m21 2-9.6 9.6" /><path d="m15.5 7.5 3 3L22 7l-3-3" /></>);
+const TrashIcon = createSvgIcon(<><path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" /><line x1="10" y1="11" x2="10" y2="17" /><line x1="14" y1="11" x2="14" y2="17" /></>);
+const EyeIcon = createSvgIcon(<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></>);
+const EyeOffIcon = createSvgIcon(<><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></>);
 
 type SavedCollectionName = 'Muốn đi' | 'Sắp đi' | 'Đã chinh phục' | 'Mục tiêu năm';
 
@@ -139,19 +145,37 @@ interface SavedTrailRecord {
 
 interface ProfileActivityItem {
   _id?: string;
+  type?: string;
+  title?: string;
   content?: string;
+  targetType?: string;
+  targetId?: string;
   createdAt?: string;
 }
 
 interface LeaderboardRow {
   userId: string;
-  rank: number;
+  rank?: number;
   fullName?: string;
+  username?: string;
   avatarUrl?: string;
+  trailsConquered?: number;
   summitsCount?: number;
   totalDistanceKm?: number;
   highestAltitudeM?: number;
+  verifiedCheckins?: number;
   verifiedCount?: number;
+}
+
+interface FollowGraphMember {
+  _id: string;
+  fullName?: string;
+  username?: string;
+  avatarUrl?: string;
+  reputationScore?: number;
+  role?: string;
+  badges?: string[];
+  isFollowingByMe?: boolean;
 }
 
 type ForumThreadExtended = Omit<ForumThread, 'userId'> & {
@@ -420,6 +444,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     threadsCount: number;
     reviewsCount: number;
     tripReportsCount: number;
+    followersCount: number;
+    followingCount: number;
   }>({
     totalDistanceKm: 0,
     highestAltitudeM: 0,
@@ -429,7 +455,32 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     threadsCount: 0,
     reviewsCount: 0,
     tripReportsCount: 0,
+    followersCount: 0,
+    followingCount: 0,
   });
+
+  // Followers & Following Modal state
+  const [followModalTab, setFollowModalTab] = useState<'followers' | 'following' | null>(null);
+  const [followModalList, setFollowModalList] = useState<FollowGraphMember[]>([]);
+  const [followModalLoading, setFollowModalLoading] = useState(false);
+  const [togglingFollowIds, setTogglingFollowIds] = useState<Set<string>>(() => new Set());
+
+  // Security Modals state (Change Password & Delete Account)
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+  const [cpCurrentPassword, setCpCurrentPassword] = useState('');
+  const [cpNewPassword, setCpNewPassword] = useState('');
+  const [cpConfirmPassword, setCpConfirmPassword] = useState('');
+  const [cpShowCurrent, setCpShowCurrent] = useState(false);
+  const [cpShowNew, setCpShowNew] = useState(false);
+  const [cpError, setCpError] = useState('');
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+
+  const [showDeleteAccountModal, setShowDeleteAccountModal] = useState(false);
+  const [delConfirmText, setDelConfirmText] = useState('');
+  const [delPassword, setDelPassword] = useState('');
+  const [delShowPassword, setDelShowPassword] = useState(false);
+  const [delError, setDelError] = useState('');
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [checkedTrails, setCheckedTrails] = useState<Trail[]>([]);
   const [rawCheckins, setRawCheckins] = useState<RawCheckinInput[]>([]);
   const [verifiedCheckinIds, setVerifiedCheckinIds] = useState<string[]>([]);
@@ -476,6 +527,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     return currentUser?.coverUrl || storedForUser || DEFAULT_COVER_URL;
   });
   const [showCoverModal, setShowCoverModal] = useState(false);
+  const [isSavingCover, setIsSavingCover] = useState(false);
   const [previewCover, setPreviewCover] = useState<string>(customCoverUrl);
   const [customCoverInput, setCustomCoverInput] = useState<string>('');
   const coverFileInputRef = useRef<HTMLInputElement>(null);
@@ -546,7 +598,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   // User Live Forum Posts State (Feature 3)
   const [userForumPosts, setUserForumPosts] = useState<ForumThread[]>([]);
   const [selectedThreadForModal, setSelectedThreadForModal] = useState<ForumThread | null>(null);
-  const [selectedAuthorForModal, setSelectedAuthorForModal] = useState<{ name: string; avatar: string } | null>(null);
+  const [selectedAuthorForModal, setSelectedAuthorForModal] = useState<{ name: string; avatar: string; userId?: string } | null>(null);
 
   // User Submitted Trail Contributions State (strictly server-backed — no global lost_contributions dump)
   const [userContributions, setUserContributions] = useState<ProfileContributionItem[]>([]);
@@ -602,6 +654,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   const [isSaving, setIsSaving] = useState(false);
   const [editFullName, setEditFullName] = useState('');
   const [editUsername, setEditUsername] = useState('');
+  const [editUsernameSuggestions, setEditUsernameSuggestions] = useState<string[]>([]);
   const [editPhone, setEditPhone] = useState('');
   const [editBio, setEditBio] = useState('');
   const [editEmergency, setEditEmergency] = useState('');
@@ -610,6 +663,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
   // Field-specific Inline Error State
   const [fieldErrors, setFieldErrors] = useState<{
+    username?: string;
     fullName?: string;
     phone?: string;
     emergencyContact?: string;
@@ -621,6 +675,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   const populateForm = useCallback((u: UserProfile) => {
     setEditFullName(u.fullName || u.name || '');
     setEditUsername(u.username || '');
+    setEditUsernameSuggestions([]);
     setEditPhone(u.phone || '');
     setEditBio(u.bio || '');
     setEditEmergency(u.emergencyContact || '');
@@ -724,6 +779,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             threadsCount: Number(statsData.data.stats.threadsCount) || 0,
             reviewsCount: Number(statsData.data.stats.reviewsCount) || 0,
             tripReportsCount: Number(statsData.data.stats.tripReportsCount) || 0,
+            followersCount: Number(statsData.data.stats.followersCount) || 0,
+            followingCount: Number(statsData.data.stats.followingCount) || 0,
           });
         }
       } catch (err) {
@@ -942,7 +999,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     };
   }, [currentUserId, currentUserEmail, loadProfileData]);
 
-  // LIFO Focus Trap refs for all 9 inline profile portal modals
+  // LIFO Focus Trap refs for all inline profile portal modals
   const qrModalRef = useRef<HTMLDivElement | null>(null);
   const badgeModalRef = useRef<HTMLDivElement | null>(null);
   const passportModalRef = useRef<HTMLDivElement | null>(null);
@@ -952,6 +1009,9 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   const gearModalRef = useRef<HTMLDivElement | null>(null);
   const coverModalRef = useRef<HTMLDivElement | null>(null);
   const lightboxModalRef = useRef<HTMLDivElement | null>(null);
+  const followModalRef = useRef<HTMLDivElement | null>(null);
+  const changePasswordModalRef = useRef<HTMLDivElement | null>(null);
+  const deleteAccountModalRef = useRef<HTMLDivElement | null>(null);
 
   useFocusTrap(showQrModal, qrModalRef);
   useFocusTrap(Boolean(selectedBadge), badgeModalRef);
@@ -962,11 +1022,17 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   useFocusTrap(showGearModal, gearModalRef);
   useFocusTrap(showCoverModal, coverModalRef);
   useFocusTrap(Boolean(fullViewImage), lightboxModalRef);
+  useFocusTrap(Boolean(followModalTab), followModalRef);
+  useFocusTrap(showChangePasswordModal, changePasswordModalRef);
+  useFocusTrap(showDeleteAccountModal, deleteAccountModalRef);
 
   // Unified Escape key handler for ALL profile modals (LIFO focus-trap + IME safe)
   useEffect(() => {
     const hasOpenModal = Boolean(
       fullViewImage ||
+      showDeleteAccountModal ||
+      showChangePasswordModal ||
+      followModalTab ||
       deletingContribution ||
       showCoverModal ||
       showCheckInModal ||
@@ -984,6 +1050,18 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         e.preventDefault();
         e.stopImmediatePropagation();
         setFullViewImage(null);
+      } else if (showDeleteAccountModal && isTopmostFocusTrap(deleteAccountModalRef.current)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (!isDeletingAccount) setShowDeleteAccountModal(false);
+      } else if (showChangePasswordModal && isTopmostFocusTrap(changePasswordModalRef.current)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (!isChangingPassword) setShowChangePasswordModal(false);
+      } else if (followModalTab && isTopmostFocusTrap(followModalRef.current)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setFollowModalTab(null);
       } else if (deletingContribution && isTopmostFocusTrap(deleteContribModalRef.current)) {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -991,7 +1069,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       } else if (showCoverModal && isTopmostFocusTrap(coverModalRef.current)) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        setShowCoverModal(false);
+        if (!isSavingCover) setShowCoverModal(false);
       } else if (showCheckInModal && isTopmostFocusTrap(checkInModalRef.current)) {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -1022,8 +1100,14 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
     fullViewImage,
+    showDeleteAccountModal,
+    isDeletingAccount,
+    showChangePasswordModal,
+    isChangingPassword,
+    followModalTab,
     deletingContribution,
     showCoverModal,
+    isSavingCover,
     showCheckInModal,
     isSubmittingCheckin,
     isEditing,
@@ -1034,7 +1118,218 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     showQrModal,
   ]);
 
+  const loadFollowGraphList = useCallback(async (tab: 'followers' | 'following') => {
+    const targetUid = String(
+      (profile as UserWithMongoId | null)?._id ||
+        profile?.id ||
+        currentUserId ||
+        ''
+    ).trim();
+    if (!targetUid) {
+      setFollowModalList([]);
+      return;
+    }
+    setFollowModalLoading(true);
+    try {
+      const res = await fetch(
+        `/api/users/${encodeURIComponent(targetUid)}/${tab}?limit=50`,
+        { headers: getApiHeaders() }
+      );
+      const data = await res.json().catch(() => null);
+      if (!isMountedRef.current) return;
+      if (res.ok && data?.success && Array.isArray(data.data)) {
+        setFollowModalList(data.data as FollowGraphMember[]);
+        const total = Number(data.pagination?.total);
+        if (Number.isFinite(total)) {
+          setProfileStats((prev) => ({
+            ...prev,
+            ...(tab === 'followers' ? { followersCount: total } : { followingCount: total }),
+          }));
+        }
+      } else {
+        setFollowModalList([]);
+      }
+    } catch {
+      if (isMountedRef.current) setFollowModalList([]);
+    } finally {
+      if (isMountedRef.current) setFollowModalLoading(false);
+    }
+  }, [profile, currentUserId]);
+
+  const openFollowModal = (tab: 'followers' | 'following') => {
+    setFollowModalTab(tab);
+    void loadFollowGraphList(tab);
+  };
+
+  const handleToggleFollowMember = async (member: FollowGraphMember) => {
+    const token = localStorage.getItem('lost_token');
+    if (!token) {
+      onShowToast?.('Vui lòng đăng nhập để theo dõi thành viên.', 'info');
+      return;
+    }
+    if (togglingFollowIds.has(member._id)) return;
+    setTogglingFollowIds((prev) => new Set(prev).add(member._id));
+    try {
+      const res = await fetch(`/api/users/${encodeURIComponent(member._id)}/follow`, {
+        method: 'POST',
+        headers: getApiHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!isMountedRef.current) return;
+      if (res.ok && data.success) {
+        const nextFollow = Boolean(data.isFollowing);
+        setFollowModalList((prev) =>
+          prev.map((m) => (m._id === member._id ? { ...m, isFollowingByMe: nextFollow } : m))
+        );
+        setProfileStats((prev) => ({
+          ...prev,
+          followingCount: Math.max(0, prev.followingCount + (nextFollow ? 1 : -1)),
+        }));
+        onShowToast?.(
+          data.message || (nextFollow ? 'Đã theo dõi thành viên!' : 'Đã bỏ theo dõi thành viên.'),
+          'info'
+        );
+      } else {
+        onShowToast?.(data.message || 'Không thể cập nhật trạng thái theo dõi.', 'error');
+      }
+    } catch {
+      if (isMountedRef.current) {
+        onShowToast?.('Lỗi kết nối khi cập nhật trạng thái theo dõi.', 'error');
+      }
+    } finally {
+      if (isMountedRef.current) {
+        setTogglingFollowIds((prev) => {
+          const next = new Set(prev);
+          next.delete(member._id);
+          return next;
+        });
+      }
+    }
+  };
+
+  const handleChangePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCpError('');
+
+    if (!cpCurrentPassword) {
+      setCpError('Vui lòng nhập mật khẩu hiện tại.');
+      return;
+    }
+    if (
+      cpNewPassword.length < 8 ||
+      !/[a-z]/.test(cpNewPassword) ||
+      !/[A-Z]/.test(cpNewPassword) ||
+      !/[0-9]/.test(cpNewPassword)
+    ) {
+      setCpError('Mật khẩu mới cần tối thiểu 8 ký tự, bao gồm chữ hoa (A-Z), chữ thường (a-z) và chữ số (0-9).');
+      return;
+    }
+    if (cpNewPassword !== cpConfirmPassword) {
+      setCpError('Mật khẩu mới xác nhận không trùng khớp.');
+      return;
+    }
+
+    setIsChangingPassword(true);
+    try {
+      const res = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        credentials: 'include',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          currentPassword: cpCurrentPassword,
+          newPassword: cpNewPassword,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!isMountedRef.current) return;
+      if (!res.ok || !data.success) {
+        setCpError(data.message || 'Không thể đổi mật khẩu lúc này.');
+        return;
+      }
+
+      if (data.token) {
+        localStorage.setItem('lost_token', data.token);
+      }
+      if (data.user) {
+        setProfile(data.user);
+        onProfileUpdate?.(data.user);
+      }
+      window.dispatchEvent(
+        new CustomEvent('lost:auth-changed', {
+          detail: { authenticated: true, ...(data.user ? { user: data.user } : {}) },
+        })
+      );
+      setShowChangePasswordModal(false);
+      setCpCurrentPassword('');
+      setCpNewPassword('');
+      setCpConfirmPassword('');
+      setCpError('');
+      onShowToast?.(data.message || 'Đổi mật khẩu thành công!', 'success');
+    } catch {
+      if (isMountedRef.current) {
+        setCpError('Không thể kết nối máy chủ để đổi mật khẩu.');
+      }
+    } finally {
+      if (isMountedRef.current) setIsChangingPassword(false);
+    }
+  };
+
+  const handleDeleteAccountSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setDelError('');
+    const isGoogleAcct = (profile || currentUser)?.authProvider === 'google';
+
+    if (delConfirmText.trim().normalize('NFC') !== 'XÓA TÀI KHOẢN') {
+      setDelError('Vui lòng nhập chính xác cụm từ "XÓA TÀI KHOẢN" (in hoa có dấu).');
+      return;
+    }
+    if (!isGoogleAcct && !delPassword) {
+      setDelError('Vui lòng nhập mật khẩu hiện tại để xác nhận xóa tài khoản.');
+      return;
+    }
+
+    setIsDeletingAccount(true);
+    try {
+      const res = await fetch('/api/auth/me', {
+        method: 'DELETE',
+        credentials: 'include',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          confirmText: delConfirmText.trim(),
+          ...(!isGoogleAcct ? { currentPassword: delPassword } : {}),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!isMountedRef.current) return;
+      if (!res.ok || !data.success) {
+        setDelError(data.message || 'Không thể xóa tài khoản lúc này.');
+        return;
+      }
+
+      try {
+        localStorage.removeItem('lost_token');
+      } catch {
+        // ignore storage restrictions
+      }
+      clearSensitiveSessionStorage();
+      window.dispatchEvent(new CustomEvent('lost:auth-changed', { detail: { authenticated: false } }));
+      setShowDeleteAccountModal(false);
+      onShowToast?.(data.message || 'Tài khoản của bạn đã được xóa vĩnh viễn.', 'info');
+      onBack();
+      window.setTimeout(() => {
+        window.location.href = '/';
+      }, 250);
+    } catch {
+      if (isMountedRef.current) {
+        setDelError('Không thể kết nối máy chủ để xóa tài khoản.');
+      }
+    } finally {
+      if (isMountedRef.current) setIsDeletingAccount(false);
+    }
+  };
+
   const handleToggleGear = async (gearId: string) => {
+    const previousGear = userGear;
     const nextGear = userGear.includes(gearId)
       ? userGear.filter((g) => g !== gearId)
       : [...userGear, gearId];
@@ -1042,22 +1337,35 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     setUserGear(nextGear);
     const token = localStorage.getItem('lost_token');
 
+    if (!token) {
+      onShowToast?.('Đã cập nhật tủ đồ thiết bị sinh tồn (cục bộ)!', 'info');
+      return;
+    }
+
     try {
-      if (token) {
-        await fetch('/api/auth/profile', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ gearLocker: nextGear }),
-        });
+      const res = await fetch('/api/auth/profile', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ gearLocker: nextGear }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        setUserGear(previousGear);
+        onShowToast?.(data.message || 'Không thể lưu tủ đồ thiết bị lên máy chủ.', 'error');
+        return;
       }
-      if (onShowToast) {
-        onShowToast('Đã cập nhật tủ đồ thiết bị sinh tồn!', 'success');
+      if (data.user) {
+        setProfile(data.user);
+        onProfileUpdate?.(data.user);
       }
+      onShowToast?.('Đã cập nhật tủ đồ thiết bị sinh tồn!', 'success');
     } catch (err) {
       console.error('[Gear Save Error]:', err);
+      setUserGear(previousGear);
+      onShowToast?.('Lỗi kết nối khi lưu tủ đồ thiết bị. Đã khôi phục trạng thái trước đó.', 'error');
     }
   };
 
@@ -1105,6 +1413,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           body: JSON.stringify({
             trailId: trail.id,
             completionTimeHours: hours,
+            isPublic: true,
             ...(checkinCoords ? { lat: checkinCoords.lat, lng: checkinCoords.lng } : {}),
           }),
         });
@@ -1122,15 +1431,23 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           onShowToast?.(`${data.message || `Check-in ${trail.name} thành công!`}${badgeNote}`, 'success');
           setShowCheckInModal(false);
           setCheckinCoords(null);
-          // Refresh leaderboard & activities silently
+          // Refresh rawCheckins, leaderboard & activities silently
+          fetch('/api/checkins/me', { headers: { Authorization: `Bearer ${token}` } })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((j) => {
+              if (isMountedRef.current && j?.success && Array.isArray(j.data)) {
+                setRawCheckins(j.data as RawCheckinInput[]);
+              }
+            })
+            .catch(() => {});
           fetch('/api/checkins/leaderboard?limit=10')
             .then((r) => (r.ok ? r.json() : null))
-            .then((j) => j?.success && Array.isArray(j.data) && setLeaderboard(j.data))
-            .catch(() => { });
+            .then((j) => isMountedRef.current && j?.success && Array.isArray(j.data) && setLeaderboard(j.data))
+            .catch(() => {});
           fetch('/api/activities/me?limit=15', { headers: { Authorization: `Bearer ${token}` } })
             .then((r) => (r.ok ? r.json() : null))
-            .then((j) => j?.success && Array.isArray(j.data) && setActivities(j.data))
-            .catch(() => { });
+            .then((j) => isMountedRef.current && j?.success && Array.isArray(j.data) && setActivities(j.data))
+            .catch(() => {});
           return;
         }
         onShowToast?.(data.message || 'Không thể ghi nhận check-in lên máy chủ.', 'error');
@@ -1157,28 +1474,31 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   const getActiveMetaUid = (): string =>
     String((profile as UserWithMongoId | null)?._id || profile?.id || currentUserId || 'guest');
 
-  const resolveSavedItemMeta = (item: SavedTrailRecord | undefined, trailIdKey: string): SavedTrailLocalMeta => {
-    const localOverride = savedMetaMap[trailIdKey];
-    if (localOverride?.pendingSync) {
-      return localOverride;
-    }
-    if (item) {
-      const serverMonth =
-        typeof item.plannedMonth === 'number' && item.plannedMonth >= 1 && item.plannedMonth <= 12
-          ? Math.trunc(item.plannedMonth)
-          : null;
+  const resolveSavedItemMeta = useCallback(
+    (item: SavedTrailRecord | undefined, trailIdKey: string): SavedTrailLocalMeta => {
+      const localOverride = savedMetaMap[trailIdKey];
+      if (localOverride?.pendingSync) {
+        return localOverride;
+      }
+      if (item) {
+        const serverMonth =
+          typeof item.plannedMonth === 'number' && item.plannedMonth >= 1 && item.plannedMonth <= 12
+            ? Math.trunc(item.plannedMonth)
+            : null;
+        return {
+          collectionName: normalizeSavedCollection(item.collectionName),
+          personalNote: typeof item.personalNote === 'string' ? item.personalNote : '',
+          plannedMonth: serverMonth,
+        };
+      }
       return {
-        collectionName: normalizeSavedCollection(item.collectionName),
-        personalNote: typeof item.personalNote === 'string' ? item.personalNote : '',
-        plannedMonth: serverMonth,
+        collectionName: normalizeSavedCollection(localOverride?.collectionName),
+        personalNote: localOverride?.personalNote || '',
+        plannedMonth: localOverride?.plannedMonth ?? null,
       };
-    }
-    return {
-      collectionName: normalizeSavedCollection(localOverride?.collectionName),
-      personalNote: localOverride?.personalNote || '',
-      plannedMonth: localOverride?.plannedMonth ?? null,
-    };
-  };
+    },
+    [savedMetaMap]
+  );
 
   const getSavedTrailId = (item: SavedTrailRecord): string =>
     typeof item.trailId === 'object' && item.trailId
@@ -1555,10 +1875,14 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
   const handleCoverFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file) {
+      e.target.value = '';
+      return;
+    }
 
-    if (file.size > 8 * 1024 * 1024) {
-      if (onShowToast) onShowToast('Kích thước ảnh bìa không được vượt quá 8MB.', 'error');
+    if (file.size > 5 * 1024 * 1024) {
+      onShowToast?.('Kích thước ảnh bìa không được vượt quá 5MB.', 'error');
+      e.target.value = '';
       return;
     }
 
@@ -1568,7 +1892,10 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         const base64 = reader.result;
         setPreviewCover(base64);
         setCustomCoverInput('');
-        if (onShowToast) onShowToast('Đã nạp ảnh từ máy tính vào bản xem trước! Nhấn "Lưu & Áp Dụng Ảnh Bìa" để tải lên và hoàn tất.', 'info');
+        onShowToast?.(
+          'Đã nạp ảnh từ máy tính vào bản xem trước! Nhấn "Lưu & Áp Dụng Ảnh Bìa" để tải lên và hoàn tất.',
+          'info'
+        );
       }
     };
     reader.readAsDataURL(file);
@@ -1576,37 +1903,39 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   };
 
   const handleApplyCover = async (coverUrlToApply?: string) => {
+    if (isSavingCover) return;
     let finalUrl = (coverUrlToApply || previewCover || customCoverInput).trim();
     if (!finalUrl) {
-      if (onShowToast) onShowToast('Vui lòng chọn hoặc dán đường dẫn ảnh bìa hợp lệ.', 'error');
+      onShowToast?.('Vui lòng chọn hoặc dán đường dẫn ảnh bìa hợp lệ.', 'error');
       return;
     }
 
-    // Upload base64 data URIs to Cloudinary instead of storing megabytes in localStorage
-    if (finalUrl.startsWith('data:image/')) {
-      try {
-        onShowToast?.('Đang tải ảnh bìa lên máy chủ lưu trữ...', 'info');
-        finalUrl = await uploadImageToCloudinary(finalUrl, `cover_${Date.now()}.jpg`, 'avatars');
-      } catch (err: unknown) {
-        onShowToast?.(err instanceof Error ? err.message : 'Không thể tải ảnh bìa lên Cloudinary.', 'error');
-        return;
-      }
-    }
-
-    const activeUid = String((profile as UserWithMongoId | null)?._id || profile?.id || currentUserId || '');
-    setCustomCoverUrl(finalUrl);
-    setPreviewCover(finalUrl);
+    setIsSavingCover(true);
     try {
-      localStorage.setItem(getCoverStorageKey(activeUid), finalUrl);
-    } catch (e) {
-      console.warn('[Cover LocalStorage Warning]:', e);
-    }
-    setShowCoverModal(false);
-    if (onShowToast) onShowToast('Đã lưu và cập nhật ảnh bìa mới thành công!', 'success');
+      // Upload base64 data URIs to Cloudinary under `covers` category
+      if (finalUrl.startsWith('data:image/')) {
+        onShowToast?.('Đang tải ảnh bìa lên máy chủ lưu trữ...', 'info');
+        const uploadRes = await fetch('/api/upload', {
+          method: 'POST',
+          headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            imageBase64: finalUrl,
+            filename: `cover_${Date.now()}.jpg`,
+            category: 'covers',
+          }),
+        });
+        const uploadJson = await uploadRes.json().catch(() => ({}));
+        if (!uploadRes.ok || !uploadJson.success || !uploadJson.url) {
+          onShowToast?.(uploadJson.message || 'Không thể tải ảnh bìa lên Cloudinary.', 'error');
+          return;
+        }
+        finalUrl = String(uploadJson.url);
+      }
 
-    const token = localStorage.getItem('lost_token');
-    if (token) {
-      try {
+      const activeUid = String((profile as UserWithMongoId | null)?._id || profile?.id || currentUserId || '');
+      const token = localStorage.getItem('lost_token');
+
+      if (token) {
         const res = await fetch('/api/auth/profile', {
           method: 'POST',
           headers: {
@@ -1615,44 +1944,67 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           },
           body: JSON.stringify({ coverUrl: finalUrl }),
         });
-        const data = await res.json();
-        if (data.success && data.user) {
-          const persistedCover = data.user.coverUrl || finalUrl;
-          setCustomCoverUrl(persistedCover);
-          setPreviewCover(persistedCover);
-          try {
-            const persistedUid = String(data.user._id || data.user.id || activeUid);
-            localStorage.setItem(getCoverStorageKey(persistedUid), persistedCover);
-          } catch {
-            // ignore
-          }
-          setProfile(data.user);
-          if (onProfileUpdate) onProfileUpdate({ ...data.user, coverUrl: persistedCover });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success || !data.user) {
+          onShowToast?.(data.message || 'Không thể lưu ảnh bìa lên máy chủ. Vui lòng thử lại.', 'error');
+          return;
         }
-      } catch (err) {
-        console.error('[Cover Upload Error]:', err);
+        const persistedCover = data.user.coverUrl || finalUrl;
+        setCustomCoverUrl(persistedCover);
+        setPreviewCover(persistedCover);
+        try {
+          const persistedUid = String(data.user._id || data.user.id || activeUid);
+          localStorage.setItem(getCoverStorageKey(persistedUid), persistedCover);
+        } catch {
+          // ignore quota error
+        }
+        setProfile(data.user);
+        onProfileUpdate?.({ ...data.user, coverUrl: persistedCover });
+        setShowCoverModal(false);
+        onShowToast?.('Đã lưu và cập nhật ảnh bìa mới thành công!', 'success');
+      } else {
+        setCustomCoverUrl(finalUrl);
+        setPreviewCover(finalUrl);
+        try {
+          localStorage.setItem(getCoverStorageKey(activeUid), finalUrl);
+        } catch (e) {
+          console.warn('[Cover LocalStorage Warning]:', e);
+        }
+        setShowCoverModal(false);
+        onShowToast?.('Đã lưu ảnh bìa mới trên thiết bị!', 'info');
       }
+    } catch (err) {
+      console.error('[Cover Upload Error]:', err);
+      onShowToast?.('Lỗi kết nối khi lưu ảnh bìa. Vui lòng thử lại.', 'error');
+    } finally {
+      if (isMountedRef.current) setIsSavingCover(false);
     }
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (file.size > 5 * 1024 * 1024) {
-      setFieldErrors((prev) => ({ ...prev, avatarUrl: 'Kích thước tệp ảnh không được vượt quá 5MB.' }));
+    if (!file) {
+      e.target.value = '';
       return;
     }
 
+    if (file.size > 5 * 1024 * 1024) {
+      const msg = 'Kích thước tệp ảnh đại diện không được vượt quá 5MB.';
+      setFieldErrors((prev) => ({ ...prev, avatarUrl: msg }));
+      onShowToast?.(msg, 'error');
+      e.target.value = '';
+      return;
+    }
+
+    const previousAvatar =
+      editAvatarUrl || profile?.avatarUrl || profile?.avatar || currentUser?.avatarUrl || '';
     const reader = new FileReader();
     reader.onload = async () => {
       if (typeof reader.result === 'string') {
         const base64 = reader.result;
         setEditAvatarUrl(base64);
         setFieldErrors((prev) => ({ ...prev, avatarUrl: '' }));
-        if (onShowToast) {
-          onShowToast('Đang tải và lưu ảnh đại diện mới lên Cloudinary...', 'info');
-        }
+        onShowToast?.('Đang tải và lưu ảnh đại diện mới lên Cloudinary...', 'info');
 
         // Send to backend profile update handler which performs Cloudinary upload ONCE
         const token = localStorage.getItem('lost_token');
@@ -1666,27 +2018,44 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               },
               body: JSON.stringify({ avatarUrl: base64 }),
             });
-            const data = await res.json();
-            if (data.success && data.user?.avatarUrl) {
-              setEditAvatarUrl(data.user.avatarUrl);
-              setProfile(data.user);
-              if (onProfileUpdate) onProfileUpdate(data.user);
-              if (onShowToast) {
-                onShowToast('Đã lưu ảnh đại diện lên Cloudinary CDN thành công!', 'success');
-              }
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.success || !data.user?.avatarUrl) {
+              setEditAvatarUrl(previousAvatar);
+              const errMsg = data.message || 'Không thể tải ảnh đại diện lên máy chủ.';
+              setFieldErrors((prev) => ({ ...prev, avatarUrl: errMsg }));
+              onShowToast?.(errMsg, 'error');
+              return;
             }
+            setEditAvatarUrl(data.user.avatarUrl);
+            setProfile(data.user);
+            onProfileUpdate?.(data.user);
+            onShowToast?.('Đã lưu ảnh đại diện lên Cloudinary CDN thành công!', 'success');
           } catch (err) {
             console.error('[Avatar Update Error]:', err);
+            setEditAvatarUrl(previousAvatar);
+            const errMsg = 'Lỗi kết nối khi tải lên ảnh đại diện. Đã khôi phục ảnh cũ.';
+            setFieldErrors((prev) => ({ ...prev, avatarUrl: errMsg }));
+            onShowToast?.(errMsg, 'error');
           }
         }
       }
     };
     reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     const newErrors: typeof fieldErrors = {};
+
+    // 0. Username Inline Validation
+    const cleanUsername = editUsername.trim();
+    if (cleanUsername) {
+      if (cleanUsername.length < 3 || cleanUsername.length > 30 || !/^[a-zA-Z0-9_-]+$/.test(cleanUsername)) {
+        newErrors.username =
+          'Tên tài khoản phải từ 3–30 ký tự, chỉ gồm chữ không dấu, số, dấu gạch dưới (_) hoặc gạch ngang (-).';
+      }
+    }
 
     // 1. Full Name Inline Validation
     if (!editFullName.trim() || editFullName.trim().length < 2) {
@@ -1718,6 +2087,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     }
 
     setFieldErrors({});
+    setEditUsernameSuggestions([]);
     setIsSaving(true);
     const token = localStorage.getItem('lost_token');
 
@@ -1729,6 +2099,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
+          ...(cleanUsername ? { username: cleanUsername } : {}),
           fullName: editFullName,
           phone: editPhone,
           bio: editBio,
@@ -1743,6 +2114,13 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       setIsSaving(false);
 
       if (!res.ok || !data.success) {
+        if (data.isDuplicateUsername) {
+          setFieldErrors({ username: data.message || 'Tên tài khoản này đã có người sử dụng.' });
+          if (Array.isArray(data.suggestions)) {
+            setEditUsernameSuggestions(data.suggestions);
+          }
+          return;
+        }
         setFieldErrors({ general: data.message || 'Không thể cập nhật hồ sơ cá nhân.' });
         return;
       }
@@ -1802,8 +2180,31 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   // Is User Verified (via OTP or Google Login)
   const isVerifiedUser = Boolean(activeProfile.isEmailVerified || activeProfile.authProvider === 'google');
 
-  // Filter equipped gear items
-  const equippedGearItems = ALL_GEAR_ITEMS.filter((g) => userGear.includes(g.id));
+  // Filter equipped gear items (memoized)
+  const equippedGearItems = useMemo(
+    () => ALL_GEAR_ITEMS.filter((g) => userGear.includes(g.id)),
+    [userGear]
+  );
+
+  // Memoized lookup & collection filter for Saved Trails tab
+  const allAvailableTrailsById = useMemo(() => {
+    const map = new Map<string, Trail>();
+    for (const t of allAvailableTrails) {
+      if (t.id) map.set(String(t.id), t);
+      const mongoId = (t as TrailWithMongoId)._id;
+      if (mongoId) map.set(String(mongoId), t);
+    }
+    return map;
+  }, [allAvailableTrails]);
+
+  const visibleSavedTrails = useMemo(() => {
+    if (savedCollectionFilter === 'all') return savedTrails;
+    return savedTrails.filter((item) => {
+      const trailObj = item.trailId && typeof item.trailId === 'object' ? item.trailId : null;
+      const tid = String(trailObj?.id || trailObj?._id || item.trailId || '');
+      return resolveSavedItemMeta(item, tid).collectionName === savedCollectionFilter;
+    });
+  }, [savedTrails, savedCollectionFilter, resolveSavedItemMeta]);
 
   // Real computed telemetry combining server profile stats + local check-ins
   const computedTelemetry = React.useMemo(() => {
@@ -1860,7 +2261,10 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       return { ...b, unlocked: Boolean(explicitMatch || dynamicUnlock) };
     });
   }, [activeProfile.badges, activeProfile.id, isVerifiedUser, checkedTrails, computedTelemetry.rep, computedTelemetry.totalDistanceKm]);
-  const unlockedBadgesCount = computedBadges.filter((b) => b.unlocked).length;
+  const unlockedBadgesCount = useMemo(
+    () => computedBadges.filter((b) => b.unlocked).length,
+    [computedBadges]
+  );
 
   // Filter user's own forum posts (strict exact match on userId / email / authorName)
   const userOwnPosts = React.useMemo(() => {
@@ -2066,6 +2470,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           }}
         >
           <img
+            decoding="async"
             key={customCoverUrl}
             src={customCoverUrl}
             alt="Ảnh bìa hồ sơ thám hiểm"
@@ -2099,7 +2504,6 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               left: 14,
               zIndex: 3,
               background: 'var(--overlay-bg)',
-              backdropFilter: 'blur(8px)',
               border: '1px solid color-mix(in srgb, var(--color-on-media) 22%, transparent)',
               color: 'var(--color-on-media)',
               padding: '4px 10px',
@@ -2131,7 +2535,6 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               right: 14,
               zIndex: 3,
               background: 'var(--overlay-bg)',
-              backdropFilter: 'blur(8px)',
               border: '1px solid color-mix(in srgb, var(--color-on-media) 24%, transparent)',
               color: 'var(--color-on-media)',
               padding: '5px 12px',
@@ -2188,6 +2591,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             style={{ position: 'relative', flexShrink: 0, cursor: 'pointer', marginTop: -42 }}
           >
             <img
+              decoding="async"
               src={activeProfile.avatarUrl || activeProfile.avatar || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
               alt={activeProfile.fullName}
               style={{
@@ -2304,6 +2708,49 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--color-bg-main)', padding: '3px 9px', borderRadius: 3, border: '1px solid var(--color-border)' }}>
                 <Compass size={12} color="var(--color-sky)" /> {activeProfile.preferredStyle || 'Trekking & Camping'}
               </span>
+              <button
+                type="button"
+                onClick={() => openFollowModal('followers')}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  background: 'color-mix(in srgb, var(--color-sky) 10%, var(--color-bg-main))',
+                  padding: '3px 9px',
+                  borderRadius: 3,
+                  border: '1px solid color-mix(in srgb, var(--color-sky) 32%, transparent)',
+                  color: 'var(--color-text-main)',
+                  fontSize: '0.78rem',
+                  fontFamily: 'var(--font-family)',
+                  cursor: 'pointer',
+                  fontVariantNumeric: 'tabular-nums',
+                }}
+              >
+                <UsersIcon size={12} color="var(--color-sky)" />
+                <strong>{profileStats.followersCount}</strong>
+                <span style={{ color: 'var(--color-text-muted)' }}>Người theo dõi</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => openFollowModal('following')}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  background: 'var(--color-bg-main)',
+                  padding: '3px 9px',
+                  borderRadius: 3,
+                  border: '1px solid var(--color-border)',
+                  color: 'var(--color-text-main)',
+                  fontSize: '0.78rem',
+                  fontFamily: 'var(--font-family)',
+                  cursor: 'pointer',
+                  fontVariantNumeric: 'tabular-nums',
+                }}
+              >
+                <strong>{profileStats.followingCount}</strong>
+                <span style={{ color: 'var(--color-text-muted)' }}>Đang theo dõi</span>
+              </button>
             </div>
 
             {/* Bio snippet */}
@@ -2436,6 +2883,9 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             currentUser={activeProfile}
             onSelectTrail={onSelectTrail}
             onShowToast={onShowToast}
+            onLogbookChanged={() => {
+              void loadProfileData();
+            }}
           />
         )}
 
@@ -2484,7 +2934,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                           borderRadius: 4,
                           padding: '14px 16px',
                           cursor: 'pointer',
-                          transition: 'all 0.2s ease',
+                          transition: 'border-color 0.2s ease, transform 0.2s ease',
                           display: 'flex',
                           justifyContent: 'space-between',
                           alignItems: 'center',
@@ -2546,7 +2996,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                         borderRadius: 4,
                         padding: '7px 14px',
                         cursor: 'pointer',
-                        transition: 'all 0.2s ease',
+                        transition: 'transform 0.2s ease, opacity 0.2s ease',
                         display: 'flex',
                         alignItems: 'center',
                         gap: 7,
@@ -2657,6 +3107,68 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   </div>
                 </div>
               </div>
+
+              {/* Account Security Card (Change Password & Delete Account) */}
+              <div className="card" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+                  <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Lock size={18} color="var(--color-sky)" /> Bảo Mật Tài Khoản
+                  </h3>
+                  <span className="badge badge-cloud" style={{ fontSize: '0.68rem' }}>
+                    {activeProfile.authProvider === 'google' ? 'Liên kết Google OAuth' : 'Đăng nhập Email & Mật khẩu'}
+                  </span>
+                </div>
+
+                <p style={{ margin: '0 0 14px 0', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
+                  {activeProfile.authProvider === 'google'
+                    ? 'Tài khoản này sử dụng bảo mật Google OAuth. Bạn vẫn có thể quản lý quyền riêng tư hoặc xóa tài khoản vĩnh viễn bất cứ lúc nào.'
+                    : 'Định kỳ cập nhật mật khẩu mạnh để bảo vệ nhật ký hành trình, liên hệ SOS và thu hồi các phiên đăng nhập cũ.'}
+                </p>
+
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  {activeProfile.authProvider !== 'google' && (
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      onClick={() => {
+                        setCpCurrentPassword('');
+                        setCpNewPassword('');
+                        setCpConfirmPassword('');
+                        setCpError('');
+                        setCpShowCurrent(false);
+                        setCpShowNew(false);
+                        setShowChangePasswordModal(true);
+                      }}
+                      style={{ fontSize: 'var(--font-size-xs)', padding: '7px 14px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                    >
+                      <KeyRoundIcon size={14} color="var(--color-primary)" /> Đổi Mật Khẩu
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={() => {
+                      setDelConfirmText('');
+                      setDelPassword('');
+                      setDelShowPassword(false);
+                      setDelError('');
+                      setShowDeleteAccountModal(true);
+                    }}
+                    style={{
+                      fontSize: 'var(--font-size-xs)',
+                      padding: '7px 14px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      color: 'var(--color-error-text, var(--color-error))',
+                      borderColor: 'color-mix(in srgb, var(--color-error) 42%, transparent)',
+                    }}
+                  >
+                    <TrashIcon size={14} color="var(--color-error-text, var(--color-error))" /> Xóa Tài Khoản Vĩnh Viễn
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -2695,6 +3207,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   >
                     <div style={{ height: 120, position: 'relative', overflow: 'hidden', background: 'var(--color-surface-elevated)' }}>
                       <img
+                        loading="lazy"
+                        decoding="async"
                         src={contrib.coverImage || DEFAULT_VIETNAM_TRAIL_COVER}
                         alt={contrib.name}
                         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
@@ -2744,26 +3258,32 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                         </div>
                       </div>
 
-                      <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                         <span>Ngày gửi: {formatShortDate(contrib.createdAt)}</span>
-                        <div style={{ display: 'flex', gap: 6 }}>
-                          <button
-                            type="button"
-                            className="btn btn-outline"
-                            onClick={() => handleEditContribution(contrib)}
-                            style={{ padding: '3px 8px', fontSize: '0.72rem', borderRadius: 4 }}
-                          >
-                            Chỉnh sửa
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-outline"
-                            onClick={() => handleDeleteContribution(contrib.id || contrib._id || '', contrib.name || '')}
-                            style={{ padding: '3px 8px', fontSize: '0.72rem', borderRadius: 4, color: 'var(--color-error-text, var(--color-error))', borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)' }}
-                          >
-                            Xóa
-                          </button>
-                        </div>
+                        {contrib.status !== 'approved' || activeProfile.role === 'admin' || activeProfile.role === 'moderator' ? (
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <button
+                              type="button"
+                              className="btn btn-outline"
+                              onClick={() => handleEditContribution(contrib)}
+                              style={{ padding: '3px 8px', fontSize: '0.72rem', borderRadius: 4 }}
+                            >
+                              Chỉnh sửa
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-outline"
+                              onClick={() => handleDeleteContribution(contrib.id || contrib._id || '', contrib.name || '')}
+                              style={{ padding: '3px 8px', fontSize: '0.72rem', borderRadius: 4, color: 'var(--color-error-text, var(--color-error))', borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)' }}
+                            >
+                              Xóa
+                            </button>
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: '0.7rem', color: 'var(--color-primary)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <CheckCircle2 size={12} color="var(--color-primary)" /> Đã khóa chỉnh sửa
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -2811,7 +3331,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                       flexWrap: 'wrap',
                       gap: 12,
                       cursor: 'pointer',
-                      transition: 'all 0.2s ease',
+                      transition: 'border-color 0.2s ease, transform 0.2s ease',
                     }}
                     onMouseEnter={(e) => {
                       e.currentTarget.style.borderColor = 'var(--color-primary)';
@@ -2982,13 +3502,6 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     Chưa có cung đường nào trong danh sách lưu đám mây. Hãy mở một cung đường và bấm &ldquo;Lưu Cung Đường&rdquo; hoặc &ldquo;Tải Gói Offline&rdquo;.
                   </div>
                 ) : (() => {
-                  const visibleSavedTrails = savedTrails.filter((item) => {
-                    if (savedCollectionFilter === 'all') return true;
-                    const trailObj = item.trailId && typeof item.trailId === 'object' ? item.trailId : null;
-                    const tid = String(trailObj?.id || trailObj?._id || item.trailId || '');
-                    return resolveSavedItemMeta(item, tid).collectionName === savedCollectionFilter;
-                  });
-
                   if (visibleSavedTrails.length === 0) {
                     return (
                       <div style={{ padding: 18, textAlign: 'center', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)', color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
@@ -3002,7 +3515,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                       {visibleSavedTrails.map((item, idx) => {
                         const trailObj = item.trailId && typeof item.trailId === 'object' ? item.trailId : null;
                         const tId = String(trailObj?.id || trailObj?._id || (typeof item.trailId === 'string' ? item.trailId : '') || '');
-                        const matchedFull = allAvailableTrails.find((t) => String(t.id) === tId || String((t as TrailWithMongoId)._id) === tId);
+                        const matchedFull = allAvailableTrailsById.get(tId);
                         const tName = trailObj?.name || matchedFull?.name || tId;
                         const meta = resolveSavedItemMeta(item, tId);
                         const isEditingNote = editingSavedId === tId;
@@ -3275,7 +3788,9 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 240, overflowY: 'auto' }}>
                     {activities.map((act, idx) => (
                       <div key={act._id || idx} style={{ padding: '8px 10px', borderRadius: 4, background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', fontSize: '0.76rem' }}>
-                        <div style={{ fontWeight: 700, color: 'var(--color-text-main)' }}>{act.content}</div>
+                        <div style={{ fontWeight: 700, color: 'var(--color-text-main)' }}>
+                          {act.title || act.content || 'Hoạt động thực địa'}
+                        </div>
                         <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', marginTop: 2 }}>
                           {act.createdAt ? new Date(act.createdAt).toLocaleString('vi-VN') : ''}
                         </div>
@@ -3300,63 +3815,71 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {leaderboard.map((row) => (
-                    <div
-                      key={row.userId}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: 10,
-                        padding: '10px 12px',
-                        borderRadius: 4,
-                        background: row.rank <= 3 ? 'color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-main))' : 'var(--color-bg-main)',
-                        border: row.rank === 1 ? '1.5px solid var(--color-earth)' : '1px solid var(--color-border)',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                        <span
-                          style={{
-                            width: 26,
-                            height: 26,
-                            borderRadius: '50%',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            fontWeight: 900,
-                            fontSize: '0.76rem',
-                            background: row.rank === 1 ? 'var(--color-earth)' : row.rank === 2 ? 'var(--color-sky)' : 'var(--color-bg-card)',
-                            color: row.rank <= 2 ? 'var(--color-on-primary)' : 'var(--color-text-main)',
-                            border: '1px solid var(--color-border)',
-                            flexShrink: 0,
-                          }}
-                        >
-                          #{row.rank}
-                        </span>
-                        <img
-                          src={row.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(row.fullName || 'Trekker')}&background=10b981&color=fff`}
-                          alt={row.fullName}
-                          style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
-                        />
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontWeight: 800, fontSize: '0.84rem', color: 'var(--color-text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {row.fullName}
+                  {leaderboard.map((row, idx) => {
+                    const rank = row.rank ?? idx + 1;
+                    const summits = row.trailsConquered ?? row.summitsCount ?? 0;
+                    const verified = row.verifiedCheckins ?? row.verifiedCount ?? 0;
+                    return (
+                      <div
+                        key={row.userId || idx}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 10,
+                          padding: '10px 12px',
+                          borderRadius: 4,
+                          background: rank <= 3 ? 'color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-main))' : 'var(--color-bg-main)',
+                          border: rank === 1 ? '1.5px solid var(--color-earth)' : '1px solid var(--color-border)',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                          <span
+                            style={{
+                              width: 26,
+                              height: 26,
+                              borderRadius: '50%',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontWeight: 900,
+                              fontSize: '0.76rem',
+                              background: rank === 1 ? 'var(--color-earth)' : rank === 2 ? 'var(--color-sky)' : 'var(--color-bg-card)',
+                              color: rank <= 2 ? 'var(--color-on-primary)' : 'var(--color-text-main)',
+                              border: '1px solid var(--color-border)',
+                              flexShrink: 0,
+                              fontVariantNumeric: 'tabular-nums',
+                            }}
+                          >
+                            #{rank}
+                          </span>
+                          <img
+                            loading="lazy"
+                            decoding="async"
+                            src={row.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(row.fullName || 'Trekker')}&background=10b981&color=fff`}
+                            alt={row.fullName}
+                            style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
+                          />
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 800, fontSize: '0.84rem', color: 'var(--color-text-main)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {row.fullName || row.username || 'Trekker'}
+                            </div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                              {Number(row.totalDistanceKm || 0)} km • Đỉnh cao nhất {Number(row.highestAltitudeM || 0).toLocaleString('vi-VN')}m
+                            </div>
                           </div>
-                          <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>
-                            {row.totalDistanceKm} km • Đỉnh cao nhất {Number(row.highestAltitudeM || 0).toLocaleString('vi-VN')}m
+                        </div>
+                        <div style={{ textAlign: 'right', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                          <div style={{ fontWeight: 900, fontSize: '0.86rem', color: 'var(--color-primary)' }}>
+                            {summits} đỉnh
+                          </div>
+                          <div style={{ fontSize: '0.68rem', color: 'var(--color-sky)', fontWeight: 700 }}>
+                            {verified} GPS xác thực
                           </div>
                         </div>
                       </div>
-                      <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                        <div style={{ fontWeight: 900, fontSize: '0.86rem', color: 'var(--color-primary)' }}>
-                          {row.summitsCount} đỉnh
-                        </div>
-                        <div style={{ fontSize: '0.68rem', color: 'var(--color-sky)', fontWeight: 700 }}>
-                          {row.verifiedCount} GPS xác thực
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -3407,7 +3930,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                       borderRadius: 4,
                       padding: '14px 16px',
                       cursor: 'pointer',
-                      transition: 'all 0.2s ease',
+                      transition: 'background-color 0.2s ease, border-color 0.2s ease',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
@@ -3859,18 +4382,62 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
                 {/* RESPONSIVE 2-COLUMN INPUT GRID */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
-                  {/* Immutable Username Input */}
+                  {/* Editable Username Input */}
                   <div className="form-group">
                     <label className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', gap: 6, margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
-                      <Lock size={14} color="var(--color-text-dim)" /> Tên tài khoản (Cố định)
+                      Tên tài khoản (@username)
                     </label>
                     <input
                       type="text"
                       className="form-input"
+                      placeholder="minh_trekker"
+                      maxLength={30}
+                      style={{
+                        borderColor: fieldErrors.username ? 'var(--color-error)' : undefined,
+                      }}
                       value={editUsername}
-                      disabled
-                      style={{ background: 'var(--color-bg-main)', color: 'var(--color-text-dim)', cursor: 'not-allowed', border: '1px solid var(--color-border)' }}
+                      onChange={(e) => {
+                        setEditUsername(e.target.value);
+                        setEditUsernameSuggestions([]);
+                        setFieldErrors((prev) => ({ ...prev, username: '' }));
+                      }}
                     />
+                    <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', marginTop: 4 }}>
+                      3–30 ký tự không dấu, chữ số, dấu gạch dưới (_) hoặc gạch ngang (-).
+                    </div>
+                    {fieldErrors.username && (
+                      <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-error-text, var(--color-error))', fontWeight: 600, marginTop: 5, display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <AlertTriangle size={14} color="var(--color-error-text, var(--color-error))" style={{ flexShrink: 0 }} />
+                        <span>{fieldErrors.username}</span>
+                      </div>
+                    )}
+                    {editUsernameSuggestions.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                        {editUsernameSuggestions.map((sug) => (
+                          <button
+                            key={sug}
+                            type="button"
+                            onClick={() => {
+                              setEditUsername(sug);
+                              setEditUsernameSuggestions([]);
+                              setFieldErrors((prev) => ({ ...prev, username: '' }));
+                            }}
+                            style={{
+                              background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
+                              border: '1px solid color-mix(in srgb, var(--color-primary) 36%, transparent)',
+                              color: 'var(--color-primary)',
+                              borderRadius: 4,
+                              padding: '2px 8px',
+                              fontSize: '0.72rem',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            @{sug}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   {/* Full Name Input */}
@@ -3998,6 +4565,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   </label>
                   <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
                     <img
+                      loading="lazy"
+                      decoding="async"
                       src={editAvatarUrl || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
                       alt="Preview"
                       style={{ width: 52, height: 52, borderRadius: 4, objectFit: 'cover', border: '1.5px solid var(--color-primary)', flexShrink: 0 }}
@@ -4117,7 +4686,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                         borderRadius: 4,
                         padding: '12px 14px',
                         cursor: 'pointer',
-                        transition: 'all 0.2s ease',
+                        transition: 'background-color 0.2s ease, border-color 0.2s ease',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'space-between',
@@ -4150,6 +4719,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       {selectedThreadForModal && (
         <ThreadDetailModal
           thread={selectedThreadForModal}
+          currentUser={currentUser}
           onClose={() => {
             setSelectedThreadForModal(null);
             fetch('/api/forum', { headers: getApiHeaders() })
@@ -4192,7 +4762,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
       {/* CUSTOM COVER PHOTO MODAL */}
       {showCoverModal && createPortal(
-        <div className="modal-overlay" onClick={() => setShowCoverModal(false)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
+        <div className="modal-overlay" onClick={() => !isSavingCover && setShowCoverModal(false)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
           <div
             ref={coverModalRef}
             tabIndex={-1}
@@ -4222,8 +4792,9 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               </div>
               <button
                 type="button"
-                onClick={() => setShowCoverModal(false)}
-                style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', padding: 4 }}
+                disabled={isSavingCover}
+                onClick={() => !isSavingCover && setShowCoverModal(false)}
+                style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: isSavingCover ? 'not-allowed' : 'pointer', padding: 4, opacity: isSavingCover ? 0.5 : 1 }}
               >
                 <X size={20} />
               </button>
@@ -4246,6 +4817,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 }}
               >
                 <img
+                  loading="lazy"
+                  decoding="async"
                   key={previewCover}
                   src={previewCover}
                   alt="Xem trước ảnh bìa"
@@ -4275,6 +4848,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                     <div style={{ width: 44, height: 44, borderRadius: 4, border: '2px solid var(--color-primary)', overflow: 'hidden', flexShrink: 0 }}>
                       <img
+                        decoding="async"
                         src={activeProfile.avatarUrl || activeProfile.avatar || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329093/trekmap/avatars/avatar_user_1.jpg'}
                         alt={activeProfile.fullName}
                         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
@@ -4297,10 +4871,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               <button
                 type="button"
                 className="btn btn-outline"
+                disabled={isSavingCover}
                 onClick={() => coverFileInputRef.current?.click()}
                 style={{ width: '100%', padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 'var(--font-size-sm)', borderRadius: 4 }}
               >
-                <Upload size={16} color="var(--color-primary)" /> Chọn Tệp Ảnh Từ Máy Tính (PNG, JPG, WebP - Tối đa 8MB)
+                <Upload size={16} color="var(--color-primary)" /> Chọn Tệp Ảnh Từ Máy Tính (PNG, JPG, WebP - Tối đa 5MB)
               </button>
               {previewCover.startsWith('data:image/') && (
                 <div style={{ marginTop: 6, fontSize: 'var(--font-size-xs)', color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}>
@@ -4341,6 +4916,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                       }}
                     >
                       <img
+                        loading="lazy"
+                        decoding="async"
                         src={preset.url}
                         alt={preset.name}
                         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
@@ -4416,9 +4993,10 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               <button
                 type="button"
                 className="btn btn-outline"
+                disabled={isSavingCover}
                 onClick={() => {
                   setPreviewCover(DEFAULT_COVER_URL);
-                  handleApplyCover(DEFAULT_COVER_URL);
+                  void handleApplyCover(DEFAULT_COVER_URL);
                 }}
                 style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)' }}
               >
@@ -4429,6 +5007,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 <button
                   type="button"
                   className="btn btn-outline"
+                  disabled={isSavingCover}
                   onClick={() => setShowCoverModal(false)}
                   style={{ padding: '8px 18px', fontSize: 'var(--font-size-sm)' }}
                 >
@@ -4437,10 +5016,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 <button
                   type="button"
                   className="btn btn-primary"
-                  onClick={() => handleApplyCover(previewCover)}
+                  disabled={isSavingCover}
+                  onClick={() => void handleApplyCover(previewCover)}
                   style={{ padding: '8px 22px', fontSize: 'var(--font-size-sm)', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 6 }}
                 >
-                  <Save size={16} /> Lưu & Áp Dụng Ảnh Bìa
+                  <Save size={16} /> {isSavingCover ? 'Đang lưu ảnh bìa...' : 'Lưu & Áp Dụng Ảnh Bìa'}
                 </button>
               </div>
             </div>
@@ -4463,8 +5043,6 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             inset: 0,
             zIndex: 'var(--z-lightbox, 4000)' as unknown as number,
             background: 'var(--overlay-bg)',
-            backdropFilter: 'blur(16px)',
-            WebkitBackdropFilter: 'blur(16px)',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
@@ -4575,7 +5153,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   alignItems: 'center',
                   justifyContent: 'center',
                   cursor: 'pointer',
-                  transition: 'all 0.2s ease',
+                  transition: 'background-color 0.2s ease, border-color 0.2s ease',
                 }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.background = 'var(--color-error)';
@@ -4609,6 +5187,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             }}
           >
             <img
+              loading="lazy"
+              decoding="async"
               src={fullViewImage.url}
               alt={fullViewImage.title}
               style={{
@@ -4637,6 +5217,473 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         </div>,
         document.body
       )}
+
+      {/* FOLLOWERS & FOLLOWING GRAPH MODAL */}
+      {followModalTab &&
+        createPortal(
+          <div
+            className="modal-overlay"
+            onClick={() => setFollowModalTab(null)}
+            style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}
+          >
+            <div
+              ref={followModalRef}
+              tabIndex={-1}
+              className="modal-content"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Danh sách người theo dõi và đang theo dõi"
+              onClick={(e) => e.stopPropagation()}
+              style={{ maxWidth: 500, display: 'flex', flexDirection: 'column', gap: 14 }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <UsersIcon size={18} color="var(--color-sky)" /> Kết Nối Cộng Đồng
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setFollowModalTab(null)}
+                  aria-label="Đóng"
+                  style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div role="tablist" style={{ display: 'flex', gap: 8, borderBottom: '1px solid var(--color-border)', paddingBottom: 10 }}>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={followModalTab === 'followers'}
+                  onClick={() => openFollowModal('followers')}
+                  className={followModalTab === 'followers' ? 'btn btn-primary' : 'btn btn-outline'}
+                  style={{ flex: 1, fontSize: '0.78rem', padding: '6px 10px', fontVariantNumeric: 'tabular-nums' }}
+                >
+                  Người theo dõi ({profileStats.followersCount})
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={followModalTab === 'following'}
+                  onClick={() => openFollowModal('following')}
+                  className={followModalTab === 'following' ? 'btn btn-primary' : 'btn btn-outline'}
+                  style={{ flex: 1, fontSize: '0.78rem', padding: '6px 10px', fontVariantNumeric: 'tabular-nums' }}
+                >
+                  Đang theo dõi ({profileStats.followingCount})
+                </button>
+              </div>
+
+              <div style={{ maxHeight: 360, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, paddingRight: 4 }}>
+                {followModalLoading ? (
+                  <div style={{ padding: 24, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '0.82rem' }}>
+                    Đang tải danh sách thành viên...
+                  </div>
+                ) : followModalList.length === 0 ? (
+                  <div style={{ padding: 24, textAlign: 'center', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)', color: 'var(--color-text-muted)', fontSize: '0.82rem' }}>
+                    {followModalTab === 'followers'
+                      ? 'Chưa có thành viên nào theo dõi bạn.'
+                      : 'Bạn chưa theo dõi thành viên nào.'}
+                  </div>
+                ) : (
+                  followModalList.map((member) => {
+                    const isSelf =
+                      member._id === String((activeProfile as UserWithMongoId)._id || activeProfile.id || '');
+                    const isToggling = togglingFollowIds.has(member._id);
+                    const memberName = member.fullName || member.username || 'Trekker';
+                    const memberAvatar =
+                      member.avatarUrl ||
+                      `https://ui-avatars.com/api/?name=${encodeURIComponent(memberName)}&background=10b981&color=fff`;
+                    return (
+                      <div
+                        key={member._id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 10,
+                          padding: '9px 12px',
+                          borderRadius: 4,
+                          background: 'var(--color-bg-main)',
+                          border: '1px solid var(--color-border)',
+                        }}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFollowModalTab(null);
+                            setSelectedAuthorForModal({
+                              name: memberName,
+                              avatar: memberAvatar,
+                              userId: member._id,
+                            });
+                          }}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 10,
+                            background: 'none',
+                            border: 'none',
+                            padding: 0,
+                            textAlign: 'left',
+                            cursor: 'pointer',
+                            flex: 1,
+                            minWidth: 0,
+                            fontFamily: 'var(--font-family)',
+                          }}
+                        >
+                          <img
+                            loading="lazy"
+                            decoding="async"
+                            src={memberAvatar}
+                            alt={memberName}
+                            style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', flexShrink: 0, border: '1px solid var(--color-border)' }}
+                          />
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 800, fontSize: '0.84rem', color: 'var(--color-text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {memberName}
+                            </div>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                              @{member.username || 'trekker'} · {Number(member.reputationScore || 0)} pts
+                            </div>
+                          </div>
+                        </button>
+
+                        {!isSelf && (
+                          <button
+                            type="button"
+                            className={member.isFollowingByMe ? 'btn btn-outline' : 'btn btn-primary'}
+                            disabled={isToggling}
+                            onClick={() => void handleToggleFollowMember(member)}
+                            style={{ padding: '4px 10px', fontSize: '0.72rem', flexShrink: 0 }}
+                          >
+                            {isToggling ? '...' : member.isFollowingByMe ? 'Đang theo dõi' : 'Theo dõi'}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* CHANGE PASSWORD MODAL */}
+      {showChangePasswordModal &&
+        createPortal(
+          <div
+            className="modal-overlay"
+            onClick={() => !isChangingPassword && setShowChangePasswordModal(false)}
+            style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}
+          >
+            <div
+              ref={changePasswordModalRef}
+              tabIndex={-1}
+              className="modal-content"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Đổi mật khẩu tài khoản"
+              onClick={(e) => e.stopPropagation()}
+              style={{ maxWidth: 450 }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <KeyRoundIcon size={18} /> Đổi Mật Khẩu Tài Khoản
+                </h3>
+                <button
+                  type="button"
+                  disabled={isChangingPassword}
+                  onClick={() => !isChangingPassword && setShowChangePasswordModal(false)}
+                  aria-label="Đóng"
+                  style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: isChangingPassword ? 'not-allowed' : 'pointer' }}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <form onSubmit={handleChangePasswordSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {cpError && (
+                  <div
+                    role="alert"
+                    style={{
+                      background: 'color-mix(in srgb, var(--color-error) 12%, transparent)',
+                      border: '1px solid color-mix(in srgb, var(--color-error) 42%, transparent)',
+                      color: 'var(--color-error-text, var(--color-error))',
+                      padding: '8px 12px',
+                      borderRadius: 4,
+                      fontSize: '0.78rem',
+                      fontWeight: 600,
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 7,
+                    }}
+                  >
+                    <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <span>{cpError}</span>
+                  </div>
+                )}
+
+                <div>
+                  <label className="form-label" style={{ display: 'block', marginBottom: 5, fontSize: '0.78rem' }}>
+                    Mật khẩu hiện tại
+                  </label>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      type={cpShowCurrent ? 'text' : 'password'}
+                      className="form-input"
+                      autoComplete="current-password"
+                      placeholder="Nhập mật khẩu hiện tại"
+                      value={cpCurrentPassword}
+                      onChange={(e) => setCpCurrentPassword(e.target.value)}
+                      style={{ width: '100%', paddingRight: 36 }}
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setCpShowCurrent((prev) => !prev)}
+                      aria-label={cpShowCurrent ? 'Ẩn mật khẩu hiện tại' : 'Hiện mật khẩu hiện tại'}
+                      style={{
+                        position: 'absolute',
+                        right: 8,
+                        top: '50%',
+                        transform: 'translateY(-50%)',
+                        background: 'none',
+                        border: 'none',
+                        color: 'var(--color-text-dim)',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                      }}
+                    >
+                      {cpShowCurrent ? <EyeOffIcon size={15} /> : <EyeIcon size={15} />}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="form-label" style={{ display: 'block', marginBottom: 5, fontSize: '0.78rem' }}>
+                    Mật khẩu mới
+                  </label>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      type={cpShowNew ? 'text' : 'password'}
+                      className="form-input"
+                      autoComplete="new-password"
+                      placeholder="Tối thiểu 8 ký tự (A-Z, a-z, 0-9)"
+                      value={cpNewPassword}
+                      onChange={(e) => setCpNewPassword(e.target.value)}
+                      style={{ width: '100%', paddingRight: 36 }}
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setCpShowNew((prev) => !prev)}
+                      aria-label={cpShowNew ? 'Ẩn mật khẩu mới' : 'Hiện mật khẩu mới'}
+                      style={{
+                        position: 'absolute',
+                        right: 8,
+                        top: '50%',
+                        transform: 'translateY(-50%)',
+                        background: 'none',
+                        border: 'none',
+                        color: 'var(--color-text-dim)',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                      }}
+                    >
+                      {cpShowNew ? <EyeOffIcon size={15} /> : <EyeIcon size={15} />}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="form-label" style={{ display: 'block', marginBottom: 5, fontSize: '0.78rem' }}>
+                    Xác nhận mật khẩu mới
+                  </label>
+                  <input
+                    type={cpShowNew ? 'text' : 'password'}
+                    className="form-input"
+                    autoComplete="new-password"
+                    placeholder="Nhập lại mật khẩu mới"
+                    value={cpConfirmPassword}
+                    onChange={(e) => setCpConfirmPassword(e.target.value)}
+                    style={{ width: '100%' }}
+                    required
+                  />
+                </div>
+
+                <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', lineHeight: 1.45 }}>
+                  Sau khi đổi mật khẩu, tất cả phiên đăng nhập cũ trên các thiết bị khác sẽ tự động bị đăng xuất.
+                </div>
+
+                <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={isChangingPassword}
+                    onClick={() => setShowChangePasswordModal(false)}
+                  >
+                    Hủy
+                  </button>
+                  <button type="submit" className="btn btn-primary" disabled={isChangingPassword}>
+                    <Save size={15} /> {isChangingPassword ? 'Đang cập nhật...' : 'Cập Nhật Mật Khẩu'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* DELETE ACCOUNT PERMANENT CONFIRMATION MODAL */}
+      {showDeleteAccountModal &&
+        createPortal(
+          <div
+            className="modal-overlay"
+            onClick={() => !isDeletingAccount && setShowDeleteAccountModal(false)}
+            style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}
+          >
+            <div
+              ref={deleteAccountModalRef}
+              tabIndex={-1}
+              className="modal-content"
+              role="alertdialog"
+              aria-modal="true"
+              aria-label="Xác nhận xóa vĩnh viễn tài khoản"
+              onClick={(e) => e.stopPropagation()}
+              style={{ maxWidth: 460, border: '1.5px solid var(--color-error)' }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-error-text, var(--color-error))', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <TrashIcon size={18} /> Xóa Tài Khoản Vĩnh Viễn
+                </h3>
+                <button
+                  type="button"
+                  disabled={isDeletingAccount}
+                  onClick={() => !isDeletingAccount && setShowDeleteAccountModal(false)}
+                  aria-label="Đóng"
+                  style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: isDeletingAccount ? 'not-allowed' : 'pointer' }}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div
+                style={{
+                  background: 'color-mix(in srgb, var(--color-error) 10%, var(--color-bg-main))',
+                  border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)',
+                  borderRadius: 4,
+                  padding: '10px 12px',
+                  fontSize: '0.78rem',
+                  color: 'var(--color-text-main)',
+                  lineHeight: 1.5,
+                  marginBottom: 14,
+                }}
+              >
+                Hành động này sẽ <strong>xóa vĩnh viễn</strong> tài khoản <strong>{activeProfile.email}</strong>, nhật ký check-in đỉnh, danh sách cung đã lưu, bộ hẹn giờ an toàn và thu hồi toàn bộ phiên đăng nhập. Thao tác <strong>không thể hoàn tác</strong>.
+              </div>
+
+              <form onSubmit={handleDeleteAccountSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {delError && (
+                  <div
+                    role="alert"
+                    style={{
+                      background: 'color-mix(in srgb, var(--color-error) 12%, transparent)',
+                      border: '1px solid color-mix(in srgb, var(--color-error) 42%, transparent)',
+                      color: 'var(--color-error-text, var(--color-error))',
+                      padding: '8px 12px',
+                      borderRadius: 4,
+                      fontSize: '0.78rem',
+                      fontWeight: 600,
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 7,
+                    }}
+                  >
+                    <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <span>{delError}</span>
+                  </div>
+                )}
+
+                <div>
+                  <label className="form-label" style={{ display: 'block', marginBottom: 5, fontSize: '0.78rem' }}>
+                    Nhập chính xác cụm từ <strong style={{ color: 'var(--color-error-text, var(--color-error))' }}>XÓA TÀI KHOẢN</strong> để xác nhận:
+                  </label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="XÓA TÀI KHOẢN"
+                    value={delConfirmText}
+                    onChange={(e) => setDelConfirmText(e.target.value)}
+                    style={{ width: '100%' }}
+                    required
+                  />
+                </div>
+
+                {activeProfile.authProvider !== 'google' && (
+                  <div>
+                    <label className="form-label" style={{ display: 'block', marginBottom: 5, fontSize: '0.78rem' }}>
+                      Mật khẩu hiện tại
+                    </label>
+                    <div style={{ position: 'relative' }}>
+                      <input
+                        type={delShowPassword ? 'text' : 'password'}
+                        className="form-input"
+                        autoComplete="current-password"
+                        placeholder="Nhập mật khẩu để xác nhận"
+                        value={delPassword}
+                        onChange={(e) => setDelPassword(e.target.value)}
+                        style={{ width: '100%', paddingRight: 36 }}
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setDelShowPassword((prev) => !prev)}
+                        aria-label={delShowPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                        style={{
+                          position: 'absolute',
+                          right: 8,
+                          top: '50%',
+                          transform: 'translateY(-50%)',
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--color-text-dim)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                        }}
+                      >
+                        {delShowPassword ? <EyeOffIcon size={15} /> : <EyeIcon size={15} />}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={isDeletingAccount}
+                    onClick={() => setShowDeleteAccountModal(false)}
+                  >
+                    Hủy bỏ
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn btn-danger"
+                    disabled={isDeletingAccount || delConfirmText.trim().normalize('NFC') !== 'XÓA TÀI KHOẢN'}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                  >
+                    <TrashIcon size={15} /> {isDeletingAccount ? 'Đang xóa...' : 'Xác Nhận Xóa Vĩnh Viễn'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

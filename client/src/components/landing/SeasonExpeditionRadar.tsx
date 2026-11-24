@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useCallback, useState, useMemo } from 'react';
 import type { Trail } from '../../types.js';
 import { useSlidingIndicator } from '../../hooks/useSlidingIndicator.js';
 import {
@@ -296,7 +296,7 @@ const SeasonExpeditionRadarBase: React.FC<SeasonExpeditionRadarProps> = ({
     return items;
   }, [matchedTrails, activeMonth]);
 
-  const handleExploreSeasonOnMap = () => {
+  const handleExploreSeasonOnMap = useCallback(() => {
     if (onFilterSeasonMonth) {
       // Parent callback handles setting month filter & scrolling to map cleanly (no double scrollIntoView)
       onFilterSeasonMonth(selectedMeteorology.month);
@@ -309,7 +309,7 @@ const SeasonExpeditionRadarBase: React.FC<SeasonExpeditionRadarProps> = ({
     if (onExploreFilter) {
       onExploreFilter(selectedMeteorology.label);
     }
-  };
+  }, [onFilterSeasonMonth, onExploreFilter, selectedMeteorology.month, selectedMeteorology.label]);
 
   return (
     <section
@@ -593,6 +593,7 @@ const SeasonExpeditionRadarBase: React.FC<SeasonExpeditionRadarProps> = ({
                     src={trail.coverImage || selectedMeteorology.fallbackImage}
                     alt={trail.name}
                     loading="lazy"
+                    decoding="async"
                     style={{
                       width: 60,
                       height: 60,

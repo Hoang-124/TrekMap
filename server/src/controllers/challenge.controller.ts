@@ -351,6 +351,108 @@ export const getMyPeakPassport = async (req: AuthRequest, res: Response) => {
   }
 };
 
+// GET /api/challenges/passport/verify/:code - Public non-PII Peak Passport verification by expedition code or userId
+export const verifyPeakPassportByCode = async (req: Request, res: Response) => {
+  try {
+    const rawCode = String(req.params.code || '').trim();
+    if (!rawCode || rawCode.length > 64) {
+      return res.status(400).json({ success: false, message: 'Mã xác thực hộ chiếu không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const upperCode = rawCode.toUpperCase();
+    let user: any = null;
+
+    if (Types.ObjectId.isValid(rawCode) && rawCode.length === 24) {
+      user = await UserModel.findOne({ _id: new Types.ObjectId(rawCode), isBanned: { $ne: true } })
+        .select('_id fullName username avatarUrl reputationScore badges createdAt')
+        .lean();
+    } else if (/^LS-[0-9A-F]{6}$/.test(upperCode)) {
+      const suffixLower = upperCode.slice(3).toLowerCase();
+      // Match the last 6 hex characters of the 24-char ObjectId string
+      const matched = await UserModel.findOne({
+        isBanned: { $ne: true },
+        $expr: {
+          $eq: [
+            { $toLower: { $substrBytes: [{ $toString: '$_id' }, 18, 6] } },
+            suffixLower,
+          ],
+        },
+      })
+        .select('_id fullName username avatarUrl reputationScore badges createdAt')
+        .lean();
+      user = matched;
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: 'Định dạng mã Hộ Chiếu LOST không hợp lệ (ví dụ: LS-A1B2C3).',
+      });
+    }
+
+    if (!user?._id) {
+      return res.status(404).json({
+        success: false,
+        message: 'Không tìm thấy Hộ Chiếu Đỉnh Cao khớp với mã xác thực này.',
+      });
+    }
+
+    const uidStr = String(user._id);
+    const uid = new Types.ObjectId(uidStr);
+    const [snapshot, allApprovedCount, claimsCount] = await Promise.all([
+      buildUserConquestSnapshot(uidStr),
+      TrailModel.countDocuments({ status: 'approved' }),
+      ChallengeClaimModel.countDocuments({ userId: uid }),
+    ]);
+
+    const verifiedGpsPeaks = snapshot.uniqueTrails.filter((t) => t.verified).length;
+    const canonicalCode = `LS-${uidStr.slice(-6).toUpperCase()}`;
+
+    return res.json({
+      success: true,
+      data: {
+        verified: true,
+        expeditionCode: canonicalCode,
+        passportHolder: {
+          fullName: user.fullName || user.username || 'Trekker LOST',
+          username: user.username || '',
+          avatarUrl: user.avatarUrl || '',
+          memberSince: user.createdAt || null,
+          reputationScore: Number(user.reputationScore) || 0,
+          badgesCount: Array.isArray(user.badges) ? user.badges.length : 0,
+          rankTitle: getPassportRank(snapshot.uniqueTrails.length, snapshot.highestAltitudeM),
+        },
+        summary: {
+          totalStampedPeaks: snapshot.uniqueTrails.length,
+          totalAvailableTrails: allApprovedCount,
+          verifiedGpsPeaks,
+          totalUniqueKm: snapshot.totalUniqueKm,
+          totalUniqueGainM: snapshot.totalUniqueGainM,
+          highestAltitudeM: snapshot.highestAltitudeM,
+          highestPeakName: snapshot.highestPeakName || 'Chưa ghi nhận',
+          claimedChallengesCount: claimsCount,
+        },
+        topPeaks: snapshot.uniqueTrails
+          .slice()
+          .sort((a, b) => b.maxAltitudeM - a.maxAltitudeM)
+          .slice(0, 6)
+          .map((p) => ({
+            trailSlug: p.slug,
+            trailName: p.name,
+            province: p.province,
+            maxAltitudeM: p.maxAltitudeM,
+            verified: p.verified,
+            lastCheckinDate: p.lastCheckinDate,
+          })),
+      },
+    });
+  } catch (err) {
+    console.error('[Verify Peak Passport Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi xác thực Hộ Chiếu Đỉnh Cao.' });
+  }
+};
+
 // GET /api/challenges/leaderboard - Deduplicated Vietnam Summit Leaderboard (filterable by region)
 export const getChallengeLeaderboard = async (req: Request, res: Response) => {
   try {

@@ -22,12 +22,15 @@ import {
   IconShieldCheck,
   IconChevronRight,
   IconDownload,
+  IconEdit,
 } from '../common/SvgIcons.js';
 
 interface SharedGearItem {
   id: string;
   itemName: string;
   category: string;
+  weightG?: number;
+  assignedUserId?: string;
   assignedUserName: string;
   packed: boolean;
 }
@@ -57,23 +60,30 @@ interface TripDetailPayload {
   title: string;
   trailName?: string;
   description?: string;
+  requirements?: string;
   startDate?: string;
   endDate?: string;
   meetingPoint?: string;
   estimatedCost?: string;
+  difficultyLevel?: number;
   maxMembers?: number;
-  status?: string;
-  creatorId?: { _id?: string; fullName?: string } | string;
-  currentMembers?: Array<{ _id?: string; fullName?: string; avatarUrl?: string } | string>;
+  status?: 'recruiting' | 'full' | 'in_progress' | 'completed' | 'cancelled' | string;
+  tags?: string[];
+  creatorId?: { _id?: string; fullName?: string; avatarUrl?: string } | string;
+  currentMembers?: Array<{ _id?: string; fullName?: string; avatarUrl?: string; reputationScore?: number } | string>;
   pendingRequests?: PendingApplicant[];
   sharedGear?: SharedGearItem[];
+  safetyGate?: Record<string, boolean>;
   expenses?: ExpenseItem[];
+  settledTransfers?: string[];
+  hasPendingRequest?: boolean;
 }
 
 interface SquadWorkspaceModalProps {
   tripId: string;
   tripTitle: string;
   memberCount: number;
+  currentUserId?: string;
   isCreator?: boolean;
   isMember?: boolean;
   isOpen: boolean;
@@ -92,9 +102,12 @@ interface MemberSettlementBalance {
 }
 
 interface DebtTransfer {
+  fromId: string;
   from: string;
+  toId: string;
   to: string;
   amountVnd: number;
+  key: string;
 }
 
 interface GreedyDebtSettlement {
@@ -107,8 +120,33 @@ interface GreedyDebtSettlement {
 }
 
 const SETTLEMENT_DUST_VND = 1;
-const SQUAD_GEAR_STORAGE_KEY = 'lost_squad_gear_v1';
-const SQUAD_SAFETY_GATE_STORAGE_KEY = 'lost_squad_safety_gate_v1';
+
+function extractUserIdFromToken(): string {
+  try {
+    const token = localStorage.getItem('lost_token');
+    if (!token) return '';
+    const parts = token.trim().split('.');
+    if (parts.length < 2) return '';
+    const rawSegment = parts.length === 2 ? parts[0] : parts[1];
+    if (!rawSegment) return '';
+    const base64 = rawSegment.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+    const decoded = JSON.parse(window.atob(padded)) as {
+      userId?: string;
+      id?: string;
+      _id?: string;
+      sub?: string;
+    };
+    return String(decoded.userId || decoded.id || decoded._id || decoded.sub || '');
+  } catch {
+    return '';
+  }
+}
+
+function extractRawMemberId(rosterId: string): string {
+  if (!rosterId) return '';
+  return rosterId.startsWith('uid:') ? rosterId.slice(4) : '';
+}
 
 type SquadSafetyGateStepId =
   | 'permit'
@@ -158,75 +196,18 @@ const SQUAD_SAFETY_GATE_STEPS: SquadSafetyGateStep[] = [
 ];
 
 const SQUAD_SAFETY_GATE_IDS: SquadSafetyGateStepId[] = SQUAD_SAFETY_GATE_STEPS.map((s) => s.id);
-const SQUAD_SAFETY_GATE_MAX_TRIPS = 50;
-
-function readSquadSafetyGateStore(): Record<string, Record<SquadSafetyGateStepId, boolean>> {
-  try {
-    const raw = localStorage.getItem(SQUAD_SAFETY_GATE_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    const clean: Record<string, Record<SquadSafetyGateStepId, boolean>> = {};
-    for (const [k, val] of Object.entries(parsed as Record<string, unknown>)) {
-      if (!val || typeof val !== 'object' || Array.isArray(val)) continue;
-      const entry = val as Record<string, unknown>;
-      const record = {} as Record<SquadSafetyGateStepId, boolean>;
-      for (const stepId of SQUAD_SAFETY_GATE_IDS) {
-        record[stepId] = Boolean(entry[stepId]);
-      }
-      clean[k] = record;
-    }
-    return clean;
-  } catch {
-    return {};
-  }
-}
-
-function writeSquadSafetyGateStore(store: Record<string, Record<SquadSafetyGateStepId, boolean>>): boolean {
-  try {
-    const entries = Object.entries(store);
-    const capped =
-      entries.length > SQUAD_SAFETY_GATE_MAX_TRIPS
-        ? Object.fromEntries(entries.slice(-SQUAD_SAFETY_GATE_MAX_TRIPS))
-        : store;
-    localStorage.setItem(SQUAD_SAFETY_GATE_STORAGE_KEY, JSON.stringify(capped));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function persistSafetyGateForTrip(
-  tripKey: string,
-  nextRecord: Record<SquadSafetyGateStepId, boolean>
-): { nextStore: Record<string, Record<SquadSafetyGateStepId, boolean>>; savedOk: boolean } {
-  const fresh = readSquadSafetyGateStore();
-  // Move active trip to tail for LRU 50-trip cap while merging cross-tab updates
-  delete fresh[tripKey];
-  fresh[tripKey] = nextRecord;
-  const entries = Object.entries(fresh);
-  const capped =
-    entries.length > SQUAD_SAFETY_GATE_MAX_TRIPS
-      ? Object.fromEntries(entries.slice(-SQUAD_SAFETY_GATE_MAX_TRIPS))
-      : fresh;
-  const savedOk = writeSquadSafetyGateStore(capped);
-  return { nextStore: capped, savedOk };
-}
 
 function getFairLoadThresholdPct(squadSize: number): number {
   if (squadSize <= 1) return 100;
   return Math.max(45, Math.ceil(100 / squadSize) + 15);
 }
 
-let squadGearIdCounter = 0;
-function createSquadGearItemId(prefix: string): string {
-  squadGearIdCounter += 1;
-  return `sg-${prefix}-${Date.now()}-${squadGearIdCounter}`;
-}
-
 interface SquadRosterMember {
   id: string;
+  rawId?: string;
   name: string;
+  avatarUrl?: string;
+  reputationScore?: number;
   isEstimatedSlot?: boolean;
 }
 
@@ -256,43 +237,13 @@ const VIETNAM_SQUAD_GEAR_PRESETS: SharedGearPreset[] = [
   { key: 'rope', name: 'Dây thừng', weightG: 1100, category: 'Y tế & An toàn' },
 ];
 
-function readSquadGearStore(): Record<string, SquadGearMatrixItem[]> {
-  try {
-    const raw = localStorage.getItem(SQUAD_GEAR_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    const cleanStore: Record<string, SquadGearMatrixItem[]> = {};
-    for (const [k, list] of Object.entries(parsed as Record<string, unknown>)) {
-      if (!Array.isArray(list)) continue;
-      cleanStore[k] = list
-        .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === 'object'))
-        .map((entry, idx) => {
-          const weightVal = Math.round(Number(entry.weightG));
-          return {
-            id: typeof entry.id === 'string' && entry.id.trim() ? entry.id : `gear-${k}-${idx}`,
-            name: typeof entry.name === 'string' && entry.name.trim() ? entry.name.trim() : 'Trang bị chung',
-            category: typeof entry.category === 'string' && entry.category.trim() ? entry.category : 'Dùng chung',
-            weightG: Number.isFinite(weightVal) && weightVal > 0 ? Math.min(50000, weightVal) : 500,
-            carrierId: typeof entry.carrierId === 'string' ? entry.carrierId : '',
-            carrierName: typeof entry.carrierName === 'string' ? entry.carrierName : '',
-            packed: Boolean(entry.packed),
-          };
-        });
-    }
-    return cleanStore;
-  } catch {
-    return {};
-  }
-}
-
-function writeSquadGearStore(store: Record<string, SquadGearMatrixItem[]>): void {
-  try {
-    localStorage.setItem(SQUAD_GEAR_STORAGE_KEY, JSON.stringify(store));
-  } catch {
-    // Ignore storage quota / privacy mode failures
-  }
-}
+const TRIP_STATUS_LABELS: Record<string, string> = {
+  recruiting: 'Đang tuyển thành viên',
+  full: 'Đã đủ chỗ',
+  in_progress: 'Đang diễn ra',
+  completed: 'Đã hoàn thành',
+  cancelled: 'Đã hủy chuyến',
+};
 
 function formatWeightKg(grams: number): string {
   return (grams / 1000).toFixed(2);
@@ -361,7 +312,6 @@ function buildRangerManifestCsv(params: {
     itemCount: number;
   }>;
   matrixItems: SquadGearMatrixItem[];
-  syncedSharedGear: SharedGearItem[];
   safetyGateChecks: Record<SquadSafetyGateStepId, boolean>;
   safetyGateCompletedCount: number;
 }): string {
@@ -371,7 +321,6 @@ function buildRangerManifestCsv(params: {
     roster,
     memberLoads,
     matrixItems,
-    syncedSharedGear,
     safetyGateChecks,
     safetyGateCompletedCount,
   } = params;
@@ -455,7 +404,7 @@ function buildRangerManifestCsv(params: {
   if (unassignedMatrixItems.length > 0) {
     lines.push(
       '',
-      row(['TRANG BỊ CHUNG CHƯA PHÂN CÔNG (MA TRẬN CỤC BỘ)']),
+      row(['TRANG BỊ CHUNG CHƯA PHÂN CÔNG']),
       row(['STT', 'Tên vật dụng', 'Danh mục', 'Trọng lượng (g)', 'Trạng thái'])
     );
     unassignedMatrixItems.forEach((item, idx) => {
@@ -465,25 +414,6 @@ function buildRangerManifestCsv(params: {
           item.name,
           item.category,
           item.weightG,
-          item.packed ? 'Đã chuẩn bị' : 'Chưa chuẩn bị',
-        ])
-      );
-    });
-  }
-
-  if (syncedSharedGear.length > 0) {
-    lines.push(
-      '',
-      row(['ĐỒ CHUNG ĐÃ ĐỒNG BỘ TRÊN ĐOÀN']),
-      row(['STT', 'Tên vật dụng', 'Danh mục', 'Phụ trách', 'Trạng thái'])
-    );
-    syncedSharedGear.forEach((item, idx) => {
-      lines.push(
-        row([
-          idx + 1,
-          item.itemName,
-          item.category,
-          item.assignedUserName || 'Chưa nhận',
           item.packed ? 'Đã chuẩn bị' : 'Chưa chuẩn bị',
         ])
       );
@@ -513,7 +443,12 @@ function buildSquadRoster(tripDetail: TripDetailPayload | null, memberCount: num
   const seenUserIds = new Set<string>();
   const nameCounts = new Map<string, number>();
 
-  const addMember = (rawId?: string | null, rawName?: string | null) => {
+  const addMember = (
+    rawId?: string | null,
+    rawName?: string | null,
+    avatarUrl?: string,
+    reputationScore?: number
+  ) => {
     const cleanName = (rawName || '').trim();
     const cleanId = (rawId || '').trim();
     if (!cleanName) return;
@@ -529,16 +464,16 @@ function buildSquadRoster(tripDetail: TripDetailPayload | null, memberCount: num
     const displayName = nextCount === 1 ? cleanName : `${cleanName} (#${nextCount})`;
 
     if (cleanId) seenUserIds.add(cleanId);
-    members.push({ id, name: displayName });
+    members.push({ id, rawId: cleanId || undefined, name: displayName, avatarUrl, reputationScore });
   };
 
   if (tripDetail?.creatorId && typeof tripDetail.creatorId === 'object') {
-    addMember(tripDetail.creatorId._id, tripDetail.creatorId.fullName);
+    addMember(tripDetail.creatorId._id, tripDetail.creatorId.fullName, tripDetail.creatorId.avatarUrl);
   }
   if (Array.isArray(tripDetail?.currentMembers)) {
     for (const member of tripDetail.currentMembers) {
       if (member && typeof member === 'object') {
-        addMember(member._id, member.fullName);
+        addMember(member._id, member.fullName, member.avatarUrl, member.reputationScore);
       }
     }
   }
@@ -570,21 +505,15 @@ function buildZaloGearAssignmentReport(
     isOverloaded: boolean;
   }>,
   unassignedItems: SquadGearMatrixItem[],
-  fairLoadThresholdPct: number,
-  syncedSharedGear: SharedGearItem[]
+  fairLoadThresholdPct: number
 ): string {
   const totalG = items.reduce((sum, item) => sum + item.weightG, 0);
-  const matrixPackedCount = items.filter((item) => item.packed).length;
-  const syncedPackedCount = syncedSharedGear.filter((item) => item.packed).length;
-  const totalItemCount = items.length + syncedSharedGear.length;
-  const totalPackedCount = matrixPackedCount + syncedPackedCount;
+  const packedCount = items.filter((item) => item.packed).length;
 
   const lines: string[] = [
     '[PHÂN CÔNG TRANG BỊ CHUNG ĐOÀN - LOST]',
     `Chuyến đi: ${tripTitle}`,
-    items.length > 0
-      ? `Tổng tải đồ chung (ma trận cân tải): ${formatWeightKg(totalG)} kg (${totalG.toLocaleString('vi-VN')} g) | Tiến độ: ${totalPackedCount}/${totalItemCount} món`
-      : `Tiến độ chuẩn bị đồ chung: ${totalPackedCount}/${totalItemCount} món`,
+    `Tổng tải đồ chung: ${formatWeightKg(totalG)} kg (${totalG.toLocaleString('vi-VN')} g) | Tiến độ: ${packedCount}/${items.length} món`,
   ];
 
   const assignedMembers = memberLoads.filter((m) => m.itemCount > 0);
@@ -619,15 +548,6 @@ function buildZaloGearAssignmentReport(
       '',
       `Lưu ý cân bằng tải: ${overloaded.map((m) => `${m.name} (${m.pct.toFixed(0)}%)`).join(', ')} đang gánh >${fairLoadThresholdPct}% tổng đồ chung.`
     );
-  }
-
-  if (syncedSharedGear.length > 0) {
-    lines.push('', `--- ĐỒ CHUNG ĐÃ ĐỒNG BỘ TRÊN ĐOÀN (${syncedSharedGear.length} món) ---`);
-    syncedSharedGear.forEach((item) => {
-      lines.push(
-        `  - [${item.packed ? 'Đã có' : 'Chưa có'}] ${item.itemName} (${item.category} • Phụ trách: ${item.assignedUserName})`
-      );
-    });
   }
 
   return lines.join('\n');
@@ -797,10 +717,10 @@ function computeGreedyDebtSettlement(
 
   const debtors = rawBalances
     .filter((m) => m.rawNet <= -SETTLEMENT_DUST_VND)
-    .map((m) => ({ name: m.name, remaining: -m.rawNet }));
+    .map((m) => ({ id: m.id, name: m.name, remaining: -m.rawNet }));
   const creditors = rawBalances
     .filter((m) => m.rawNet >= SETTLEMENT_DUST_VND)
-    .map((m) => ({ name: m.name, remaining: m.rawNet }));
+    .map((m) => ({ id: m.id, name: m.name, remaining: m.rawNet }));
 
   const transfers: DebtTransfer[] = [];
 
@@ -813,7 +733,14 @@ function computeGreedyDebtSettlement(
     if (exactCreditor) {
       const amount = Math.round((debtor.remaining + exactCreditor.remaining) / 2);
       if (amount >= SETTLEMENT_DUST_VND) {
-        transfers.push({ from: debtor.name, to: exactCreditor.name, amountVnd: amount });
+        transfers.push({
+          fromId: debtor.id,
+          from: debtor.name,
+          toId: exactCreditor.id,
+          to: exactCreditor.name,
+          amountVnd: amount,
+          key: `${debtor.id}->${exactCreditor.id}:${amount}`,
+        });
       }
       debtor.remaining = 0;
       exactCreditor.remaining = 0;
@@ -839,9 +766,12 @@ function computeGreedyDebtSettlement(
 
     if (roundedAmount >= SETTLEMENT_DUST_VND) {
       transfers.push({
+        fromId: topDebtor.id,
         from: topDebtor.name,
+        toId: topCreditor.id,
         to: topCreditor.name,
         amountVnd: roundedAmount,
+        key: `${topDebtor.id}->${topCreditor.id}:${roundedAmount}`,
       });
     }
 
@@ -862,8 +792,10 @@ function computeGreedyDebtSettlement(
 function buildZaloSettlementReport(
   tripTitle: string,
   expenses: ExpenseItem[],
-  settlement: GreedyDebtSettlement
+  settlement: GreedyDebtSettlement,
+  settledTransfers: string[]
 ): string {
+  const settledSet = new Set(settledTransfers);
   const lines: string[] = [
     '[QUYẾT TOÁN CHI PHÍ ĐOÀN - LOST]',
     `Chuyến đi: ${tripTitle}`,
@@ -903,7 +835,8 @@ function buildZaloSettlementReport(
     lines.push('Tất cả thành viên đã cân bằng chi phí — không cần chuyển khoản thêm.');
   } else {
     settlement.transfers.forEach((t, idx) => {
-      lines.push(`${idx + 1}. ${t.from} → ${t.to}: ${t.amountVnd.toLocaleString('vi-VN')} đ`);
+      const tag = settledSet.has(t.key) ? ' [ĐÃ THANH TOÁN]' : '';
+      lines.push(`${idx + 1}. ${t.from} → ${t.to}: ${t.amountVnd.toLocaleString('vi-VN')} đ${tag}`);
     });
   }
 
@@ -914,6 +847,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
   tripId,
   tripTitle,
   memberCount,
+  currentUserId,
   isCreator: isCreatorProp = false,
   isMember: isMemberProp = true,
   isOpen,
@@ -937,16 +871,29 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
   const csvRevokeEntriesRef = useRef<Array<{ timerId: number; url: string }>>([]);
   const onShowToastRef = useRef(onShowToast);
 
-  // Local shared-gear weight assignment matrix persisted per trip in localStorage['lost_squad_gear_v1']
-  const [gearMatrixStore, setGearMatrixStore] = useState<Record<string, SquadGearMatrixItem[]>>(() =>
-    readSquadGearStore()
-  );
-  const [safetyGateStore, setSafetyGateStore] = useState<
-    Record<string, Record<SquadSafetyGateStepId, boolean>>
-  >(() => readSquadSafetyGateStore());
   const [isSafetyGateOpen, setIsSafetyGateOpen] = useState(false);
+  const [savingSafetyStep, setSavingSafetyStep] = useState<string | null>(null);
   const [newGearWeightG, setNewGearWeightG] = useState('500');
   const [newGearCarrierId, setNewGearCarrierId] = useState('');
+  const [isAddingGear, setIsAddingGear] = useState(false);
+
+  // Creator management state (Edit Trip, Update Status, Delete Trip, Kick Member)
+  const [isEditingTrip, setIsEditingTrip] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editStartDate, setEditStartDate] = useState('');
+  const [editEndDate, setEditEndDate] = useState('');
+  const [editMaxMembers, setEditMaxMembers] = useState('6');
+  const [editDifficulty, setEditDifficulty] = useState('3');
+  const [editEstimatedCost, setEditEstimatedCost] = useState('');
+  const [editMeetingPoint, setEditMeetingPoint] = useState('');
+  const [editRequirements, setEditRequirements] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [isSavingTrip, setIsSavingTrip] = useState(false);
+  const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+  const [confirmDeleteTrip, setConfirmDeleteTrip] = useState(false);
+  const [isDeletingTrip, setIsDeletingTrip] = useState(false);
+  const [confirmKickMemberId, setConfirmKickMemberId] = useState<string | null>(null);
+  const [kickingMemberId, setKickingMemberId] = useState<string | null>(null);
 
   useEffect(() => {
     onShowToastRef.current = onShowToast;
@@ -957,6 +904,12 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
   const [deletingGearId, setDeletingGearId] = useState<string | null>(null);
   const [isAddingExpense, setIsAddingExpense] = useState(false);
   const [deletingExpenseId, setDeletingExpenseId] = useState<string | null>(null);
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
+  const [editExpTitle, setEditExpTitle] = useState('');
+  const [editExpAmount, setEditExpAmount] = useState('');
+  const [editExpPayerId, setEditExpPayerId] = useState('');
+  const [isSavingExpense, setIsSavingExpense] = useState(false);
+  const [togglingSettlementKey, setTogglingSettlementKey] = useState<string | null>(null);
   const [processingApplicantId, setProcessingApplicantId] = useState<string | null>(null);
 
   // Non-member join fallback state (when clicked from calendar)
@@ -968,10 +921,8 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
   const [newGearName, setNewGearName] = useState('');
   const [newGearCategory, setNewGearCategory] = useState('Lán trại & Nấu ăn');
   const [trackedDraftTripId, setTrackedDraftTripId] = useState(tripId);
-  const openSyncKey = isOpen ? tripId : '';
-  const [trackedOpenSyncKey, setTrackedOpenSyncKey] = useState(openSyncKey);
 
-  // Reset local gear draft inputs & collapse safety gate when switching to another trip
+  // Reset local draft inputs & collapse panels when switching to another trip
   if (trackedDraftTripId !== tripId) {
     setTrackedDraftTripId(tripId);
     setNewGearName('');
@@ -979,25 +930,28 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
     setNewGearCarrierId('');
     setNewGearCategory('Lán trại & Nấu ăn');
     setIsSafetyGateOpen(false);
-  }
-
-  // Re-sync local Safety Gate state from storage whenever modal opens or switches trips
-  if (trackedOpenSyncKey !== openSyncKey) {
-    setTrackedOpenSyncKey(openSyncKey);
-    if (openSyncKey) {
-      setSafetyGateStore(readSquadSafetyGateStore());
-    }
+    setIsEditingTrip(false);
+    setConfirmDeleteTrip(false);
+    setConfirmKickMemberId(null);
+    setEditingExpenseId(null);
   }
 
   // Add Expense state
   const [newExpTitle, setNewExpTitle] = useState('');
   const [newExpAmount, setNewExpAmount] = useState('');
+  const [newExpPayerId, setNewExpPayerId] = useState('');
+
+  const effectiveUserId = useMemo(
+    () => (currentUserId && currentUserId.trim() ? currentUserId.trim() : extractUserIdFromToken()),
+    [currentUserId]
+  );
 
   const currentRequestKey = isOpen ? `${tripId}:${reloadTick}` : '';
   const isLoading = isOpen && loadedRequestKey !== currentRequestKey;
   const activeTripDetail = tripDetail && tripDetail._id === tripId ? tripDetail : null;
   const activeViewerRole = serverViewerRole && serverViewerRole.tripId === tripId ? serverViewerRole.role : null;
-  const joinRequested = joinRequestedTripId === tripId;
+  const joinRequested = joinRequestedTripId === tripId || Boolean(activeTripDetail?.hasPendingRequest);
+  const displayTripTitle = activeTripDetail?.title || tripTitle;
 
   const sharedGear = useMemo(
     () => (Array.isArray(activeTripDetail?.sharedGear) ? activeTripDetail.sharedGear : []),
@@ -1007,6 +961,10 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
     () => (Array.isArray(activeTripDetail?.expenses) ? activeTripDetail.expenses : []),
     [activeTripDetail]
   );
+  const settledTransfers = useMemo(
+    () => (Array.isArray(activeTripDetail?.settledTransfers) ? activeTripDetail.settledTransfers : []),
+    [activeTripDetail]
+  );
   const pendingRequests = useMemo(
     () => (Array.isArray(activeTripDetail?.pendingRequests) ? activeTripDetail.pendingRequests : []),
     [activeTripDetail]
@@ -1014,8 +972,16 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
 
   const isBusyMutation =
     isOpeningChat ||
+    isAddingGear ||
     isAddingExpense ||
+    isSavingExpense ||
+    isSavingTrip ||
+    isUpdatingStatus ||
+    isDeletingTrip ||
     isSubmittingJoin ||
+    Boolean(savingSafetyStep) ||
+    Boolean(togglingSettlementKey) ||
+    Boolean(kickingMemberId) ||
     Boolean(processingApplicantId) ||
     Boolean(deletingGearId) ||
     Boolean(deletingExpenseId) ||
@@ -1122,10 +1088,33 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
     [activeTripDetail, liveMemberCount]
   );
 
-  const squadGearItems = useMemo(
-    () => gearMatrixStore[tripId] || [],
-    [gearMatrixStore, tripId]
+  const confirmedRosterMembers = useMemo(
+    () => squadRoster.filter((m) => !m.isEstimatedSlot && Boolean(m.rawId)),
+    [squadRoster]
   );
+
+  const squadGearItems: SquadGearMatrixItem[] = useMemo(() => {
+    return sharedGear.map((item) => {
+      const assignedUid = item.assignedUserId ? `uid:${String(item.assignedUserId)}` : '';
+      const rawAssigneeName = (item.assignedUserName || '').trim();
+      const cleanAssigneeName = rawAssigneeName && rawAssigneeName !== 'Chưa nhận' ? rawAssigneeName : '';
+      let resolvedCarrierId = assignedUid;
+      if (!resolvedCarrierId && cleanAssigneeName) {
+        const matched = squadRoster.find((m) => m.name.toLowerCase() === cleanAssigneeName.toLowerCase());
+        if (matched) resolvedCarrierId = matched.id;
+      }
+      const parsedWeight = Math.round(Number(item.weightG));
+      return {
+        id: item.id,
+        name: item.itemName,
+        category: item.category || 'Dùng chung',
+        weightG: Number.isFinite(parsedWeight) && parsedWeight >= 0 ? parsedWeight : 500,
+        carrierId: resolvedCarrierId,
+        carrierName: cleanAssigneeName,
+        packed: Boolean(item.packed),
+      };
+    });
+  }, [sharedGear, squadRoster]);
 
   const gearLoadSummary = useMemo(() => {
     const rosterById = new Map(squadRoster.map((m) => [m.id, m]));
@@ -1134,12 +1123,10 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
         return { ...it, carrierName: rosterById.get(it.carrierId)!.name };
       }
       if (it.carrierId) {
-        // Fallback match by stored carrierName if roster id changed
         const byName = squadRoster.find(
           (m) => it.carrierName && m.name.toLowerCase() === it.carrierName.toLowerCase()
         );
         if (byName) return { ...it, carrierId: byName.id, carrierName: byName.name };
-        // Member left the trip -> normalize stale carrierId to '' so <select> stays synced
         return { ...it, carrierId: '', carrierName: '' };
       }
       return it;
@@ -1188,37 +1175,20 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
     };
   }, [squadGearItems, squadRoster]);
 
-  const syncedGearPackedCount = useMemo(
-    () => sharedGear.filter((item) => item.packed).length,
-    [sharedGear]
-  );
-  const totalSquadGearCount = gearLoadSummary.items.length + sharedGear.length;
-  const totalSquadGearPackedCount = gearLoadSummary.packedCount + syncedGearPackedCount;
+  const totalSquadGearCount = gearLoadSummary.items.length;
+  const totalSquadGearPackedCount = gearLoadSummary.packedCount;
   const effectiveNewGearCarrierId = squadRoster.some((m) => m.id === newGearCarrierId)
     ? newGearCarrierId
     : '';
 
-  const updateTripGearMatrix = useCallback(
-    (updater: (prevItems: SquadGearMatrixItem[]) => SquadGearMatrixItem[]) => {
-      setGearMatrixStore((prev) => {
-        const currentItems = prev[tripId] || [];
-        const nextItems = updater(currentItems);
-        const nextStore = { ...prev, [tripId]: nextItems };
-        writeSquadGearStore(nextStore);
-        return nextStore;
-      });
-    },
-    [tripId]
-  );
-
   const safetyGateChecks = useMemo(() => {
-    const saved = safetyGateStore[tripId];
+    const saved = activeTripDetail?.safetyGate || {};
     const record = {} as Record<SquadSafetyGateStepId, boolean>;
     for (const stepId of SQUAD_SAFETY_GATE_IDS) {
-      record[stepId] = Boolean(saved?.[stepId]);
+      record[stepId] = Boolean(saved[stepId]);
     }
     return record;
-  }, [safetyGateStore, tripId]);
+  }, [activeTripDetail]);
 
   const safetyGateCompletedCount = useMemo(
     () => SQUAD_SAFETY_GATE_IDS.filter((stepId) => safetyGateChecks[stepId]).length,
@@ -1227,52 +1197,57 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
   const isSafetyGateReady = safetyGateCompletedCount === SQUAD_SAFETY_GATE_STEPS.length;
 
   const handleToggleSafetyGateStep = useCallback(
-    (stepId: SquadSafetyGateStepId) => {
-      if (!tripId) return;
-      const nextRecord = {} as Record<SquadSafetyGateStepId, boolean>;
-      for (const id of SQUAD_SAFETY_GATE_IDS) {
-        nextRecord[id] = id === stepId ? !safetyGateChecks[id] : safetyGateChecks[id];
-      }
-      const { nextStore, savedOk } = persistSafetyGateForTrip(tripId, nextRecord);
-      setSafetyGateStore(nextStore);
-      if (!savedOk) {
-        onShowToastRef.current?.(
-          'Bộ nhớ trình duyệt đã đầy — không thể lưu trạng thái Cổng Kiểm Tra An Toàn.',
-          'error'
-        );
+    async (stepId: SquadSafetyGateStepId) => {
+      if (!tripId || savingSafetyStep) return;
+      const nextChecked = !safetyGateChecks[stepId];
+      setSavingSafetyStep(stepId);
+      try {
+        const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/safety-gate`, {
+          method: 'PATCH',
+          headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ stepKey: stepId, checked: nextChecked }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.success && data.data) {
+          setTripDetail((prev) =>
+            prev && prev._id === tripId ? { ...prev, safetyGate: data.data } : prev
+          );
+        } else {
+          onShowToastRef.current?.(data.message || 'Không thể lưu trạng thái Cổng Kiểm Tra An Toàn.', 'error');
+        }
+      } catch {
+        onShowToastRef.current?.('Lỗi kết nối máy chủ khi cập nhật an toàn đoàn.', 'error');
+      } finally {
+        setSavingSafetyStep(null);
       }
     },
-    [tripId, safetyGateChecks]
+    [tripId, safetyGateChecks, savingSafetyStep]
   );
 
-  const handleResetSafetyGate = useCallback(() => {
-    if (!tripId) return;
-    const nextRecord = {} as Record<SquadSafetyGateStepId, boolean>;
-    for (const id of SQUAD_SAFETY_GATE_IDS) {
-      nextRecord[id] = false;
-    }
-    const { nextStore, savedOk } = persistSafetyGateForTrip(tripId, nextRecord);
-    setSafetyGateStore(nextStore);
-    if (!savedOk) {
-      onShowToastRef.current?.(
-        'Bộ nhớ trình duyệt đã đầy — không thể lưu trạng thái đặt lại.',
-        'error'
-      );
-      return;
-    }
-    onShowToastRef.current?.('Đã đặt lại 6 bước Cổng Kiểm Tra An Toàn cho chuyến đi này.', 'info');
-  }, [tripId]);
-
-  // Cross-tab localStorage sync for Safety Gate checklist
-  useEffect(() => {
-    const handleStorageSync = (e: StorageEvent) => {
-      if (e.key === SQUAD_SAFETY_GATE_STORAGE_KEY || e.key === null) {
-        setSafetyGateStore(readSquadSafetyGateStore());
+  const handleResetSafetyGate = useCallback(async () => {
+    if (!tripId || savingSafetyStep) return;
+    setSavingSafetyStep('reset');
+    try {
+      const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/safety-gate`, {
+        method: 'PATCH',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ reset: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.data) {
+        setTripDetail((prev) =>
+          prev && prev._id === tripId ? { ...prev, safetyGate: data.data } : prev
+        );
+        onShowToastRef.current?.('Đã đặt lại 6 bước Cổng Kiểm Tra An Toàn trên đám mây.', 'info');
+      } else {
+        onShowToastRef.current?.(data.message || 'Không thể đặt lại trạng thái an toàn.', 'error');
       }
-    };
-    window.addEventListener('storage', handleStorageSync);
-    return () => window.removeEventListener('storage', handleStorageSync);
-  }, []);
+    } catch {
+      onShowToastRef.current?.('Lỗi kết nối máy chủ khi đặt lại trạng thái an toàn.', 'error');
+    } finally {
+      setSavingSafetyStep(null);
+    }
+  }, [tripId, savingSafetyStep]);
 
   const pickLightestCarrier = useCallback((): { id: string; name: string } => {
     if (gearLoadSummary.memberLoads.length === 0) return { id: '', name: '' };
@@ -1280,28 +1255,45 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
     return { id: sorted[0].id, name: sorted[0].name };
   }, [gearLoadSummary.memberLoads]);
 
-  const handleAddPresetGearItem = (preset: SharedGearPreset) => {
+  const handleAddPresetGearItem = async (preset: SharedGearPreset) => {
+    if (isAddingGear) return;
     const carrier = pickLightestCarrier();
-    const newItem: SquadGearMatrixItem = {
-      id: createSquadGearItemId(preset.key),
-      name: preset.name,
-      category: preset.category,
-      weightG: preset.weightG,
-      carrierId: carrier.id,
-      carrierName: carrier.name,
-      packed: false,
-    };
-    updateTripGearMatrix((prev) => [...prev, newItem]);
-    onShowToastRef.current?.(
-      carrier.name
-        ? `Đã thêm "${preset.name}" (${preset.weightG.toLocaleString('vi-VN')} g) giao cho ${carrier.name}.`
-        : `Đã thêm "${preset.name}" (${preset.weightG.toLocaleString('vi-VN')} g) vào trang bị chung.`,
-      'success'
-    );
+    setIsAddingGear(true);
+    try {
+      const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/gear`, {
+        method: 'POST',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          itemName: preset.name,
+          category: preset.category,
+          weightG: preset.weightG,
+          assignedUserId: extractRawMemberId(carrier.id) || undefined,
+          assignedUserName: carrier.name || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        const nextGear = Array.isArray(data.data) ? data.data : [];
+        setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, sharedGear: nextGear } : prev));
+        onShowToastRef.current?.(
+          carrier.name
+            ? `Đã thêm "${preset.name}" (${preset.weightG.toLocaleString('vi-VN')} g) giao cho ${carrier.name}.`
+            : `Đã thêm "${preset.name}" (${preset.weightG.toLocaleString('vi-VN')} g) vào trang bị chung.`,
+          'success'
+        );
+      } else {
+        onShowToastRef.current?.(data.message || 'Không thể thêm trang bị chung.', 'error');
+      }
+    } catch {
+      onShowToastRef.current?.('Lỗi kết nối máy chủ khi thêm trang bị.', 'error');
+    } finally {
+      setIsAddingGear(false);
+    }
   };
 
-  const handleAddMatrixGearItem = (e: React.FormEvent) => {
+  const handleAddMatrixGearItem = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isAddingGear) return;
     const cleanName = newGearName.trim();
     const weightNum = Math.round(Number(newGearWeightG));
     if (!cleanName) {
@@ -1313,49 +1305,113 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       return;
     }
 
-    const chosenMember = newGearCarrierId
-      ? squadRoster.find((m) => m.id === newGearCarrierId) || null
+    const chosenMember = effectiveNewGearCarrierId
+      ? squadRoster.find((m) => m.id === effectiveNewGearCarrierId) || null
       : null;
 
-    const newItem: SquadGearMatrixItem = {
-      id: createSquadGearItemId('custom'),
-      name: cleanName,
-      category: newGearCategory,
-      weightG: weightNum,
-      carrierId: chosenMember ? chosenMember.id : '',
-      carrierName: chosenMember ? chosenMember.name : '',
-      packed: false,
-    };
-
-    updateTripGearMatrix((prev) => [...prev, newItem]);
-    setNewGearName('');
-    setNewGearWeightG('500');
-    onShowToastRef.current?.(`Đã thêm "${cleanName}" (${weightNum.toLocaleString('vi-VN')} g) vào ma trận đồ chung!`, 'success');
+    setIsAddingGear(true);
+    try {
+      const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/gear`, {
+        method: 'POST',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          itemName: cleanName,
+          category: newGearCategory,
+          weightG: weightNum,
+          assignedUserId: chosenMember ? extractRawMemberId(chosenMember.id) || undefined : undefined,
+          assignedUserName: chosenMember ? chosenMember.name : undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        const nextGear = Array.isArray(data.data) ? data.data : [];
+        setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, sharedGear: nextGear } : prev));
+        setNewGearName('');
+        setNewGearWeightG('500');
+        onShowToastRef.current?.(
+          `Đã đồng bộ "${cleanName}" (${weightNum.toLocaleString('vi-VN')} g) lên đám mây!`,
+          'success'
+        );
+      } else {
+        onShowToastRef.current?.(data.message || 'Không thể thêm vật dụng chung.', 'error');
+      }
+    } catch {
+      onShowToastRef.current?.('Lỗi kết nối máy chủ khi thêm vật dụng.', 'error');
+    } finally {
+      setIsAddingGear(false);
+    }
   };
 
-  const handleAssignMatrixGearCarrier = (itemId: string, nextCarrierId: string) => {
+  const handleAssignMatrixGearCarrier = async (itemId: string, nextCarrierId: string) => {
+    if (togglingGearId === itemId) return;
     const member = squadRoster.find((m) => m.id === nextCarrierId) || null;
-    updateTripGearMatrix((prev) =>
-      prev.map((it) =>
-        it.id === itemId
-          ? {
-              ...it,
-              carrierId: member ? member.id : '',
-              carrierName: member ? member.name : '',
-            }
-          : it
-      )
-    );
+    setTogglingGearId(itemId);
+    try {
+      const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/gear/${encodeURIComponent(itemId)}`, {
+        method: 'PATCH',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          assignedUserId: member ? extractRawMemberId(member.id) : '',
+          assignedUserName: member ? member.name : 'Chưa nhận',
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        const nextGear = Array.isArray(data.data) ? data.data : [];
+        setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, sharedGear: nextGear } : prev));
+      } else {
+        onShowToastRef.current?.(data.message || 'Không thể phân công người mang.', 'error');
+      }
+    } catch {
+      onShowToastRef.current?.('Lỗi kết nối khi cập nhật phân công đồ chung.', 'error');
+    } finally {
+      setTogglingGearId(null);
+    }
   };
 
-  const handleToggleMatrixGearPacked = (itemId: string) => {
-    updateTripGearMatrix((prev) =>
-      prev.map((it) => (it.id === itemId ? { ...it, packed: !it.packed } : it))
-    );
+  const handleToggleMatrixGearPacked = async (item: SquadGearMatrixItem) => {
+    if (togglingGearId === item.id) return;
+    setTogglingGearId(item.id);
+    try {
+      const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/gear/${encodeURIComponent(item.id)}`, {
+        method: 'PATCH',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ packed: !item.packed }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        const nextGear = Array.isArray(data.data) ? data.data : [];
+        setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, sharedGear: nextGear } : prev));
+      } else {
+        onShowToastRef.current?.(data.message || 'Không thể cập nhật trạng thái vật dụng.', 'error');
+      }
+    } catch {
+      onShowToastRef.current?.('Không thể cập nhật trạng thái vật dụng.', 'error');
+    } finally {
+      setTogglingGearId(null);
+    }
   };
 
-  const handleDeleteMatrixGearItem = (itemId: string) => {
-    updateTripGearMatrix((prev) => prev.filter((it) => it.id !== itemId));
+  const handleDeleteMatrixGearItem = async (gearId: string) => {
+    if (deletingGearId === gearId) return;
+    setDeletingGearId(gearId);
+    try {
+      const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/gear/${encodeURIComponent(gearId)}`, {
+        method: 'DELETE',
+        headers: getApiHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        const nextGear = Array.isArray(data.data) ? data.data : [];
+        setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, sharedGear: nextGear } : prev));
+      } else {
+        onShowToastRef.current?.(data.message || 'Không thể xóa vật dụng này.', 'error');
+      }
+    } catch {
+      onShowToastRef.current?.('Không thể xóa vật dụng.', 'error');
+    } finally {
+      setDeletingGearId(null);
+    }
   };
 
   const handleCopyZaloGearAssignment = async () => {
@@ -1364,12 +1420,11 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       return;
     }
     const reportText = buildZaloGearAssignmentReport(
-      tripTitle,
+      displayTripTitle,
       gearLoadSummary.items,
       gearLoadSummary.memberLoads,
       gearLoadSummary.unassignedItems,
-      gearLoadSummary.fairLoadThresholdPct,
-      sharedGear
+      gearLoadSummary.fairLoadThresholdPct
     );
     let copied: boolean;
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
@@ -1399,10 +1454,144 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
 
   const effectiveIsCreator = activeViewerRole ? activeViewerRole === 'creator' : isCreatorProp;
   const effectiveIsMember = activeViewerRole ? activeViewerRole === 'creator' || activeViewerRole === 'member' : isMemberProp;
-  const showRequestsTab = effectiveIsCreator || pendingRequests.length > 0;
+
+  const creatorUserId = useMemo(() => {
+    if (!activeTripDetail?.creatorId) return '';
+    return typeof activeTripDetail.creatorId === 'object'
+      ? String(activeTripDetail.creatorId._id || '')
+      : String(activeTripDetail.creatorId);
+  }, [activeTripDetail]);
+
+  const handleOpenEditTrip = () => {
+    if (!activeTripDetail) return;
+    setEditTitle(activeTripDetail.title || tripTitle);
+    const sDate = activeTripDetail.startDate ? new Date(activeTripDetail.startDate) : null;
+    const eDate = activeTripDetail.endDate ? new Date(activeTripDetail.endDate) : null;
+    setEditStartDate(sDate && !Number.isNaN(sDate.getTime()) ? sDate.toISOString().split('T')[0] : '');
+    setEditEndDate(eDate && !Number.isNaN(eDate.getTime()) ? eDate.toISOString().split('T')[0] : '');
+    setEditMaxMembers(String(activeTripDetail.maxMembers || Math.max(2, liveMemberCount)));
+    setEditDifficulty(String(activeTripDetail.difficultyLevel || 3));
+    setEditEstimatedCost(activeTripDetail.estimatedCost || '');
+    setEditMeetingPoint(activeTripDetail.meetingPoint || '');
+    setEditRequirements(activeTripDetail.requirements || '');
+    setEditDescription(activeTripDetail.description || '');
+    setConfirmDeleteTrip(false);
+    setIsEditingTrip(true);
+  };
+
+  const handleSaveTripEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSavingTrip || !editTitle.trim()) return;
+    setIsSavingTrip(true);
+    try {
+      const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}`, {
+        method: 'PUT',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          title: editTitle.trim(),
+          startDate: editStartDate || undefined,
+          endDate: editEndDate || undefined,
+          maxMembers: Math.max(liveMemberCount, Number(editMaxMembers) || liveMemberCount),
+          difficultyLevel: Number(editDifficulty) || 3,
+          estimatedCost: editEstimatedCost.trim(),
+          meetingPoint: editMeetingPoint.trim(),
+          requirements: editRequirements.trim(),
+          description: editDescription.trim(),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.data) {
+        setTripDetail(data.data);
+        setIsEditingTrip(false);
+        onShowToast?.(data.message || 'Đã cập nhật kế hoạch chuyến đi!', 'success');
+        onTripUpdated?.();
+      } else {
+        onShowToast?.(data.message || 'Không thể cập nhật thông tin chuyến đi.', 'error');
+      }
+    } catch {
+      onShowToast?.('Lỗi kết nối máy chủ khi cập nhật chuyến đi.', 'error');
+    } finally {
+      setIsSavingTrip(false);
+    }
+  };
+
+  const handleUpdateTripStatus = async (nextStatus: string) => {
+    if (isUpdatingStatus || !nextStatus) return;
+    setIsUpdatingStatus(true);
+    try {
+      const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/status`, {
+        method: 'PATCH',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, status: nextStatus } : prev));
+        onShowToast?.(data.message || 'Đã cập nhật trạng thái chuyến đi!', 'success');
+        onTripUpdated?.();
+      } else {
+        onShowToast?.(data.message || 'Không thể cập nhật trạng thái chuyến đi.', 'error');
+      }
+    } catch {
+      onShowToast?.('Lỗi kết nối khi đổi trạng thái chuyến đi.', 'error');
+    } finally {
+      setIsUpdatingStatus(false);
+    }
+  };
+
+  const handleDeleteTrip = async () => {
+    if (isDeletingTrip) return;
+    setIsDeletingTrip(true);
+    try {
+      const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}`, {
+        method: 'DELETE',
+        headers: getApiHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        onShowToast?.(data.message || 'Đã xóa chuyến ghép đoàn.', 'success');
+        onTripUpdated?.();
+        onClose();
+      } else {
+        onShowToast?.(data.message || 'Không thể xóa chuyến đi này.', 'error');
+      }
+    } catch {
+      onShowToast?.('Lỗi kết nối máy chủ khi xóa chuyến đi.', 'error');
+    } finally {
+      setIsDeletingTrip(false);
+      setConfirmDeleteTrip(false);
+    }
+  };
+
+  const handleKickMember = async (memberRawId: string) => {
+    if (kickingMemberId || !memberRawId) return;
+    setKickingMemberId(memberRawId);
+    try {
+      const res = await fetch(
+        `/api/trips/${encodeURIComponent(tripId)}/members/${encodeURIComponent(memberRawId)}`,
+        {
+          method: 'DELETE',
+          headers: getApiHeaders(),
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setConfirmKickMemberId(null);
+        onShowToast?.(data.message || 'Đã xóa thành viên khỏi đoàn.', 'info');
+        reloadWorkspace();
+        onTripUpdated?.();
+      } else {
+        onShowToast?.(data.message || 'Không thể xóa thành viên này.', 'error');
+      }
+    } catch {
+      onShowToast?.('Lỗi kết nối máy chủ khi cập nhật thành viên.', 'error');
+    } finally {
+      setKickingMemberId(null);
+    }
+  };
 
   const handleCopyZaloSettlement = async () => {
-    const reportText = buildZaloSettlementReport(tripTitle, expenses, settlement);
+    const reportText = buildZaloSettlementReport(displayTripTitle, expenses, settlement, settledTransfers);
     let copied: boolean;
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
       try {
@@ -1443,16 +1632,15 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
     let scheduledRevoke = false;
     try {
       const csvContent = buildRangerManifestCsv({
-        tripTitle,
+        tripTitle: displayTripTitle,
         tripDetail: activeTripDetail,
         roster: squadRoster,
         memberLoads: gearLoadSummary.memberLoads,
         matrixItems: gearLoadSummary.items,
-        syncedSharedGear: sharedGear,
         safetyGateChecks,
         safetyGateCompletedCount,
       });
-      const filename = `khai-bao-kiem-lam-${slugifyCsvFilenamePart(activeTripDetail.trailName || tripTitle)}-${getVietnamDateCompact()}.csv`;
+      const filename = `khai-bao-kiem-lam-${slugifyCsvFilenamePart(activeTripDetail.trailName || displayTripTitle)}-${getVietnamDateCompact()}.csv`;
       const blob = new Blob([`\uFEFF${csvContent}`], { type: 'text/csv;charset=utf-8;' });
       createdUrl = URL.createObjectURL(blob);
       anchor = document.createElement('a');
@@ -1508,8 +1696,9 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
         onOpenGroupChat?.(convId);
       }
       onClose();
-      window.history.pushState(null, '', '#messages');
-      window.dispatchEvent(new HashChangeEvent('hashchange'));
+      const targetUrl = convId ? `/messages?convId=${encodeURIComponent(convId)}` : '/messages';
+      window.history.pushState({ view: 'messages' }, '', targetUrl);
+      window.dispatchEvent(new PopStateEvent('popstate'));
     } catch (err: unknown) {
       onShowToast?.(
         extractErrorMessage(err, 'Chỉ thành viên đã được duyệt vào đoàn mới mở được chat nhóm.'),
@@ -1517,47 +1706,6 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       );
     } finally {
       setIsOpeningChat(false);
-    }
-  };
-
-  const handleToggleGearPacked = async (item: SharedGearItem) => {
-    if (togglingGearId === item.id) return;
-    setTogglingGearId(item.id);
-    try {
-      const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/gear/${encodeURIComponent(item.id)}`, {
-        method: 'PATCH',
-        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ packed: !item.packed }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        const nextGear = Array.isArray(data.data) ? data.data : [];
-        setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, sharedGear: nextGear } : prev));
-      }
-    } catch {
-      onShowToast?.('Không thể cập nhật trạng thái vật dụng.', 'error');
-    } finally {
-      setTogglingGearId(null);
-    }
-  };
-
-  const handleDeleteGear = async (gearId: string) => {
-    if (deletingGearId === gearId) return;
-    setDeletingGearId(gearId);
-    try {
-      const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/gear/${encodeURIComponent(gearId)}`, {
-        method: 'DELETE',
-        headers: getApiHeaders(),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        const nextGear = Array.isArray(data.data) ? data.data : [];
-        setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, sharedGear: nextGear } : prev));
-      }
-    } catch {
-      onShowToast?.('Không thể xóa vật dụng.', 'error');
-    } finally {
-      setDeletingGearId(null);
     }
   };
 
@@ -1578,6 +1726,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
           title: newExpTitle.trim(),
           amountVnd: amount,
           splitCount: Math.max(1, liveMemberCount),
+          paidByUserId: effectiveIsCreator && newExpPayerId ? newExpPayerId : undefined,
         }),
       });
       const data = await res.json();
@@ -1591,6 +1740,78 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       onShowToast?.(extractErrorMessage(err, 'Không thể thêm khoản chi.'), 'error');
     } finally {
       setIsAddingExpense(false);
+    }
+  };
+
+  const handleStartEditExpense = (exp: ExpenseItem) => {
+    setEditingExpenseId(exp.id);
+    setEditExpTitle(exp.title);
+    setEditExpAmount(String(exp.amountVnd));
+    setEditExpPayerId(exp.paidByUserId ? String(exp.paidByUserId) : '');
+  };
+
+  const handleSaveEditExpense = async (e: React.FormEvent, expenseId: string) => {
+    e.preventDefault();
+    if (isSavingExpense) return;
+    const amount = Number(editExpAmount);
+    if (!editExpTitle.trim() || !Number.isFinite(amount) || amount < 1000) {
+      onShowToast?.('Tên khoản chi và số tiền (từ 1.000đ) không hợp lệ.', 'error');
+      return;
+    }
+    setIsSavingExpense(true);
+    try {
+      const res = await fetch(
+        `/api/trips/${encodeURIComponent(tripId)}/expenses/${encodeURIComponent(expenseId)}`,
+        {
+          method: 'PATCH',
+          headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            title: editExpTitle.trim(),
+            amountVnd: amount,
+            paidByUserId: effectiveIsCreator && editExpPayerId ? editExpPayerId : undefined,
+          }),
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        const nextExpenses = Array.isArray(data.data) ? data.data : [];
+        setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, expenses: nextExpenses } : prev));
+        setEditingExpenseId(null);
+        onShowToast?.(data.message || 'Đã cập nhật khoản chi!', 'success');
+      } else {
+        onShowToast?.(data.message || 'Không thể sửa khoản chi này.', 'error');
+      }
+    } catch {
+      onShowToast?.('Lỗi kết nối máy chủ khi sửa khoản chi.', 'error');
+    } finally {
+      setIsSavingExpense(false);
+    }
+  };
+
+  const handleToggleSettlement = async (transferKey: string) => {
+    if (togglingSettlementKey || !transferKey) return;
+    setTogglingSettlementKey(transferKey);
+    try {
+      const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/settlements`, {
+        method: 'POST',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ transferKey }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        const nextSettled = Array.isArray(data.data) ? data.data : [];
+        setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, settledTransfers: nextSettled } : prev));
+        onShowToast?.(
+          data.settled ? 'Đã đánh dấu giao dịch hoàn tất!' : 'Đã bỏ đánh dấu thanh toán.',
+          data.settled ? 'success' : 'info'
+        );
+      } else {
+        onShowToast?.(data.message || 'Không thể cập nhật trạng thái quyết toán.', 'error');
+      }
+    } catch {
+      onShowToast?.('Lỗi kết nối khi cập nhật quyết toán.', 'error');
+    } finally {
+      setTogglingSettlementKey(null);
     }
   };
 
@@ -1692,8 +1913,6 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
         position: 'fixed',
         inset: 0,
         background: 'var(--overlay-bg)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
         zIndex: 'var(--z-modal, 3000)',
         display: 'flex',
         alignItems: 'center',
@@ -1741,7 +1960,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
               Không Gian Đoàn Thám Hiểm ({liveMemberCount} thành viên)
             </div>
             <h3 className="font-editorial" style={{ margin: '3px 0 0 0', fontSize: '1.3rem', fontWeight: 600, color: 'var(--color-text-main)' }}>
-              {tripTitle}
+              {displayTripTitle}
             </h3>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -1808,6 +2027,246 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Creator Management Controls (Status, Edit Trip, Delete Trip) */}
+        {effectiveIsCreator && activeTripDetail && (
+          <div
+            style={{
+              marginBottom: 14,
+              padding: '10px 12px',
+              borderRadius: 4,
+              background: 'var(--color-bg-main)',
+              border: '1px solid var(--color-border)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.7rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Quản trị Trưởng đoàn:
+                </span>
+                <select
+                  aria-label="Trạng thái chuyến đi"
+                  className="form-input"
+                  value={activeTripDetail.status || 'recruiting'}
+                  disabled={isUpdatingStatus || isDeletingTrip}
+                  onChange={(e) => handleUpdateTripStatus(e.target.value)}
+                  style={{
+                    padding: '4px 8px',
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    borderRadius: 4,
+                    background: 'var(--color-bg-card)',
+                    color: 'var(--color-text-main)',
+                  }}
+                >
+                  {Object.entries(TRIP_STATUS_LABELS).map(([val, lbl]) => (
+                    <option key={val} value={val}>
+                      {lbl}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  disabled={isSavingTrip || isDeletingTrip}
+                  onClick={() => (isEditingTrip ? setIsEditingTrip(false) : handleOpenEditTrip())}
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: '0.74rem',
+                    fontWeight: 700,
+                    borderRadius: 4,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                >
+                  <IconEdit size={13} />
+                  <span>{isEditingTrip ? 'Đóng form sửa' : 'Chỉnh sửa chuyến'}</span>
+                </button>
+
+                {confirmDeleteTrip ? (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      disabled={isDeletingTrip}
+                      onClick={handleDeleteTrip}
+                      style={{ padding: '4px 10px', fontSize: '0.74rem', fontWeight: 800, borderRadius: 4 }}
+                    >
+                      {isDeletingTrip ? 'Đang xóa...' : 'Xác nhận xóa đoàn'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      disabled={isDeletingTrip}
+                      onClick={() => setConfirmDeleteTrip(false)}
+                      style={{ padding: '4px 8px', fontSize: '0.74rem', borderRadius: 4 }}
+                    >
+                      Hủy
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={isDeletingTrip}
+                    onClick={() => setConfirmDeleteTrip(true)}
+                    style={{
+                      padding: '4px 10px',
+                      fontSize: '0.74rem',
+                      fontWeight: 700,
+                      borderRadius: 4,
+                      color: 'var(--color-error-text, var(--color-error))',
+                      borderColor: 'color-mix(in srgb, var(--color-error) 35%, transparent)',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                    }}
+                  >
+                    <IconTrash size={13} color="var(--color-error-text, var(--color-error))" />
+                    <span>Xóa chuyến</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {isEditingTrip && (
+              <form
+                onSubmit={handleSaveTripEdit}
+                style={{
+                  borderTop: '1px solid var(--color-border)',
+                  paddingTop: 10,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                }}
+              >
+                <input
+                  type="text"
+                  className="form-input"
+                  required
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  placeholder="Tiêu đề chuyến đi *"
+                  style={{ width: '100%', padding: '7px 10px', fontSize: '0.82rem', borderRadius: 4 }}
+                />
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8 }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-text-dim)', marginBottom: 3 }}>Ngày khởi hành</label>
+                    <input
+                      type="date"
+                      className="form-input"
+                      value={editStartDate}
+                      onChange={(e) => setEditStartDate(e.target.value)}
+                      style={{ width: '100%', padding: '6px 8px', fontSize: '0.78rem', borderRadius: 4 }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-text-dim)', marginBottom: 3 }}>Ngày kết thúc</label>
+                    <input
+                      type="date"
+                      className="form-input"
+                      min={editStartDate || undefined}
+                      value={editEndDate}
+                      onChange={(e) => setEditEndDate(e.target.value)}
+                      style={{ width: '100%', padding: '6px 8px', fontSize: '0.78rem', borderRadius: 4 }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-text-dim)', marginBottom: 3 }}>Số chỗ tối đa</label>
+                    <input
+                      type="number"
+                      className="form-input"
+                      min={liveMemberCount}
+                      max={50}
+                      value={editMaxMembers}
+                      onChange={(e) => setEditMaxMembers(e.target.value)}
+                      style={{ width: '100%', padding: '6px 8px', fontSize: '0.78rem', borderRadius: 4 }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-text-dim)', marginBottom: 3 }}>Độ khó (1-5)</label>
+                    <select
+                      className="form-input"
+                      value={editDifficulty}
+                      onChange={(e) => setEditDifficulty(e.target.value)}
+                      style={{ width: '100%', padding: '6px 8px', fontSize: '0.78rem', borderRadius: 4 }}
+                    >
+                      {[1, 2, 3, 4, 5].map((lvl) => (
+                        <option key={lvl} value={String(lvl)}>
+                          Cấp {lvl}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={editMeetingPoint}
+                    onChange={(e) => setEditMeetingPoint(e.target.value)}
+                    placeholder="Điểm hẹn tập trung"
+                    style={{ width: '100%', padding: '7px 10px', fontSize: '0.78rem', borderRadius: 4 }}
+                  />
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={editEstimatedCost}
+                    onChange={(e) => setEditEstimatedCost(e.target.value)}
+                    placeholder="Dự toán chi phí"
+                    style={{ width: '100%', padding: '7px 10px', fontSize: '0.78rem', borderRadius: 4 }}
+                  />
+                </div>
+
+                <input
+                  type="text"
+                  className="form-input"
+                  value={editRequirements}
+                  onChange={(e) => setEditRequirements(e.target.value)}
+                  placeholder="Yêu cầu thể lực & chuẩn bị"
+                  style={{ width: '100%', padding: '7px 10px', fontSize: '0.78rem', borderRadius: 4 }}
+                />
+
+                <textarea
+                  rows={2}
+                  className="form-input"
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  placeholder="Mô tả kế hoạch chi tiết..."
+                  style={{ width: '100%', padding: '7px 10px', fontSize: '0.78rem', borderRadius: 4, resize: 'vertical' }}
+                />
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={isSavingTrip}
+                    onClick={() => setIsEditingTrip(false)}
+                    style={{ padding: '5px 12px', fontSize: '0.76rem', borderRadius: 4 }}
+                  >
+                    Hủy
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={isSavingTrip || !editTitle.trim()}
+                    style={{ padding: '5px 14px', fontSize: '0.76rem', fontWeight: 800, borderRadius: 4 }}
+                  >
+                    {isSavingTrip ? 'Đang lưu...' : 'Lưu kế hoạch'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
 
         {/* Non-member overview & join card when opened from Calendar */}
         {!effectiveIsMember ? (
@@ -2074,21 +2533,22 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                         fontWeight: 700,
                         padding: '2px 7px',
                         borderRadius: 4,
-                        background: 'var(--color-bg-card)',
-                        border: '1px solid var(--color-border-strong)',
-                        color: 'var(--color-text-muted)',
+                        background: 'color-mix(in srgb, var(--color-primary) 10%, var(--color-bg-card))',
+                        border: '1px solid color-mix(in srgb, var(--color-primary) 35%, var(--color-border))',
+                        color: 'var(--color-primary)',
                       }}
                     >
-                      Lưu cục bộ trên thiết bị
+                      Đồng bộ đám mây cả đoàn
                     </span>
                     {safetyGateCompletedCount > 0 && (
                       <button
                         type="button"
+                        disabled={Boolean(savingSafetyStep)}
                         onClick={handleResetSafetyGate}
                         className="btn btn-outline"
                         style={{ padding: '3px 8px', fontSize: '0.7rem', borderRadius: 4, fontWeight: 700 }}
                       >
-                        Đặt lại 6 bước
+                        {savingSafetyStep === 'reset' ? 'Đang đặt lại...' : 'Đặt lại 6 bước'}
                       </button>
                     )}
                   </div>
@@ -2096,12 +2556,14 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {SQUAD_SAFETY_GATE_STEPS.map((step, idx) => {
                       const checked = safetyGateChecks[step.id];
+                      const isSavingThis = savingSafetyStep === step.id;
                       return (
                         <button
                           key={step.id}
                           type="button"
                           role="checkbox"
                           aria-checked={checked}
+                          disabled={Boolean(savingSafetyStep)}
                           onClick={() => handleToggleSafetyGateStep(step.id)}
                           style={{
                             width: '100%',
@@ -2111,7 +2573,8 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                             padding: '8px 10px',
                             borderRadius: 4,
                             textAlign: 'left',
-                            cursor: 'pointer',
+                            cursor: isSavingThis ? 'wait' : 'pointer',
+                            opacity: isSavingThis ? 0.7 : 1,
                             fontFamily: 'var(--font-family)',
                             background: checked
                               ? 'color-mix(in srgb, var(--color-primary) 10%, var(--color-bg-card))'
@@ -2180,7 +2643,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: showRequestsTab ? 'repeat(auto-fit, minmax(150px, 1fr))' : '1fr 1fr',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
                 gap: 8,
                 marginBottom: 16,
               }}
@@ -2192,7 +2655,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                 style={{ justifyContent: 'center', fontSize: '0.8rem', padding: '8px 10px', borderRadius: 4 }}
               >
                 <IconBackpack size={14} />
-                <span>Trang Bị Chung Đoàn ({gearLoadSummary.items.length + sharedGear.length})</span>
+                <span>Trang Bị Chung ({totalSquadGearCount})</span>
               </button>
               <button
                 type="button"
@@ -2202,17 +2665,18 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
               >
                 <span>Chia Chi Phí ({expenses.length})</span>
               </button>
-              {showRequestsTab && (
-                <button
-                  type="button"
-                  className={`btn ${activeTab === 'requests' ? 'btn-primary' : 'btn-outline'}`}
-                  onClick={() => setActiveTab('requests')}
-                  style={{ justifyContent: 'center', fontSize: '0.8rem', padding: '8px 10px', borderRadius: 4 }}
-                >
-                  <IconUserPlus size={14} />
-                  <span>Chờ Duyệt ({pendingRequests.length})</span>
-                </button>
-              )}
+              <button
+                type="button"
+                className={`btn ${activeTab === 'requests' ? 'btn-primary' : 'btn-outline'}`}
+                onClick={() => setActiveTab('requests')}
+                style={{ justifyContent: 'center', fontSize: '0.8rem', padding: '8px 10px', borderRadius: 4 }}
+              >
+                <IconUsers size={14} />
+                <span>
+                  Thành Viên ({liveMemberCount}
+                  {effectiveIsCreator && pendingRequests.length > 0 ? ` • +${pendingRequests.length}` : ''})
+                </span>
+              </button>
             </div>
 
             {isLoading ? (
@@ -2220,144 +2684,277 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                 Đang tải dữ liệu đoàn...
               </div>
             ) : activeTab === 'requests' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {pendingRequests.length === 0 ? (
-                  <div
-                    style={{
-                      textAlign: 'center',
-                      padding: 24,
-                      borderRadius: 4,
-                      border: '1px dashed var(--color-border)',
-                      color: 'var(--color-text-muted)',
-                      fontSize: '0.82rem',
-                    }}
-                  >
-                    Hiện không có yêu cầu xin ghép đoàn nào đang chờ duyệt.
-                  </div>
-                ) : (
-                  pendingRequests.map((reqItem, idx) => {
-                    const userObj = typeof reqItem.userId === 'object' && reqItem.userId ? reqItem.userId : null;
-                    const applicantId = userObj?._id || (typeof reqItem.userId === 'string' ? reqItem.userId : '');
-                    const applicantName = userObj?.fullName || 'Thành viên LOST';
-                    const isBusy = processingApplicantId === applicantId;
-                    const reqDate = reqItem.requestedAt
-                      ? new Date(reqItem.requestedAt).toLocaleString('vi-VN', {
-                          day: '2-digit',
-                          month: '2-digit',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })
-                      : '';
-
-                    return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {/* Pending Join Requests (Creator only) */}
+                {effectiveIsCreator && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                      Yêu Cầu Chờ Duyệt ({pendingRequests.length})
+                    </div>
+                    {pendingRequests.length === 0 ? (
                       <div
-                        key={applicantId || idx}
                         style={{
-                          padding: '12px 14px',
+                          textAlign: 'center',
+                          padding: 18,
                           borderRadius: 4,
-                          background: 'var(--color-bg-main)',
-                          border: '1px solid var(--color-border)',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: 10,
+                          border: '1px dashed var(--color-border)',
+                          color: 'var(--color-text-muted)',
+                          fontSize: '0.8rem',
                         }}
                       >
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                        Hiện không có yêu cầu xin ghép đoàn nào đang chờ duyệt.
+                      </div>
+                    ) : (
+                      pendingRequests.map((reqItem, idx) => {
+                        const userObj = typeof reqItem.userId === 'object' && reqItem.userId ? reqItem.userId : null;
+                        const applicantId = userObj?._id || (typeof reqItem.userId === 'string' ? reqItem.userId : '');
+                        const applicantName = userObj?.fullName || 'Thành viên LOST';
+                        const isBusy = processingApplicantId === applicantId;
+                        const reqDate = reqItem.requestedAt
+                          ? new Date(reqItem.requestedAt).toLocaleString('vi-VN', {
+                              day: '2-digit',
+                              month: '2-digit',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })
+                          : '';
+
+                        return (
+                          <div
+                            key={applicantId || idx}
+                            style={{
+                              padding: '12px 14px',
+                              borderRadius: 4,
+                              background: 'var(--color-bg-main)',
+                              border: '1px solid var(--color-border)',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 10,
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                {userObj?.avatarUrl ? (
+                                  <img
+                                    loading="lazy"
+                                    decoding="async"
+                                    src={userObj.avatarUrl}
+                                    alt={applicantName}
+                                    referrerPolicy="no-referrer"
+                                    style={{ width: 34, height: 34, borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--color-primary)' }}
+                                  />
+                                ) : (
+                                  <div
+                                    style={{
+                                      width: 34,
+                                      height: 34,
+                                      borderRadius: '50%',
+                                      background: 'color-mix(in srgb, var(--color-sky) 16%, transparent)',
+                                      border: '1px solid var(--color-sky)',
+                                      color: 'var(--color-sky)',
+                                      fontWeight: 800,
+                                      fontSize: '0.84rem',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                    }}
+                                  >
+                                    {applicantName.charAt(0).toUpperCase()}
+                                  </div>
+                                )}
+                                <div>
+                                  <div style={{ fontSize: '0.86rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                                    {applicantName}
+                                  </div>
+                                  <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    {userObj?.reputationScore !== undefined && (
+                                      <span style={{ color: 'var(--color-primary)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                        <IconStar size={11} color="var(--color-primary)" fill="var(--color-primary)" />
+                                        {userObj.reputationScore} Uy tín
+                                      </span>
+                                    )}
+                                    {reqDate && <span>• {reqDate}</span>}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <button
+                                  type="button"
+                                  disabled={Boolean(processingApplicantId) || isFull}
+                                  onClick={() => handleReviewApplicant(applicantId, 'approve')}
+                                  className="btn btn-primary"
+                                  style={{ padding: '6px 12px', fontSize: '0.76rem', borderRadius: 4, fontWeight: 700 }}
+                                >
+                                  {isBusy ? 'Đang xử lý...' : 'Duyệt vào đoàn'}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={Boolean(processingApplicantId)}
+                                  onClick={() => handleReviewApplicant(applicantId, 'reject')}
+                                  className="btn btn-outline"
+                                  style={{
+                                    padding: '6px 12px',
+                                    fontSize: '0.76rem',
+                                    borderRadius: 4,
+                                    fontWeight: 700,
+                                    color: 'var(--color-error-text, var(--color-error))',
+                                    borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)',
+                                  }}
+                                >
+                                  Từ chối
+                                </button>
+                              </div>
+                            </div>
+
+                            {reqItem.message && (
+                              <div
+                                style={{
+                                  fontSize: '0.8rem',
+                                  color: 'var(--color-text-muted)',
+                                  background: 'var(--color-bg-card)',
+                                  border: '1px solid var(--color-border)',
+                                  borderRadius: 4,
+                                  padding: '8px 10px',
+                                  lineHeight: 1.45,
+                                }}
+                              >
+                                &ldquo;{reqItem.message}&rdquo;
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+
+                {/* Approved Squad Roster with Creator Kick Member */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Danh Sách Thành Viên Chính Thức ({confirmedRosterMembers.length}/{maxMembers})
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                    {confirmedRosterMembers.map((member) => {
+                      const isLeader = Boolean(creatorUserId && member.rawId && member.rawId === creatorUserId);
+                      const canKick = Boolean(effectiveIsCreator && !isLeader && member.rawId);
+                      const isConfirmingKick = confirmKickMemberId === member.rawId;
+                      const isKickingThis = kickingMemberId === member.rawId;
+
+                      return (
+                        <div
+                          key={member.id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 10,
+                            flexWrap: 'wrap',
+                            padding: '10px 12px',
+                            borderRadius: 4,
+                            background: 'var(--color-bg-main)',
+                            border: '1px solid var(--color-border)',
+                          }}
+                        >
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            {userObj?.avatarUrl ? (
+                            {member.avatarUrl ? (
                               <img
-                                src={userObj.avatarUrl}
-                                alt={applicantName}
+                                loading="lazy"
+                                decoding="async"
+                                src={member.avatarUrl}
+                                alt={member.name}
                                 referrerPolicy="no-referrer"
-                                style={{ width: 34, height: 34, borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--color-primary)' }}
+                                style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--color-primary)' }}
                               />
                             ) : (
                               <div
                                 style={{
-                                  width: 34,
-                                  height: 34,
+                                  width: 32,
+                                  height: 32,
                                   borderRadius: '50%',
-                                  background: 'color-mix(in srgb, var(--color-sky) 16%, transparent)',
-                                  border: '1px solid var(--color-sky)',
-                                  color: 'var(--color-sky)',
+                                  background: 'color-mix(in srgb, var(--color-primary) 16%, transparent)',
+                                  border: '1px solid var(--color-primary)',
+                                  color: 'var(--color-primary)',
                                   fontWeight: 800,
-                                  fontSize: '0.84rem',
+                                  fontSize: '0.8rem',
                                   display: 'flex',
                                   alignItems: 'center',
                                   justifyContent: 'center',
                                 }}
                               >
-                                {applicantName.charAt(0).toUpperCase()}
+                                {member.name.charAt(0).toUpperCase()}
                               </div>
                             )}
                             <div>
-                              <div style={{ fontSize: '0.86rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                                {applicantName}
-                              </div>
-                              <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                                {userObj?.reputationScore !== undefined && (
-                                  <span style={{ color: 'var(--color-primary)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                                    <IconStar size={11} color="var(--color-primary)" fill="var(--color-primary)" />
-                                    {userObj.reputationScore} Uy tín
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                <span style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                                  {member.name}
+                                </span>
+                                {isLeader && (
+                                  <span className="badge badge-success" style={{ fontSize: '0.64rem', padding: '1px 6px' }}>
+                                    Trưởng đoàn
                                   </span>
                                 )}
-                                {reqDate && <span>• {reqDate}</span>}
                               </div>
+                              {member.reputationScore !== undefined && (
+                                <div style={{ fontSize: '0.7rem', color: 'var(--color-primary)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                  <IconStar size={10} color="var(--color-primary)" fill="var(--color-primary)" />
+                                  <span>{member.reputationScore} Uy tín</span>
+                                </div>
+                              )}
                             </div>
                           </div>
 
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                            <button
-                              type="button"
-                              disabled={Boolean(processingApplicantId) || isFull}
-                              onClick={() => handleReviewApplicant(applicantId, 'approve')}
-                              className="btn btn-primary"
-                              style={{ padding: '6px 12px', fontSize: '0.76rem', borderRadius: 4, fontWeight: 700 }}
-                            >
-                              {isBusy ? 'Đang xử lý...' : 'Duyệt vào đoàn'}
-                            </button>
-                            <button
-                              type="button"
-                              disabled={Boolean(processingApplicantId)}
-                              onClick={() => handleReviewApplicant(applicantId, 'reject')}
-                              className="btn btn-outline"
-                              style={{
-                                padding: '6px 12px',
-                                fontSize: '0.76rem',
-                                borderRadius: 4,
-                                fontWeight: 700,
-                                color: 'var(--color-error-text, var(--color-error))',
-                                borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)',
-                              }}
-                            >
-                              Từ chối
-                            </button>
-                          </div>
+                          {canKick && member.rawId && (
+                            isConfirmingKick ? (
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                                <button
+                                  type="button"
+                                  disabled={isKickingThis}
+                                  onClick={() => handleKickMember(member.rawId!)}
+                                  className="btn btn-danger"
+                                  style={{ padding: '4px 10px', fontSize: '0.72rem', fontWeight: 800, borderRadius: 4 }}
+                                >
+                                  {isKickingThis ? 'Đang xóa...' : 'Xác nhận xóa'}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isKickingThis}
+                                  onClick={() => setConfirmKickMemberId(null)}
+                                  className="btn btn-outline"
+                                  style={{ padding: '4px 8px', fontSize: '0.72rem', borderRadius: 4 }}
+                                >
+                                  Hủy
+                                </button>
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={Boolean(kickingMemberId)}
+                                onClick={() => setConfirmKickMemberId(member.rawId!)}
+                                className="btn btn-outline"
+                                style={{
+                                  padding: '4px 10px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 700,
+                                  borderRadius: 4,
+                                  color: 'var(--color-error-text, var(--color-error))',
+                                  borderColor: 'color-mix(in srgb, var(--color-error) 35%, transparent)',
+                                }}
+                              >
+                                Xóa khỏi đoàn
+                              </button>
+                            )
+                          )}
                         </div>
-
-                        {reqItem.message && (
-                          <div
-                            style={{
-                              fontSize: '0.8rem',
-                              color: 'var(--color-text-muted)',
-                              background: 'var(--color-bg-card)',
-                              border: '1px solid var(--color-border)',
-                              borderRadius: 4,
-                              padding: '8px 10px',
-                              lineHeight: 1.45,
-                            }}
-                          >
-                            &ldquo;{reqItem.message}&rdquo;
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })
-                )}
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             ) : activeTab === 'gear' ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                {/* Shared Gear Telemetry KPIs + Local Sync Scope Badge + 1-Click Zalo Export */}
+                {/* Shared Gear Telemetry KPIs + Cloud Sync Badge + 1-Click Zalo Export */}
                 <div
                   style={{
                     display: 'flex',
@@ -2395,12 +2992,12 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                         fontWeight: 700,
                         padding: '2px 7px',
                         borderRadius: 4,
-                        background: 'var(--color-bg-card)',
-                        border: '1px solid var(--color-border-strong)',
-                        color: 'var(--color-text-muted)',
+                        background: 'color-mix(in srgb, var(--color-primary) 10%, var(--color-bg-card))',
+                        border: '1px solid color-mix(in srgb, var(--color-primary) 35%, var(--color-border))',
+                        color: 'var(--color-primary)',
                       }}
                     >
-                      Lưu cục bộ trên thiết bị
+                      Đồng bộ đám mây cả đoàn
                     </span>
                   </div>
 
@@ -2496,7 +3093,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                   </div>
                 )}
 
-                {/* Vietnam Trekking Shared-Gear Presets (1-Click Auto Balanced Add) */}
+                {/* Vietnam Trekking Shared-Gear Presets (1-Click Auto Balanced Cloud Add) */}
                 <div>
                   <div
                     style={{
@@ -2515,6 +3112,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                       <button
                         key={preset.key}
                         type="button"
+                        disabled={isAddingGear}
                         onClick={() => handleAddPresetGearItem(preset)}
                         className="btn btn-outline"
                         style={{
@@ -2556,6 +3154,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     onChange={(e) => setNewGearName(e.target.value)}
                     placeholder="Tên món (VD: Nồi dã ngoại...)"
                     aria-label="Tên trang bị chung của đoàn"
+                    disabled={isAddingGear}
                     style={{ gridColumn: '1 / -1', minWidth: 0, fontSize: '0.82rem', borderRadius: 4 }}
                     required
                   />
@@ -2569,6 +3168,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     onChange={(e) => setNewGearWeightG(e.target.value)}
                     placeholder="Gram (g)"
                     aria-label="Trọng lượng trang bị chung tính theo gram"
+                    disabled={isAddingGear}
                     style={{ minWidth: 0, fontSize: '0.82rem', borderRadius: 4, fontVariantNumeric: 'tabular-nums' }}
                     required
                   />
@@ -2577,6 +3177,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     value={newGearCategory}
                     onChange={(e) => setNewGearCategory(e.target.value)}
                     aria-label="Danh mục trang bị chung"
+                    disabled={isAddingGear}
                     style={{ minWidth: 0, fontSize: '0.78rem', borderRadius: 4 }}
                   >
                     <option value="Lán trại & Nấu ăn">Lán trại &amp; Nấu ăn</option>
@@ -2589,6 +3190,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     value={effectiveNewGearCarrierId}
                     onChange={(e) => setNewGearCarrierId(e.target.value)}
                     aria-label="Người mang trang bị chung"
+                    disabled={isAddingGear}
                     style={{ minWidth: 0, fontSize: '0.78rem', borderRadius: 4 }}
                   >
                     <option value="">-- Chưa phân công --</option>
@@ -2600,111 +3202,112 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                   </select>
                   <button
                     type="submit"
-                    disabled={!newGearName.trim()}
+                    disabled={isAddingGear || !newGearName.trim()}
                     className="btn btn-primary"
                     style={{ fontSize: '0.78rem', fontWeight: 800, padding: '7px 12px', borderRadius: 4 }}
                   >
-                    + Thêm Đồ Chung
+                    {isAddingGear ? 'Đang lưu...' : '+ Thêm Đồ Chung'}
                   </button>
                 </form>
 
-                {/* Shared Gear Matrix Items */}
+                {/* Unified Cloud-Synced Shared Gear Matrix Items */}
                 {gearLoadSummary.items.length === 0 ? (
-                  sharedGear.length === 0 ? (
-                    <div style={{ textAlign: 'center', padding: 20, borderRadius: 4, border: '1px dashed var(--color-border)', color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
-                      Chưa có trang bị chung nào. Chọn nhanh các món gợi ý ở trên hoặc thêm vật dụng tùy chỉnh để chia đều tải cho cả đoàn!
-                    </div>
-                  ) : (
-                    <div style={{ padding: '9px 12px', borderRadius: 4, border: '1px dashed var(--color-border)', color: 'var(--color-text-muted)', fontSize: '0.76rem' }}>
-                      Đoàn đã có <strong>{sharedGear.length} món</strong> đồng bộ bên dưới. Thêm món kèm trọng lượng (g) vào ma trận cục bộ ở trên để tự động cân bằng tải theo thành viên.
-                    </div>
-                  )
+                  <div style={{ textAlign: 'center', padding: 20, borderRadius: 4, border: '1px dashed var(--color-border)', color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
+                    Chưa có trang bị chung nào. Chọn nhanh các món gợi ý ở trên hoặc thêm vật dụng tùy chỉnh để chia đều tải cho cả đoàn!
+                  </div>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 7, maxHeight: 250, overflowY: 'auto' }}>
-                    {gearLoadSummary.items.map((item) => (
-                      <div
-                        key={item.id}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          gap: 8,
-                          flexWrap: 'wrap',
-                          padding: '9px 12px',
-                          borderRadius: 4,
-                          background: item.packed ? 'color-mix(in srgb, var(--color-primary) 10%, transparent)' : 'var(--color-bg-main)',
-                          border: item.packed ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
-                        }}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => handleToggleMatrixGearPacked(item.id)}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 7, maxHeight: 260, overflowY: 'auto' }}>
+                    {gearLoadSummary.items.map((item) => {
+                      const isMutatingItem = togglingGearId === item.id || deletingGearId === item.id;
+                      return (
+                        <div
+                          key={item.id}
                           style={{
                             display: 'flex',
                             alignItems: 'center',
-                            gap: 9,
-                            cursor: 'pointer',
-                            flex: '1 1 180px',
-                            minWidth: 0,
-                            textAlign: 'left',
-                            background: 'none',
-                            border: 'none',
-                            padding: 0,
+                            justifyContent: 'space-between',
+                            gap: 8,
+                            flexWrap: 'wrap',
+                            padding: '9px 12px',
+                            borderRadius: 4,
+                            background: item.packed ? 'color-mix(in srgb, var(--color-primary) 10%, transparent)' : 'var(--color-bg-main)',
+                            border: item.packed ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+                            opacity: isMutatingItem ? 0.7 : 1,
                           }}
                         >
-                          <IconCheckCircle size={17} color={item.packed ? 'var(--color-primary)' : 'var(--color-text-dim)'} />
-                          <div style={{ minWidth: 0 }}>
-                            <div
-                              style={{
-                                fontSize: '0.84rem',
-                                fontWeight: 700,
-                                color: 'var(--color-text-main)',
-                                textDecoration: item.packed ? 'line-through' : 'none',
-                              }}
-                            >
-                              {item.name}
-                            </div>
-                            <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                              {item.category} •{' '}
-                              <strong style={{ color: 'var(--color-earth)' }}>
-                                {item.weightG.toLocaleString('vi-VN')} g
-                              </strong>
-                            </div>
-                          </div>
-                        </button>
-
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                          <select
-                            className="form-input"
-                            aria-label={`Chọn người mang ${item.name}`}
-                            value={item.carrierId}
-                            onChange={(e) => handleAssignMatrixGearCarrier(item.id, e.target.value)}
-                            style={{
-                              padding: '4px 8px',
-                              fontSize: '0.74rem',
-                              borderRadius: 4,
-                              maxWidth: 155,
-                              background: 'var(--color-bg-card)',
-                            }}
-                          >
-                            <option value="">Chưa phân công</option>
-                            {squadRoster.map((member) => (
-                              <option key={member.id} value={member.id}>
-                                {member.name}
-                              </option>
-                            ))}
-                          </select>
                           <button
                             type="button"
-                            onClick={() => handleDeleteMatrixGearItem(item.id)}
-                            aria-label={`Xóa ${item.name}`}
-                            style={{ background: 'none', border: 'none', color: 'var(--color-error-text, var(--banner-danger-text))', cursor: 'pointer', padding: 4 }}
+                            disabled={isMutatingItem}
+                            onClick={() => handleToggleMatrixGearPacked(item)}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 9,
+                              cursor: isMutatingItem ? 'wait' : 'pointer',
+                              flex: '1 1 180px',
+                              minWidth: 0,
+                              textAlign: 'left',
+                              background: 'none',
+                              border: 'none',
+                              padding: 0,
+                            }}
                           >
-                            <IconTrash size={14} />
+                            <IconCheckCircle size={17} color={item.packed ? 'var(--color-primary)' : 'var(--color-text-dim)'} />
+                            <div style={{ minWidth: 0 }}>
+                              <div
+                                style={{
+                                  fontSize: '0.84rem',
+                                  fontWeight: 700,
+                                  color: 'var(--color-text-main)',
+                                  textDecoration: item.packed ? 'line-through' : 'none',
+                                }}
+                              >
+                                {item.name}
+                              </div>
+                              <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                                {item.category} •{' '}
+                                <strong style={{ color: 'var(--color-earth)' }}>
+                                  {item.weightG.toLocaleString('vi-VN')} g
+                                </strong>
+                              </div>
+                            </div>
                           </button>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                            <select
+                              className="form-input"
+                              aria-label={`Chọn người mang ${item.name}`}
+                              value={item.carrierId}
+                              disabled={isMutatingItem}
+                              onChange={(e) => handleAssignMatrixGearCarrier(item.id, e.target.value)}
+                              style={{
+                                padding: '4px 8px',
+                                fontSize: '0.74rem',
+                                borderRadius: 4,
+                                maxWidth: 155,
+                                background: 'var(--color-bg-card)',
+                              }}
+                            >
+                              <option value="">Chưa phân công</option>
+                              {squadRoster.map((member) => (
+                                <option key={member.id} value={member.id}>
+                                  {member.name}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              disabled={isMutatingItem}
+                              onClick={() => handleDeleteMatrixGearItem(item.id)}
+                              aria-label={`Xóa ${item.name}`}
+                              style={{ background: 'none', border: 'none', color: 'var(--color-error-text, var(--banner-danger-text))', cursor: isMutatingItem ? 'wait' : 'pointer', padding: 4 }}
+                            >
+                              <IconTrash size={14} />
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
 
@@ -2806,66 +3409,6 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     </div>
                   </div>
                 )}
-
-                {/* Existing Server-Synced Shared Gear Records (if any exist on trip document) */}
-                {sharedGear.length > 0 && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <div style={{ fontSize: '0.68rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                      Đồ Chung Đã Đồng Bộ Trên Đoàn ({sharedGear.length})
-                    </div>
-                    {sharedGear.map((item) => (
-                      <div
-                        key={item.id}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          gap: 10,
-                          padding: '8px 12px',
-                          borderRadius: 4,
-                          background: item.packed ? 'color-mix(in srgb, var(--color-primary) 10%, transparent)' : 'var(--color-bg-main)',
-                          border: item.packed ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
-                        }}
-                      >
-                        <button
-                          type="button"
-                          disabled={togglingGearId === item.id}
-                          onClick={() => handleToggleGearPacked(item)}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 10,
-                            cursor: togglingGearId === item.id ? 'wait' : 'pointer',
-                            flex: 1,
-                            textAlign: 'left',
-                            background: 'none',
-                            border: 'none',
-                            padding: 0,
-                          }}
-                        >
-                          <IconCheckCircle size={17} color={item.packed ? 'var(--color-primary)' : 'var(--color-text-dim)'} />
-                          <div>
-                            <div style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--color-text-main)', textDecoration: item.packed ? 'line-through' : 'none' }}>
-                              {item.itemName}
-                            </div>
-                            <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>
-                              {item.category} • Phụ trách: <strong style={{ color: 'var(--color-primary)' }}>{item.assignedUserName}</strong>
-                            </div>
-                          </div>
-                        </button>
-                        <button
-                          type="button"
-                          disabled={deletingGearId === item.id}
-                          onClick={() => handleDeleteGear(item.id)}
-                          aria-label="Xóa vật dụng"
-                          style={{ background: 'none', border: 'none', color: 'var(--color-error-text, var(--banner-danger-text))', cursor: deletingGearId === item.id ? 'wait' : 'pointer', padding: 4 }}
-                        >
-                          <IconTrash size={14} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -2894,7 +3437,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     onChange={(e) => setNewExpTitle(e.target.value)}
                     placeholder="VD: Thuê Porter, Vé VQG, Xe khách..."
                     disabled={isAddingExpense}
-                    style={{ flex: 2, minWidth: 190, fontSize: '0.84rem', borderRadius: 4 }}
+                    style={{ flex: 2, minWidth: 180, fontSize: '0.84rem', borderRadius: 4 }}
                     required
                   />
                   <input
@@ -2906,9 +3449,26 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     onChange={(e) => setNewExpAmount(e.target.value)}
                     placeholder="Số tiền (VNĐ)"
                     disabled={isAddingExpense}
-                    style={{ flex: 1, minWidth: 130, fontSize: '0.84rem', borderRadius: 4 }}
+                    style={{ flex: 1, minWidth: 120, fontSize: '0.84rem', borderRadius: 4 }}
                     required
                   />
+                  {effectiveIsCreator && confirmedRosterMembers.length > 1 && (
+                    <select
+                      className="form-input"
+                      aria-label="Chọn người ứng tiền"
+                      value={newExpPayerId}
+                      onChange={(e) => setNewExpPayerId(e.target.value)}
+                      disabled={isAddingExpense}
+                      style={{ flex: 1, minWidth: 135, fontSize: '0.78rem', borderRadius: 4 }}
+                    >
+                      <option value="">Người ứng: Tôi</option>
+                      {confirmedRosterMembers.map((member) => (
+                        <option key={member.id} value={member.rawId || ''}>
+                          Ứng: {member.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                   <button
                     type="submit"
                     disabled={isAddingExpense || !newExpTitle.trim() || !newExpAmount}
@@ -2924,43 +3484,122 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     Chưa có khoản chi nào. Ghi nhận tiền xe, porter, vé vào rừng để hệ thống chia đều tự động!
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 240, overflowY: 'auto' }}>
-                    {expenses.map((exp) => (
-                      <div
-                        key={exp.id}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          gap: 10,
-                          padding: '10px 14px',
-                          borderRadius: 4,
-                          background: 'var(--color-bg-main)',
-                          border: '1px solid var(--color-border)',
-                        }}
-                      >
-                        <div>
-                          <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--color-text-main)' }}>{exp.title}</div>
-                          <div style={{ fontSize: '0.73rem', color: 'var(--color-text-muted)' }}>
-                            Người ứng: <strong>{exp.paidByName}</strong>
-                          </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 260, overflowY: 'auto' }}>
+                    {expenses.map((exp) => {
+                      const canManageExpense = Boolean(
+                        effectiveIsCreator ||
+                          (effectiveUserId && exp.paidByUserId && String(exp.paidByUserId) === effectiveUserId)
+                      );
+                      const isEditingThis = editingExpenseId === exp.id;
+
+                      return (
+                        <div
+                          key={exp.id}
+                          style={{
+                            padding: '10px 14px',
+                            borderRadius: 4,
+                            background: 'var(--color-bg-main)',
+                            border: '1px solid var(--color-border)',
+                          }}
+                        >
+                          {isEditingThis ? (
+                            <form
+                              onSubmit={(e) => handleSaveEditExpense(e, exp.id)}
+                              style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}
+                            >
+                              <input
+                                className="form-input"
+                                value={editExpTitle}
+                                onChange={(e) => setEditExpTitle(e.target.value)}
+                                disabled={isSavingExpense}
+                                required
+                                style={{ flex: 2, minWidth: 140, padding: '6px 9px', fontSize: '0.8rem', borderRadius: 4 }}
+                              />
+                              <input
+                                type="number"
+                                min="1000"
+                                step="1000"
+                                className="form-input"
+                                value={editExpAmount}
+                                onChange={(e) => setEditExpAmount(e.target.value)}
+                                disabled={isSavingExpense}
+                                required
+                                style={{ flex: 1, minWidth: 105, padding: '6px 9px', fontSize: '0.8rem', borderRadius: 4 }}
+                              />
+                              {effectiveIsCreator && confirmedRosterMembers.length > 1 && (
+                                <select
+                                  className="form-input"
+                                  value={editExpPayerId}
+                                  onChange={(e) => setEditExpPayerId(e.target.value)}
+                                  disabled={isSavingExpense}
+                                  style={{ minWidth: 120, padding: '6px 8px', fontSize: '0.76rem', borderRadius: 4 }}
+                                >
+                                  {confirmedRosterMembers.map((member) => (
+                                    <option key={member.id} value={member.rawId || ''}>
+                                      {member.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              )}
+                              <button
+                                type="submit"
+                                disabled={isSavingExpense}
+                                className="btn btn-primary"
+                                style={{ padding: '5px 10px', fontSize: '0.74rem', borderRadius: 4, fontWeight: 700 }}
+                              >
+                                {isSavingExpense ? 'Lưu...' : 'Lưu'}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isSavingExpense}
+                                onClick={() => setEditingExpenseId(null)}
+                                className="btn btn-outline"
+                                style={{ padding: '5px 8px', fontSize: '0.74rem', borderRadius: 4 }}
+                              >
+                                Hủy
+                              </button>
+                            </form>
+                          ) : (
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                              <div>
+                                <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--color-text-main)' }}>{exp.title}</div>
+                                <div style={{ fontSize: '0.73rem', color: 'var(--color-text-muted)' }}>
+                                  Người ứng: <strong>{exp.paidByName}</strong>
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <strong style={{ color: 'var(--color-earth)', fontSize: '0.88rem', fontVariantNumeric: 'tabular-nums' }}>
+                                  {Number(exp.amountVnd).toLocaleString('vi-VN')} đ
+                                </strong>
+                                {canManageExpense && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStartEditExpense(exp)}
+                                      aria-label="Sửa khoản chi"
+                                      title="Chỉnh sửa khoản chi"
+                                      style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', padding: 4 }}
+                                    >
+                                      <IconEdit size={14} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={deletingExpenseId === exp.id}
+                                      onClick={() => handleDeleteExpense(exp.id)}
+                                      aria-label="Xóa khoản chi"
+                                      title="Xóa khoản chi"
+                                      style={{ background: 'none', border: 'none', color: 'var(--color-error-text, var(--color-error))', cursor: deletingExpenseId === exp.id ? 'wait' : 'pointer', padding: 4 }}
+                                    >
+                                      <IconTrash size={15} />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          )}
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                          <strong style={{ color: 'var(--color-earth)', fontSize: '0.88rem', fontVariantNumeric: 'tabular-nums' }}>
-                            {Number(exp.amountVnd).toLocaleString('vi-VN')} đ
-                          </strong>
-                          <button
-                            type="button"
-                            disabled={deletingExpenseId === exp.id}
-                            onClick={() => handleDeleteExpense(exp.id)}
-                            aria-label="Xóa khoản chi"
-                            style={{ background: 'none', border: 'none', color: 'var(--color-error-text, var(--color-error))', cursor: deletingExpenseId === exp.id ? 'wait' : 'pointer', padding: 4 }}
-                          >
-                            <IconTrash size={15} />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
 
@@ -3048,7 +3687,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                       </button>
                     </div>
 
-                    {/* Minimal Transfer Matrix */}
+                    {/* Minimal Transfer Matrix with Cloud-Synced Settled Toggle */}
                     {settlement.isSettled ? (
                       <div
                         style={{
@@ -3069,61 +3708,97 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                       </div>
                     ) : (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                        {settlement.transfers.map((transfer, idx) => (
-                          <div
-                            key={`${transfer.from}-${transfer.to}-${idx}`}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              gap: 10,
-                              flexWrap: 'wrap',
-                              padding: '9px 12px',
-                              borderRadius: 4,
-                              background: 'var(--color-bg-card)',
-                              border: '1px solid var(--color-border)',
-                            }}
-                          >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: '0.82rem' }}>
-                              <span
-                                style={{
-                                  fontWeight: 800,
-                                  color: 'var(--color-error-text, var(--color-error))',
-                                  padding: '2px 7px',
-                                  borderRadius: 4,
-                                  background: 'color-mix(in srgb, var(--color-error) 10%, transparent)',
-                                  border: '1px solid color-mix(in srgb, var(--color-error) 25%, transparent)',
-                                }}
-                              >
-                                {transfer.from}
-                              </span>
-                              <IconArrowRight size={14} color="var(--color-text-muted)" />
-                              <span
-                                style={{
-                                  fontWeight: 800,
-                                  color: 'var(--color-primary)',
-                                  padding: '2px 7px',
-                                  borderRadius: 4,
-                                  background: 'color-mix(in srgb, var(--color-primary) 10%, transparent)',
-                                  border: '1px solid color-mix(in srgb, var(--color-primary) 28%, transparent)',
-                                }}
-                              >
-                                {transfer.to}
-                              </span>
-                            </div>
+                        {settlement.transfers.map((transfer, idx) => {
+                          const isTransferSettled = settledTransfers.includes(transfer.key);
+                          const isTogglingThis = togglingSettlementKey === transfer.key;
 
-                            <strong
+                          return (
+                            <div
+                              key={`${transfer.key}-${idx}`}
                               style={{
-                                fontSize: '0.88rem',
-                                fontWeight: 900,
-                                color: 'var(--color-earth)',
-                                fontVariantNumeric: 'tabular-nums',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                gap: 10,
+                                flexWrap: 'wrap',
+                                padding: '9px 12px',
+                                borderRadius: 4,
+                                background: isTransferSettled
+                                  ? 'color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-card))'
+                                  : 'var(--color-bg-card)',
+                                border: isTransferSettled
+                                  ? '1px solid color-mix(in srgb, var(--color-primary) 42%, var(--color-border))'
+                                  : '1px solid var(--color-border)',
+                                opacity: isTogglingThis ? 0.7 : 1,
                               }}
                             >
-                              {transfer.amountVnd.toLocaleString('vi-VN')} đ
-                            </strong>
-                          </div>
-                        ))}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: '0.82rem' }}>
+                                <span
+                                  style={{
+                                    fontWeight: 800,
+                                    color: 'var(--color-error-text, var(--color-error))',
+                                    padding: '2px 7px',
+                                    borderRadius: 4,
+                                    background: 'color-mix(in srgb, var(--color-error) 10%, transparent)',
+                                    border: '1px solid color-mix(in srgb, var(--color-error) 25%, transparent)',
+                                  }}
+                                >
+                                  {transfer.from}
+                                </span>
+                                <IconArrowRight size={14} color="var(--color-text-muted)" />
+                                <span
+                                  style={{
+                                    fontWeight: 800,
+                                    color: 'var(--color-primary)',
+                                    padding: '2px 7px',
+                                    borderRadius: 4,
+                                    background: 'color-mix(in srgb, var(--color-primary) 10%, transparent)',
+                                    border: '1px solid color-mix(in srgb, var(--color-primary) 28%, transparent)',
+                                  }}
+                                >
+                                  {transfer.to}
+                                </span>
+                              </div>
+
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                <strong
+                                  style={{
+                                    fontSize: '0.88rem',
+                                    fontWeight: 900,
+                                    color: isTransferSettled ? 'var(--color-text-muted)' : 'var(--color-earth)',
+                                    textDecoration: isTransferSettled ? 'line-through' : 'none',
+                                    fontVariantNumeric: 'tabular-nums',
+                                  }}
+                                >
+                                  {transfer.amountVnd.toLocaleString('vi-VN')} đ
+                                </strong>
+                                <button
+                                  type="button"
+                                  disabled={Boolean(togglingSettlementKey)}
+                                  onClick={() => handleToggleSettlement(transfer.key)}
+                                  className="btn btn-outline"
+                                  style={{
+                                    padding: '3px 9px',
+                                    fontSize: '0.7rem',
+                                    fontWeight: 800,
+                                    borderRadius: 4,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: 4,
+                                    background: isTransferSettled
+                                      ? 'color-mix(in srgb, var(--color-primary) 14%, transparent)'
+                                      : 'transparent',
+                                    borderColor: isTransferSettled ? 'var(--color-primary)' : 'var(--color-border-strong)',
+                                    color: isTransferSettled ? 'var(--color-primary)' : 'var(--color-text-muted)',
+                                  }}
+                                >
+                                  {isTransferSettled && <IconCheck size={12} color="var(--color-primary)" />}
+                                  <span>{isTransferSettled ? 'Đã thanh toán' : 'Đánh dấu đã trả'}</span>
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
 

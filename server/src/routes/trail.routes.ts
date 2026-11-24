@@ -8,6 +8,8 @@ import {
   getGuides,
   getTrailGuides,
   createReview,
+  updateReview,
+  toggleReviewHelpful,
   deleteReview,
   getTrailReviews,
   getTrailElevation,
@@ -27,6 +29,7 @@ import {
   createItinerary,
   getItineraryByShareToken,
   getMyItineraries,
+  updateItinerary,
   deleteItinerary,
 } from '../controllers/itinerary.controller.js';
 import { handleReverseGeocode } from '../controllers/geocoding.controller.js';
@@ -142,7 +145,9 @@ router.get('/trails/:id/nearby-trails', routeCache(300), getNearbyTrailsForTrail
 router.get('/trails/:id/elevation', routeCache(1800), getTrailElevation);
 router.get('/trails/:id/permit-template', routeCache(600), getTrailPermitTemplate);
 router.get('/trails/:id/og', routeCache(600), getTrailShareMetadata);
-router.get('/trails/:id/reviews', getTrailReviews);
+router.get('/trails/:id/reviews', optionalAuthMiddleware as any, getTrailReviews as any);
+router.put('/trails/:id/reviews/:reviewId', authMiddleware as any, updateReview as any);
+router.post('/trails/:id/reviews/:reviewId/helpful', authMiddleware as any, toggleReviewHelpful as any);
 router.delete('/trails/:id/reviews/:reviewId', authMiddleware as any, deleteReview as any);
 router.get('/trails/:id/guides', routeCache(600), getTrailGuides);
 router.get('/guides', routeCache(600), getGuides);
@@ -165,6 +170,7 @@ router.patch('/users/me/goals', userGoalsWriteIpShield, authMiddleware as any, u
 
 // Protected WRITE routes (Require Authentication)
 router.post('/itineraries', authMiddleware as any, createItinerary as any);
+router.put('/itineraries/:shareToken', authMiddleware as any, updateItinerary as any);
 router.delete('/itineraries/:shareToken', authMiddleware as any, deleteItinerary as any);
 router.post('/reviews', authMiddleware as any, createReview as any);
 

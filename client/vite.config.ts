@@ -20,12 +20,19 @@ export default defineConfig({
   build: {
     target: 'es2022',
     cssCodeSplit: true,
-    // Vite 8 / Rolldown native codeSplitting groups: keeps heavy vendor engines cached & out of initial load
-    // while preserving automatic per-route React.lazy chunks for all 8 Flagship Hubs, AI Suite & Live GPS modals.
+    sourcemap: false,
+    // Vite 8 / Rolldown native codeSplitting groups:
+    // `vendor-react` MUST carry the highest priority so Rolldown never pulls react/jsx-runtime
+    // into lazy map chunks (`vendor-leaflet` / `vendor-maplibre`) and forces eager preloads on landing.
     rolldownOptions: {
       output: {
         codeSplitting: {
           groups: [
+            {
+              name: 'vendor-react',
+              test: /[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/,
+              priority: 50,
+            },
             {
               name: 'vendor-maplibre',
               test: /[\\/]node_modules[\\/]maplibre-gl[\\/]/,
@@ -40,11 +47,6 @@ export default defineConfig({
               name: 'vendor-socket',
               test: /[\\/]node_modules[\\/](socket\.io-client|engine\.io-client|@socket\.io)[\\/]/,
               priority: 30,
-            },
-            {
-              name: 'vendor-react',
-              test: /[\\/]node_modules[\\/](react|react-dom|scheduler)[\\/]/,
-              priority: 25,
             },
             {
               name: 'data-vietnam-catalog',

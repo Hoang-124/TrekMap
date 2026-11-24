@@ -649,8 +649,6 @@ export const WeatherAlertModal: React.FC<WeatherAlertModalProps> = ({
         inset: 0,
         zIndex: 'var(--z-modal, 3000)' as unknown as number,
         background: 'var(--overlay-bg)',
-        backdropFilter: 'blur(10px)',
-        WebkitBackdropFilter: 'blur(10px)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',

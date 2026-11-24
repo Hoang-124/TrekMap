@@ -14,6 +14,7 @@ import {
   IconSparkles,
   IconEye,
   IconImage,
+  IconCamera,
   IconChevronLeft,
   IconChevronRight,
   IconFlame,
@@ -21,11 +22,14 @@ import {
   IconTrash,
   IconBookOpen,
   IconArrowRight,
+  IconMessageSquare,
+  IconSend,
 } from '../common/SvgIcons.js';
+import { uploadImageToCloudinary } from '../../services/api.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
 import type { UserProfile } from '../../types.js';
-import type { TripReportItem } from './TripReportCard.js';
+import type { TripReportCommentItem, TripReportItem } from './TripReportCard.js';
 
 interface TripReportDetailModalProps {
   report: TripReportItem | null;
@@ -133,6 +137,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
   const [editTitle, setEditTitle] = useState('');
   const [editSummary, setEditSummary] = useState('');
   const [editContent, setEditContent] = useState('');
+  const [editTripDate, setEditTripDate] = useState('');
   const [editDuration, setEditDuration] = useState('');
   const [editGroupSize, setEditGroupSize] = useState('2');
   const [editTotalCost, setEditTotalCost] = useState('');
@@ -141,9 +146,22 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
   const [editDifficulty, setEditDifficulty] = useState(3);
   const [editHighlightsText, setEditHighlightsText] = useState('');
   const [editWarningsText, setEditWarningsText] = useState('');
+  const [editRecommendationsText, setEditRecommendationsText] = useState('');
+  const [editPhotos, setEditPhotos] = useState<string[]>([]);
+  const [editPhotoUrlInput, setEditPhotoUrlInput] = useState('');
+  const [uploadingEditPhoto, setUploadingEditPhoto] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Comments state
+  const [comments, setComments] = useState<TripReportCommentItem[]>(() =>
+    Array.isArray(report?.comments) ? report.comments : []
+  );
+  const [commentInput, setCommentInput] = useState('');
+  const [isPostingComment, setIsPostingComment] = useState(false);
+  const [confirmDeleteCommentId, setConfirmDeleteCommentId] = useState<string | null>(null);
+  const [deletingCommentId, setDeletingCommentId] = useState<string | null>(null);
 
   const reportId = report?._id ?? '';
   const [trackedReportId, setTrackedReportId] = useState(reportId);
@@ -152,6 +170,9 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
     setLightboxIndex(null);
     setIsEditing(false);
     setConfirmDelete(false);
+    setConfirmDeleteCommentId(null);
+    setCommentInput('');
+    setComments(Array.isArray(report?.comments) ? report.comments : []);
     setReactions({
       like: report?.reactions?.like || 0,
       love: report?.reactions?.love || 0,
@@ -190,6 +211,9 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
         if (json?.success && json.data) {
           const fetched: TripReportItem = json.data;
           setFetchedDetail(fetched);
+          if (Array.isArray(fetched.comments)) {
+            setComments(fetched.comments);
+          }
           setReactions({
             like: fetched.reactions?.like || 0,
             love: fetched.reactions?.love || 0,
@@ -302,6 +326,14 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
     setEditTitle(detail.title || '');
     setEditSummary(detail.summary && detail.summary !== detail.title ? detail.summary : '');
     setEditContent(detail.content || '');
+    const parsedDate = detail.tripDate ? new Date(detail.tripDate) : null;
+    setEditTripDate(
+      parsedDate && !Number.isNaN(parsedDate.getTime())
+        ? parsedDate.toISOString().split('T')[0]
+        : typeof detail.tripDate === 'string' && /^\d{4}-\d{2}-\d{2}/.test(detail.tripDate)
+          ? detail.tripDate.slice(0, 10)
+          : ''
+    );
     setEditDuration(detail.duration || '');
     setEditGroupSize(String(detail.groupSize || 2));
     setEditTotalCost(detail.totalCost || '');
@@ -310,13 +342,67 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
     setEditDifficulty(Math.min(5, Math.max(1, Number(detail.difficultyActual) || 3)));
     setEditHighlightsText(Array.isArray(detail.highlights) ? detail.highlights.join('\n') : '');
     setEditWarningsText(Array.isArray(detail.warnings) ? detail.warnings.join('\n') : '');
+    setEditRecommendationsText(Array.isArray(detail.recommendations) ? detail.recommendations.join('\n') : '');
+    setEditPhotos(Array.isArray(detail.photos) ? detail.photos.filter(Boolean).slice(0, 10) : []);
+    setEditPhotoUrlInput('');
     setConfirmDelete(false);
     setIsEditing(true);
   };
 
+  const handleEditPhotoFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    const slots = Math.max(0, 10 - editPhotos.length);
+    if (slots === 0) {
+      dispatchToast('Tối đa 10 ảnh thực địa cho mỗi nhật ký.', 'info');
+      e.target.value = '';
+      return;
+    }
+    setUploadingEditPhoto(true);
+    try {
+      const uploaded: string[] = [];
+      for (const file of Array.from(fileList).slice(0, slots)) {
+        if (!file.type.startsWith('image/') || file.size > 5 * 1024 * 1024) continue;
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (ev) => resolve(String(ev.target?.result || ''));
+          reader.onerror = () => reject(new Error('read_failed'));
+          reader.readAsDataURL(file);
+        });
+        if (base64) {
+          const url = await uploadImageToCloudinary(base64, file.name, 'reviews');
+          uploaded.push(url);
+        }
+      }
+      if (uploaded.length > 0 && isMountedRef.current) {
+        setEditPhotos((prev) => [...prev, ...uploaded].slice(0, 10));
+      }
+    } catch {
+      dispatchToast('Không thể tải ảnh lên máy chủ ảnh.', 'error');
+    } finally {
+      if (isMountedRef.current) setUploadingEditPhoto(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleAddEditPhotoUrl = () => {
+    const trimmed = editPhotoUrlInput.trim();
+    if (!trimmed) return;
+    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+      dispatchToast('Vui lòng nhập đường link ảnh hợp lệ (https://...).', 'error');
+      return;
+    }
+    if (editPhotos.length >= 10) {
+      dispatchToast('Tối đa 10 ảnh thực địa cho mỗi nhật ký.', 'info');
+      return;
+    }
+    setEditPhotos((prev) => (prev.includes(trimmed) ? prev : [...prev, trimmed].slice(0, 10)));
+    setEditPhotoUrlInput('');
+  };
+
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!detail || isSavingEdit) return;
+    if (!detail || isSavingEdit || uploadingEditPhoto) return;
     const cleanTitle = editTitle.trim();
     const cleanContent = editContent.trim();
     if (!cleanTitle || !cleanContent) {
@@ -334,6 +420,21 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
       .map((s) => s.trim())
       .filter(Boolean)
       .slice(0, 10);
+    const parsedRecommendations = editRecommendationsText
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 10);
+    const pendingPhotoUrl = editPhotoUrlInput.trim();
+    const finalPhotos = [...editPhotos];
+    if (
+      pendingPhotoUrl &&
+      (pendingPhotoUrl.startsWith('http://') || pendingPhotoUrl.startsWith('https://')) &&
+      finalPhotos.length < 10 &&
+      !finalPhotos.includes(pendingPhotoUrl)
+    ) {
+      finalPhotos.push(pendingPhotoUrl);
+    }
 
     setIsSavingEdit(true);
     try {
@@ -344,6 +445,8 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
           title: cleanTitle,
           summary: editSummary.trim() || cleanTitle,
           content: cleanContent,
+          tripDate: editTripDate || detail.tripDate,
+          photos: finalPhotos.slice(0, 10),
           duration: editDuration.trim() || detail.duration,
           groupSize: Math.min(100, Math.max(1, Math.round(Number(editGroupSize) || 2))),
           totalCost: editTotalCost.trim(),
@@ -352,6 +455,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
           difficultyActual: editDifficulty,
           highlights: parsedHighlights,
           warnings: parsedWarnings,
+          recommendations: parsedRecommendations,
         }),
       });
       const json = await res.json().catch(() => ({}));
@@ -359,6 +463,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
         const updated: TripReportItem = json.data;
         if (isMountedRef.current) {
           setFetchedDetail(updated);
+          if (Array.isArray(updated.comments)) setComments(updated.comments);
           setIsEditing(false);
         }
         onReportUpdated?.(updated);
@@ -372,6 +477,103 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
     } finally {
       if (isMountedRef.current) {
         setIsSavingEdit(false);
+      }
+    }
+  };
+
+  const handleAddComment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!detail || isPostingComment) return;
+    const token = localStorage.getItem('lost_token');
+    if (!token) {
+      dispatchToast('Vui lòng đăng nhập để bình luận nhật ký chuyến đi.', 'info');
+      window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
+      return;
+    }
+    const cleanText = commentInput.trim();
+    if (!cleanText) return;
+
+    setIsPostingComment(true);
+    try {
+      const res = await fetch(`/api/trip-reports/${encodeURIComponent(detail._id)}/comments`, {
+        method: 'POST',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ content: cleanText }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.success) {
+        const nextComments: TripReportCommentItem[] = Array.isArray(json.comments)
+          ? json.comments
+          : json.data
+            ? [...comments, json.data]
+            : comments;
+        const nextCount = typeof json.commentsCount === 'number' ? json.commentsCount : nextComments.length;
+        const updatedReport: TripReportItem = {
+          ...detail,
+          comments: nextComments,
+          commentsCount: nextCount,
+        };
+        if (isMountedRef.current) {
+          setComments(nextComments);
+          setFetchedDetail(updatedReport);
+          setCommentInput('');
+        }
+        onReportUpdated?.(updatedReport);
+        window.dispatchEvent(new CustomEvent('lost:trip-report-updated', { detail: updatedReport }));
+        dispatchToast(json.message || 'Đã gửi bình luận!', 'success');
+      } else {
+        if (res.status === 401) {
+          window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
+        }
+        dispatchToast(json.message || 'Không thể gửi bình luận lúc này.', 'error');
+      }
+    } catch {
+      dispatchToast('Lỗi kết nối máy chủ khi gửi bình luận.', 'error');
+    } finally {
+      if (isMountedRef.current) {
+        setIsPostingComment(false);
+      }
+    }
+  };
+
+  const handleDeleteComment = async (commentId: string) => {
+    if (!detail || deletingCommentId) return;
+    setDeletingCommentId(commentId);
+    try {
+      const res = await fetch(
+        `/api/trip-reports/${encodeURIComponent(detail._id)}/comments/${encodeURIComponent(commentId)}`,
+        {
+          method: 'DELETE',
+          headers: getApiHeaders(),
+        }
+      );
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.success) {
+        const nextComments: TripReportCommentItem[] = Array.isArray(json.comments)
+          ? json.comments
+          : comments.filter((c) => c._id !== commentId);
+        const nextCount = typeof json.commentsCount === 'number' ? json.commentsCount : nextComments.length;
+        const updatedReport: TripReportItem = {
+          ...detail,
+          comments: nextComments,
+          commentsCount: nextCount,
+        };
+        if (isMountedRef.current) {
+          setComments(nextComments);
+          setFetchedDetail(updatedReport);
+          setConfirmDeleteCommentId(null);
+        }
+        onReportUpdated?.(updatedReport);
+        window.dispatchEvent(new CustomEvent('lost:trip-report-updated', { detail: updatedReport }));
+        dispatchToast(json.message || 'Đã xóa bình luận.', 'success');
+      } else {
+        dispatchToast(json.message || 'Không thể xóa bình luận này.', 'error');
+      }
+    } catch {
+      dispatchToast('Lỗi kết nối máy chủ khi xóa bình luận.', 'error');
+    } finally {
+      if (isMountedRef.current) {
+        setDeletingCommentId(null);
       }
     }
   };
@@ -514,8 +716,6 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
             position: 'fixed',
             inset: 0,
             background: 'var(--overlay-bg)',
-            backdropFilter: 'blur(12px)',
-            WebkitBackdropFilter: 'blur(12px)',
             zIndex: 'var(--z-modal, 3000)',
             display: 'flex',
             alignItems: 'center',
@@ -564,6 +764,8 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
                 {authorAvatar ? (
                   <img
+                    loading="lazy"
+                    decoding="async"
                     src={authorAvatar}
                     alt={authorName}
                     referrerPolicy="no-referrer"
@@ -781,6 +983,18 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(160px, 100%), 1fr))', gap: 10 }}>
                     <div>
                       <label style={{ display: 'block', fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-text-muted)', marginBottom: 4 }}>
+                        Ngày khởi hành
+                      </label>
+                      <input
+                        type="date"
+                        className="form-input"
+                        value={editTripDate}
+                        onChange={(e) => setEditTripDate(e.target.value)}
+                        style={{ width: '100%', padding: '7px 10px', fontSize: '0.82rem', borderRadius: 4 }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-text-muted)', marginBottom: 4 }}>
                         Thời gian di chuyển
                       </label>
                       <input
@@ -909,7 +1123,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                     />
                   </div>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(220px, 100%), 1fr))', gap: 10 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(200px, 100%), 1fr))', gap: 10 }}>
                     <div>
                       <label style={{ display: 'block', fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-primary)', marginBottom: 4 }}>
                         Điểm nổi bật (mỗi dòng 1 ý)
@@ -934,6 +1148,125 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                         style={{ width: '100%', padding: '8px 10px', fontSize: '0.8rem', borderRadius: 4, resize: 'vertical' }}
                       />
                     </div>
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-sun)', marginBottom: 4 }}>
+                        Lưu ý chuẩn bị (mỗi dòng 1 ý)
+                      </label>
+                      <textarea
+                        className="form-input"
+                        rows={3}
+                        value={editRecommendationsText}
+                        onChange={(e) => setEditRecommendationsText(e.target.value)}
+                        style={{ width: '100%', padding: '8px 10px', fontSize: '0.8rem', borderRadius: 4, resize: 'vertical' }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Multi-Photo Editor (up to 10 photos) */}
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8, flexWrap: 'wrap' }}>
+                      <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-text-muted)' }}>
+                        Ảnh thực địa ({editPhotos.length}/10 ảnh)
+                      </label>
+                      {editPhotos.length < 10 && (
+                        <label
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 5,
+                            padding: '4px 10px',
+                            borderRadius: 4,
+                            background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
+                            border: '1px solid var(--color-primary)',
+                            color: 'var(--color-primary)',
+                            fontSize: '0.72rem',
+                            fontWeight: 700,
+                            cursor: uploadingEditPhoto ? 'wait' : 'pointer',
+                          }}
+                        >
+                          <IconCamera size={13} color="var(--color-primary)" />
+                          <span>{uploadingEditPhoto ? 'Đang tải...' : 'Tải thêm ảnh'}</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            disabled={uploadingEditPhoto}
+                            onChange={handleEditPhotoFiles}
+                            style={{ display: 'none' }}
+                          />
+                        </label>
+                      )}
+                    </div>
+
+                    {editPhotos.length > 0 && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(84px, 1fr))', gap: 8, marginBottom: 8 }}>
+                        {editPhotos.map((src, idx) => (
+                          <div
+                            key={`${src}-${idx}`}
+                            style={{
+                              position: 'relative',
+                              height: 66,
+                              borderRadius: 4,
+                              overflow: 'hidden',
+                              border: '1px solid var(--color-border)',
+                              background: 'var(--color-bg-main)',
+                            }}
+                          >
+                            <img loading="lazy" decoding="async" src={src} alt={`Ảnh ${idx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                            <button
+                              type="button"
+                              onClick={() => setEditPhotos((prev) => prev.filter((_, i) => i !== idx))}
+                              aria-label={`Xóa ảnh ${idx + 1}`}
+                              style={{
+                                position: 'absolute',
+                                top: 3,
+                                right: 3,
+                                width: 20,
+                                height: 20,
+                                borderRadius: 4,
+                                background: 'var(--overlay-bg)',
+                                border: '1px solid var(--color-border-strong)',
+                                color: 'var(--color-on-media)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                cursor: 'pointer',
+                                padding: 0,
+                              }}
+                            >
+                              <IconX size={11} color="var(--color-on-media)" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {editPhotos.length < 10 && (
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <input
+                          type="url"
+                          className="form-input"
+                          placeholder="Hoặc dán link ảnh (https://...) rồi bấm + Thêm"
+                          value={editPhotoUrlInput}
+                          onChange={(e) => setEditPhotoUrlInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddEditPhotoUrl();
+                            }
+                          }}
+                          style={{ flex: 1, padding: '7px 10px', fontSize: '0.78rem', borderRadius: 4 }}
+                        />
+                        <button
+                          type="button"
+                          onClick={handleAddEditPhotoUrl}
+                          className="btn btn-outline"
+                          style={{ padding: '7px 12px', fontSize: '0.76rem', fontWeight: 700, borderRadius: 4, whiteSpace: 'nowrap' }}
+                        >
+                          + Thêm
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 4 }}>
@@ -941,7 +1274,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                       type="button"
                       className="btn btn-outline"
                       onClick={() => setIsEditing(false)}
-                      disabled={isSavingEdit}
+                      disabled={isSavingEdit || uploadingEditPhoto}
                       style={{ padding: '7px 14px', fontSize: '0.82rem', borderRadius: 4 }}
                     >
                       Hủy
@@ -949,7 +1282,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                     <button
                       type="submit"
                       className="btn btn-primary"
-                      disabled={isSavingEdit || !editTitle.trim() || !editContent.trim()}
+                      disabled={isSavingEdit || uploadingEditPhoto || !editTitle.trim() || !editContent.trim()}
                       style={{ padding: '7px 16px', fontSize: '0.82rem', fontWeight: 800, borderRadius: 4 }}
                     >
                       {isSavingEdit ? 'Đang lưu...' : 'Lưu thay đổi'}
@@ -1198,6 +1531,8 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                         title="Bấm để phóng to ảnh"
                       >
                         <img
+                          loading="lazy"
+                          decoding="async"
                           src={photo}
                           alt={`${detail.title} - ảnh ${idx + 1}`}
                           style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
@@ -1223,6 +1558,239 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                   </div>
                 </div>
               )}
+              {/* Comments Section */}
+              <div
+                style={{
+                  borderTop: '1px solid var(--color-border)',
+                  paddingTop: 14,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 12,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                  <div
+                    style={{
+                      fontSize: '0.76rem',
+                      fontWeight: 800,
+                      color: 'var(--color-text-main)',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.04em',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <IconMessageSquare size={14} color="var(--color-sky)" />
+                    <span>Bình luận &amp; Hỏi kinh nghiệm ({comments.length})</span>
+                  </div>
+                </div>
+
+                {/* Add Comment Form */}
+                <form onSubmit={handleAddComment} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <textarea
+                    className="form-input"
+                    rows={2}
+                    maxLength={2000}
+                    placeholder="Hỏi thêm về đường mòn, nguồn nước, thời tiết hoặc chia sẻ cảm nhận... (Ctrl+Enter để gửi)"
+                    value={commentInput}
+                    onChange={(e) => setCommentInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                        e.preventDefault();
+                        if (commentInput.trim() && !isPostingComment) {
+                          void handleAddComment(e as unknown as React.FormEvent);
+                        }
+                      }
+                    }}
+                    disabled={isPostingComment}
+                    style={{
+                      width: '100%',
+                      padding: '9px 12px',
+                      borderRadius: 4,
+                      fontSize: '0.82rem',
+                      resize: 'vertical',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      type="submit"
+                      disabled={isPostingComment || !commentInput.trim()}
+                      className="btn btn-primary"
+                      style={{
+                        padding: '6px 14px',
+                        fontSize: '0.78rem',
+                        fontWeight: 800,
+                        borderRadius: 4,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                      }}
+                    >
+                      <IconSend size={13} color="var(--color-on-primary)" />
+                      <span>{isPostingComment ? 'Đang gửi...' : 'Gửi bình luận'}</span>
+                    </button>
+                  </div>
+                </form>
+
+                {/* Comment List */}
+                {comments.length === 0 ? (
+                  <div
+                    style={{
+                      padding: '16px 14px',
+                      borderRadius: 4,
+                      border: '1px dashed var(--color-border)',
+                      textAlign: 'center',
+                      fontSize: '0.78rem',
+                      color: 'var(--color-text-dim)',
+                    }}
+                  >
+                    Chưa có bình luận nào. Hãy đặt câu hỏi đầu tiên cho tác giả nhật ký!
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {comments.map((c) => {
+                      const canDeleteComment = Boolean(
+                        currentUserId &&
+                          (isStaff ||
+                            isAuthorSelf ||
+                            String(c.authorId) === currentUserId)
+                      );
+                      const createdLabel = (() => {
+                        const d = new Date(c.createdAt);
+                        if (Number.isNaN(d.getTime())) return '';
+                        return d.toLocaleString('vi-VN', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          year: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        });
+                      })();
+
+                      return (
+                        <div
+                          key={c._id}
+                          style={{
+                            padding: '10px 12px',
+                            borderRadius: 4,
+                            background: 'var(--color-bg-main)',
+                            border: '1px solid var(--color-border)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 6,
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                              {c.authorAvatar ? (
+                                <img
+                                  loading="lazy"
+                                  decoding="async"
+                                  src={c.authorAvatar}
+                                  alt={c.authorName}
+                                  referrerPolicy="no-referrer"
+                                  style={{
+                                    width: 24,
+                                    height: 24,
+                                    borderRadius: '50%',
+                                    objectFit: 'cover',
+                                    border: '1px solid var(--color-primary)',
+                                    flexShrink: 0,
+                                  }}
+                                />
+                              ) : (
+                                <span
+                                  style={{
+                                    width: 24,
+                                    height: 24,
+                                    borderRadius: '50%',
+                                    background: 'color-mix(in srgb, var(--color-primary) 14%, transparent)',
+                                    border: '1px solid var(--color-primary)',
+                                    color: 'var(--color-primary)',
+                                    fontSize: '0.68rem',
+                                    fontWeight: 800,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  {(c.authorName || 'T').charAt(0).toUpperCase()}
+                                </span>
+                              )}
+                              <strong style={{ fontSize: '0.8rem', color: 'var(--color-text-main)' }}>
+                                {c.authorName}
+                              </strong>
+                              {createdLabel && (
+                                <span style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
+                                  • {createdLabel}
+                                </span>
+                              )}
+                            </div>
+
+                            {canDeleteComment && (
+                              confirmDeleteCommentId === c._id ? (
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                  <button
+                                    type="button"
+                                    disabled={deletingCommentId === c._id}
+                                    onClick={() => handleDeleteComment(c._id)}
+                                    className="btn btn-danger"
+                                    style={{ padding: '2px 8px', fontSize: '0.68rem', borderRadius: 4, fontWeight: 700 }}
+                                  >
+                                    {deletingCommentId === c._id ? 'Đang xóa...' : 'Xóa'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={deletingCommentId === c._id}
+                                    onClick={() => setConfirmDeleteCommentId(null)}
+                                    className="btn btn-outline"
+                                    style={{ padding: '2px 7px', fontSize: '0.68rem', borderRadius: 4 }}
+                                  >
+                                    Hủy
+                                  </button>
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteCommentId(c._id)}
+                                  aria-label="Xóa bình luận"
+                                  title="Xóa bình luận"
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    color: 'var(--color-error-text, var(--color-error))',
+                                    cursor: 'pointer',
+                                    padding: 3,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                  }}
+                                >
+                                  <IconTrash size={13} />
+                                </button>
+                              )
+                            )}
+                          </div>
+
+                          <div
+                            style={{
+                              fontSize: '0.82rem',
+                              color: 'var(--color-text-main)',
+                              lineHeight: 1.55,
+                              whiteSpace: 'pre-wrap',
+                              overflowWrap: 'anywhere',
+                            }}
+                          >
+                            {c.content}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
                 </>
               )}
             </div>
@@ -1336,8 +1904,6 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
             inset: 0,
             zIndex: 'var(--z-lightbox, 4000)',
             background: 'var(--overlay-bg)',
-            backdropFilter: 'blur(20px)',
-            WebkitBackdropFilter: 'blur(20px)',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
@@ -1447,6 +2013,8 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
             )}
 
             <img
+              loading="lazy"
+              decoding="async"
               src={activePhotos[lightboxIndex]}
               alt={`${detail.title} - ảnh ${lightboxIndex + 1}`}
               onClick={(e) => e.stopPropagation()}

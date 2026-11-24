@@ -421,7 +421,7 @@ export const SummitWeatherRadar: React.FC<SummitWeatherRadarProps> = ({
 
   const handleRefresh = () => {
     setRefreshTick((t) => t + 1);
-    onShowToast?.('Đang cập nhật dữ liệu khí tượng vệ tinh Top 12 đỉnh cao...', 'info');
+    emitToast('Đang cập nhật dữ liệu khí tượng vệ tinh Top 12 đỉnh cao...', 'info');
   };
 
   const fetchedTimeLabel = useMemo(() => {
@@ -1327,7 +1327,7 @@ export const SummitWeatherRadar: React.FC<SummitWeatherRadarProps> = ({
             isAuthenticated={hasAuthToken}
             existingAlert={alertByTrailId.get(alertModalTrail.id) || null}
             eventSource="summit-radar-modal"
-            onShowToast={onShowToast}
+            onShowToast={emitToast}
             onAlertChanged={(change) => {
               if (change.action === 'upsert' && change.sub) {
                 const savedSub = change.sub;

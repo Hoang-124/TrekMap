@@ -5,17 +5,35 @@ import { AuthRequest } from '../middleware/auth.middleware.js';
 import { TripPlanModel } from '../models/TripPlan.js';
 import { TrailModel } from '../models/Trail.js';
 import { ConversationModel } from '../models/Conversation.js';
+import { MessageModel } from '../models/Message.js';
 import { UserModel } from '../models/User.js';
 import { sanitizeInput, isSafeHttpUrl } from '../utils/validation.js';
 import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
 import { isValidObjectId, resolveTrailByIdOrSlug } from '../utils/resolveTrail.js';
 import { sendNotification } from '../utils/notification.js';
 import { recordActivity } from '../utils/audit.js';
+import { evictUserFromRoom, evictAllFromRoom } from '../config/socket.js';
 
 const VALID_TRIP_STATUSES = new Set(['recruiting', 'full', 'in_progress', 'completed', 'cancelled']);
 const VALID_REGIONS = new Set(['Miền Bắc', 'Miền Trung', 'Miền Nam']);
+const VALID_SAFETY_GATE_KEYS = new Set(['permit', 'beacon', 'gonogo', 'wfa_gear', 'turnaround', 'hotline']);
 const MAX_SHARED_GEAR_ITEMS = 100;
 const MAX_EXPENSE_ITEMS = 200;
+const MAX_SETTLED_TRANSFERS = 200;
+
+function serializeSafetyGate(raw: any): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const key of VALID_SAFETY_GATE_KEYS) {
+    if (raw instanceof Map) {
+      out[key] = Boolean(raw.get(key));
+    } else if (raw && typeof raw === 'object') {
+      out[key] = Boolean(raw[key]);
+    } else {
+      out[key] = false;
+    }
+  }
+  return out;
+}
 const DEFAULT_TRIP_COVER =
   'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329099/trekmap/trails/trail_cover_trail-taxua.jpg';
 
@@ -214,10 +232,11 @@ export const getTripPlans = async (req: AuthRequest, res: Response) => {
       query.$and = [...(query.$and || []), { $or: [{ creatorId: uid }, { currentMembers: uid }] }];
     }
 
+    const viewerId = req.user?.userId ? String(req.user.userId) : '';
     const skip = (page - 1) * limit;
-    const [trips, total] = await Promise.all([
+    const [rawTrips, total] = await Promise.all([
       TripPlanModel.find(query)
-        .select('-pendingRequests -sharedGear -expenses -groupConversationId')
+        .select('-sharedGear -expenses -groupConversationId -safetyGate -settledTransfers')
         .populate('creatorId', 'fullName avatarUrl reputationScore badges')
         .populate('currentMembers', 'fullName avatarUrl')
         .populate('trailId', 'id name province region maxAltitudeM')
@@ -228,10 +247,27 @@ export const getTripPlans = async (req: AuthRequest, res: Response) => {
       TripPlanModel.countDocuments(query),
     ]);
 
+    // Compute hasPendingRequest strictly for viewer without leaking other applicants
+    const trips = rawTrips.map((t: any) => {
+      const hasPendingRequest = Boolean(
+        viewerId &&
+          Array.isArray(t.pendingRequests) &&
+          t.pendingRequests.some((r: any) => String(r?.userId?._id || r?.userId || '') === viewerId)
+      );
+      const { pendingRequests: _strippedPending, ...publicTrip } = t;
+      return {
+        ...publicTrip,
+        hasPendingRequest,
+      };
+    });
+
+    const totalPages = Math.ceil(total / limit);
+    const hasMore = skip + trips.length < total;
+
     return res.json({
       success: true,
       data: trips,
-      pagination: { total, page, limit },
+      pagination: { total, page, limit, totalPages, hasMore },
     });
   } catch (err) {
     console.error('[Get Trip Plans Error]:', err);
@@ -346,16 +382,29 @@ export const getTripPlanById = async (req: AuthRequest, res: Response) => {
       (Boolean(viewerId) &&
         Array.isArray(trip.currentMembers) &&
         trip.currentMembers.some((m: any) => String(m?._id || m) === viewerId));
+    const hasPendingRequest = Boolean(
+      viewerId &&
+        Array.isArray(trip.pendingRequests) &&
+        trip.pendingRequests.some((r: any) => String(r?.userId?._id || r?.userId || '') === viewerId)
+    );
 
-    // Only creator sees pending applicants; only approved members see private squad gear, expenses, and group chat ID
+    // Only creator sees pending applicants; only approved members see private squad gear, safetyGate, expenses, settlements & group chat ID
     if (!isCreator) {
       (trip as any).pendingRequests = [];
     }
     if (!isMember) {
       (trip as any).sharedGear = [];
       (trip as any).expenses = [];
+      (trip as any).safetyGate = {};
+      (trip as any).settledTransfers = [];
       delete (trip as any).groupConversationId;
+    } else {
+      (trip as any).safetyGate = serializeSafetyGate((trip as any).safetyGate);
+      (trip as any).settledTransfers = Array.isArray((trip as any).settledTransfers)
+        ? (trip as any).settledTransfers
+        : [];
     }
+    (trip as any).hasPendingRequest = hasPendingRequest;
 
     return res.json({
       success: true,
@@ -365,6 +414,253 @@ export const getTripPlanById = async (req: AuthRequest, res: Response) => {
   } catch (err) {
     console.error('[Get Trip Plan Detail Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi khi tải chi tiết chuyến đi.' });
+  }
+};
+
+// PUT /api/trips/:id - Creator or Admin edits trip plan metadata
+export const updateTripPlan = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
+    const { id } = req.params;
+
+    if (!userId || !isValidObjectId(userId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: 'Mã chuyến đi không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const trip = await TripPlanModel.findById(id);
+    if (!trip) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy chuyến đi.' });
+    }
+    if (!isAdmin && String(trip.creatorId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'Chỉ trưởng đoàn mới có quyền chỉnh sửa chuyến đi.' });
+    }
+
+    const {
+      title,
+      startDate,
+      endDate,
+      maxMembers,
+      difficultyLevel,
+      difficulty,
+      estimatedCost,
+      estimatedBudget,
+      description,
+      meetingPoint,
+      requirements,
+      tags,
+      trailId,
+      trailName,
+    } = req.body || {};
+
+    const nextTitle = title !== undefined ? sanitizeInput(String(title)).slice(0, 180) : trip.title;
+    const nextDesc = description !== undefined ? sanitizeInput(String(description)).slice(0, 3000) : trip.description;
+    const nextReq = requirements !== undefined ? sanitizeInput(String(requirements)).slice(0, 500) : trip.requirements;
+    const nextMeeting = meetingPoint !== undefined ? sanitizeInput(String(meetingPoint)).slice(0, 200) : trip.meetingPoint;
+    const rawBudget = estimatedCost !== undefined ? estimatedCost : estimatedBudget;
+    const nextBudget = rawBudget !== undefined ? sanitizeInput(String(rawBudget)).slice(0, 200) : trip.estimatedCost;
+
+    if (!nextTitle.trim()) {
+      return res.status(400).json({ success: false, message: 'Tiêu đề chuyến đi không được để trống.' });
+    }
+    if (containsProfanity(`${nextTitle} ${nextDesc} ${nextReq} ${nextMeeting}`)) {
+      const matched = getProfanityMatch(`${nextTitle} ${nextDesc} ${nextReq} ${nextMeeting}`);
+      return res.status(400).json({
+        success: false,
+        message: `Nội dung chứa từ ngữ vi phạm quy chuẩn cộng đồng ("${matched}").`,
+      });
+    }
+
+    let nextStart = trip.startDate;
+    let nextEnd = trip.endDate;
+    if (startDate !== undefined) {
+      const d = new Date(startDate);
+      if (Number.isNaN(d.getTime())) {
+        return res.status(400).json({ success: false, message: 'Ngày khởi hành không hợp lệ.' });
+      }
+      nextStart = d;
+    }
+    if (endDate !== undefined) {
+      const d = new Date(endDate);
+      if (Number.isNaN(d.getTime())) {
+        return res.status(400).json({ success: false, message: 'Ngày kết thúc không hợp lệ.' });
+      }
+      nextEnd = d;
+    }
+    const MAX_TRIP_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
+    if (nextEnd < nextStart || nextEnd.getTime() - nextStart.getTime() > MAX_TRIP_DURATION_MS) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ngày kết thúc phải lớn hơn hoặc bằng ngày khởi hành (tối đa 30 ngày).',
+      });
+    }
+
+    let nextMax = trip.maxMembers;
+    if (maxMembers !== undefined && Number.isFinite(Number(maxMembers))) {
+      const parsedMax = Math.min(50, Math.max(2, Math.round(Number(maxMembers))));
+      if (parsedMax < trip.currentMembers.length) {
+        return res.status(400).json({
+          success: false,
+          message: `Số lượng tối đa không thể nhỏ hơn số thành viên hiện tại (${trip.currentMembers.length}).`,
+        });
+      }
+      nextMax = parsedMax;
+    }
+
+    const rawDiff = difficultyLevel !== undefined ? difficultyLevel : difficulty;
+    if (rawDiff !== undefined && Number.isFinite(Number(rawDiff))) {
+      trip.difficultyLevel = Math.min(5, Math.max(1, Math.round(Number(rawDiff))));
+    }
+
+    if (trailId !== undefined) {
+      const resolvedTrail = trailId ? await resolveTrailByIdOrSlug(String(trailId)) : null;
+      trip.trailId = resolvedTrail?._id || undefined;
+      if (trailName === undefined) {
+        trip.trailName = resolvedTrail?.name || '';
+      }
+    }
+    if (trailName !== undefined) {
+      trip.trailName = sanitizeInput(String(trailName)).slice(0, 160);
+    }
+
+    if (Array.isArray(tags)) {
+      trip.tags = tags
+        .filter((t: unknown) => typeof t === 'string' && t.trim())
+        .slice(0, 10)
+        .map((t: string) => sanitizeInput(t).slice(0, 30));
+    }
+
+    const titleChanged = nextTitle !== trip.title;
+    trip.title = nextTitle;
+    trip.description = nextDesc || nextTitle;
+    trip.requirements = nextReq;
+    trip.meetingPoint = nextMeeting;
+    trip.estimatedCost = nextBudget;
+    trip.startDate = nextStart;
+    trip.endDate = nextEnd;
+    trip.maxMembers = nextMax;
+
+    if (trip.status === 'recruiting' && trip.currentMembers.length >= trip.maxMembers) {
+      trip.status = 'full';
+    } else if (trip.status === 'full' && trip.currentMembers.length < trip.maxMembers) {
+      trip.status = 'recruiting';
+    }
+
+    await trip.save();
+
+    if (titleChanged && trip.groupConversationId) {
+      await ConversationModel.updateOne(
+        { _id: trip.groupConversationId },
+        { $set: { groupName: `Đoàn: ${trip.title}`.slice(0, 140) } }
+      ).catch(() => {});
+    }
+
+    const populated = await TripPlanModel.findById(trip._id)
+      .populate('creatorId', 'fullName avatarUrl reputationScore badges bio')
+      .populate('currentMembers', 'fullName avatarUrl reputationScore badges')
+      .populate('pendingRequests.userId', 'fullName avatarUrl reputationScore')
+      .populate('trailId', 'id name province region maxAltitudeM distanceKm')
+      .lean();
+
+    if (populated) {
+      (populated as any).safetyGate = serializeSafetyGate((populated as any).safetyGate);
+      (populated as any).settledTransfers = Array.isArray((populated as any).settledTransfers)
+        ? (populated as any).settledTransfers
+        : [];
+    }
+
+    return res.json({
+      success: true,
+      message: 'Đã cập nhật thông tin chuyến ghép đoàn!',
+      data: populated || trip,
+    });
+  } catch (err) {
+    console.error('[Update Trip Plan Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi cập nhật chuyến đi.' });
+  }
+};
+
+// DELETE /api/trips/:id/members/:memberId - Creator removes an approved member from the squad & group chat
+export const kickTripMember = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
+    const { id, memberId } = req.params;
+
+    if (!userId || !isValidObjectId(userId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    if (!isValidObjectId(id) || !isValidObjectId(memberId)) {
+      return res.status(400).json({ success: false, message: 'Mã chuyến đi hoặc thành viên không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const trip = await TripPlanModel.findById(id);
+    if (!trip) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy chuyến đi.' });
+    }
+    if (!isAdmin && String(trip.creatorId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'Chỉ trưởng đoàn mới có quyền quản lý thành viên.' });
+    }
+    if (String(trip.creatorId) === String(memberId)) {
+      return res.status(400).json({ success: false, message: 'Không thể xóa trưởng đoàn khỏi chuyến đi.' });
+    }
+
+    const memberObjId = new mongoose.Types.ObjectId(memberId);
+    const isMember = trip.currentMembers.some((m) => String(m) === String(memberId));
+    if (!isMember) {
+      return res.status(404).json({ success: false, message: 'Người này không nằm trong danh sách thành viên đoàn.' });
+    }
+
+    await TripPlanModel.updateOne({ _id: trip._id }, { $pull: { currentMembers: memberObjId } });
+    await TripPlanModel.updateOne(
+      {
+        _id: trip._id,
+        status: 'full',
+        $expr: { $lt: [{ $size: '$currentMembers' }, '$maxMembers'] },
+      },
+      { $set: { status: 'recruiting' } }
+    );
+
+    if (trip.groupConversationId) {
+      await ConversationModel.updateOne(
+        { _id: trip.groupConversationId },
+        { $pull: { participants: memberObjId } }
+      ).catch(() => {});
+      evictUserFromRoom(String(memberId), `conv:${trip.groupConversationId.toString()}`);
+    }
+
+    sendNotification({
+      recipientId: String(memberId),
+      type: 'system',
+      category: 'social',
+      title: 'Cập nhật danh sách đoàn',
+      message: `Trưởng đoàn đã điều chỉnh danh sách và đưa bạn ra khỏi chuyến "${trip.title}".`,
+      link: '/forum?tab=trips',
+      relatedId: trip._id.toString(),
+    }).catch(() => {});
+
+    const refreshed = await TripPlanModel.findById(trip._id)
+      .select('currentMembers status')
+      .populate('currentMembers', 'fullName avatarUrl reputationScore badges')
+      .lean();
+
+    return res.json({
+      success: true,
+      message: 'Đã xóa thành viên khỏi đoàn và phòng chat nhóm.',
+      data: refreshed,
+    });
+  } catch (err) {
+    console.error('[Kick Trip Member Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi xóa thành viên khỏi đoàn.' });
   }
 };
 
@@ -433,7 +729,7 @@ export const requestJoinTrip = async (req: AuthRequest, res: Response) => {
       category: 'social',
       title: 'Yêu cầu xin ghép đoàn mới',
       message: `${applicant?.fullName || 'Một Trekker'} muốn tham gia chuyến "${updatedTrip.title}": "${message.slice(0, 80)}"`,
-      link: '/forum',
+      link: '/forum?tab=trips',
       relatedId: id,
     }).catch(() => {});
 
@@ -520,7 +816,7 @@ export const approveJoinTrip = async (req: AuthRequest, res: Response) => {
       category: 'social',
       title: 'Bạn đã được duyệt vào đoàn!',
       message: `Trưởng đoàn đã chấp thuận yêu cầu tham gia chuyến "${updatedTrip.title}". Bạn đã có thể mở Không Gian Đoàn & Chat nhóm!`,
-      link: '/forum',
+      link: '/forum?tab=trips',
       relatedId: updatedTrip._id.toString(),
     }).catch(() => {});
 
@@ -583,7 +879,7 @@ export const rejectJoinTrip = async (req: AuthRequest, res: Response) => {
       category: 'social',
       title: 'Phản hồi yêu cầu ghép đoàn',
       message: `Yêu cầu tham gia chuyến "${updatedTrip.title}" chưa được chấp thuận${safeReason ? `: ${safeReason}` : '.'}`,
-      link: '/forum',
+      link: '/forum?tab=trips',
       relatedId: id,
     }).catch(() => {});
 
@@ -656,6 +952,7 @@ export const leaveTrip = async (req: AuthRequest, res: Response) => {
         { _id: trip.groupConversationId },
         { $pull: { participants: userObjId } }
       ).catch(() => {});
+      evictUserFromRoom(String(userId), `conv:${trip.groupConversationId.toString()}`);
     }
 
     return res.json({ success: true, message: 'Bạn đã rời khỏi chuyến ghép đoàn.' });
@@ -733,7 +1030,11 @@ export const deleteTripPlan = async (req: AuthRequest, res: Response) => {
 
     await TripPlanModel.deleteOne({ _id: id });
     if (trip.groupConversationId) {
-      await ConversationModel.deleteOne({ _id: trip.groupConversationId }).catch(() => {});
+      evictAllFromRoom(`conv:${trip.groupConversationId.toString()}`);
+      await Promise.all([
+        MessageModel.deleteMany({ conversation: trip.groupConversationId }).catch(() => {}),
+        ConversationModel.deleteOne({ _id: trip.groupConversationId }).catch(() => {}),
+      ]);
     }
 
     const otherMembers = (trip.currentMembers || [])
@@ -747,7 +1048,7 @@ export const deleteTripPlan = async (req: AuthRequest, res: Response) => {
           category: 'social',
           title: 'Chuyến ghép đoàn đã bị hủy',
           message: `Chuyến đi "${trip.title}" đã được trưởng đoàn đóng / xóa khỏi lịch khởi hành.`,
-          link: '/forum',
+          link: '/forum?tab=trips',
         }).catch(() => {})
       )
     );
@@ -825,16 +1126,86 @@ export const openTripGroupChat = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// POST /api/trips/:id/gear - Atomically add a shared group gear item (capped at 100)
+// PATCH /api/trips/:id/safety-gate - Member or creator toggles a 6-step safety gate step in MongoDB
+export const toggleSafetyGateStep = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId || !isValidObjectId(userId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    const { trip, errorStatus, errorMessage } = await loadAuthorizedTrip(String(req.params.id || ''), userId);
+    if (!trip) {
+      return res.status(errorStatus!).json({ success: false, message: errorMessage });
+    }
+
+    const { stepKey, checked, reset } = req.body || {};
+
+    if (reset === true) {
+      const resetSet: Record<string, boolean> = {};
+      for (const k of VALID_SAFETY_GATE_KEYS) {
+        resetSet[`safetyGate.${k}`] = false;
+      }
+      const updated = await TripPlanModel.findByIdAndUpdate(
+        trip._id,
+        { $set: resetSet },
+        { new: true }
+      )
+        .select('safetyGate')
+        .lean();
+      return res.json({
+        success: true,
+        message: 'Đã đặt lại 6 bước Cổng Kiểm Tra An Toàn.',
+        data: serializeSafetyGate(updated?.safetyGate),
+      });
+    }
+
+    const cleanKey = typeof stepKey === 'string' ? stepKey.trim() : '';
+    if (!VALID_SAFETY_GATE_KEYS.has(cleanKey)) {
+      return res.status(400).json({ success: false, message: 'Hạng mục kiểm tra an toàn không hợp lệ.' });
+    }
+
+    const currentMap = serializeSafetyGate(trip.safetyGate);
+    const nextValue = typeof checked === 'boolean' ? checked : !currentMap[cleanKey];
+
+    const updated = await TripPlanModel.findByIdAndUpdate(
+      trip._id,
+      { $set: { [`safetyGate.${cleanKey}`]: nextValue } },
+      { new: true }
+    )
+      .select('safetyGate')
+      .lean();
+
+    return res.json({
+      success: true,
+      data: serializeSafetyGate(updated?.safetyGate),
+    });
+  } catch (err) {
+    console.error('[Toggle Safety Gate Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi cập nhật Cổng Kiểm Tra An Toàn.' });
+  }
+};
+
+// POST /api/trips/:id/gear - Atomically add a shared group gear item with weightG & assignment (capped at 100)
 export const addSharedGear = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
     if (!userId || !isValidObjectId(userId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
     }
-    const { itemName, category = 'Dùng chung', claimByMe = true } = req.body || {};
+    const {
+      itemName,
+      category = 'Dùng chung',
+      weightG = 500,
+      assignedUserId,
+      assignedUserName,
+      claimByMe = false,
+    } = req.body || {};
+
     const cleanName = sanitizeInput(String(itemName || '')).trim();
     const cleanCategory = sanitizeInput(String(category)).slice(0, 60) || 'Dùng chung';
+    const rawWeight = Math.round(Number(weightG));
+    const safeWeightG = Number.isFinite(rawWeight) && rawWeight >= 0 ? Math.min(100_000, rawWeight) : 500;
+
     if (!cleanName) {
       return res.status(400).json({ success: false, message: 'Vui lòng nhập tên vật dụng dùng chung.' });
     }
@@ -848,15 +1219,36 @@ export const addSharedGear = async (req: AuthRequest, res: Response) => {
       return res.status(errorStatus!).json({ success: false, message: errorMessage });
     }
 
-    const user = await UserModel.findById(userId).select('fullName username').lean();
-    const userName = user?.fullName || user?.username || 'Thành viên';
+    let resolvedAssigneeId: mongoose.Types.ObjectId | undefined;
+    let resolvedAssigneeName = 'Chưa nhận';
+
+    if (typeof assignedUserId === 'string' && assignedUserId.trim()) {
+      const rawAssigneeId = assignedUserId.trim();
+      const memberSet = new Set([String(trip.creatorId), ...trip.currentMembers.map((m) => String(m))]);
+      if (isValidObjectId(rawAssigneeId) && memberSet.has(rawAssigneeId)) {
+        resolvedAssigneeId = new mongoose.Types.ObjectId(rawAssigneeId);
+        const assigneeDoc = await UserModel.findById(rawAssigneeId).select('fullName username').lean();
+        resolvedAssigneeName =
+          assigneeDoc?.fullName ||
+          assigneeDoc?.username ||
+          sanitizeInput(String(assignedUserName || '')).slice(0, 80) ||
+          'Thành viên';
+      }
+    } else if (typeof assignedUserName === 'string' && assignedUserName.trim()) {
+      resolvedAssigneeName = sanitizeInput(assignedUserName).slice(0, 80);
+    } else if (claimByMe === true) {
+      const user = await UserModel.findById(userId).select('fullName username').lean();
+      resolvedAssigneeId = new mongoose.Types.ObjectId(userId);
+      resolvedAssigneeName = user?.fullName || user?.username || 'Thành viên';
+    }
 
     const newItem = {
       id: `gear-${crypto.randomBytes(6).toString('hex')}`,
       itemName: cleanName.slice(0, 140),
       category: cleanCategory,
-      assignedUserId: claimByMe ? new mongoose.Types.ObjectId(userId) : undefined,
-      assignedUserName: claimByMe ? userName : 'Chưa ai nhận',
+      weightG: safeWeightG,
+      assignedUserId: resolvedAssigneeId,
+      assignedUserName: resolvedAssigneeName,
       packed: false,
     };
 
@@ -882,7 +1274,7 @@ export const addSharedGear = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// PATCH /api/trips/:id/gear/:gearId - Atomically claim, unclaim, or toggle packed status on shared gear
+// PATCH /api/trips/:id/gear/:gearId - Update weightG, category, assignment, claim, or packed status
 export const updateSharedGear = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
@@ -900,41 +1292,72 @@ export const updateSharedGear = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ success: false, message: 'Không tìm thấy vật dụng này.' });
     }
 
-    const { packed, claim } = req.body || {};
-    const isCreator = String(trip.creatorId) === String(userId);
-    const currentAssigneeId = target.assignedUserId ? String(target.assignedUserId) : '';
+    const { packed, claim, weightG, category, itemName, assignedUserId, assignedUserName } = req.body || {};
     const setFields: Record<string, any> = {};
     const unsetFields: Record<string, any> = {};
 
     if (typeof packed === 'boolean') {
-      if (currentAssigneeId && currentAssigneeId !== String(userId) && !isCreator) {
-        return res.status(403).json({
-          success: false,
-          message: 'Chỉ người phụ trách vật dụng này hoặc trưởng đoàn mới có thể cập nhật trạng thái đóng gói.',
-        });
-      }
       setFields['sharedGear.$.packed'] = packed;
     }
 
-    if (claim === true) {
-      if (currentAssigneeId && currentAssigneeId !== String(userId) && !isCreator) {
-        return res.status(409).json({
-          success: false,
-          message: `Vật dụng này đã có ${target.assignedUserName || 'thành viên khác'} nhận phụ trách.`,
-        });
+    if (weightG !== undefined) {
+      const parsedW = Math.round(Number(weightG));
+      if (!Number.isFinite(parsedW) || parsedW < 0 || parsedW > 100_000) {
+        return res.status(400).json({ success: false, message: 'Trọng lượng không hợp lệ (0 - 100.000g).' });
       }
+      setFields['sharedGear.$.weightG'] = parsedW;
+    }
+
+    if (typeof category === 'string' && category.trim()) {
+      const cleanCat = sanitizeInput(category).slice(0, 60);
+      if (cleanCat) setFields['sharedGear.$.category'] = cleanCat;
+    }
+
+    if (typeof itemName === 'string' && itemName.trim()) {
+      const cleanItem = sanitizeInput(itemName).slice(0, 140);
+      if (containsProfanity(cleanItem)) {
+        const matched = getProfanityMatch(cleanItem);
+        return res.status(400).json({ success: false, message: `Tên vật dụng chứa từ ngữ không phù hợp ("${matched}").` });
+      }
+      if (cleanItem) setFields['sharedGear.$.itemName'] = cleanItem;
+    }
+
+    if (assignedUserId !== undefined) {
+      if (assignedUserId === null || assignedUserId === '') {
+        unsetFields['sharedGear.$.assignedUserId'] = '';
+        setFields['sharedGear.$.assignedUserName'] = 'Chưa nhận';
+      } else if (typeof assignedUserId === 'string' && isValidObjectId(assignedUserId.trim())) {
+        const cleanAssigneeId = assignedUserId.trim();
+        const memberSet = new Set([String(trip.creatorId), ...trip.currentMembers.map((m) => String(m))]);
+        if (!memberSet.has(cleanAssigneeId)) {
+          return res.status(400).json({ success: false, message: 'Người được phân công không thuộc danh sách thành viên đoàn.' });
+        }
+        const assigneeDoc = await UserModel.findById(cleanAssigneeId).select('fullName username').lean();
+        setFields['sharedGear.$.assignedUserId'] = new mongoose.Types.ObjectId(cleanAssigneeId);
+        setFields['sharedGear.$.assignedUserName'] =
+          assigneeDoc?.fullName ||
+          assigneeDoc?.username ||
+          sanitizeInput(String(assignedUserName || '')).slice(0, 80) ||
+          'Thành viên';
+      } else if (typeof assignedUserName === 'string' && assignedUserName.trim()) {
+        unsetFields['sharedGear.$.assignedUserId'] = '';
+        setFields['sharedGear.$.assignedUserName'] = sanitizeInput(assignedUserName).slice(0, 80);
+      }
+    } else if (typeof assignedUserName === 'string') {
+      const cleanAssigneeName = sanitizeInput(assignedUserName).slice(0, 80);
+      setFields['sharedGear.$.assignedUserName'] = cleanAssigneeName || 'Chưa nhận';
+      if (!cleanAssigneeName || cleanAssigneeName === 'Chưa nhận') {
+        unsetFields['sharedGear.$.assignedUserId'] = '';
+      }
+    }
+
+    if (claim === true) {
       const user = await UserModel.findById(userId).select('fullName username').lean();
       setFields['sharedGear.$.assignedUserId'] = new mongoose.Types.ObjectId(userId);
       setFields['sharedGear.$.assignedUserName'] = user?.fullName || user?.username || 'Thành viên';
     } else if (claim === false) {
-      if (currentAssigneeId && currentAssigneeId !== String(userId) && !isCreator) {
-        return res.status(403).json({
-          success: false,
-          message: 'Bạn không thể hủy phân công vật dụng của thành viên khác.',
-        });
-      }
       unsetFields['sharedGear.$.assignedUserId'] = '';
-      setFields['sharedGear.$.assignedUserName'] = 'Chưa ai nhận';
+      setFields['sharedGear.$.assignedUserName'] = 'Chưa nhận';
       setFields['sharedGear.$.packed'] = false;
     }
 
@@ -1004,14 +1427,14 @@ export const deleteSharedGear = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// POST /api/trips/:id/expenses - Atomically record a shared expedition expense (VND, capped at 200)
+// POST /api/trips/:id/expenses - Atomically record a shared expedition expense (VND, capped at 200; creator can pick payer)
 export const addTripExpense = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
     if (!userId || !isValidObjectId(userId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
     }
-    const { title, amountVnd, splitCount } = req.body || {};
+    const { title, amountVnd, splitCount, paidByUserId, paidByName } = req.body || {};
     const cleanTitle = sanitizeInput(String(title || '')).trim();
     const amount = Math.round(Number(amountVnd));
     if (!cleanTitle || !Number.isFinite(amount) || amount < 1000 || amount > 500_000_000) {
@@ -1027,8 +1450,21 @@ export const addTripExpense = async (req: AuthRequest, res: Response) => {
       return res.status(errorStatus!).json({ success: false, message: errorMessage });
     }
 
-    const user = await UserModel.findById(userId).select('fullName username').lean();
-    const userName = user?.fullName || user?.username || 'Thành viên';
+    const isCreator = String(trip.creatorId) === String(userId);
+    const memberSet = new Set([String(trip.creatorId), ...trip.currentMembers.map((m) => String(m))]);
+
+    let targetPayerId = String(userId);
+    if (isCreator && typeof paidByUserId === 'string' && isValidObjectId(paidByUserId.trim()) && memberSet.has(paidByUserId.trim())) {
+      targetPayerId = paidByUserId.trim();
+    }
+
+    const payerDoc = await UserModel.findById(targetPayerId).select('fullName username').lean();
+    const resolvedPayerName =
+      payerDoc?.fullName ||
+      payerDoc?.username ||
+      (isCreator && typeof paidByName === 'string' && paidByName.trim() ? sanitizeInput(paidByName).slice(0, 80) : '') ||
+      'Thành viên';
+
     const rawSplit = Number(splitCount);
     const memberCount =
       Number.isFinite(rawSplit) && rawSplit >= 1 ? Math.round(rawSplit) : trip.currentMembers.length || 1;
@@ -1037,8 +1473,8 @@ export const addTripExpense = async (req: AuthRequest, res: Response) => {
       id: `exp-${crypto.randomBytes(6).toString('hex')}`,
       title: cleanTitle.slice(0, 140),
       amountVnd: amount,
-      paidByUserId: new mongoose.Types.ObjectId(userId),
-      paidByName: userName,
+      paidByUserId: new mongoose.Types.ObjectId(targetPayerId),
+      paidByName: resolvedPayerName,
       splitCount: Math.min(50, Math.max(1, memberCount)),
       createdAt: new Date(),
     };
@@ -1065,6 +1501,89 @@ export const addTripExpense = async (req: AuthRequest, res: Response) => {
   }
 };
 
+// PATCH /api/trips/:id/expenses/:expenseId - Edit an expense entry (strictly payer or creator!)
+export const updateTripExpense = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId || !isValidObjectId(userId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    const { trip, errorStatus, errorMessage } = await loadAuthorizedTrip(String(req.params.id || ''), userId);
+    if (!trip) {
+      return res.status(errorStatus!).json({ success: false, message: errorMessage });
+    }
+
+    const expenseId = String(req.params.expenseId || '');
+    const target = (trip.expenses || []).find((e) => e.id === expenseId);
+    if (!target) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy khoản chi này.' });
+    }
+
+    const isCreator = String(trip.creatorId) === String(userId);
+    const isPayer = target.paidByUserId ? String(target.paidByUserId) === String(userId) : false;
+    if (!isCreator && !isPayer) {
+      return res.status(403).json({ success: false, message: 'Chỉ người chi hoặc trưởng đoàn mới có quyền sửa khoản chi này.' });
+    }
+
+    const { title, amountVnd, splitCount, paidByUserId } = req.body || {};
+    const setFields: Record<string, any> = {};
+
+    if (title !== undefined) {
+      const cleanTitle = sanitizeInput(String(title)).trim();
+      if (!cleanTitle) {
+        return res.status(400).json({ success: false, message: 'Tên khoản chi không được để trống.' });
+      }
+      if (containsProfanity(cleanTitle)) {
+        const matched = getProfanityMatch(cleanTitle);
+        return res.status(400).json({ success: false, message: `Tên khoản chi chứa từ ngữ không phù hợp ("${matched}").` });
+      }
+      setFields['expenses.$.title'] = cleanTitle.slice(0, 140);
+    }
+
+    if (amountVnd !== undefined) {
+      const amount = Math.round(Number(amountVnd));
+      if (!Number.isFinite(amount) || amount < 1000 || amount > 500_000_000) {
+        return res.status(400).json({ success: false, message: 'Số tiền không hợp lệ (từ 1.000đ đến 500.000.000đ).' });
+      }
+      setFields['expenses.$.amountVnd'] = amount;
+    }
+
+    if (splitCount !== undefined) {
+      const parsedSplit = Math.round(Number(splitCount));
+      if (Number.isFinite(parsedSplit) && parsedSplit >= 1 && parsedSplit <= 50) {
+        setFields['expenses.$.splitCount'] = parsedSplit;
+      }
+    }
+
+    if (isCreator && typeof paidByUserId === 'string' && isValidObjectId(paidByUserId.trim())) {
+      const cleanPayerId = paidByUserId.trim();
+      const memberSet = new Set([String(trip.creatorId), ...trip.currentMembers.map((m) => String(m))]);
+      if (memberSet.has(cleanPayerId)) {
+        const payerDoc = await UserModel.findById(cleanPayerId).select('fullName username').lean();
+        setFields['expenses.$.paidByUserId'] = new mongoose.Types.ObjectId(cleanPayerId);
+        setFields['expenses.$.paidByName'] = payerDoc?.fullName || payerDoc?.username || 'Thành viên';
+      }
+    }
+
+    if (Object.keys(setFields).length === 0) {
+      return res.status(400).json({ success: false, message: 'Không có trường cập nhật hợp lệ.' });
+    }
+
+    const updated = await TripPlanModel.findOneAndUpdate(
+      { _id: trip._id, 'expenses.id': expenseId },
+      { $set: setFields },
+      { new: true }
+    )
+      .select('expenses')
+      .lean();
+
+    return res.json({ success: true, message: 'Đã cập nhật khoản chi!', data: updated?.expenses || [] });
+  } catch (err) {
+    console.error('[Update Trip Expense Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi cập nhật khoản chi.' });
+  }
+};
+
 // DELETE /api/trips/:id/expenses/:expenseId - Remove an expense entry (strictly payer or creator!)
 export const deleteTripExpense = async (req: AuthRequest, res: Response) => {
   try {
@@ -1084,7 +1603,7 @@ export const deleteTripExpense = async (req: AuthRequest, res: Response) => {
     }
 
     const isCreator = String(trip.creatorId) === userId;
-    const isPayer = String(target.paidByUserId) === userId;
+    const isPayer = target.paidByUserId ? String(target.paidByUserId) === userId : false;
     if (!isCreator && !isPayer) {
       return res.status(403).json({ success: false, message: 'Chỉ người chi hoặc trưởng đoàn mới có quyền xóa khoản chi này.' });
     }
@@ -1101,5 +1620,51 @@ export const deleteTripExpense = async (req: AuthRequest, res: Response) => {
   } catch (err) {
     console.error('[Delete Trip Expense Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi khi xóa khoản chi.' });
+  }
+};
+
+// POST /api/trips/:id/settlements - Toggle settled status for a debt transfer key in MongoDB
+export const toggleTripSettlement = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId || !isValidObjectId(userId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    const { trip, errorStatus, errorMessage } = await loadAuthorizedTrip(String(req.params.id || ''), userId);
+    if (!trip) {
+      return res.status(errorStatus!).json({ success: false, message: errorMessage });
+    }
+
+    const rawKey = typeof req.body?.transferKey === 'string' ? req.body.transferKey.trim() : '';
+    const transferKey = sanitizeInput(rawKey).slice(0, 200);
+    if (!transferKey) {
+      return res.status(400).json({ success: false, message: 'Thiếu mã giao dịch cần đánh dấu.' });
+    }
+
+    const currentList = Array.isArray(trip.settledTransfers) ? trip.settledTransfers : [];
+    const alreadySettled = currentList.includes(transferKey);
+
+    if (!alreadySettled && currentList.length >= MAX_SETTLED_TRANSFERS) {
+      return res.status(400).json({ success: false, message: 'Đã đạt giới hạn lưu trạng thái quyết toán.' });
+    }
+
+    const updated = await TripPlanModel.findByIdAndUpdate(
+      trip._id,
+      alreadySettled
+        ? { $pull: { settledTransfers: transferKey } }
+        : { $addToSet: { settledTransfers: transferKey } },
+      { new: true }
+    )
+      .select('settledTransfers')
+      .lean();
+
+    return res.json({
+      success: true,
+      settled: !alreadySettled,
+      data: updated?.settledTransfers || [],
+    });
+  } catch (err) {
+    console.error('[Toggle Trip Settlement Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi cập nhật trạng thái quyết toán.' });
   }
 };

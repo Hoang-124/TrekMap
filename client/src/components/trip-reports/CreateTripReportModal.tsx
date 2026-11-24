@@ -41,7 +41,8 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
   const [highlightsInput, setHighlightsInput] = useState('');
   const [warningsInput, setWarningsInput] = useState('');
   const [recommendationsInput, setRecommendationsInput] = useState('');
-  const [photoUrl, setPhotoUrl] = useState('');
+  const [photos, setPhotos] = useState<string[]>([]);
+  const [photoUrlInput, setPhotoUrlInput] = useState('');
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   const [loading, setLoading] = useState(false);
@@ -66,7 +67,8 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
     setHighlightsInput('');
     setWarningsInput('');
     setRecommendationsInput('');
-    setPhotoUrl('');
+    setPhotos([]);
+    setPhotoUrlInput('');
     setError('');
   }, []);
 
@@ -115,38 +117,75 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      setError('Vui lòng chọn tệp hình ảnh hợp lệ (JPG, PNG, WebP).');
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      setError('Kích thước ảnh tối đa 5MB.');
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    const remainingSlots = Math.max(0, 10 - photos.length);
+    if (remainingSlots === 0) {
+      setError('Bạn có thể đính kèm tối đa 10 ảnh cho mỗi nhật ký chuyến đi.');
+      e.target.value = '';
       return;
     }
 
+    const files = Array.from(fileList).slice(0, remainingSlots);
     setUploadingPhoto(true);
     setError('');
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        const base64 = ev.target?.result as string;
-        const url = await uploadImageToCloudinary(base64, file.name, 'reviews');
-        setPhotoUrl(url);
-      } catch (err: unknown) {
-        setError(
-          err instanceof Error && err.message
-            ? err.message
-            : 'Không thể tải ảnh lên máy chủ. Bạn có thể dán link ảnh trực tiếp.'
-        );
-      } finally {
-        setUploadingPhoto(false);
+
+    try {
+      const uploadedUrls: string[] = [];
+      for (const file of files) {
+        if (!file.type.startsWith('image/')) {
+          setError('Chỉ chấp nhận định dạng ảnh hợp lệ (JPG, PNG, WebP).');
+          continue;
+        }
+        if (file.size > 5 * 1024 * 1024) {
+          setError('Mỗi ảnh tối đa 5MB.');
+          continue;
+        }
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (ev) => resolve(String(ev.target?.result || ''));
+          reader.onerror = () => reject(new Error('Không thể đọc tệp ảnh.'));
+          reader.readAsDataURL(file);
+        });
+        if (base64) {
+          const url = await uploadImageToCloudinary(base64, file.name, 'reviews');
+          uploadedUrls.push(url);
+        }
       }
-    };
-    reader.readAsDataURL(file);
-    e.target.value = '';
+      if (uploadedUrls.length > 0) {
+        setPhotos((prev) => [...prev, ...uploadedUrls].slice(0, 10));
+      }
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : 'Không thể tải ảnh lên máy chủ. Bạn có thể dán link ảnh trực tiếp.'
+      );
+    } finally {
+      setUploadingPhoto(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleAddPhotoUrl = () => {
+    const trimmed = photoUrlInput.trim();
+    if (!trimmed) return;
+    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+      setError('Vui lòng nhập đường link ảnh hợp lệ (https://...).');
+      return;
+    }
+    if (photos.length >= 10) {
+      setError('Bạn có thể đính kèm tối đa 10 ảnh thực địa.');
+      return;
+    }
+    setPhotos((prev) => (prev.includes(trimmed) ? prev : [...prev, trimmed].slice(0, 10)));
+    setPhotoUrlInput('');
+    setError('');
+  };
+
+  const handleRemovePhoto = (idx: number) => {
+    setPhotos((prev) => prev.filter((_, i) => i !== idx));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -177,7 +216,16 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
       const highlights = highlightsInput.split(',').map((s) => s.trim()).filter(Boolean);
       const warnings = warningsInput.split(',').map((s) => s.trim()).filter(Boolean);
       const recommendations = recommendationsInput.split(',').map((s) => s.trim()).filter(Boolean);
-      const trimmedPhoto = photoUrl.trim();
+      const pendingUrl = photoUrlInput.trim();
+      const finalPhotos = [...photos];
+      if (
+        pendingUrl &&
+        (pendingUrl.startsWith('http://') || pendingUrl.startsWith('https://')) &&
+        finalPhotos.length < 10 &&
+        !finalPhotos.includes(pendingUrl)
+      ) {
+        finalPhotos.push(pendingUrl);
+      }
 
       const res = await fetch('/api/trip-reports', {
         method: 'POST',
@@ -187,7 +235,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
           title: title.trim(),
           summary: summary.trim() || title.trim(),
           content: content.trim(),
-          photos: trimmedPhoto ? [trimmedPhoto] : [],
+          photos: finalPhotos.slice(0, 10),
           tripDate,
           duration: duration.trim() || '2 ngày 1 đêm',
           groupSize,
@@ -258,8 +306,6 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
         position: 'fixed',
         inset: 0,
         background: 'var(--overlay-bg)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
         zIndex: 'var(--z-modal, 3000)',
         display: 'flex',
         alignItems: 'center',
@@ -567,43 +613,124 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
             />
           </div>
 
-          {/* Ảnh kỷ niệm hiện trường */}
+          {/* Thư viện ảnh kỷ niệm hiện trường (Tối đa 10 ảnh) */}
           <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <label style={{ ...labelStyle, marginBottom: 0 }}>Ảnh kỷ niệm hiện trường (tùy chọn)</label>
-              <label
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8, flexWrap: 'wrap' }}>
+              <label style={{ ...labelStyle, marginBottom: 0 }}>
+                Ảnh kỷ niệm hiện trường ({photos.length}/10 ảnh)
+              </label>
+              {photos.length < 10 && (
+                <label
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    padding: '4px 10px',
+                    borderRadius: 4,
+                    background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
+                    border: '1px solid var(--color-primary)',
+                    color: 'var(--color-primary)',
+                    fontSize: '0.72rem',
+                    fontWeight: 700,
+                    cursor: uploadingPhoto ? 'wait' : 'pointer',
+                  }}
+                >
+                  <IconCamera size={13} color="var(--color-primary)" />
+                  <span>{uploadingPhoto ? 'Đang tải ảnh...' : 'Tải ảnh từ máy (nhiều ảnh)'}</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    disabled={uploadingPhoto}
+                    onChange={handlePhotoUpload}
+                    style={{ display: 'none' }}
+                  />
+                </label>
+              )}
+            </div>
+
+            {photos.length > 0 && (
+              <div
                 style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 5,
-                  padding: '4px 10px',
-                  borderRadius: 4,
-                  background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
-                  border: '1px solid var(--color-primary)',
-                  color: 'var(--color-primary)',
-                  fontSize: '0.72rem',
-                  fontWeight: 700,
-                  cursor: uploadingPhoto ? 'wait' : 'pointer',
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(84px, 1fr))',
+                  gap: 8,
+                  marginBottom: 8,
                 }}
               >
-                <IconCamera size={13} color="var(--color-primary)" />
-                <span>{uploadingPhoto ? 'Đang tải...' : 'Tải ảnh từ máy'}</span>
+                {photos.map((src, idx) => (
+                  <div
+                    key={`${src}-${idx}`}
+                    style={{
+                      position: 'relative',
+                      height: 68,
+                      borderRadius: 4,
+                      overflow: 'hidden',
+                      border: '1px solid var(--color-border)',
+                      background: 'var(--color-bg-main)',
+                    }}
+                  >
+                    <img
+                      loading="lazy"
+                      decoding="async"
+                      src={src}
+                      alt={`Ảnh hiện trường ${idx + 1}`}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleRemovePhoto(idx)}
+                      aria-label={`Xóa ảnh ${idx + 1}`}
+                      title="Xóa ảnh"
+                      style={{
+                        position: 'absolute',
+                        top: 3,
+                        right: 3,
+                        width: 20,
+                        height: 20,
+                        borderRadius: 4,
+                        background: 'var(--overlay-bg)',
+                        border: '1px solid var(--color-border-strong)',
+                        color: 'var(--color-on-media)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'pointer',
+                        padding: 0,
+                      }}
+                    >
+                      <IconX size={11} color="var(--color-on-media)" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {photos.length < 10 && (
+              <div style={{ display: 'flex', gap: 6 }}>
                 <input
-                  type="file"
-                  accept="image/*"
-                  disabled={uploadingPhoto}
-                  onChange={handlePhotoUpload}
-                  style={{ display: 'none' }}
+                  type="url"
+                  placeholder="Hoặc dán link ảnh thực tế (https://...) rồi bấm + Thêm"
+                  value={photoUrlInput}
+                  onChange={(e) => setPhotoUrlInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddPhotoUrl();
+                    }
+                  }}
+                  style={{ ...inputStyle, flex: 1 }}
                 />
-              </label>
-            </div>
-            <input
-              type="url"
-              placeholder="Hoặc dán link ảnh thực tế của bạn (https://...)"
-              value={photoUrl}
-              onChange={(e) => setPhotoUrl(e.target.value)}
-              style={inputStyle}
-            />
+                <button
+                  type="button"
+                  onClick={handleAddPhotoUrl}
+                  className="btn btn-outline"
+                  style={{ padding: '7px 12px', borderRadius: 4, fontSize: '0.78rem', fontWeight: 700, whiteSpace: 'nowrap' }}
+                >
+                  + Thêm
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Nội dung chi tiết */}

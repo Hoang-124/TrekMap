@@ -479,8 +479,6 @@ export const TrailComparisonModal: React.FC<TrailComparisonModalProps> = ({
         inset: 0,
         zIndex: 'var(--z-modal, 3000)' as unknown as number,
         background: 'var(--overlay-bg)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -1160,8 +1158,7 @@ export const TrailComparisonModal: React.FC<TrailComparisonModalProps> = ({
                         position: 'absolute',
                         top: 8,
                         left: 8,
-                        background: 'var(--color-bg-glass)',
-                        backdropFilter: 'blur(6px)',
+                        background: 'var(--color-bg-hud)',
                         padding: '2px 8px',
                         borderRadius: 4,
                         border: '1px solid var(--color-border)',
@@ -1238,7 +1235,7 @@ export const TrailComparisonModal: React.FC<TrailComparisonModalProps> = ({
                         <span>Đánh giá:</span>
                       </span>
                       <strong style={{ color: 'var(--color-sun)' }}>
-                        {t.rating} ({t.reviewCount})
+                        {t.reviewCount > 0 ? `${t.rating} (${t.reviewCount})` : 'Chưa có đánh giá'}
                       </strong>
                     </div>
                   </div>

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Trail, User } from '../../types.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
+import { scopedStorageKey } from '../../utils/storageScope.js';
 import {
   IconAlertTriangle,
   IconArrowLeft,
@@ -8,6 +9,7 @@ import {
   IconCalendar,
   IconCheck,
   IconClock,
+  IconCloud,
   IconFlame,
   IconHiking,
   IconMountain,
@@ -15,6 +17,20 @@ import {
   IconShieldCheck,
   IconTrash,
 } from '../common/SvgIcons.js';
+
+function formatDateVi(raw?: string): string {
+  if (!raw) return 'Chưa xác định';
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  return d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function getEffectivePlanReadiness(plan: TrainingPlanRecord): number {
+  if (!plan.isLocalOnly && typeof plan.readinessScore === 'number' && Number.isFinite(plan.readinessScore)) {
+    return Math.max(0, Math.min(100, Math.round(plan.readinessScore)));
+  }
+  return computeReadinessScore(plan.sessions);
+}
 
 export interface TrainingPlannerViewProps {
   trails: Trail[];
@@ -289,24 +305,45 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
     [trailById, builderTrailId, trails]
   );
 
-  const persistLocalPlans = useCallback((nextPlans: TrainingPlanRecord[]) => {
-    try {
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(nextPlans));
-    } catch {
-      // ignore storage quota errors
-    }
-  }, []);
+  const [updatingStatus, setUpdatingStatus] = useState(false);
+  const [syncingCloudPlanId, setSyncingCloudPlanId] = useState<string | null>(null);
+
+  const storageKey = useMemo(() => scopedStorageKey(LOCAL_STORAGE_KEY, currentUserId || null), [currentUserId]);
+
+  const persistLocalPlans = useCallback(
+    (nextPlans: TrainingPlanRecord[]) => {
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(nextPlans));
+      } catch {
+        // ignore storage quota errors
+      }
+    },
+    [storageKey]
+  );
 
   const readLocalPlans = useCallback((): TrainingPlanRecord[] => {
     try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
+      const raw = localStorage.getItem(storageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      }
+      // Also surface any unsynced guest/legacy plans so newly signed-in trekkers can 1-click sync to Cloud
+      const guestKey = scopedStorageKey(LOCAL_STORAGE_KEY, null);
+      const guestRaw =
+        (guestKey !== storageKey ? localStorage.getItem(guestKey) : null) ??
+        localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (guestRaw) {
+        const parsedGuest = JSON.parse(guestRaw);
+        if (Array.isArray(parsedGuest)) {
+          return parsedGuest.map((p: TrainingPlanRecord) => ({ ...p, isLocalOnly: true }));
+        }
+      }
+      return [];
     } catch {
       return [];
     }
-  }, []);
+  }, [storageKey]);
 
   // Load saved plans (MongoDB if logged in, fallback/guest -> localStorage) with AbortController
   // When targetInitialTrailId is set: auto-select matching plan OR auto-open builder preselected to it
@@ -362,7 +399,11 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
             : Array.isArray(json?.data?.plans)
               ? json.data.plans
               : [];
-          const combined = serverPlans.length > 0 ? serverPlans : localPlans;
+          // Keep unsynced local-only plans visible alongside cloud plans so user can 1-click sync
+          const unsyncedLocal = localPlans.filter(
+            (lp) => lp.isLocalOnly && !serverPlans.some((sp) => sp._id === lp._id)
+          );
+          const combined = [...serverPlans, ...unsyncedLocal];
           applyLoadedPlans(combined);
         } else {
           applyLoadedPlans(localPlans);
@@ -471,19 +512,22 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
         ? { ...s, completed: !s.completed, completedAt: !s.completed ? new Date().toISOString() : undefined }
         : s
     );
-    const updatedScore = computeReadinessScore(updatedSessions);
+    const prevBase = computeReadinessScore(activePlan.sessions);
+    const expBonus = !activePlan.isLocalOnly ? Math.max(0, (activePlan.readinessScore || 0) - prevBase) : 0;
+    const updatedBaseScore = computeReadinessScore(updatedSessions);
+    const updatedScore = Math.min(100, updatedBaseScore + expBonus);
     const updatedPlan: TrainingPlanRecord = {
       ...activePlan,
       sessions: updatedSessions,
       readinessScore: updatedScore,
-      status: updatedScore >= 100 ? 'completed' : 'active',
+      status: updatedBaseScore >= 100 ? 'completed' : activePlan.status === 'completed' ? 'active' : activePlan.status,
     };
 
     const nextPlans = plans.map((p) => (p._id === activePlan._id ? updatedPlan : p));
     setPlans(nextPlans);
 
     if (activePlan.isLocalOnly || !currentUser) {
-      persistLocalPlans(nextPlans);
+      persistLocalPlans(nextPlans.filter((p) => p.isLocalOnly));
       return;
     }
 
@@ -505,8 +549,120 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
         }
       }
     } catch {
-      // Optimistic state already applied; save local backup
-      persistLocalPlans(nextPlans);
+      // Optimistic state already applied
+    }
+  };
+
+  const handleUpdatePlanStatus = async (plan: TrainingPlanRecord, nextStatus: TrainingPlanRecord['status']) => {
+    if (updatingStatus) return;
+    setUpdatingStatus(true);
+    const optimistic = plans.map((p) => (p._id === plan._id ? { ...p, status: nextStatus } : p));
+    setPlans(optimistic);
+
+    const statusMsg =
+      nextStatus === 'completed'
+        ? 'Đã đánh dấu hoàn thành giáo án!'
+        : nextStatus === 'abandoned'
+          ? 'Đã tạm dừng giáo án.'
+          : 'Đã kích hoạt lại giáo án!';
+
+    if (plan.isLocalOnly || !currentUser) {
+      persistLocalPlans(optimistic.filter((p) => p.isLocalOnly));
+      setUpdatingStatus(false);
+      onShowToast?.(statusMsg, 'success');
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/training-plans/${encodeURIComponent(plan._id)}/status`, {
+        method: 'PATCH',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      const json = await res.json().catch(() => null);
+      if (res.ok && json?.success) {
+        if (json.data?._id) {
+          setPlans((curr) => curr.map((p) => (p._id === plan._id ? { ...p, status: json.data.status } : p)));
+        }
+        onShowToast?.(json.message || statusMsg, 'success');
+      } else {
+        setPlans(plans);
+        onShowToast?.(json?.message || 'Không thể cập nhật trạng thái giáo án.', 'error');
+      }
+    } catch {
+      setPlans(plans);
+      onShowToast?.('Lỗi kết nối máy chủ khi cập nhật trạng thái giáo án.', 'error');
+    } finally {
+      setUpdatingStatus(false);
+    }
+  };
+
+  const handleSyncLocalPlanToCloud = async (localPlan: TrainingPlanRecord) => {
+    if (!currentUser || !localPlan.isLocalOnly || syncingCloudPlanId) return;
+    setSyncingCloudPlanId(localPlan._id);
+    try {
+      const res = await fetch('/api/training-plans', {
+        method: 'POST',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          targetTrailId: localPlan.targetTrailSlug,
+          targetTrailSlug: localPlan.targetTrailSlug,
+          targetDate: localPlan.targetDate,
+          durationWeeks: localPlan.durationWeeks,
+          fitnessLevel: localPlan.fitnessLevel,
+        }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success || !json.data?._id) {
+        throw new Error(json?.message || 'Không thể đồng bộ giáo án lên Cloud.');
+      }
+
+      let syncedPlan: TrainingPlanRecord = json.data;
+      const completedSessionIds = localPlan.sessions.filter((s) => s.completed).map((s) => s.id);
+      for (const sid of completedSessionIds) {
+        const sRes = await fetch(
+          `/api/training-plans/${encodeURIComponent(syncedPlan._id)}/sessions/${encodeURIComponent(sid)}`,
+          {
+            method: 'PATCH',
+            headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ completed: true }),
+          }
+        ).catch(() => null);
+        if (sRes?.ok) {
+          const sJson = await sRes.json().catch(() => null);
+          if (sJson?.success && sJson.data?._id) {
+            syncedPlan = sJson.data;
+          }
+        }
+      }
+
+      const nextPlans = [syncedPlan, ...plans.filter((p) => p._id !== localPlan._id)];
+      setPlans(nextPlans);
+      setActivePlanId(syncedPlan._id);
+      const remainingLocal = nextPlans.filter((p) => p.isLocalOnly);
+      persistLocalPlans(remainingLocal);
+      try {
+        const guestKey = scopedStorageKey(LOCAL_STORAGE_KEY, null);
+        const removeFromKey = (k: string) => {
+          const raw = localStorage.getItem(k);
+          if (!raw) return;
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            const cleaned = parsed.filter((x: TrainingPlanRecord) => x._id !== localPlan._id);
+            if (cleaned.length > 0) localStorage.setItem(k, JSON.stringify(cleaned));
+            else localStorage.removeItem(k);
+          }
+        };
+        removeFromKey(guestKey);
+        removeFromKey(LOCAL_STORAGE_KEY);
+      } catch {
+        // ignore storage errors
+      }
+      onShowToast?.(`Đã đồng bộ giáo án "${syncedPlan.targetTrailName}" lên LOST Cloud!`, 'success');
+    } catch (err: unknown) {
+      onShowToast?.(err instanceof Error ? err.message : 'Lỗi khi đồng bộ giáo án lên Cloud.', 'error');
+    } finally {
+      setSyncingCloudPlanId(null);
     }
   };
 
@@ -519,7 +675,22 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
     if (remaining.length === 0) setShowBuilder(true);
 
     if (!target || target.isLocalOnly || !currentUser) {
-      persistLocalPlans(remaining);
+      persistLocalPlans(remaining.filter((p) => p.isLocalOnly));
+      try {
+        const guestKey = scopedStorageKey(LOCAL_STORAGE_KEY, null);
+        for (const k of [guestKey, LOCAL_STORAGE_KEY]) {
+          const raw = localStorage.getItem(k);
+          if (!raw) continue;
+          const arr = JSON.parse(raw);
+          if (Array.isArray(arr)) {
+            const cleaned = arr.filter((x: TrainingPlanRecord) => x._id !== planId);
+            if (cleaned.length > 0) localStorage.setItem(k, JSON.stringify(cleaned));
+            else localStorage.removeItem(k);
+          }
+        }
+      } catch {
+        // ignore
+      }
       onShowToast?.('Đã xóa giáo án tập luyện.', 'info');
       return;
     }
@@ -535,9 +706,9 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
     }
   };
 
-  // Computed analytics for activePlan
+  // Computed analytics for activePlan (preserves server's +10 verified summit experience bonus when synced)
   const readinessScore = useMemo(
-    () => (activePlan ? computeReadinessScore(activePlan.sessions) : 0),
+    () => (activePlan ? getEffectivePlanReadiness(activePlan) : 0),
     [activePlan]
   );
   const readinessTier = getReadinessTier(readinessScore);
@@ -861,7 +1032,7 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
           {plans.map((p) => {
             const active = activePlan?._id === p._id;
-            const sc = computeReadinessScore(p.sessions);
+            const sc = getEffectivePlanReadiness(p);
             return (
               <button
                 key={p._id}
@@ -893,6 +1064,9 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
                   {p.targetTrailName}
                 </span>
                 <span style={{ fontVariantNumeric: 'tabular-nums', opacity: 0.8 }}>({sc}%)</span>
+                {p.isLocalOnly && (
+                  <span style={{ fontSize: '0.66rem', opacity: 0.85 }}>[Cục bộ]</span>
+                )}
               </button>
             );
           })}
@@ -905,6 +1079,41 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
         </div>
       ) : activePlan ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {/* 1-Click Cloud Sync Banner when logged in with a local guest plan */}
+          {currentUser && activePlan.isLocalOnly && (
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: 12,
+                flexWrap: 'wrap',
+                padding: '10px 14px',
+                borderRadius: 6,
+                background: 'color-mix(in srgb, var(--color-primary) 10%, var(--color-bg-card))',
+                border: '1px solid color-mix(in srgb, var(--color-primary) 35%, var(--color-border))',
+                fontSize: '0.8rem',
+              }}
+            >
+              <span style={{ color: 'var(--color-text-main)', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                <IconCloud size={15} color="var(--color-primary)" />
+                <span>Giáo án này đang lưu cục bộ trên trình duyệt — đồng bộ lên LOST Cloud để lưu tiến độ đa thiết bị.</span>
+              </span>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={syncingCloudPlanId === activePlan._id}
+                onClick={() => void handleSyncLocalPlanToCloud(activePlan)}
+                style={{ padding: '6px 12px', fontSize: '0.76rem', borderRadius: 4 }}
+              >
+                <IconCloud size={13} color="var(--color-on-primary)" />
+                <span>
+                  {syncingCloudPlanId === activePlan._id ? 'Đang đồng bộ...' : 'Đồng bộ giáo án lên Cloud'}
+                </span>
+              </button>
+            </div>
+          )}
+
           {/* Active Plan Hero + Dual Pure-SVG Visualizations */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(300px, 100%), 1fr))', gap: 16 }}>
             {/* Readiness Score Ring SVG Card */}
@@ -921,15 +1130,43 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
                 <div>
-                  <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-primary)' }}>
-                    Chỉ Số Sẵn Sàng Thực Địa
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-primary)' }}>
+                      Chỉ Số Sẵn Sàng Thực Địa
+                    </span>
+                    <span
+                      style={{
+                        fontSize: '0.66rem',
+                        fontWeight: 800,
+                        padding: '2px 7px',
+                        borderRadius: 4,
+                        color:
+                          activePlan.status === 'completed'
+                            ? 'var(--color-primary)'
+                            : activePlan.status === 'abandoned'
+                              ? 'var(--color-sun)'
+                              : 'var(--color-sky)',
+                        background:
+                          activePlan.status === 'completed'
+                            ? 'color-mix(in srgb, var(--color-primary) 14%, transparent)'
+                            : activePlan.status === 'abandoned'
+                              ? 'color-mix(in srgb, var(--color-sun) 16%, transparent)'
+                              : 'color-mix(in srgb, var(--color-sky) 14%, transparent)',
+                      }}
+                    >
+                      {activePlan.status === 'completed'
+                        ? 'Đã hoàn thành'
+                        : activePlan.status === 'abandoned'
+                          ? 'Đang tạm dừng'
+                          : 'Đang tập luyện'}
+                    </span>
                   </div>
                   <h2 style={{ margin: '3px 0 0', fontSize: '1.05rem', fontWeight: 700, color: 'var(--color-text-main)', lineHeight: 1.3 }}>
                     {activePlan.targetTrailName}
                   </h2>
                   <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 6, fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                      <IconCalendar size={13} /> Khởi hành: {activePlan.targetDate}
+                      <IconCalendar size={13} /> Khởi hành: {formatDateVi(activePlan.targetDate)}
                     </span>
                     {daysUntilDeparture !== null && (
                       <span style={{ fontWeight: 700, color: daysUntilDeparture <= 7 ? 'var(--color-earth)' : 'var(--color-sky)', fontVariantNumeric: 'tabular-nums' }}>
@@ -940,6 +1177,38 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
                 </div>
 
                 <div style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  {activePlan.status === 'active' ? (
+                    <>
+                      <button
+                        type="button"
+                        className="btn btn-outline"
+                        disabled={updatingStatus}
+                        onClick={() => void handleUpdatePlanStatus(activePlan, 'completed')}
+                        style={{ padding: '5px 9px', fontSize: '0.72rem', borderRadius: 4, color: 'var(--color-primary)' }}
+                      >
+                        <IconCheck size={12} color="var(--color-primary)" /> Hoàn thành
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-outline"
+                        disabled={updatingStatus}
+                        onClick={() => void handleUpdatePlanStatus(activePlan, 'abandoned')}
+                        style={{ padding: '5px 9px', fontSize: '0.72rem', borderRadius: 4 }}
+                      >
+                        Tạm dừng
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={updatingStatus}
+                      onClick={() => void handleUpdatePlanStatus(activePlan, 'active')}
+                      style={{ padding: '5px 10px', fontSize: '0.72rem', borderRadius: 4 }}
+                    >
+                      Kích hoạt lại
+                    </button>
+                  )}
                   {activeTrail && onSelectTrail && (
                     <button
                       type="button"

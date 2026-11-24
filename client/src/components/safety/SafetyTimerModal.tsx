@@ -81,6 +81,11 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
   const [contactPhone, setContactPhone] = useState(currentUser?.emergencyContact || '');
   const [contactEmail, setContactEmail] = useState('');
   const [notes, setNotes] = useState('');
+  const [showHistory, setShowHistory] = useState(false);
+
+  const selectedDropdownTrail =
+    (trailId ? trails.find((t) => t.id === trailId) : null) ||
+    (selectedTrail && (!trailId || selectedTrail.id === trailId) ? selectedTrail : null);
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeBtnRef = useRef<HTMLButtonElement>(null);
@@ -199,7 +204,7 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
       return;
     }
 
-    const finalTrailName = trailName.trim() || selectedTrail?.name || '';
+    const finalTrailName = trailName.trim() || selectedDropdownTrail?.name || '';
     if (!finalTrailName) {
       onShowToast?.('Vui lòng chọn hoặc nhập tên cung đường trekking.', 'error');
       return;
@@ -221,8 +226,8 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
           emergencyContactName: contactName.trim(),
           emergencyContactPhone: contactPhone.trim(),
           emergencyContactEmail: contactEmail.trim(),
-          lastKnownLat: gpsCoords?.lat ?? selectedTrail?.startLat,
-          lastKnownLng: gpsCoords?.lng ?? selectedTrail?.startLng,
+          lastKnownLat: gpsCoords?.lat ?? selectedDropdownTrail?.startLat,
+          lastKnownLng: gpsCoords?.lng ?? selectedDropdownTrail?.startLng,
           notes: notes.trim(),
         }),
       });
@@ -292,18 +297,45 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
     }
   };
 
+  const handleExtendTimer = async (id: string, extendMinutes: number) => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
+    try {
+      const res = await fetch(`/api/safety-timers/${encodeURIComponent(id)}/extend`, {
+        method: 'PATCH',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ extendMinutes }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || 'Không thể gia hạn lịch hẹn.');
+      }
+      const hoursLabel = extendMinutes >= 60 ? `+${extendMinutes / 60} giờ` : `+${extendMinutes} phút`;
+      onShowToast?.(`Đã gia hạn lịch báo bình an thêm ${hoursLabel}!`, 'success');
+      if (isMountedRef.current) reloadTimers();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Lỗi máy chủ khi gia hạn lịch hẹn.';
+      onShowToast?.(msg, 'error');
+    } finally {
+      isSubmittingRef.current = false;
+      if (isMountedRef.current) setIsSubmitting(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   const activeDeadlineMs = activeTimer ? new Date(activeTimer.expectedReturnAt).getTime() : 0;
   const remainingMs = activeTimer ? activeDeadlineMs - nowMs : 0;
   const isOverdue = Boolean(activeTimer && (activeTimer.status === 'overdue_alerted' || remainingMs <= 0));
+  const historicalTimers = timers.filter((t) => t._id !== activeTimer?._id);
 
   const sosPayload = buildOfflineSosSmsUri({
     phone: sosTargetPhone,
-    trailName: trailName || selectedTrail?.name || 'Rừng núi Việt Nam',
-    lat: gpsCoords?.lat ?? selectedTrail?.startLat ?? null,
-    lng: gpsCoords?.lng ?? selectedTrail?.startLng ?? null,
-    altitudeM: gpsCoords?.alt ?? selectedTrail?.maxAltitudeM ?? null,
+    trailName: trailName || selectedDropdownTrail?.name || 'Rừng núi Việt Nam',
+    lat: gpsCoords?.lat ?? selectedDropdownTrail?.startLat ?? null,
+    lng: gpsCoords?.lng ?? selectedDropdownTrail?.startLng ?? null,
+    altitudeM: gpsCoords?.alt ?? selectedDropdownTrail?.maxAltitudeM ?? null,
     note: sosNote,
   });
 
@@ -326,8 +358,6 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
         position: 'fixed',
         inset: 0,
         background: 'var(--overlay-bg)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
         zIndex: 'var(--z-modal, 3000)',
         display: 'flex',
         alignItems: 'center',
@@ -547,6 +577,48 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
                   </div>
                 )}
 
+                {activeTimer.status === 'active' && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      flexWrap: 'wrap',
+                      marginBottom: 10,
+                      padding: '8px 10px',
+                      borderRadius: 4,
+                      background: 'var(--color-bg-card)',
+                      border: '1px solid var(--color-border)',
+                    }}
+                  >
+                    <span style={{ fontSize: '0.73rem', fontWeight: 700, color: 'var(--color-text-muted)', marginRight: 4 }}>
+                      Gia hạn nhanh:
+                    </span>
+                    {([
+                      { mins: 60, label: '+1h' },
+                      { mins: 120, label: '+2h' },
+                      { mins: 240, label: '+4h' },
+                    ] as const).map((opt) => (
+                      <button
+                        key={opt.mins}
+                        type="button"
+                        className="btn btn-outline"
+                        disabled={isSubmitting}
+                        onClick={() => handleExtendTimer(activeTimer._id, opt.mins)}
+                        style={{
+                          padding: '4px 10px',
+                          fontSize: '0.74rem',
+                          fontWeight: 700,
+                          borderRadius: 4,
+                          fontVariantNumeric: 'tabular-nums',
+                        }}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                   <button
                     type="button"
@@ -557,15 +629,17 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
                   >
                     <IconCheckCircle size={16} /> Tôi Đã Ra Khỏi Rừng An Toàn
                   </button>
-                  <button
-                    type="button"
-                    className="btn btn-outline"
-                    disabled={isSubmitting}
-                    onClick={() => handleCancelTimer(activeTimer._id)}
-                    style={{ fontSize: '0.8rem', borderRadius: 4 }}
-                  >
-                    Hủy Lịch
-                  </button>
+                  {activeTimer.status !== 'overdue_alerted' && (
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      disabled={isSubmitting}
+                      onClick={() => handleCancelTimer(activeTimer._id)}
+                      style={{ fontSize: '0.8rem', borderRadius: 4 }}
+                    >
+                      Hủy Lịch
+                    </button>
+                  )}
                 </div>
               </div>
             )}
@@ -699,6 +773,113 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
             {isLoading && (
               <div style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)', textAlign: 'center' }}>
                 Đang đồng bộ lịch sử an toàn...
+              </div>
+            )}
+
+            {/* Collapsible Safety Timer History */}
+            {historicalTimers.length > 0 && (
+              <div
+                style={{
+                  borderRadius: 6,
+                  border: '1px solid var(--color-border)',
+                  background: 'var(--color-bg-main)',
+                  overflow: 'hidden',
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setShowHistory((prev) => !prev)}
+                  aria-expanded={showHistory}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    background: 'transparent',
+                    border: 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 8,
+                    cursor: 'pointer',
+                    color: 'var(--color-text-main)',
+                    fontFamily: 'var(--font-family)',
+                    fontSize: '0.8rem',
+                    fontWeight: 700,
+                  }}
+                >
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <IconClock size={14} color="var(--color-text-muted)" />
+                    <span>Lịch Sử Hẹn Giờ ({historicalTimers.length})</span>
+                  </span>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>
+                    {showHistory ? 'Thu gọn' : 'Xem chi tiết'}
+                  </span>
+                </button>
+
+                {showHistory && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 8,
+                      padding: '0 12px 12px',
+                      borderTop: '1px solid var(--color-border)',
+                      maxHeight: 220,
+                      overflowY: 'auto',
+                    }}
+                  >
+                    {historicalTimers.map((item) => {
+                      const statusMeta =
+                        item.status === 'checked_in_safe'
+                          ? { label: 'Đã báo bình an', color: 'var(--color-primary)' }
+                          : item.status === 'overdue_alerted'
+                            ? { label: 'Đã quá hạn', color: 'var(--color-error-text, var(--color-error))' }
+                            : item.status === 'cancelled'
+                              ? { label: 'Đã hủy', color: 'var(--color-text-dim)' }
+                              : { label: 'Đang hoạt động', color: 'var(--color-sky)' };
+
+                      return (
+                        <div
+                          key={item._id}
+                          style={{
+                            marginTop: 8,
+                            padding: '8px 10px',
+                            borderRadius: 4,
+                            background: 'var(--color-bg-card)',
+                            border: '1px solid var(--color-border)',
+                            borderLeft: `3px solid ${statusMeta.color}`,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 4,
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <strong style={{ fontSize: '0.8rem', color: 'var(--color-text-main)' }}>
+                              {item.trailName}
+                            </strong>
+                            <span
+                              style={{
+                                fontSize: '0.68rem',
+                                fontWeight: 800,
+                                padding: '2px 7px',
+                                borderRadius: 4,
+                                color: statusMeta.color,
+                                background: `color-mix(in srgb, ${statusMeta.color} 14%, transparent)`,
+                              }}
+                            >
+                              {statusMeta.label}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
+                            <span>Người liên hệ: {item.emergencyContactName} ({item.emergencyContactPhone})</span>
+                            <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+                              Hạn: {new Date(item.expectedReturnAt).toLocaleString('vi-VN')}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>

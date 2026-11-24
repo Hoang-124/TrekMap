@@ -21,6 +21,8 @@ import {
   IconTrash,
   IconFileText,
   IconBot,
+  IconDownload,
+  IconCopy,
 } from '../common/SvgIcons.js';
 
 const Terrain3DModal = lazy(() => import('../map/Terrain3DModal.js'));
@@ -695,21 +697,61 @@ export const TrailIntelligenceBar: React.FC<TrailIntelligenceBarProps> = ({
                     Cơ quan tiếp nhận: {permitData.authority}
                   </strong>
                 </div>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(permitData.registrationTemplateText);
-                      emitToast('Đã sao chép mẫu đơn đăng ký đoàn vào bộ nhớ tạm!', 'success');
-                    } catch {
-                      emitToast('Không thể tự động sao chép.', 'info');
-                    }
-                  }}
-                  style={{ padding: '6px 12px', fontSize: '0.78rem' }}
-                >
-                  Sao Chép Mẫu Đơn Đăng Ký
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(permitData.registrationTemplateText);
+                        emitToast('Đã sao chép mẫu đơn đăng ký đoàn vào bộ nhớ tạm!', 'success');
+                      } catch {
+                        emitToast('Không thể tự động sao chép.', 'info');
+                      }
+                    }}
+                    style={{ padding: '6px 12px', fontSize: '0.78rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                  >
+                    <IconCopy size={13} />
+                    <span>Sao Chép Mẫu Đơn</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={() => {
+                      const blob = new Blob([permitData.registrationTemplateText], {
+                        type: 'text/plain;charset=utf-8',
+                      });
+                      const url = URL.createObjectURL(blob);
+                      const link = document.createElement('a');
+                      link.href = url;
+                      link.download = `Don_Dang_Ky_${trail.id}_LOST.txt`;
+                      document.body.appendChild(link);
+                      link.click();
+                      document.body.removeChild(link);
+                      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+                      emitToast('Đã tải tệp mẫu đơn đăng ký (.txt)!', 'success');
+                    }}
+                    style={{ padding: '6px 12px', fontSize: '0.78rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                  >
+                    <IconDownload size={13} color="var(--color-primary)" />
+                    <span>Tải file đơn (.txt)</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={() => {
+                      window.print();
+                    }}
+                    style={{ padding: '6px 12px', fontSize: '0.78rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="6 9 6 2 18 2 18 9" />
+                      <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+                      <rect x="6" y="14" width="12" height="8" />
+                    </svg>
+                    <span>In mẫu đơn</span>
+                  </button>
+                </div>
               </div>
 
               <ul style={{ margin: '0 0 12px 0', paddingLeft: 18, fontSize: '0.82rem', color: 'var(--color-text-muted)', lineHeight: 1.6 }}>

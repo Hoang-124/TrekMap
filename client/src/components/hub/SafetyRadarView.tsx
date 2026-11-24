@@ -98,13 +98,22 @@ interface TrailConditionReport {
   description: string;
   section?: string;
   weatherNote?: string;
+  upvotes?: number;
   upvotesCount?: number;
+  hasUpvoted?: boolean;
   createdAt: string;
   userId?: {
     _id?: string;
     fullName?: string;
     reputationScore?: number;
   };
+}
+
+type IncidentWithMeta = Incident & { _id?: string; isSynthetic?: boolean };
+
+function isSyntheticIncident(inc: IncidentWithMeta): boolean {
+  const id = String(inc.id || '');
+  return Boolean(inc.isSynthetic || id.startsWith('weather-live-') || id.startsWith('nasa-'));
 }
 
 const REGIONS: Region[] = ['Miền Bắc', 'Miền Trung', 'Miền Nam'];
@@ -167,9 +176,48 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
   const [regionFilter, setRegionFilter] = useState<'All' | Region>('All');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Optimistic confirmations & loading guard
+  // Fetch full incidents list including resolved (?includeResolved=true) so "Đã xử lý" tab & KPI reflect real DB data
+  const [resolvedFeedIncidents, setResolvedFeedIncidents] = useState<Incident[] | null>(null);
+  const [incidentFetchTick, setIncidentFetchTick] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`${API_BASE_URL}/incidents?includeResolved=true&limit=100`, {
+      headers: getApiHeaders(),
+      signal: controller.signal,
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (controller.signal.aborted) return;
+        if (json?.success && Array.isArray(json.data)) {
+          setResolvedFeedIncidents(json.data as Incident[]);
+        }
+      })
+      .catch(() => {
+        // offline safe — fall back to prop incidents
+      });
+    return () => controller.abort();
+  }, [incidents, incidentFetchTick]);
+
+  const effectiveIncidents = useMemo<Incident[]>(() => {
+    if (!resolvedFeedIncidents || resolvedFeedIncidents.length === 0) return incidents;
+    const byId = new Map<string, Incident>();
+    for (const inc of resolvedFeedIncidents) {
+      byId.set(getIncidentId(inc), inc);
+    }
+    for (const inc of incidents) {
+      const k = getIncidentId(inc);
+      if (!byId.has(k)) byId.set(k, inc);
+    }
+    return Array.from(byId.values());
+  }, [incidents, resolvedFeedIncidents]);
+
+  // Optimistic confirmations, disputes & condition upvotes
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [localConfirmedMap, setLocalConfirmedMap] = useState<Record<string, number>>({});
+  const [disputingIncidentId, setDisputingIncidentId] = useState<string | null>(null);
+  const [disputeReason, setDisputeReason] = useState('');
+  const [upvotingConditionId, setUpvotingConditionId] = useState<string | null>(null);
 
   // Live Trail Conditions Inspector state
   const [inspectedTrailId, setInspectedTrailId] = useState<string>(() => trails[0]?.id || 'trail-fansipan');
@@ -226,8 +274,8 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
 
   // Global Safety KPIs
   const stats = useMemo(() => {
-    const activeList = incidents.filter((i) => !i.resolved);
-    const resolvedList = incidents.filter((i) => i.resolved);
+    const activeList = effectiveIncidents.filter((i) => !i.resolved);
+    const resolvedList = effectiveIncidents.filter((i) => i.resolved);
     const criticalCount = activeList.filter((i) => i.severity === 'critical').length;
     const highCount = activeList.filter((i) => i.severity === 'high').length;
     const impactedTrailIds = new Set<string>();
@@ -246,14 +294,14 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
       impactedCount: impactedTrailIds.size,
       safeTrailCount,
     };
-  }, [incidents, trails.length, matchTrailForIncident]);
+  }, [effectiveIncidents, trails.length, matchTrailForIncident]);
 
   // Pure Inline SVG Regional Risk Matrix data
   const regionalMatrix = useMemo(() => {
     return REGIONS.map((region) => {
       const regionTrails = trails.filter((t) => t.region === region);
       const regionTrailIds = new Set(regionTrails.map((t) => t.id));
-      const activeRegionIncidents = incidents.filter((inc) => {
+      const activeRegionIncidents = effectiveIncidents.filter((inc) => {
         if (inc.resolved) return false;
         const matched = matchTrailForIncident(inc);
         if (matched) return matched.region === region;
@@ -288,11 +336,11 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
         riskLevel,
       };
     });
-  }, [trails, incidents, matchTrailForIncident]);
+  }, [trails, effectiveIncidents, matchTrailForIncident]);
 
   // Filtered Incidents
   const filteredIncidents = useMemo(() => {
-    return incidents
+    return effectiveIncidents
       .filter((inc) => {
         if (statusFilter === 'active' && inc.resolved) return false;
         if (statusFilter === 'resolved' && !inc.resolved) return false;
@@ -320,7 +368,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
         if (diffSev !== 0) return diffSev;
         return new Date(b.reportedAt).getTime() - new Date(a.reportedAt).getTime();
       });
-  }, [incidents, statusFilter, severityFilter, regionFilter, searchQuery, matchTrailForIncident]);
+  }, [effectiveIncidents, statusFilter, severityFilter, regionFilter, searchQuery, matchTrailForIncident]);
 
   // Fetch live trail conditions when inspectedTrailId changes
   useEffect(() => {
@@ -488,7 +536,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
 
   const handleConfirmIncident = async (inc: Incident) => {
     const incId = getIncidentId(inc);
-    if (!incId || confirmingId === incId) return;
+    if (!incId || confirmingId === incId || isSyntheticIncident(inc as IncidentWithMeta)) return;
     const token = localStorage.getItem('lost_token');
     if (!currentUser && !token) {
       notify('Vui lòng đăng nhập để xác nhận cảnh báo hiện trường.', 'info');
@@ -514,6 +562,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
             : (localConfirmedMap[incId] ?? (inc.confirmations || 1)) + 1;
         setLocalConfirmedMap((prev) => ({ ...prev, [incId]: nextCount }));
         notify(json.message || `Đã xác nhận cảnh báo tại "${inc.trailName}" (+1 Xác thực)!`, 'success');
+        setIncidentFetchTick((t) => t + 1);
         onRefreshIncidents?.();
       } else {
         notify(json.message || 'Không thể xác nhận cảnh báo này.', 'error');
@@ -522,6 +571,88 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
       notify('Lỗi kết nối máy chủ khi xác nhận cảnh báo.', 'error');
     } finally {
       setConfirmingId(null);
+    }
+  };
+
+  const handleSubmitDisputeIncident = async (inc: Incident) => {
+    const incId = getIncidentId(inc);
+    if (!incId || confirmingId === incId || isSyntheticIncident(inc as IncidentWithMeta)) return;
+    const token = localStorage.getItem('lost_token');
+    if (!currentUser && !token) {
+      notify('Vui lòng đăng nhập để báo sai / phản hồi sự cố hiện trường.', 'info');
+      window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
+      return;
+    }
+
+    const cleanReason = disputeReason.trim() || 'Đã qua khu vực này, hiện trường thực tế đã thông thoáng hoặc thông tin chưa chính xác.';
+    setConfirmingId(incId);
+    try {
+      const res = await fetch(`/api/incidents/${encodeURIComponent(incId)}/confirm`, {
+        method: 'POST',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          action: 'dispute_false',
+          note: cleanReason,
+          reason: cleanReason,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.success) {
+        notify(json.message || 'Đã ghi nhận báo sai / phản hồi hiện trường để Ban kiểm duyệt xác minh.', 'info');
+        setDisputingIncidentId(null);
+        setDisputeReason('');
+        setIncidentFetchTick((t) => t + 1);
+        onRefreshIncidents?.();
+      } else {
+        notify(json.message || 'Không thể gửi báo sai cho cảnh báo này.', 'error');
+      }
+    } catch {
+      notify('Lỗi kết nối máy chủ khi gửi báo sai.', 'error');
+    } finally {
+      setConfirmingId(null);
+    }
+  };
+
+  const handleUpvoteCondition = async (cond: TrailConditionReport) => {
+    if (!cond._id || upvotingConditionId === cond._id) return;
+    const token = localStorage.getItem('lost_token');
+    if (!currentUser && !token) {
+      notify('Vui lòng đăng nhập để đánh dấu báo cáo thực địa hữu ích.', 'info');
+      window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
+      return;
+    }
+    if (cond.hasUpvoted) {
+      notify('Bạn đã đánh dấu hữu ích cho báo cáo này rồi.', 'info');
+      return;
+    }
+
+    setUpvotingConditionId(cond._id);
+    try {
+      const res = await fetch(`/api/trail-conditions/${encodeURIComponent(cond._id)}/upvote`, {
+        method: 'POST',
+        headers: getApiHeaders(),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.success) {
+        const nextCount =
+          typeof json.upvotes === 'number'
+            ? json.upvotes
+            : (cond.upvotes ?? cond.upvotesCount ?? 0) + 1;
+        setConditions((prev) =>
+          prev.map((item) =>
+            item._id === cond._id
+              ? { ...item, upvotes: nextCount, upvotesCount: nextCount, hasUpvoted: true }
+              : item
+          )
+        );
+        notify(json.message || 'Đã xác nhận báo cáo thực địa hữu ích!', 'success');
+      } else {
+        notify(json.message || 'Không thể bình chọn báo cáo này.', 'error');
+      }
+    } catch {
+      notify('Lỗi kết nối máy chủ khi bình chọn báo cáo.', 'error');
+    } finally {
+      setUpvotingConditionId(null);
     }
   };
 
@@ -1293,11 +1424,14 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {filteredIncidents.map((inc) => {
+                const incMeta = inc as IncidentWithMeta;
                 const incId = getIncidentId(inc);
+                const isSynthetic = isSyntheticIncident(incMeta);
                 const sev = SEVERITY_META[inc.severity] || SEVERITY_META.medium;
                 const matchedTrail = matchTrailForIncident(inc);
                 const confirmations = localConfirmedMap[incId] ?? (inc.confirmations || 1);
                 const isConfirming = confirmingId === incId;
+                const isDisputeOpen = disputingIncidentId === incId;
 
                 return (
                   <article
@@ -1342,6 +1476,25 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                         >
                           {INCIDENT_TYPE_LABELS[inc.type] || inc.type}
                         </span>
+                        {isSynthetic && (
+                          <span
+                            style={{
+                              fontSize: '0.68rem',
+                              fontWeight: 700,
+                              padding: '2px 8px',
+                              borderRadius: 4,
+                              background: 'color-mix(in srgb, var(--color-sky) 14%, transparent)',
+                              border: '1px solid color-mix(in srgb, var(--color-sky) 35%, transparent)',
+                              color: 'var(--color-sky)',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                            }}
+                          >
+                            <IconRadar size={11} color="var(--color-sky)" />
+                            <span>Tín hiệu tự động vệ tinh (chỉ đọc)</span>
+                          </span>
+                        )}
                       </div>
 
                       <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
@@ -1382,31 +1535,63 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                       }}
                     >
                       <span style={{ fontSize: '0.74rem', color: 'var(--color-text-dim)', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
-                        {confirmations} Trekker đã xác thực hiện trường
+                        {isSynthetic
+                          ? `Nguồn đo tự động: ${inc.verifiedBy || 'Vệ tinh khí tượng'}`
+                          : `${confirmations} Trekker đã xác thực hiện trường`}
                       </span>
 
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                        {!inc.resolved && (
-                          <button
-                            type="button"
-                            disabled={isConfirming}
-                            onClick={() => handleConfirmIncident(inc)}
-                            className="btn btn-outline"
-                            style={{
-                              padding: '5px 10px',
-                              fontSize: '0.74rem',
-                              fontWeight: 700,
-                              borderRadius: 4,
-                              color: 'var(--color-primary)',
-                              borderColor: 'color-mix(in srgb, var(--color-primary) 45%, transparent)',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 4,
-                            }}
-                          >
-                            <IconCheckCircle size={13} color="var(--color-primary)" />
-                            <span>{isConfirming ? 'Đang gửi...' : 'Xác Nhận Hiện Trường'}</span>
-                          </button>
+                        {!inc.resolved && !isSynthetic && (
+                          <>
+                            <button
+                              type="button"
+                              disabled={isConfirming}
+                              onClick={() => handleConfirmIncident(inc)}
+                              className="btn btn-outline"
+                              style={{
+                                padding: '5px 10px',
+                                fontSize: '0.74rem',
+                                fontWeight: 700,
+                                borderRadius: 4,
+                                color: 'var(--color-primary)',
+                                borderColor: 'color-mix(in srgb, var(--color-primary) 45%, transparent)',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4,
+                              }}
+                            >
+                              <IconCheckCircle size={13} color="var(--color-primary)" />
+                              <span>{isConfirming ? 'Đang gửi...' : 'Xác Nhận'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={isConfirming}
+                              onClick={() => {
+                                if (isDisputeOpen) {
+                                  setDisputingIncidentId(null);
+                                  setDisputeReason('');
+                                } else {
+                                  setDisputingIncidentId(incId);
+                                  setDisputeReason('');
+                                }
+                              }}
+                              className="btn btn-outline"
+                              style={{
+                                padding: '5px 10px',
+                                fontSize: '0.74rem',
+                                fontWeight: 700,
+                                borderRadius: 4,
+                                color: 'var(--color-error-text, var(--color-error))',
+                                borderColor: 'color-mix(in srgb, var(--color-error) 42%, transparent)',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4,
+                              }}
+                            >
+                              <IconAlertTriangle size={13} color="var(--color-error-text, var(--color-error))" />
+                              <span>Báo Sai</span>
+                            </button>
+                          </>
                         )}
 
                         {matchedTrail && onSelectTrail && (
@@ -1432,6 +1617,60 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                         </button>
                       </div>
                     </div>
+
+                    {isDisputeOpen && !inc.resolved && !isSynthetic && (
+                      <div
+                        style={{
+                          padding: '10px 12px',
+                          borderRadius: 4,
+                          background: 'var(--color-bg-main)',
+                          border: '1px solid color-mix(in srgb, var(--color-error) 35%, var(--color-border))',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 8,
+                        }}
+                      >
+                        <label
+                          htmlFor={`dispute-reason-${incId}`}
+                          style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-text-main)' }}
+                        >
+                          Lý do báo sai / hiện trường đã thông thoáng:
+                        </label>
+                        <input
+                          id={`dispute-reason-${incId}`}
+                          type="text"
+                          className="form-input"
+                          value={disputeReason}
+                          onChange={(e) => setDisputeReason(e.target.value)}
+                          placeholder="VD: Đoàn mình vừa qua sáng nay, đường đã dọn sạch và đi lại an toàn..."
+                          maxLength={300}
+                          style={{ fontSize: '0.78rem', padding: '6px 10px', borderRadius: 4 }}
+                        />
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                          <button
+                            type="button"
+                            className="btn btn-outline"
+                            disabled={isConfirming}
+                            onClick={() => {
+                              setDisputingIncidentId(null);
+                              setDisputeReason('');
+                            }}
+                            style={{ padding: '4px 10px', fontSize: '0.72rem', borderRadius: 4 }}
+                          >
+                            Hủy
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-danger"
+                            disabled={isConfirming}
+                            onClick={() => void handleSubmitDisputeIncident(inc)}
+                            style={{ padding: '4px 12px', fontSize: '0.72rem', borderRadius: 4 }}
+                          >
+                            {isConfirming ? 'Đang gửi...' : 'Gửi Báo Sai'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </article>
                 );
               })}
@@ -1560,6 +1799,8 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 380, overflowY: 'auto' }}>
               {conditions.map((c) => {
                 const cMeta = CONDITION_META[c.condition] || CONDITION_META.caution;
+                const upvoteCount = c.upvotes ?? c.upvotesCount ?? 0;
+                const isUpvoting = upvotingConditionId === c._id;
                 return (
                   <div
                     key={c._id}
@@ -1604,9 +1845,34 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                         Thời tiết ghi nhận: {c.weatherNote}
                       </div>
                     )}
-                    <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', display: 'flex', justifyContent: 'space-between' }}>
+                    <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 2 }}>
                       <span>Bởi: {c.userId?.fullName || 'Trekker Thực Địa'}</span>
-                      <span>{c.upvotesCount || 0} hữu ích</span>
+                      <button
+                        type="button"
+                        disabled={isUpvoting || Boolean(c.hasUpvoted)}
+                        onClick={() => void handleUpvoteCondition(c)}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          padding: '3px 8px',
+                          borderRadius: 4,
+                          fontSize: '0.7rem',
+                          fontWeight: 700,
+                          cursor: c.hasUpvoted ? 'default' : 'pointer',
+                          border: c.hasUpvoted
+                            ? '1px solid var(--color-primary)'
+                            : '1px solid var(--color-border-strong)',
+                          background: c.hasUpvoted
+                            ? 'color-mix(in srgb, var(--color-primary) 14%, transparent)'
+                            : 'var(--color-bg-card)',
+                          color: c.hasUpvoted ? 'var(--color-primary)' : 'var(--color-text-main)',
+                          fontVariantNumeric: 'tabular-nums',
+                        }}
+                      >
+                        <IconCheckCircle size={11} color={c.hasUpvoted ? 'var(--color-primary)' : 'var(--color-text-muted)'} />
+                        <span>{c.hasUpvoted ? 'Đã hữu ích' : 'Hữu ích'} ({upvoteCount})</span>
+                      </button>
                     </div>
                   </div>
                 );

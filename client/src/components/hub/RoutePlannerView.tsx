@@ -14,6 +14,7 @@ import L from 'leaflet';
 import type { Region, Trail, User } from '../../types.js';
 import { isTopmostFocusTrap, useFocusTrap } from '../../hooks/useFocusTrap.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
+import { scopedStorageKey } from '../../utils/storageScope.js';
 import { calculateHaversineKm } from '../../utils/solarMath.js';
 import {
   computeRouteMetrics,
@@ -67,19 +68,26 @@ export interface RoutePlannerViewProps {
 
 type MapTileKey = 'topo' | 'satellite' | 'osm';
 type ClickToolMode = 'vertex' | 'waypoint';
-type ElevationSourceState = 'none' | 'server-dem' | 'open-meteo-dem' | 'gpx-elevation' | 'interpolated';
+type ElevationSourceState =
+  | 'none'
+  | 'server-dem'
+  | 'open-meteo-dem'
+  | 'gpx-elevation'
+  | 'interpolated'
+  | 'interpolated-fallback';
 
 interface SavedCustomRouteRecord {
   id: string;
   _id?: string;
   shareSlug: string;
+  creatorId?: string | { _id?: string; id?: string };
   title: string;
   description?: string;
   region?: string;
   province?: string;
   baseTrailId?: string;
   waypoints: PlannerWaypoint[];
-  trackPoints: [number, number][];
+  trackPoints: [number, number][] | [number, number, number][];
   elevations?: number[];
   metrics: {
     distanceKm: number;
@@ -97,6 +105,13 @@ interface SavedCustomRouteRecord {
   isLiked?: boolean;
   isLocalOnly?: boolean;
   createdAt?: string;
+}
+
+interface LoadedRouteMeta {
+  id: string;
+  shareSlug: string;
+  isOwner: boolean;
+  isLocalOnly?: boolean;
 }
 
 const LOCAL_ROUTES_STORAGE_KEY = 'lost_custom_routes_v1';
@@ -503,7 +518,9 @@ function createWaypointDivIcon(type: RouteWaypointType): L.DivIcon {
 
 function loadLocalSavedRoutes(): SavedCustomRouteRecord[] {
   try {
-    const raw = localStorage.getItem(LOCAL_ROUTES_STORAGE_KEY);
+    const raw =
+      localStorage.getItem(scopedStorageKey(LOCAL_ROUTES_STORAGE_KEY)) ||
+      localStorage.getItem(LOCAL_ROUTES_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
@@ -514,7 +531,7 @@ function loadLocalSavedRoutes(): SavedCustomRouteRecord[] {
 
 function saveLocalSavedRoutes(items: SavedCustomRouteRecord[]) {
   try {
-    localStorage.setItem(LOCAL_ROUTES_STORAGE_KEY, JSON.stringify(items.slice(0, 30)));
+    localStorage.setItem(scopedStorageKey(LOCAL_ROUTES_STORAGE_KEY), JSON.stringify(items.slice(0, 30)));
   } catch {
     // ignore storage quota errors
   }
@@ -626,6 +643,9 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
   const libraryDrawerRef = useRef<HTMLDivElement | null>(null);
   const onShowToastRef = useRef(onShowToast);
   const lastInitialTrailIdRef = useRef<string | undefined>(initialTrailId);
+  const profileScrubRafRef = useRef<number | null>(null);
+  const pendingProfileScrubRef = useRef<{ clientX: number; svgEl: SVGSVGElement } | null>(null);
+  const lastHoverIdxRef = useRef<number | null>(null);
 
   useEffect(() => {
     onShowToastRef.current = onShowToast;
@@ -635,6 +655,10 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+      if (profileScrubRafRef.current !== null) {
+        window.cancelAnimationFrame(profileScrubRafRef.current);
+        profileScrubRafRef.current = null;
+      }
       libraryAbortRef.current?.abort();
       saveAbortRef.current?.abort();
     };
@@ -684,6 +708,8 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
   const [isSaveModalOpen, setIsSaveModalOpen] = useState<boolean>(false);
   const [saveVisibility, setSaveVisibility] = useState<'private' | 'unlisted' | 'public'>('public');
   const [savingRoute, setSavingRoute] = useState<boolean>(false);
+  const [loadedRouteMeta, setLoadedRouteMeta] = useState<LoadedRouteMeta | null>(null);
+  const currentUserId = String(currentUser?.id || (currentUser as (User & { _id?: string }) | null)?._id || '');
 
   const [isLibraryOpen, setIsLibraryOpen] = useState<boolean>(false);
   const [libraryTab, setLibraryTab] = useState<'mine' | 'public'>('mine');
@@ -881,6 +907,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     setVertices([]);
     setWaypoints([]);
     setBaseTrailId('');
+    setLoadedRouteMeta(null);
     setElevationSource('none');
     setHoverIdx(null);
     onShowToast?.('Đã xóa toàn bộ điểm trên bản đồ.', 'info');
@@ -1032,6 +1059,9 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
           : Array.isArray(rawProfile?.points)
           ? rawProfile.points
           : json?.data?.points;
+        const profileSource =
+          (!Array.isArray(rawProfile) ? rawProfile?.source : undefined) || json?.data?.source || '';
+        const isFallbackSource = profileSource === 'interpolated-fallback';
         if (json?.success && Array.isArray(pts) && pts.length >= 2) {
           const updated: RouteVertex[] = pts.map((p, idx) => ({
             lat: typeof p.lat === 'number' ? p.lat : densifiedCoords[Math.min(idx, densifiedCoords.length - 1)][0],
@@ -1040,9 +1070,14 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
           }));
           pushUndoSnapshot();
           setVertices(updated);
-          setElevationSource('server-dem');
+          setElevationSource(isFallbackSource ? 'interpolated-fallback' : 'server-dem');
           setDemLoading(false);
-          onShowToastRef.current?.(`Đã cập nhật cao độ DEM thật từ máy chủ LOST (${updated.length} mẫu).`, 'success');
+          onShowToastRef.current?.(
+            isFallbackSource
+              ? 'Nguồn DEM thực địa tạm gián đoạn — đang hiển thị cao độ ước tính ngoại tuyến.'
+              : `Đã cập nhật cao độ DEM thật từ máy chủ LOST (${updated.length} mẫu).`,
+            isFallbackSource ? 'info' : 'success'
+          );
           return;
         }
       }
@@ -1093,9 +1128,9 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
       };
     });
     setVertices(fallbackUpdated);
-    setElevationSource('interpolated');
+    setElevationSource('interpolated-fallback');
     setDemLoading(false);
-    onShowToastRef.current?.('Đang ngoại tuyến — sử dụng nội suy cao độ cục bộ.', 'info');
+    onShowToastRef.current?.('Đang ngoại tuyến — sử dụng ước tính cao độ cục bộ (DEM tạm gián đoạn).', 'info');
   };
 
   // Export GPX 1.1 XML file (including standard <wpt><sym>...</sym><type>...</type></wpt>)
@@ -1132,9 +1167,15 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     onShowToast?.(`Đã xuất tệp ${slug}.gpx (chuẩn GPX 1.1).`, 'success');
   };
 
-  // Save & Share Custom Route (POST /api/custom-routes + localStorage fallback)
-  const handleSaveCustomRoute = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const canUpdateLoadedRoute = Boolean(
+    currentUser &&
+      loadedRouteMeta?.isOwner &&
+      !loadedRouteMeta.isLocalOnly &&
+      /^[a-fA-F0-9]{24}$/.test(loadedRouteMeta.id)
+  );
+
+  // Save & Share Custom Route (PUT /api/custom-routes/:id for owned loaded route, or POST for new / copy)
+  const submitSaveCustomRoute = async (saveAsCopy: boolean) => {
     if (vertices.length < 2) {
       onShowToast?.('Vui lòng vẽ tối thiểu 2 điểm trước khi lưu.', 'error');
       return;
@@ -1161,9 +1202,19 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
       visibility: saveVisibility,
     };
 
+    const shouldUpdateExisting = !saveAsCopy && canUpdateLoadedRoute && Boolean(loadedRouteMeta?.id);
+    const localSlug =
+      !saveAsCopy && loadedRouteMeta?.isLocalOnly && loadedRouteMeta.shareSlug
+        ? loadedRouteMeta.shareSlug
+        : `local-${Date.now().toString(36)}`;
+    const localId =
+      !saveAsCopy && loadedRouteMeta?.isLocalOnly && loadedRouteMeta.id
+        ? loadedRouteMeta.id
+        : `local-route-${Date.now()}`;
+
     const localRecord: SavedCustomRouteRecord = {
-      id: `local-route-${Date.now()}`,
-      shareSlug: `local-${Date.now().toString(36)}`,
+      id: localId,
+      shareSlug: localSlug,
       ...payload,
       waypoints,
       elevations: vertices.map((v) => (typeof v.elevationM === 'number' ? v.elevationM : 0)),
@@ -1191,8 +1242,11 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
 
     if (currentUser) {
       try {
-        const res = await fetch('/api/custom-routes', {
-          method: 'POST',
+        const endpoint = shouldUpdateExisting
+          ? `/api/custom-routes/${encodeURIComponent(loadedRouteMeta!.id)}`
+          : '/api/custom-routes';
+        const res = await fetch(endpoint, {
+          method: shouldUpdateExisting ? 'PUT' : 'POST',
           headers: getApiHeaders({ 'Content-Type': 'application/json' }),
           signal: saveController.signal,
           body: JSON.stringify(payload),
@@ -1204,14 +1258,21 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
         } | null;
         if (!isMountedRef.current || saveController.signal.aborted) return;
         if (res.ok && json?.success && json.data) {
+          const resolvedId = json.data._id || json.data.id || localRecord.id;
           savedRecord = {
             ...json.data,
-            id: json.data.id || json.data._id || localRecord.id,
+            id: resolvedId,
             waypoints,
             elevations: localRecord.elevations,
             isLocalOnly: false,
           };
           syncedCloud = true;
+          setLoadedRouteMeta({
+            id: resolvedId,
+            shareSlug: savedRecord.shareSlug,
+            isOwner: true,
+            isLocalOnly: false,
+          });
         }
       } catch {
         if (!isMountedRef.current || saveController.signal.aborted) return;
@@ -1219,22 +1280,84 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
       }
     }
 
+    if (!syncedCloud) {
+      setLoadedRouteMeta({
+        id: savedRecord.id,
+        shareSlug: savedRecord.shareSlug,
+        isOwner: true,
+        isLocalOnly: true,
+      });
+    }
+
     if (!isMountedRef.current || saveController.signal.aborted) return;
     const existingLocal = loadLocalSavedRoutes().filter((r) => r.shareSlug !== savedRecord.shareSlug);
     const updatedLocal = [savedRecord, ...existingLocal];
     saveLocalSavedRoutes(updatedLocal);
-    setMyRoutes(updatedLocal);
+    setMyRoutes((prev) => [
+      savedRecord,
+      ...prev.filter((r) => r.shareSlug !== savedRecord.shareSlug && r.id !== savedRecord.id),
+    ]);
     setSavingRoute(false);
     setIsSaveModalOpen(false);
 
     onShowToastRef.current?.(
       syncedCloud
-        ? `Đã lưu & đồng bộ cung "${cleanTitle}" lên máy chủ LOST!`
+        ? shouldUpdateExisting
+          ? `Đã cập nhật cung "${cleanTitle}" trên máy chủ LOST!`
+          : `Đã lưu & đồng bộ cung "${cleanTitle}" lên máy chủ LOST!`
         : currentUser
         ? `Đã lưu cung "${cleanTitle}" vào bộ nhớ máy (chế độ Offline).`
         : `Đã lưu cục bộ "${cleanTitle}". Đăng nhập để chia sẻ công khai cùng cộng đồng LOST.`,
       'success'
     );
+  };
+
+  const handleSaveCustomRoute = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitSaveCustomRoute(false);
+  };
+
+  const handleOpenLiveGpsForRoute = () => {
+    if (vertices.length < 2) {
+      onShowToast?.('Vui lòng vẽ hoặc nạp tối thiểu 2 điểm trước khi mở Live GPS.', 'error');
+      return;
+    }
+    const cleanTitle = routeTitle.trim() || 'Cung Đường Tự Vẽ LOST';
+    const targetSlug = loadedRouteMeta?.shareSlug || `local-live-${Date.now().toString(36)}`;
+    const draftRecord: SavedCustomRouteRecord = {
+      id: loadedRouteMeta?.id || `local-route-${Date.now()}`,
+      shareSlug: targetSlug,
+      title: cleanTitle,
+      description: routeDescription.trim(),
+      region: routeRegion,
+      province: routeProvince.trim() || 'Việt Nam',
+      baseTrailId: baseTrailId || undefined,
+      waypoints,
+      trackPoints: vertices.map((v) => [v.lat, v.lng] as [number, number]),
+      elevations: vertices.map((v) => (typeof v.elevationM === 'number' ? v.elevationM : 0)),
+      metrics: {
+        distanceKm: metrics.distanceKm,
+        elevationGainM: metrics.elevationGainM,
+        elevationLossM: metrics.elevationLossM,
+        maxAltitudeM: metrics.maxAltitudeM,
+        minAltitudeM: metrics.minAltitudeM,
+        maxSlopePercent: metrics.maxSlopePercent,
+        naismithHours: metrics.naismithLangmuirHours,
+        toblerHours: metrics.toblerHours,
+        difficultyEstimate: metrics.estimatedDifficulty,
+      },
+      visibility: saveVisibility,
+      isLocalOnly: loadedRouteMeta?.isLocalOnly ?? true,
+      createdAt: new Date().toISOString(),
+    };
+    const existingLocal = loadLocalSavedRoutes().filter((r) => r.shareSlug !== targetSlug);
+    saveLocalSavedRoutes([draftRecord, ...existingLocal]);
+    window.dispatchEvent(
+      new CustomEvent('lost:open-live-tracker', {
+        detail: { customRouteId: targetSlug, trailId: baseTrailId || undefined },
+      })
+    );
+    onShowToast?.(`Đang mở Live GPS dẫn đường theo tuyến "${cleanTitle}"...`, 'info');
   };
 
   // Hydrate shared /planner?route=<shareSlug> on mount via GET /api/custom-routes/share/:shareSlug
@@ -1272,6 +1395,18 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
         }
         if (rec.province) setRouteProvince(rec.province);
         setBaseTrailId(rec.baseTrailId || '');
+        setSaveVisibility(rec.visibility || 'public');
+        const ownerIdRaw =
+          typeof rec.creatorId === 'object' && rec.creatorId
+            ? String(rec.creatorId._id || rec.creatorId.id || '')
+            : String(rec.creatorId || '');
+        const isOwner = Boolean(rec.isLocalOnly || (currentUserId && ownerIdRaw && ownerIdRaw === currentUserId));
+        setLoadedRouteMeta({
+          id: rec._id || rec.id,
+          shareSlug: rec.shareSlug,
+          isOwner,
+          isLocalOnly: rec.isLocalOnly,
+        });
         setElevationSource(loadedVertices.some((v) => typeof v.elevationM === 'number') ? 'server-dem' : 'none');
         setFitBoundsToken((n) => n + 1);
         onShowToastRef.current?.(`Đã mở cung chia sẻ "${rec.title}" (${sourceLabel}).`, 'success');
@@ -1304,7 +1439,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
 
     void hydrateShared();
     return () => controller.abort();
-  }, []);
+  }, [currentUserId]);
 
   // Sync initialTrailId when switching trails in-place
   useEffect(() => {
@@ -1324,6 +1459,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
       setRouteRegion(tr.region);
       setRouteProvince(tr.province);
       setBaseTrailId(tr.id);
+      setLoadedRouteMeta(null);
       setElevationSource('interpolated');
       setFitBoundsToken((n) => n + 1);
     });
@@ -1383,11 +1519,21 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
   const handleLoadSavedRoute = (rec: SavedCustomRouteRecord) => {
     cancelPendingDem();
     pushUndoSnapshot();
-    const loadedVertices: RouteVertex[] = (rec.trackPoints || []).map(([lat, lng], idx) => ({
-      lat,
-      lng,
-      elevationM: Array.isArray(rec.elevations) && typeof rec.elevations[idx] === 'number' ? rec.elevations[idx] : null,
-    }));
+    const loadedVertices: RouteVertex[] = (rec.trackPoints || []).map((rawPt, idx) => {
+      const ptArr = rawPt as unknown as number[];
+      const thirdEle =
+        ptArr.length >= 3 && Number.isFinite(Number(ptArr[2])) ? Math.round(Number(ptArr[2])) : null;
+      const arrEle =
+        Array.isArray(rec.elevations) && typeof rec.elevations[idx] === 'number' && Number.isFinite(rec.elevations[idx])
+          ? Math.round(rec.elevations[idx])
+          : null;
+      return {
+        lat: Number(ptArr[0]),
+        lng: Number(ptArr[1]),
+        elevationM: thirdEle ?? arrEle,
+      };
+    });
+    const hasEle = loadedVertices.some((v) => typeof v.elevationM === 'number');
     setVertices(loadedVertices);
     setWaypoints(
       Array.isArray(rec.waypoints)
@@ -1401,11 +1547,32 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     }
     if (rec.province) setRouteProvince(rec.province);
     setBaseTrailId(rec.baseTrailId || '');
-    setElevationSource(Array.isArray(rec.elevations) && rec.elevations.length > 0 ? 'interpolated' : 'none');
+    setSaveVisibility(rec.visibility || 'public');
+    const ownerIdRaw =
+      typeof rec.creatorId === 'object' && rec.creatorId
+        ? String(rec.creatorId._id || rec.creatorId.id || '')
+        : String(rec.creatorId || '');
+    const isOwner = Boolean(
+      libraryTab === 'mine' ||
+        rec.isLocalOnly ||
+        (currentUserId && ownerIdRaw && ownerIdRaw === currentUserId)
+    );
+    setLoadedRouteMeta({
+      id: rec._id || rec.id,
+      shareSlug: rec.shareSlug,
+      isOwner,
+      isLocalOnly: rec.isLocalOnly,
+    });
+    setElevationSource(hasEle ? (rec.isLocalOnly ? 'interpolated' : 'server-dem') : 'none');
     setHoverIdx(null);
     setFitBoundsToken((n) => n + 1);
     setIsLibraryOpen(false);
-    onShowToast?.(`Đã nạp cung "${rec.title}" lên bản đồ.`, 'success');
+    onShowToast?.(
+      hasEle
+        ? `Đã nạp cung "${rec.title}" kèm dữ liệu cao độ lên bản đồ.`
+        : `Đã nạp cung "${rec.title}". Bấm "Lấy Cao Độ DEM Thật" để cập nhật biểu đồ độ dốc.`,
+      'success'
+    );
   };
 
   const handleDeleteSavedRoute = async (rec: SavedCustomRouteRecord) => {
@@ -1639,20 +1806,46 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     return { W, H, padL, padR, padT, padB, plotW, plotH, segments, areaPath, yTicks, xTicks, coords };
   }, [metrics.profile, metrics.minAltitudeM, metrics.maxAltitudeM]);
 
-  const handleProfileScrub = (clientX: number, rect: DOMRect) => {
-    if (profileSvg.coords.length < 2 || rect.width <= 0) return;
-    const relX = ((clientX - rect.left) / rect.width) * profileSvg.W;
-    let bestIdx = 0;
-    let bestDiff = Infinity;
-    profileSvg.coords.forEach((c, idx) => {
-      const diff = Math.abs(c.x - relX);
-      if (diff < bestDiff) {
-        bestDiff = diff;
-        bestIdx = idx;
-      }
-    });
-    setHoverIdx(bestIdx);
-  };
+  const handleProfileScrub = useCallback(
+    (clientX: number, svgEl: SVGSVGElement) => {
+      pendingProfileScrubRef.current = { clientX, svgEl };
+      if (profileScrubRafRef.current !== null) return;
+      profileScrubRafRef.current = window.requestAnimationFrame(() => {
+        profileScrubRafRef.current = null;
+        const pending = pendingProfileScrubRef.current;
+        if (!pending || profileSvg.coords.length < 2) return;
+        const rect = pending.svgEl.getBoundingClientRect();
+        if (rect.width <= 0) return;
+        const relX = ((pending.clientX - rect.left) / rect.width) * profileSvg.W;
+        let bestIdx = 0;
+        let bestDiff = Infinity;
+        for (let idx = 0; idx < profileSvg.coords.length; idx++) {
+          const diff = Math.abs(profileSvg.coords[idx].x - relX);
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            bestIdx = idx;
+          }
+        }
+        if (bestIdx !== lastHoverIdxRef.current) {
+          lastHoverIdxRef.current = bestIdx;
+          setHoverIdx(bestIdx);
+        }
+      });
+    },
+    [profileSvg.coords, profileSvg.W]
+  );
+
+  const handleProfileScrubEnd = useCallback(() => {
+    pendingProfileScrubRef.current = null;
+    if (profileScrubRafRef.current !== null) {
+      window.cancelAnimationFrame(profileScrubRafRef.current);
+      profileScrubRafRef.current = null;
+    }
+    if (lastHoverIdxRef.current !== null) {
+      lastHoverIdxRef.current = null;
+      setHoverIdx(null);
+    }
+  }, []);
 
   const hoveredPoint =
     hoverIdx !== null && profileSvg.coords[hoverIdx] ? profileSvg.coords[hoverIdx] : null;
@@ -2185,6 +2378,8 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                   ? 'badge-success'
                   : elevationSource === 'gpx-elevation'
                   ? 'badge-info'
+                  : elevationSource === 'interpolated-fallback'
+                  ? 'badge-sun'
                   : 'badge-cloud'
               }`}
             >
@@ -2194,6 +2389,8 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                 ? 'Open-Meteo DEM 90m'
                 : elevationSource === 'gpx-elevation'
                 ? 'Cao độ GPX gốc'
+                : elevationSource === 'interpolated-fallback'
+                ? 'Ước tính ngoại tuyến (DEM tạm gián đoạn)'
                 : elevationSource === 'interpolated'
                 ? 'Ước tính sơ bộ'
                 : 'Chưa có dữ liệu DEM'}
@@ -2207,12 +2404,13 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                 width="100%"
                 role="img"
                 aria-label="Biểu đồ cao độ và độ dốc tuyến đường"
-                onMouseMove={(e) => handleProfileScrub(e.clientX, e.currentTarget.getBoundingClientRect())}
+                onMouseMove={(e) => handleProfileScrub(e.clientX, e.currentTarget)}
                 onTouchMove={(e) => {
                   const t = e.touches[0];
-                  if (t) handleProfileScrub(t.clientX, e.currentTarget.getBoundingClientRect());
+                  if (t) handleProfileScrub(t.clientX, e.currentTarget);
                 }}
-                onMouseLeave={() => setHoverIdx(null)}
+                onMouseLeave={handleProfileScrubEnd}
+                onTouchEnd={handleProfileScrubEnd}
                 style={{
                   display: 'block',
                   width: '100%',
@@ -2552,6 +2750,16 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
               >
                 <IconBot size={15} />
                 Phân Tích Bằng LOST AI
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={vertices.length < 2}
+                onClick={handleOpenLiveGpsForRoute}
+                style={{ gridColumn: '1 / -1' }}
+              >
+                <IconCompass size={15} color="var(--color-on-primary)" />
+                Mở Live GPS Theo Tuyến Này
               </button>
               <button
                 type="button"
@@ -3012,13 +3220,19 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                   </select>
                 </div>
 
+                {canUpdateLoadedRoute && (
+                  <p style={{ fontSize: '0.78rem', color: 'var(--color-primary)', margin: 0 }}>
+                    Bạn đang chỉnh sửa cung đã lưu của chính mình — bấm <strong>Cập Nhật Cung</strong> để ghi đè hoặc chọn <strong>Lưu Thành Bản Sao Mới</strong>.
+                  </p>
+                )}
+
                 {!currentUser && (
                   <p style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
                     Bạn chưa đăng nhập — cung đường sẽ được lưu an toàn vào bộ nhớ trình duyệt (Offline).
                   </p>
                 )}
 
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
                   <button
                     type="button"
                     className="btn btn-outline"
@@ -3027,8 +3241,22 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                   >
                     Hủy
                   </button>
+                  {canUpdateLoadedRoute && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      disabled={savingRoute}
+                      onClick={() => void submitSaveCustomRoute(true)}
+                    >
+                      {savingRoute ? 'Đang lưu...' : 'Lưu Thành Bản Sao Mới'}
+                    </button>
+                  )}
                   <button type="submit" className="btn btn-primary" disabled={savingRoute}>
-                    {savingRoute ? 'Đang lưu...' : 'Lưu Cung Tự Vẽ'}
+                    {savingRoute
+                      ? 'Đang lưu...'
+                      : canUpdateLoadedRoute
+                        ? 'Cập Nhật Cung'
+                        : 'Lưu Cung Tự Vẽ'}
                   </button>
                 </div>
               </form>
@@ -3048,7 +3276,6 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
               inset: 0,
               zIndex: 'var(--z-drawer, 2000)',
               background: 'var(--overlay-bg)',
-              backdropFilter: 'blur(8px)',
               display: 'flex',
               justifyContent: 'flex-end',
             }}

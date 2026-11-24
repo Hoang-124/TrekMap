@@ -13,6 +13,8 @@ import {
   activateAccount,
   logout,
   refreshSession,
+  changePassword,
+  deleteMyAccount,
 } from '../controllers/auth.controller.js';
 import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.middleware.js';
 import { authRateLimiter, createRateLimiter } from '../middleware/rateLimiter.middleware.js';
@@ -47,6 +49,8 @@ router.post('/reset-password-with-token', authRateLimiter, resetPasswordWithToke
 router.get('/check-username', usernameCheckLimiter, checkUsername);
 router.get('/me', authMiddleware as any, getMe as any);
 router.post('/profile', authMiddleware as any, updateProfile as any);
+router.post('/change-password', authRateLimiter, authMiddleware as any, changePassword as any);
+router.delete('/me', authRateLimiter, authMiddleware as any, deleteMyAccount as any);
 router.post('/refresh', refreshRateLimiter, refreshSession);
 router.post('/logout', optionalAuthMiddleware as any, logout as any);
 

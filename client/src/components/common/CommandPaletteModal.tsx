@@ -570,8 +570,6 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
         inset: 0,
         zIndex: 'var(--z-modal, 3000)' as unknown as number,
         background: 'var(--overlay-bg)',
-        backdropFilter: 'blur(8px)',
-        WebkitBackdropFilter: 'blur(8px)',
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'center',

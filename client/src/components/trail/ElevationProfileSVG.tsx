@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useId } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useId, useCallback } from 'react';
 import type { Waypoint } from '../../types.js';
 import { haversineMeters } from '../../utils/geoMath.js';
 import { IconMountain } from '../common/SvgIcons.js';
@@ -20,6 +20,7 @@ interface ElevationProfileSVGProps {
   waypoints?: Waypoint[];
   height?: number;
   onHoverCoordinate?: (coord: [number, number] | null) => void;
+  externalHoverIndex?: number | null;
 }
 
 function formatSlopeLabel(slopePercent: number): string {
@@ -39,7 +40,7 @@ function haversineDistSqApprox(lat1: number, lng1: number, lat2: number, lng2: n
   return dLat * dLat + dLng * dLng;
 }
 
-export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
+export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = React.memo(({
   trailId,
   gpxTrack,
   elevationGainM,
@@ -48,6 +49,7 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
   waypoints = [],
   height = 170,
   onHoverCoordinate,
+  externalHoverIndex = null,
 }) => {
   const uniqueId = useId();
   const gradientId = `elevation-grad-${uniqueId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
@@ -67,6 +69,14 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
   } | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const scrubRafRef = useRef<number | null>(null);
+  const pendingScrubRef = useRef<{ svgEl: SVGSVGElement; clientX: number } | null>(null);
+  const lastHoveredIdxRef = useRef<number | null>(null);
+  const onHoverCoordinateRef = useRef(onHoverCoordinate);
+
+  useEffect(() => {
+    onHoverCoordinateRef.current = onHoverCoordinate;
+  }, [onHoverCoordinate]);
 
   // Immediately clear stale DEM curve when trailId changes (prevents Trail A curve lingering on Trail B)
   if (trackedTrailId !== trailId) {
@@ -223,7 +233,138 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
     });
   }, [points, waypoints, svgWidth]);
 
-  if (points.length < 2) {
+  // Map -> Chart reverse hover sync: resolve external GPX track index onto nearest elevation point
+  const externalHoveredPoint = useMemo(() => {
+    if (
+      externalHoverIndex === null ||
+      externalHoverIndex === undefined ||
+      points.length < 2 ||
+      !Array.isArray(gpxTrack) ||
+      gpxTrack.length < 2
+    ) {
+      return null;
+    }
+    const clampedIdx = Math.max(0, Math.min(gpxTrack.length - 1, Math.round(externalHoverIndex)));
+    const targetCoord = gpxTrack[clampedIdx];
+    if (
+      Array.isArray(targetCoord) &&
+      Number.isFinite(targetCoord[0]) &&
+      Number.isFinite(targetCoord[1])
+    ) {
+      let nearest = points[0];
+      let bestDistSq = Infinity;
+      for (const p of points) {
+        const dSq = haversineDistSqApprox(targetCoord[0], targetCoord[1], p.lat, p.lng);
+        if (dSq < bestDistSq) {
+          bestDistSq = dSq;
+          nearest = p;
+        }
+      }
+      return nearest;
+    }
+    const ratio = clampedIdx / Math.max(1, gpxTrack.length - 1);
+    return points[Math.min(points.length - 1, Math.round(ratio * (points.length - 1)))];
+  }, [externalHoverIndex, gpxTrack, points]);
+
+  const activeHoverPoint = hoveredPoint || externalHoveredPoint;
+
+  // Reset deduplicated hover index whenever trail or point array changes, and cancel pending rAF on unmount
+  useEffect(() => {
+    lastHoveredIdxRef.current = null;
+  }, [trailId, points]);
+
+  useEffect(() => {
+    return () => {
+      if (scrubRafRef.current !== null) {
+        window.cancelAnimationFrame(scrubRafRef.current);
+        scrubRafRef.current = null;
+      }
+    };
+  }, []);
+
+  // Memoize Catmull-Rom smooth SVG path, fill area & peak marker geometry
+  const svgGeometry = useMemo(() => {
+    if (points.length < 2) return null;
+    let d = `M ${points[0].x} ${points[0].y}`;
+    for (let i = 0; i < points.length - 1; i++) {
+      const p0 = points[i === 0 ? 0 : i - 1];
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      const p3 = points[i + 2 >= points.length ? points.length - 1 : i + 2];
+
+      const cp1x = p1.x + (p2.x - p0.x) / 6;
+      const cp1y = p1.y + (p2.y - p0.y) / 6;
+      const cp2x = p2.x - (p3.x - p1.x) / 6;
+      const cp2y = p2.y - (p3.y - p1.y) / 6;
+      d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
+    }
+    const areaD = `${d} L ${points[points.length - 1].x} ${height - paddingBottom} L ${points[0].x} ${height - paddingBottom} Z`;
+    const peakPoint = points.reduce((prev, curr) => (curr.alt > prev.alt ? curr : prev), points[0]);
+    const clampedPeakLabelX = Math.min(svgWidth - 82, Math.max(82, peakPoint.x));
+    return { pathD: d, areaD, peakPoint, clampedPeakLabelX };
+  }, [points, height, paddingBottom, svgWidth]);
+
+  const scheduleScrub = useCallback(
+    (svgEl: SVGSVGElement, clientX: number) => {
+      pendingScrubRef.current = { svgEl, clientX };
+      if (scrubRafRef.current !== null) return;
+      scrubRafRef.current = window.requestAnimationFrame(() => {
+        scrubRafRef.current = null;
+        const pending = pendingScrubRef.current;
+        if (!pending || points.length < 2) return;
+        const rect = pending.svgEl.getBoundingClientRect();
+        if (rect.width <= 0) return;
+        const svgX = ((pending.clientX - rect.left) / rect.width) * svgWidth;
+
+        let nearestIdx = 0;
+        let minDist = Infinity;
+        for (let i = 0; i < points.length; i++) {
+          const dist = Math.abs(points[i].x - svgX);
+          if (dist < minDist) {
+            minDist = dist;
+            nearestIdx = i;
+          }
+        }
+        if (nearestIdx === lastHoveredIdxRef.current) return;
+        lastHoveredIdxRef.current = nearestIdx;
+        const nearest = points[nearestIdx];
+        setHoveredPoint(nearest);
+        onHoverCoordinateRef.current?.([nearest.lat, nearest.lng]);
+      });
+    },
+    [points, svgWidth]
+  );
+
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<SVGSVGElement>) => {
+      scheduleScrub(e.currentTarget, e.clientX);
+    },
+    [scheduleScrub]
+  );
+
+  const handleTouchScrub = useCallback(
+    (e: React.TouchEvent<SVGSVGElement>) => {
+      if (e.touches && e.touches.length > 0) {
+        scheduleScrub(e.currentTarget, e.touches[0].clientX);
+      }
+    },
+    [scheduleScrub]
+  );
+
+  const handleScrubEnd = useCallback(() => {
+    pendingScrubRef.current = null;
+    if (scrubRafRef.current !== null) {
+      window.cancelAnimationFrame(scrubRafRef.current);
+      scrubRafRef.current = null;
+    }
+    if (lastHoveredIdxRef.current !== null) {
+      lastHoveredIdxRef.current = null;
+      setHoveredPoint(null);
+      onHoverCoordinateRef.current?.(null);
+    }
+  }, []);
+
+  if (!svgGeometry) {
     return (
       <div
         style={{
@@ -243,60 +384,7 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
     );
   }
 
-  const createSmoothPath = (pts: typeof points) => {
-    let d = `M ${pts[0].x} ${pts[0].y}`;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[i === 0 ? 0 : i - 1];
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const p3 = pts[i + 2 >= pts.length ? pts.length - 1 : i + 2];
-
-      const cp1x = p1.x + (p2.x - p0.x) / 6;
-      const cp1y = p1.y + (p2.y - p0.y) / 6;
-      const cp2x = p2.x - (p3.x - p1.x) / 6;
-      const cp2y = p2.y - (p3.y - p1.y) / 6;
-      d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
-    }
-    return d;
-  };
-
-  const pathD = createSmoothPath(points);
-  const areaD = `${pathD} L ${points[points.length - 1].x} ${height - paddingBottom} L ${points[0].x} ${height - paddingBottom} Z`;
-  const peakPoint = points.reduce((prev, curr) => (curr.alt > prev.alt ? curr : prev), points[0]);
-  const clampedPeakLabelX = Math.min(svgWidth - 82, Math.max(82, peakPoint.x));
-
-  const scrubAtClientX = (svgEl: SVGSVGElement, clientX: number) => {
-    const rect = svgEl.getBoundingClientRect();
-    if (rect.width <= 0) return;
-    const svgX = ((clientX - rect.left) / rect.width) * svgWidth;
-
-    let nearest = points[0];
-    let minDist = Infinity;
-    for (const p of points) {
-      const dist = Math.abs(p.x - svgX);
-      if (dist < minDist) {
-        minDist = dist;
-        nearest = p;
-      }
-    }
-    setHoveredPoint(nearest);
-    onHoverCoordinate?.([nearest.lat, nearest.lng]);
-  };
-
-  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    scrubAtClientX(e.currentTarget, e.clientX);
-  };
-
-  const handleTouchScrub = (e: React.TouchEvent<SVGSVGElement>) => {
-    if (e.touches && e.touches.length > 0) {
-      scrubAtClientX(e.currentTarget, e.touches[0].clientX);
-    }
-  };
-
-  const handleScrubEnd = () => {
-    setHoveredPoint(null);
-    onHoverCoordinate?.(null);
-  };
+  const { pathD, areaD, peakPoint, clampedPeakLabelX } = svgGeometry;
 
   return (
     <div
@@ -423,13 +511,13 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
             );
           })}
 
-          {/* Interactive Crosshair */}
-          {hoveredPoint && (
+          {/* Interactive Crosshair (supports both Chart scrub & Map -> Chart reverse hover sync) */}
+          {activeHoverPoint && (
             <g>
               <line
-                x1={hoveredPoint.x}
+                x1={activeHoverPoint.x}
                 y1={paddingTop - 10}
-                x2={hoveredPoint.x}
+                x2={activeHoverPoint.x}
                 y2={height - paddingBottom}
                 stroke="var(--color-text-main)"
                 strokeWidth="1.5"
@@ -437,8 +525,8 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
                 opacity={0.8}
               />
               <circle
-                cx={hoveredPoint.x}
-                cy={hoveredPoint.y}
+                cx={activeHoverPoint.x}
+                cy={activeHoverPoint.y}
                 r={6}
                 fill="var(--color-bg-card)"
                 stroke="var(--color-primary)"
@@ -448,12 +536,12 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
           )}
         </svg>
 
-        {hoveredPoint && (
+        {activeHoverPoint && (
           <div
             style={{
               position: 'absolute',
-              top: Math.max(0, (hoveredPoint.y / height) * 100 - 30) + '%',
-              left: Math.min(80, Math.max(16, (hoveredPoint.x / svgWidth) * 100)) + '%',
+              top: Math.max(0, (activeHoverPoint.y / height) * 100 - 30) + '%',
+              left: Math.min(80, Math.max(16, (activeHoverPoint.x / svgWidth) * 100)) + '%',
               transform: 'translate(-50%, -100%)',
               background: 'var(--color-bg-card)',
               border: '1px solid var(--color-primary)',
@@ -468,17 +556,17 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
             }}
           >
             <div style={{ fontWeight: 800, color: 'var(--color-primary)' }}>
-              Km {hoveredPoint.km} · Cao độ: {hoveredPoint.alt.toLocaleString('vi-VN')}m
+              Km {activeHoverPoint.km} · Cao độ: {activeHoverPoint.alt.toLocaleString('vi-VN')}m
             </div>
             <div
               style={{
-                color: Math.abs(hoveredPoint.slopePercent) >= 25 ? 'var(--color-error-text, var(--color-error))' : 'var(--color-text-muted)',
+                color: Math.abs(activeHoverPoint.slopePercent) >= 25 ? 'var(--color-error-text, var(--color-error))' : 'var(--color-text-muted)',
                 fontSize: '0.7rem',
                 marginTop: 2,
                 fontWeight: 700,
               }}
             >
-              {hoveredPoint.slope}
+              {activeHoverPoint.slope}
             </div>
           </div>
         )}
@@ -504,4 +592,4 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = ({
       </div>
     </div>
   );
-};
+});

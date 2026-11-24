@@ -454,7 +454,13 @@ export const getCommunityActivities = async (req: AuthRequest, res: Response) =>
     const skip = (page - 1) * limit;
 
     if (mongoose.connection.readyState !== 1) {
-      return res.json({ success: true, scope, count: 0, data: [], pagination: { total: 0, page, limit } });
+      return res.json({
+        success: true,
+        scope,
+        count: 0,
+        data: [],
+        pagination: { total: 0, page, limit, totalPages: 0, hasMore: false },
+      });
     }
 
     const bannedUsers = await UserModel.find({ isBanned: true }).select('_id').lean();
@@ -465,7 +471,13 @@ export const getCommunityActivities = async (req: AuthRequest, res: Response) =>
     if (scope === 'following') {
       const viewerId = req.user?.userId;
       if (!viewerId || !Types.ObjectId.isValid(viewerId)) {
-        return res.json({ success: true, scope, count: 0, data: [], pagination: { total: 0, page, limit } });
+        return res.json({
+          success: true,
+          scope,
+          count: 0,
+          data: [],
+          pagination: { total: 0, page, limit, totalPages: 0, hasMore: false },
+        });
       }
       const follows = await FollowModel.find({ followerId: new Types.ObjectId(viewerId) })
         .select('followingId')
@@ -474,7 +486,13 @@ export const getCommunityActivities = async (req: AuthRequest, res: Response) =>
         .map((f) => f.followingId)
         .filter((fid) => !bannedIdSet.has(String(fid)));
       if (followingIds.length === 0) {
-        return res.json({ success: true, scope, count: 0, data: [], pagination: { total: 0, page, limit } });
+        return res.json({
+          success: true,
+          scope,
+          count: 0,
+          data: [],
+          pagination: { total: 0, page, limit, totalPages: 0, hasMore: false },
+        });
       }
       matchStage.userId = { $in: followingIds };
     } else if (bannedUsers.length > 0) {
@@ -570,12 +588,15 @@ export const getCommunityActivities = async (req: AuthRequest, res: Response) =>
       };
     });
 
+    const totalPages = Math.ceil(total / limit);
+    const hasMore = skip + formatted.length < total;
+
     return res.json({
       success: true,
       scope,
       count: formatted.length,
       data: formatted,
-      pagination: { total, page, limit },
+      pagination: { total, page, limit, totalPages, hasMore },
     });
   } catch (err) {
     console.error('[Get Community Activities Error]:', err);

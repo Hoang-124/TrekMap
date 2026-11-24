@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import type { UserProfile } from '../../types.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import { isTopmostFocusTrap, useFocusTrap } from '../../hooks/useFocusTrap.js';
+import { useSocket } from '../../hooks/useSocket.js';
 import { IconUserPlus, IconUserCheck, IconUsers, IconArrowLeft, IconArrowRight } from '../common/SvgIcons.js';
 
 // Pure SVG Icon Helper
@@ -83,6 +84,7 @@ interface RealProfilePayload {
   };
   recentThreads?: Array<{
     _id: string;
+    id?: string;
     title: string;
     category: string;
     upvotes: number;
@@ -107,6 +109,8 @@ interface AuthorProfileModalProps {
   currentUser?: UserProfile | null;
   onClose: () => void;
   onStartChat?: (targetUserId?: string, targetUserName?: string) => void;
+  onOpenThread?: (threadId: string) => void;
+  onRequireLogin?: (actionName: string) => void;
 }
 
 // Pure SVG Icon Gear Translation (Zero Emojis - Rule 12 compliant)
@@ -126,7 +130,10 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
   currentUser,
   onClose,
   onStartChat,
+  onOpenThread,
+  onRequireLogin,
 }) => {
+  const { isUserOnline } = useSocket();
   // Navigation stack so clicking a member in Followers/Following inspects their profile seamlessly
   const [inspectedStack, setInspectedStack] = useState<AuthorProfileData[]>([]);
   const rootAuthorKey = author ? `${author.userId || author._id || author.id || ''}:${author.name}` : '';
@@ -240,7 +247,7 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
           setFollowingCount(json.data.stats?.followingCount ?? json.data.followingCount ?? 0);
         } else {
           setProfile({
-            _id: activeAuthor._id || activeAuthor.id || activeAuthor.userId || 'LS-VERIFIED',
+            _id: activeAuthor._id || activeAuthor.id || activeAuthor.userId || '',
             username: cleanName.toLowerCase().replace(/\s+/g, '_'),
             fullName: cleanName,
             avatarUrl: activeAuthor.avatar || '',
@@ -275,14 +282,12 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
     return () => controller.abort();
   }, [activeAuthor, lookupKey, cleanName, isSelfByAuthor, currentUser]);
 
-  // Fetch real follow status when viewing another user's profile while authenticated
-  const targetUserId =
-    profile?._id && profile._id !== 'LS-VERIFIED'
-      ? profile._id
-      : (activeAuthor?.userId || activeAuthor?._id || '');
+  // Fetch real follow status & live counts
+  const targetUserId = profile?._id || activeAuthor?.userId || activeAuthor?._id || '';
+  const isTargetOnline = Boolean(targetUserId && isUserOnline(targetUserId));
 
   useEffect(() => {
-    if (!activeAuthor || isSelf || !targetUserId || !localStorage.getItem('lost_token')) {
+    if (!activeAuthor || isSelf || !targetUserId) {
       return;
     }
     const controller = new AbortController();
@@ -294,6 +299,8 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
       .then((json) => {
         if (!controller.signal.aborted && json?.success) {
           setIsFollowing(Boolean(json.isFollowing));
+          if (typeof json.followersCount === 'number') setFollowersCount(json.followersCount);
+          if (typeof json.followingCount === 'number') setFollowingCount(json.followingCount);
         }
       })
       .catch(() => {});
@@ -411,7 +418,16 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
       if (res.ok && json.success) {
         const nextFollow = Boolean(json.isFollowing);
         setIsFollowing(nextFollow);
-        setFollowersCount((prev) => Math.max(0, prev + (nextFollow ? 1 : -1)));
+        setFollowersCount((prev) =>
+          typeof json.followersCount === 'number'
+            ? json.followersCount
+            : Math.max(0, prev + (nextFollow ? 1 : -1))
+        );
+        window.dispatchEvent(
+          new CustomEvent('lost:follow-changed', {
+            detail: { targetUserId, isFollowing: nextFollow },
+          })
+        );
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
             detail: { message: json.message || (nextFollow ? 'Đã theo dõi thành công!' : 'Đã bỏ theo dõi.'), type: 'success' },
@@ -453,8 +469,22 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
 
   const handleStartMessage = () => {
     if (isSelf) return;
+    const token = localStorage.getItem('lost_token');
+    if (!currentUser && !token) {
+      if (onRequireLogin) {
+        onRequireLogin('nhắn tin trực tiếp với thành viên này');
+      } else {
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: 'Vui lòng đăng nhập để nhắn tin trực tiếp!', type: 'info' },
+          })
+        );
+        window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
+      }
+      return;
+    }
     onClose();
-    const targetId = profile?._id || lookupKey;
+    const targetId = targetUserId || lookupKey;
     if (targetId) {
       localStorage.setItem('lost_target_chat_user', targetId);
     }
@@ -464,6 +494,18 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
       window.history.pushState({ view: 'messages' }, '', '/messages');
       window.dispatchEvent(new PopStateEvent('popstate'));
     }
+  };
+
+  const handleOpenRecentThread = (threadIdToOpen: string) => {
+    if (!threadIdToOpen) return;
+    onClose();
+    if (onOpenThread) {
+      onOpenThread(threadIdToOpen);
+      return;
+    }
+    const targetUrl = `/forum?threadId=${encodeURIComponent(threadIdToOpen)}`;
+    window.history.pushState({ view: 'forum', threadId: threadIdToOpen }, '', targetUrl);
+    window.dispatchEvent(new PopStateEvent('popstate'));
   };
 
   const effectiveAvatar =
@@ -508,8 +550,6 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
         position: 'fixed',
         inset: 0,
         background: 'var(--overlay-bg)',
-        backdropFilter: 'blur(16px)',
-        WebkitBackdropFilter: 'blur(16px)',
         zIndex: 'var(--z-modal-nested, 3100)',
         display: 'flex',
         alignItems: 'center',
@@ -709,6 +749,8 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                 <div style={{ position: 'relative', flexShrink: 0 }}>
                   {effectiveAvatar ? (
                     <img
+                      loading="lazy"
+                      decoding="async"
                       src={effectiveAvatar}
                       alt={effectiveName}
                       referrerPolicy="no-referrer"
@@ -744,7 +786,7 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                     </div>
                   )}
                   <div
-                    title="Đang hoạt động trên hệ thống LOST"
+                    title={isTargetOnline ? 'Đang trực tuyến trên hệ thống LOST' : 'Ngoại tuyến'}
                     style={{
                       position: 'absolute',
                       bottom: -1,
@@ -752,7 +794,7 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                       width: 14,
                       height: 14,
                       borderRadius: '50%',
-                      background: 'var(--color-primary)',
+                      background: isTargetOnline ? 'var(--color-primary)' : 'var(--color-text-dim)',
                       border: '2.5px solid var(--color-bg-card)',
                     }}
                   />
@@ -1187,9 +1229,15 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 165, overflowY: 'auto' }}>
                     {profile?.recentThreads && profile.recentThreads.length > 0 ? (
                       profile.recentThreads.map((t) => (
-                        <div
+                        <button
                           key={t._id}
+                          type="button"
+                          onClick={() => handleOpenRecentThread(t.id || t._id)}
+                          title="Mở chi tiết bài viết"
                           style={{
+                            width: '100%',
+                            textAlign: 'left',
+                            cursor: 'pointer',
                             background: 'var(--color-bg-main)',
                             border: '1px solid var(--color-border)',
                             borderRadius: 4,
@@ -1198,6 +1246,7 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                             alignItems: 'center',
                             justifyContent: 'space-between',
                             gap: 10,
+                            fontFamily: 'var(--font-family)',
                           }}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
@@ -1226,8 +1275,9 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                             <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
                               <Eye size={11} /> {t.viewsCount}
                             </span>
+                            <IconArrowRight size={12} color="var(--color-primary)" />
                           </div>
-                        </div>
+                        </button>
                       ))
                     ) : (
                       <div style={{ padding: '20px 0', textAlign: 'center', color: 'var(--color-text-dim)', fontSize: '0.76rem' }}>
@@ -1347,6 +1397,8 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                             <span style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
                               {member.avatarUrl ? (
                                 <img
+                                  loading="lazy"
+                                  decoding="async"
                                   src={member.avatarUrl}
                                   alt={member.fullName}
                                   referrerPolicy="no-referrer"

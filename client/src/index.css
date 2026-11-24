@@ -56,9 +56,24 @@
   --ease-spring-crisp: cubic-bezier(0.22, 1.18, 0.36, 1);
   --ease-in-out-smooth: cubic-bezier(0.4, 0, 0.2, 1);
 
+  /* Static Z-Index Layer Scale (Theme-Invariant — Defined Once on :root) */
+  --z-map-hud: 400;
+  --z-navbar: 1000;
+  --z-dropdown: 1100;
+  --z-grain: 1200;
+  --z-drawer: 2000;
+  --z-modal: 3000;
+  --z-modal-nested: 3100;
+  --z-lightbox: 4000;
+  --z-toast: 5000;
+}
+
+:root,
+[data-theme="dark"] {
   /* ==========================================
    * 2. COLOR TOKENS - OBSIDIAN SLATE DARK MODE (DEFAULT)
    * ========================================== */
+  color-scheme: dark;
   --color-primary: #52b788;
   --color-sky: #6fa8c7;
   --color-earth: #d97742;
@@ -66,7 +81,7 @@
   --color-bg-main: #0c0f0d;
   --color-bg-card: #141916;
   --color-surface-elevated: #1c231f;
-  --color-bg-hud: rgba(12, 15, 13, 0.88);
+  --color-bg-hud: rgba(12, 15, 13, 0.96);
   --color-text-main: #f4f3ee;
   --color-text-muted: #a8b0aa;
 
@@ -75,16 +90,7 @@
   --color-on-primary: #07140d;
   --color-on-danger: #fdfcf9;
   --color-on-media: #f6f5f0;
-  --z-map-hud: 400;
-  --z-navbar: 1000;
-  --z-dropdown: 1100;
-  --z-grain: 1200;
-  --z-drawer: 2000;
-  --z-modal: 3000;
-  --z-modal-nested: 3100;
-  --z-lightbox: 4000;
-  --z-toast: 5000;
-  --color-bg-glass: rgba(14, 18, 15, 0.86);
+  --color-bg-glass: rgba(14, 18, 15, 0.96);
   --color-border: rgba(235, 240, 236, 0.09);
   --color-border-strong: rgba(235, 240, 236, 0.18);
   --color-border-glow: rgba(82, 183, 136, 0.42);
@@ -106,64 +112,14 @@
   --hero-contour-overlay: none;
   --shadow-header: 0 1px 0 rgba(235, 240, 236, 0.06);
   --shadow-card: 0 10px 28px -10px rgba(0, 0, 0, 0.45);
-  --overlay-bg: rgba(8, 11, 9, 0.82);
-}
-
-[data-theme="dark"] {
-  --color-primary: #52b788;
-  --color-sky: #6fa8c7;
-  --color-earth: #d97742;
-  --color-stream: #5ea8a7;
-  --color-bg-main: #0c0f0d;
-  --color-bg-card: #141916;
-  --color-surface-elevated: #1c231f;
-  --color-bg-hud: rgba(12, 15, 13, 0.88);
-  --color-text-main: #f4f3ee;
-  --color-text-muted: #a8b0aa;
-
-  --color-sun: #d4a348;
-  --color-text-dim: #8e9891;
-  --color-on-primary: #07140d;
-  --color-on-danger: #fdfcf9;
-  --color-on-media: #f6f5f0;
-  --z-map-hud: 400;
-  --z-navbar: 1000;
-  --z-dropdown: 1100;
-  --z-grain: 1200;
-  --z-drawer: 2000;
-  --z-modal: 3000;
-  --z-modal-nested: 3100;
-  --z-lightbox: 4000;
-  --z-toast: 5000;
-  --color-bg-glass: rgba(14, 18, 15, 0.86);
-  --color-border: rgba(235, 240, 236, 0.09);
-  --color-border-strong: rgba(235, 240, 236, 0.18);
-  --color-border-glow: rgba(82, 183, 136, 0.42);
-
-  --color-success: var(--color-primary);
-  --color-info: var(--color-sky);
-  --color-warning: var(--color-earth);
-  --color-error: #c8473c;
-  --color-error-text: #f3968d;
-
-  --banner-danger-bg: #261413;
-  --banner-danger-text: #f3cbc7;
-  --banner-danger-border: rgba(214, 90, 79, 0.32);
-  --glow-primary: 0 8px 24px rgba(0, 0, 0, 0.36);
-  --glow-sky: 0 8px 24px rgba(0, 0, 0, 0.36);
-
-  --hero-overlay: linear-gradient(180deg, rgba(12, 15, 13, 0.4) 0%, var(--color-bg-main) 100%);
-  --hero-bg-gradient: linear-gradient(180deg, #101613 0%, var(--color-bg-main) 100%);
-  --hero-contour-overlay: none;
-  --shadow-header: 0 1px 0 rgba(235, 240, 236, 0.06);
-  --shadow-card: 0 10px 28px -10px rgba(0, 0, 0, 0.45);
-  --overlay-bg: rgba(8, 11, 9, 0.82);
+  --overlay-bg: rgba(8, 11, 9, 0.84);
 }
 
 [data-theme="light"] {
   /* ==========================================
    * COLOR TOKENS - FIELD PAPER LIGHT MODE (WCAG AAA)
    * ========================================== */
+  color-scheme: light;
   --color-primary: #1f6f4a;
   --color-sky: #2c6a8e;
   --color-earth: #a9461a;
@@ -171,7 +127,7 @@
   --color-bg-main: #f5f3ee;
   --color-bg-card: #fdfcf9;
   --color-surface-elevated: #ece8df;
-  --color-bg-hud: rgba(253, 252, 249, 0.94);
+  --color-bg-hud: rgba(253, 252, 249, 0.97);
   --color-text-main: #171c19;
   --color-text-muted: #4a544e;
   --color-text-dim: #5d6761;
@@ -179,16 +135,7 @@
   --color-on-primary: #fdfcf9;
   --color-on-danger: #fdfcf9;
   --color-on-media: #f6f5f0;
-  --z-map-hud: 400;
-  --z-navbar: 1000;
-  --z-dropdown: 1100;
-  --z-grain: 1200;
-  --z-drawer: 2000;
-  --z-modal: 3000;
-  --z-modal-nested: 3100;
-  --z-lightbox: 4000;
-  --z-toast: 5000;
-  --color-bg-glass: rgba(253, 252, 249, 0.9);
+  --color-bg-glass: rgba(253, 252, 249, 0.96);
   --color-border: rgba(23, 28, 25, 0.1);
   --color-border-strong: rgba(23, 28, 25, 0.2);
   --color-border-glow: rgba(31, 111, 74, 0.35);
@@ -211,7 +158,7 @@
   --shadow-header: 0 1px 0 rgba(23, 28, 25, 0.08);
   --shadow-card: 0 6px 20px -8px rgba(23, 28, 25, 0.09);
   --shadow-3d: 0 10px 26px -8px rgba(23, 28, 25, 0.11);
-  --overlay-bg: rgba(15, 20, 17, 0.58);
+  --overlay-bg: rgba(15, 20, 17, 0.62);
 }
 
 .hero-editorial-grid {
@@ -231,7 +178,7 @@
 .hero-telemetry-strip {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  border-top: 1px solid rgba(244, 243, 238, 0.16);
+  border-top: 1px solid color-mix(in srgb, var(--color-on-media) 16%, transparent);
   margin-top: 28px;
   padding-top: 18px;
   gap: 16px;
@@ -243,21 +190,9 @@
   }
 }
 
-/* Tactile Archival Paper / Film Grain Overlay (Lightweight 1-octave SVG, auto-disabled on lite/mobile) */
+/* Permanently disabled: fixed full-viewport SVG noise overlay caused continuous GPU compositing tax */
 .lost-grain-overlay {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: var(--z-grain, 1200);
-  opacity: 0.024;
-  contain: strict;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 120 120' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='1' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-
-@media (max-width: 768px) {
-  .lost-grain-overlay {
-    display: none;
-  }
+  display: none;
 }
 
 /* ==========================================
@@ -267,8 +202,26 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
-  scrollbar-width: thin;
+}
+
+:root {
   scrollbar-color: var(--color-border-strong) var(--color-bg-main);
+}
+
+html,
+.modal-content {
+  scrollbar-width: thin;
+}
+
+/* Sticky header uses opaque-feeling CSS token surface without costly per-scroll-frame GPU backdrop blur */
+header {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Safe style containment on sections without breaking position:sticky or nested position:fixed modals */
+section {
+  contain: style;
 }
 
 button {
@@ -428,6 +381,7 @@ button {
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+  contain: layout style;
 }
 
 .section-eyebrow {
@@ -461,10 +415,10 @@ button {
   overflow: hidden;
   margin-bottom: 20px;
   cursor: pointer;
+  contain: layout style;
   transition:
     border-color var(--dur-base) ease,
-    transform var(--dur-base) var(--ease-out-expo),
-    box-shadow var(--dur-base) var(--ease-out-quart);
+    transform var(--dur-base) var(--ease-out-expo);
 }
 
 .editorial-lead-media {
@@ -534,9 +488,8 @@ button {
   padding: 15px 16px;
   border-bottom: 1px solid var(--color-border);
   cursor: pointer;
-  transition:
-    background-color var(--dur-fast) var(--ease-out-quart),
-    box-shadow var(--dur-fast) var(--ease-out-quart);
+  contain: layout style;
+  transition: background-color var(--dur-fast) var(--ease-out-quart);
 }
 
 .manifest-table-row[role="button"]:hover {
@@ -644,7 +597,7 @@ button {
 }
 
 [data-theme="light"] .card:hover {
-  box-shadow: 0 10px 26px -6px rgba(23, 28, 25, 0.12);
+  box-shadow: var(--shadow-3d);
 }
 
 [data-theme="light"] input,
@@ -664,17 +617,8 @@ html {
 }
 
 /* =========================================================
- * SILKY SMOOTH SLIDE, DRAWER, DOCK & THEME TRANSITIONS
+ * SILKY SMOOTH SLIDE, DRAWER & DOCK MOTION (ZERO * THEME STUTTER)
  * ========================================================= */
-html.theme-transitioning,
-html.theme-transitioning *,
-html.theme-transitioning *::before,
-html.theme-transitioning *::after {
-  transition-property: background-color, color, border-color, fill, stroke, box-shadow !important;
-  transition-duration: 280ms !important;
-  transition-timing-function: var(--ease-in-out-smooth) !important;
-}
-
 .page-view-slide {
   animation: pageSlideSmooth 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
@@ -746,11 +690,9 @@ html.theme-transitioning *::after {
   top: 0;
   left: 0;
   border-radius: 4px;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--color-sun) 15%, var(--color-surface-elevated)) 0%,
-    var(--color-surface-elevated) 100%
-  );
+  background: linear-gradient(180deg,
+      color-mix(in srgb, var(--color-sun) 15%, var(--color-surface-elevated)) 0%,
+      var(--color-surface-elevated) 100%);
   border: 1px solid color-mix(in srgb, var(--color-sun) 36%, var(--color-border-strong));
   pointer-events: none;
   z-index: 0;
@@ -851,8 +793,7 @@ html.theme-transitioning *::after {
   transition:
     opacity 0.48s cubic-bezier(0.22, 1, 0.36, 1),
     transform 0.48s cubic-bezier(0.22, 1, 0.36, 1),
-    border-color var(--dur-base) ease,
-    box-shadow var(--dur-base) var(--ease-out-quart);
+    border-color var(--dur-base) ease;
   transition-delay: calc(var(--stagger-i, 0) * 55ms);
 }
 
@@ -1016,10 +957,10 @@ html.theme-transitioning *::after {
   cursor: pointer;
   background: var(--color-bg-card);
   border: 1px solid var(--color-border);
+  contain: layout style;
   transition:
     border-color var(--dur-base) ease,
-    transform var(--dur-base) var(--ease-out-expo),
-    box-shadow var(--dur-base) var(--ease-out-quart);
+    transform var(--dur-base) var(--ease-out-expo);
 }
 
 .trail-editorial-card[data-selected="true"] {
@@ -1456,20 +1397,14 @@ body {
   overflow-x: hidden;
 }
 
-/* Transitions for Interactive Elements (Targeted — Zero Layout Thrash) */
+/* Transitions for Interactive Links & Buttons (Explicit Cheap Properties — Zero Box-Shadow/Badge Tax) */
 a,
-button,
-input,
-select,
-textarea,
-.card,
-.badge {
+button {
   transition:
     color var(--dur-fast) ease,
     background-color var(--dur-fast) ease,
     border-color var(--dur-fast) ease,
-    transform var(--dur-fast) var(--ease-out-expo),
-    box-shadow var(--dur-fast) var(--ease-out-quart);
+    transform var(--dur-fast) var(--ease-out-expo);
 }
 
 /* Accessible Dual-Theme Keyboard Focus-Visible Ring */
@@ -1602,6 +1537,11 @@ summary:focus-visible {
   padding: 20px;
   box-shadow: var(--shadow-card);
   position: relative;
+  contain: style;
+}
+
+.card:not([style*="overflow: visible"]) {
+  contain: layout style;
 }
 
 /* Leaflet GIS Map Theme Overrides */
@@ -1680,13 +1620,11 @@ summary:focus-visible {
   color: var(--color-text-dim);
 }
 
-/* Modal Overlay */
+/* Modal Overlay (High-Opacity Scrim — Zero Full-Viewport GPU Blur Stall) */
 .modal-overlay {
   position: fixed;
   inset: 0;
   background: var(--overlay-bg);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   z-index: var(--z-modal, 3000);
   display: flex;
   align-items: center;
@@ -1754,10 +1692,7 @@ textarea,
   font-size: var(--font-size-base);
   line-height: var(--line-height-normal);
   outline: none;
-  transition:
-    border-color var(--dur-fast) ease,
-    box-shadow var(--dur-fast) var(--ease-out-quart),
-    background-color var(--dur-fast) ease;
+  transition: border-color var(--dur-fast) ease;
 }
 
 input:focus,
@@ -1792,9 +1727,8 @@ textarea:focus,
   gap: 20px;
 }
 
-/* Marker Hover Acceleration */
+/* Marker Hover Acceleration (No Permanent will-change VRAM Bloat Across 60+ Markers) */
 .marker-hover-anim {
-  will-change: transform;
   transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
 }
 
@@ -1883,35 +1817,37 @@ textarea:focus,
 
 @keyframes chatBubbleGlow {
   0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-primary) 55%, transparent);
-  }
-
-  70% {
-    box-shadow: 0 0 0 8px transparent;
+    opacity: 0.72;
+    transform: scale(1.012);
   }
 
   100% {
-    box-shadow: 0 0 0 0 transparent;
+    opacity: 1;
+    transform: none;
   }
 }
 
 .chat-message-pop {
   animation: chatMessagePop 0.32s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-  will-change: transform, opacity;
 }
 
 .chat-bubble-glow {
-  animation: chatBubbleGlow 1.2s ease-out 1;
+  animation: chatBubbleGlow 0.9s var(--ease-out-expo) 1;
 }
 
-/* Smooth Card Hover Elevation (Zero Resting GPU Layer Bloat) */
+/* Smooth Card Hover Elevation (Zero Resting GPU Layer Bloat, Zero Box-Shadow Interpolation) */
+.trail-card,
+.forum-card,
+.profile-card {
+  contain: layout style;
+}
+
 .card,
 .trail-card,
 .forum-card,
 .profile-card {
   transition:
     transform var(--dur-base) var(--ease-out-expo),
-    box-shadow var(--dur-base) var(--ease-out-quart),
     border-color var(--dur-base) ease;
 }
 
@@ -1930,11 +1866,9 @@ textarea:focus,
 .action-btn {
   transition:
     transform var(--dur-fast) var(--ease-out-expo),
-    box-shadow var(--dur-fast) var(--ease-out-quart),
     background-color var(--dur-fast) ease,
     border-color var(--dur-fast) ease,
-    color var(--dur-fast) ease,
-    filter var(--dur-fast) ease;
+    color var(--dur-fast) ease;
 }
 
 .btn:hover,
@@ -2126,23 +2060,22 @@ textarea:focus,
   transform: scale(1.35) translateY(-3px);
 }
 
-/* Live Radar Pulse Effect */
+/* Live Radar Pulse Effect (100% GPU-Composited transform + opacity — Zero Box-Shadow Repaint) */
 @keyframes radarPulse {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-primary) 65%, transparent);
-  }
-
-  70% {
-    box-shadow: 0 0 0 8px transparent;
-  }
-
+  0%,
   100% {
-    box-shadow: 0 0 0 0 transparent;
+    transform: scale(0.95);
+    opacity: 1;
+  }
+
+  50% {
+    transform: scale(1.22);
+    opacity: 0.55;
   }
 }
 
 .radar-pulse-dot {
-  animation: radarPulse 2s infinite ease-out;
+  animation: radarPulse 2s infinite ease-in-out;
 }
 
 /* Live Badge Glow Pulse */
@@ -2170,10 +2103,8 @@ textarea:focus,
 .interactive-click {
   transition:
     transform var(--dur-fast) var(--ease-out-expo),
-    box-shadow var(--dur-fast) var(--ease-out-quart),
     border-color var(--dur-fast) ease,
-    background-color var(--dur-fast) ease,
-    filter var(--dur-fast) ease !important;
+    background-color var(--dur-fast) ease !important;
 }
 
 .interactive-click:hover {
@@ -2188,7 +2119,6 @@ textarea:focus,
 .card-hover-lift {
   transition:
     transform var(--dur-base) var(--ease-out-expo),
-    box-shadow var(--dur-base) var(--ease-out-quart),
     border-color var(--dur-base) ease !important;
 }
 
@@ -2240,21 +2170,17 @@ textarea:focus,
   animation: waveBarBounce 0.7s infinite ease-in-out 0.1s;
 }
 
-/* Sonar Wave for SOS & Radars */
+/* Sonar Wave for SOS & Radars (100% GPU-Composited transform + opacity — Zero Box-Shadow Repaint) */
 @keyframes sonarWave {
-  0% {
-    transform: scale(0.97);
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-error) 55%, transparent);
-  }
-
-  70% {
-    transform: scale(1);
-    box-shadow: 0 0 0 10px transparent;
-  }
-
+  0%,
   100% {
-    transform: scale(0.97);
-    box-shadow: 0 0 0 0 transparent;
+    transform: scale(0.98);
+    opacity: 1;
+  }
+
+  50% {
+    transform: scale(1.03);
+    opacity: 0.84;
   }
 }
 
@@ -2302,7 +2228,7 @@ textarea:focus,
 .ripple-fx:active::after {
   transform: scale(0, 0);
   opacity: 0.3;
-  transition: 0s;
+  transition: none;
 }
 
 /* Theme Toggle Button Smooth Hover & Press */
@@ -2356,37 +2282,33 @@ textarea:focus,
   animation: spin 1s linear infinite;
 }
 
-/* Shimmer Loading Animation (Dual-Theme Tokenized) */
+/* Shimmer Loading Animation (100% GPU-Composited Opacity Pulse — Zero Paint Thrash) */
 @keyframes shimmer {
-  0% {
-    background-position: -200% 0;
+  0%,
+  100% {
+    opacity: 0.5;
   }
 
-  100% {
-    background-position: 200% 0;
+  50% {
+    opacity: 0.95;
   }
 }
 
 .skeleton-shimmer {
-  background: linear-gradient(90deg,
-      var(--color-bg-card) 25%,
-      var(--color-surface-elevated) 50%,
-      var(--color-bg-card) 75%);
-  background-size: 200% 100%;
+  background: var(--color-surface-elevated);
   animation: shimmer 1.6s infinite ease-in-out;
   border-radius: 8px;
 }
 
-/* Badge Pulse Animation */
+/* Badge Pulse Animation (100% GPU-Composited Opacity — Zero Box-Shadow Repaint) */
 @keyframes pulseGlow {
-
   0%,
   100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-error) 45%, transparent);
+    opacity: 1;
   }
 
   50% {
-    box-shadow: 0 0 0 6px transparent;
+    opacity: 0.68;
   }
 }
 
@@ -2412,7 +2334,6 @@ textarea:focus,
   padding: 12px 14px;
   white-space: normal;
   box-shadow: var(--shadow-3d);
-  backdrop-filter: blur(18px);
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
@@ -2432,7 +2353,6 @@ textarea:focus,
   border-width: 8px 8px 0 8px;
   border-style: solid;
   border-color: var(--color-bg-card) transparent transparent transparent;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.25));
 }
 
 .trail-pin-node:hover {
@@ -2578,6 +2498,7 @@ textarea:focus,
   transition: background-color 0.2s ease;
   position: relative;
   overflow: hidden;
+  contain: layout style;
 }
 
 .admin-kpi-card:hover {
@@ -2660,6 +2581,7 @@ textarea:focus,
   border-radius: 6px;
   overflow: hidden;
   box-shadow: var(--shadow-card);
+  contain: layout style;
   transition: border-color 0.2s ease, transform 0.2s var(--ease-out-expo);
   display: flex;
   flex-direction: column;
@@ -2710,8 +2632,7 @@ textarea:focus,
 }
 
 .leaflet-control-attribution {
-  background: var(--color-bg-glass) !important;
-  backdrop-filter: blur(12px) !important;
+  background: var(--color-bg-hud) !important;
   color: var(--color-text-dim) !important;
   font-size: 8.5px !important;
   border-radius: 4px 0 0 0 !important;
@@ -2723,7 +2644,7 @@ textarea:focus,
   white-space: nowrap !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
-  opacity: 0.78;
+  opacity: 0.94;
 }
 
 .leaflet-control-attribution a {
@@ -2737,7 +2658,6 @@ textarea:focus,
 
 .leaflet-popup-content-wrapper {
   background: var(--color-bg-card) !important;
-  backdrop-filter: blur(16px) !important;
   border: 1px solid var(--color-border-strong) !important;
   border-radius: 6px !important;
   box-shadow: var(--shadow-3d) !important;
@@ -2790,7 +2710,7 @@ textarea:focus,
 }
 
 /* ==========================================
- * CYBER-ALPINE TACTICAL HUD & DUAL-THEME DOCK
+ * CYBER-ALPINE TACTICAL HUD & DUAL-THEME DOCK (ZERO BLUR PAINT TAX)
  * ========================================== */
 .cyber-hud-pill {
   display: inline-flex;
@@ -2798,12 +2718,11 @@ textarea:focus,
   gap: 6px;
   padding: 4px 10px;
   border-radius: 4px;
-  background: var(--color-bg-glass);
+  background: var(--color-bg-hud);
   border: 1px solid var(--color-border);
   color: var(--color-text-muted);
   font-size: 0.72rem;
   font-weight: 700;
-  backdrop-filter: blur(12px);
 }
 
 .cyber-dock-bar {
@@ -2812,8 +2731,6 @@ textarea:focus,
   border-radius: 6px;
   padding: 10px 18px;
   box-shadow: var(--shadow-3d);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
   color: var(--color-text-main);
 }
 
@@ -2845,6 +2762,7 @@ textarea:focus,
   justify-content: space-between;
   position: relative;
   overflow: hidden;
+  contain: layout style;
   transition: transform 0.22s var(--ease-out-expo), border-color 0.22s ease;
 }
 

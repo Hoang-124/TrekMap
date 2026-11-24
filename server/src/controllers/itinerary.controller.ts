@@ -12,16 +12,38 @@ function sanitizeTimelineSteps(steps: unknown) {
   return steps
     .filter((s: any) => s && typeof s === 'object')
     .slice(0, 60)
-    .map((s: any, idx: number) => ({
-      day: Math.max(1, Math.min(30, Math.round(Number(s.day) || 1))),
-      time: sanitizeInput(String(s.time || `08:00`)).slice(0, 30),
-      title: sanitizeInput(String(s.title || `Chặng ${idx + 1}`)).slice(0, 140),
-      activity: sanitizeInput(String(s.activity || '')).slice(0, 200),
-      description: sanitizeInput(String(s.description || '')).slice(0, 600),
-      location: sanitizeInput(String(s.location || '')).slice(0, 140),
-      locationNote: sanitizeInput(String(s.locationNote || '')).slice(0, 200),
-      ...(Number.isFinite(Number(s.altitudeM)) ? { altitudeM: Math.round(Number(s.altitudeM)) } : {}),
-    }));
+    .map((s: any, idx: number) => {
+      const rawTitle = String(s.activity || s.title || '').trim();
+      const resolvedTitle = sanitizeInput(rawTitle || `Chặng ${idx + 1}`).slice(0, 180);
+      const rawDesc = String(s.notes || s.description || '').trim();
+      const resolvedDesc = sanitizeInput(rawDesc).slice(0, 800);
+      const rawLocation = String(s.location || s.locationNote || '').trim();
+      const resolvedLocation = sanitizeInput(rawLocation).slice(0, 200);
+      return {
+        day: Math.max(1, Math.min(30, Math.round(Number(s.day) || 1))),
+        time: sanitizeInput(String(s.time || '08:00')).slice(0, 30),
+        title: resolvedTitle,
+        activity: resolvedTitle,
+        description: resolvedDesc,
+        notes: resolvedDesc,
+        location: resolvedLocation,
+        locationNote: resolvedLocation,
+        ...(Number.isFinite(Number(s.altitudeM)) ? { altitudeM: Math.round(Number(s.altitudeM)) } : {}),
+      };
+    });
+}
+
+function attachTrailName<T extends Record<string, any>>(doc: T): T & { trailName?: string } {
+  if (!doc || typeof doc !== 'object') return doc;
+  const populatedTrail = doc.trailId && typeof doc.trailId === 'object' ? doc.trailId : null;
+  const resolvedName =
+    (typeof doc.trailName === 'string' && doc.trailName.trim()) ||
+    (typeof populatedTrail?.name === 'string' && populatedTrail.name.trim()) ||
+    '';
+  return {
+    ...doc,
+    ...(resolvedName ? { trailName: resolvedName } : {}),
+  };
 }
 
 export const createItinerary = async (req: AuthRequest, res: Response) => {
@@ -34,16 +56,29 @@ export const createItinerary = async (req: AuthRequest, res: Response) => {
       return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
     }
 
-    const { trailId, title, startDate, endDate, memberCount, timelineSteps } = req.body || {};
+    const { trailId, title, startDate, endDate, totalDays, memberCount, notes, timelineSteps } = req.body || {};
 
     if (!trailId || typeof title !== 'string' || !title.trim() || !startDate) {
       return res.status(400).json({ success: false, message: 'Vui lòng điền đầy đủ thông tin chuyến đi.' });
     }
 
     const parsedStart = new Date(startDate);
-    const parsedEnd = endDate ? new Date(endDate) : new Date(startDate);
-    if (isNaN(parsedStart.getTime()) || isNaN(parsedEnd.getTime())) {
-      return res.status(400).json({ success: false, message: 'Ngày khởi hành hoặc ngày kết thúc không hợp lệ.' });
+    if (isNaN(parsedStart.getTime())) {
+      return res.status(400).json({ success: false, message: 'Ngày khởi hành không hợp lệ.' });
+    }
+
+    const safeSteps = sanitizeTimelineSteps(timelineSteps);
+    const inferredDays = safeSteps.reduce((maxD, st) => Math.max(maxD, st.day || 1), 1);
+    const parsedTotalDays =
+      Number.isFinite(Number(totalDays)) && Number(totalDays) >= 1
+        ? Math.min(30, Math.round(Number(totalDays)))
+        : inferredDays;
+
+    const parsedEnd = endDate
+      ? new Date(endDate)
+      : new Date(parsedStart.getTime() + Math.max(0, parsedTotalDays - 1) * 86_400_000);
+    if (isNaN(parsedEnd.getTime())) {
+      return res.status(400).json({ success: false, message: 'Ngày kết thúc không hợp lệ.' });
     }
     if (parsedEnd < parsedStart) {
       return res.status(400).json({ success: false, message: 'Ngày kết thúc không thể trước ngày khởi hành.' });
@@ -56,7 +91,7 @@ export const createItinerary = async (req: AuthRequest, res: Response) => {
 
     const safeMemberCount = Math.min(Math.max(Math.round(Number(memberCount) || 1), 1), 100);
     const shareToken = `lost-${crypto.randomBytes(12).toString('hex')}`;
-    const safeSteps = sanitizeTimelineSteps(timelineSteps);
+    const safeNotes = typeof notes === 'string' ? sanitizeInput(notes).slice(0, 1000) : '';
 
     const created = await ItineraryModel.create({
       creatorId: new mongoose.Types.ObjectId(userId),
@@ -64,17 +99,23 @@ export const createItinerary = async (req: AuthRequest, res: Response) => {
       title: sanitizeInput(title).slice(0, 180),
       startDate: parsedStart,
       endDate: parsedEnd,
+      totalDays: parsedTotalDays,
       memberCount: safeMemberCount,
+      notes: safeNotes,
       timelineSteps: safeSteps,
       shareToken,
       status: 'active',
     });
 
+    const populatedCreated = await ItineraryModel.findById(created._id)
+      .populate('trailId', 'id name province region coverImage maxAltitudeM distanceKm')
+      .lean();
+
     const clientUrl = (process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
 
     return res.status(201).json({
       success: true,
-      data: created,
+      data: populatedCreated ? attachTrailName(populatedCreated) : created,
       shareUrl: `${clientUrl}/#itinerary/${shareToken}`,
     });
   } catch (err) {
@@ -98,7 +139,7 @@ export const getItineraryByShareToken = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: 'Không tìm thấy lịch trình.' });
     }
 
-    return res.json({ success: true, data: itinerary });
+    return res.json({ success: true, data: attachTrailName(itinerary) });
   } catch (err) {
     console.error('[Get Itinerary Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi truy vấn lịch trình.' });
@@ -117,14 +158,130 @@ export const getMyItineraries = async (req: AuthRequest, res: Response) => {
 
     const list = await ItineraryModel.find({ creatorId: new mongoose.Types.ObjectId(userId) })
       .populate('trailId', 'id name province region coverImage maxAltitudeM distanceKm')
-      .sort({ createdAt: -1 })
+      .sort({ updatedAt: -1, createdAt: -1 })
       .limit(50)
       .lean();
 
-    return res.json({ success: true, count: list.length, data: list });
+    const formatted = list.map((item) => attachTrailName(item));
+    return res.json({ success: true, count: formatted.length, data: formatted });
   } catch (err) {
     console.error('[Get My Itineraries Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi khi tải danh sách lịch trình.' });
+  }
+};
+
+export const updateItinerary = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    const isAdmin = req.user?.role === 'admin';
+    const rawIdentifier = String(req.params.shareToken || req.params.id || '').trim();
+
+    if (!userId || !isValidObjectId(userId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để chỉnh sửa lịch trình.' });
+    }
+    if (!rawIdentifier || rawIdentifier.length > 100) {
+      return res.status(400).json({ success: false, message: 'Mã lịch trình không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const query = /^[a-fA-F0-9]{24}$/.test(rawIdentifier)
+      ? { $or: [{ _id: new mongoose.Types.ObjectId(rawIdentifier) }, { shareToken: rawIdentifier }] }
+      : { shareToken: rawIdentifier };
+
+    const existing = await ItineraryModel.findOne(query).lean();
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy lịch trình.' });
+    }
+    if (!isAdmin && String(existing.creatorId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền chỉnh sửa lịch trình này.' });
+    }
+
+    const { title, startDate, endDate, totalDays, memberCount, timelineSteps, notes } = req.body || {};
+    const updateFields: Record<string, unknown> = {};
+
+    if (typeof title === 'string' && title.trim()) {
+      updateFields.title = sanitizeInput(title).slice(0, 180);
+    }
+
+    let nextStart = existing.startDate ? new Date(existing.startDate) : new Date();
+    if (startDate !== undefined) {
+      const parsedStart = new Date(startDate);
+      if (isNaN(parsedStart.getTime())) {
+        return res.status(400).json({ success: false, message: 'Ngày khởi hành không hợp lệ.' });
+      }
+      nextStart = parsedStart;
+      updateFields.startDate = parsedStart;
+    }
+
+    let nextSteps = existing.timelineSteps;
+    if (timelineSteps !== undefined) {
+      if (!Array.isArray(timelineSteps)) {
+        return res.status(400).json({ success: false, message: 'Danh sách chặng hành trình không hợp lệ.' });
+      }
+      nextSteps = sanitizeTimelineSteps(timelineSteps);
+      updateFields.timelineSteps = nextSteps;
+    }
+
+    let nextTotalDays = existing.totalDays;
+    if (totalDays !== undefined) {
+      const numDays = Math.round(Number(totalDays));
+      if (!Number.isFinite(numDays) || numDays < 1 || numDays > 30) {
+        return res.status(400).json({ success: false, message: 'Số ngày hành trình phải từ 1 đến 30.' });
+      }
+      nextTotalDays = numDays;
+      updateFields.totalDays = numDays;
+    } else if (timelineSteps !== undefined && Array.isArray(nextSteps) && nextSteps.length > 0) {
+      nextTotalDays = nextSteps.reduce((maxD, st) => Math.max(maxD, Number(st.day) || 1), 1);
+      updateFields.totalDays = nextTotalDays;
+    }
+
+    if (endDate !== undefined) {
+      const parsedEnd = new Date(endDate);
+      if (isNaN(parsedEnd.getTime())) {
+        return res.status(400).json({ success: false, message: 'Ngày kết thúc không hợp lệ.' });
+      }
+      if (parsedEnd < nextStart) {
+        return res.status(400).json({ success: false, message: 'Ngày kết thúc không thể trước ngày khởi hành.' });
+      }
+      updateFields.endDate = parsedEnd;
+    } else if (startDate !== undefined || totalDays !== undefined || timelineSteps !== undefined) {
+      const daysSpan = Math.max(1, Number(nextTotalDays) || 1);
+      updateFields.endDate = new Date(nextStart.getTime() + (daysSpan - 1) * 86_400_000);
+    }
+
+    if (memberCount !== undefined) {
+      const safeMembers = Math.min(Math.max(Math.round(Number(memberCount) || 1), 1), 100);
+      updateFields.memberCount = safeMembers;
+    }
+
+    if (notes !== undefined) {
+      updateFields.notes = typeof notes === 'string' ? sanitizeInput(notes).slice(0, 1000) : '';
+    }
+
+    const updated = await ItineraryModel.findByIdAndUpdate(
+      existing._id,
+      { $set: updateFields },
+      { new: true, runValidators: true }
+    )
+      .populate('trailId', 'id name province region coverImage maxAltitudeM distanceKm')
+      .lean();
+
+    if (!updated) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy lịch trình.' });
+    }
+
+    const clientUrl = (process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
+    return res.json({
+      success: true,
+      message: 'Đã cập nhật lịch trình thành công!',
+      data: attachTrailName(updated),
+      shareUrl: `${clientUrl}/#itinerary/${updated.shareToken}`,
+    });
+  } catch (err) {
+    console.error('[Update Itinerary Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi cập nhật lịch trình.' });
   }
 };
 

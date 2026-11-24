@@ -81,6 +81,8 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
   const [maxMembers, setMaxMembers] = useState(6);
   const [meetingPoint, setMeetingPoint] = useState('');
   const [estimatedCost, setEstimatedCost] = useState('Chia đều chi phí thực tế');
+  const [requirements, setRequirements] = useState('');
+  const [tagsInput, setTagsInput] = useState('Trekking, Ghép Đoàn');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -89,7 +91,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
   const isMountedRef = useRef(true);
   const submitAbortRef = useRef<AbortController | null>(null);
   const trailsRef = useRef<Trail[]>(trails);
-  const hydratedDraftRef = useRef<TripBudgetDraft | null>(null);
+  const hydratedDraftRef = useRef<TripBudgetDraft | string | null>(null);
 
   useEffect(() => {
     trailsRef.current = trails;
@@ -105,16 +107,38 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
 
   useFocusTrap(isOpen, dialogRef, { initialFocusRef: titleInputRef });
 
-  // Hydrate form from Cost Estimator -> Trip Budget handoff ONCE per open session/draft (never clobbered by /api/trails)
+  // Hydrate form from Cost Estimator -> Trip Budget handoff ONCE per open session/draft (prop or sessionStorage fallback)
   useEffect(() => {
     if (!isOpen) {
       hydratedDraftRef.current = null;
       return;
     }
-    if (!initialDraft || hydratedDraftRef.current === initialDraft) return;
-    hydratedDraftRef.current = initialDraft;
+
+    let resolvedDraft: TripBudgetDraft | null = initialDraft || null;
+    let draftKey: TripBudgetDraft | string | null = initialDraft || null;
+
+    if (!resolvedDraft) {
+      try {
+        const raw = sessionStorage.getItem('lost_trip_budget_draft');
+        if (raw) {
+          const parsed = JSON.parse(raw) as { trailId?: string; budgetNote?: string; ts?: number };
+          sessionStorage.removeItem('lost_trip_budget_draft');
+          const isFresh = !parsed.ts || Date.now() - Number(parsed.ts) < 10 * 60 * 1000;
+          if (isFresh && (parsed.trailId || parsed.budgetNote)) {
+            resolvedDraft = { trailId: parsed.trailId, budgetNote: parsed.budgetNote };
+            draftKey = raw;
+          }
+        }
+      } catch {
+        // ignore storage errors
+      }
+    }
+
+    if (!resolvedDraft || hydratedDraftRef.current === draftKey) return;
+    hydratedDraftRef.current = draftKey;
+    const draftToApply = resolvedDraft;
     const rafId = window.requestAnimationFrame(() => {
-      const parsed = parseDraftBudgetFields(initialDraft, trailsRef.current);
+      const parsed = parseDraftBudgetFields(draftToApply, trailsRef.current);
       setSelectedTrailId(parsed.trailId);
       setCustomTrailName(parsed.trailName);
       setDifficultyLevel(parsed.difficultyLevel);
@@ -138,6 +162,8 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
     setMaxMembers(6);
     setMeetingPoint('');
     setEstimatedCost('Chia đều chi phí thực tế');
+    setRequirements('');
+    setTagsInput('Trekking, Ghép Đoàn');
     setError('');
   }, []);
 
@@ -238,6 +264,12 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
       const resolvedTrailId = chosen ? ((chosen as TrailWithMongoId)._id || chosen.id) : undefined;
       const resolvedTrailName = chosen ? chosen.name : customTrailName.trim();
 
+      const parsedTags = tagsInput
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean)
+        .slice(0, 10);
+
       const res = await fetch('/api/trips', {
         method: 'POST',
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
@@ -248,6 +280,8 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
           trailName: resolvedTrailName,
           difficultyLevel,
           description: description.trim(),
+          requirements: requirements.trim() || undefined,
+          tags: parsedTags.length > 0 ? parsedTags : ['Trekking', 'Ghép Đoàn'],
           startDate,
           endDate,
           maxMembers,
@@ -318,8 +352,6 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
         position: 'fixed',
         inset: 0,
         background: 'var(--overlay-bg)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
         zIndex: 'var(--z-modal, 3000)',
         display: 'flex',
         alignItems: 'center',
@@ -551,14 +583,40 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
           </div>
 
           <div>
-            <label style={labelStyle}>Mô tả kế hoạch &amp; Yêu cầu thể lực</label>
+            <label style={labelStyle}>Mô tả kế hoạch &amp; Lộ trình</label>
             <textarea
               rows={3}
-              placeholder="Chi tiết kinh nghiệm cần có, đồ đạc mang theo, lộ trình di chuyển..."
+              placeholder="Chi tiết lộ trình di chuyển, lịch nghỉ trại, phương tiện..."
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               style={{ ...inputStyle, resize: 'vertical' }}
             />
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+            <div>
+              <label style={labelStyle}>Yêu cầu thể lực &amp; Chuẩn bị</label>
+              <input
+                type="text"
+                placeholder="VD: Đã từng đi ít nhất 1 cung >2.000m, tự túc giày bám đá"
+                value={requirements}
+                onChange={(e) => setRequirements(e.target.value)}
+                maxLength={500}
+                style={inputStyle}
+              />
+            </div>
+
+            <div>
+              <label style={labelStyle}>Thẻ gắn (phân cách bằng dấu phẩy)</label>
+              <input
+                type="text"
+                placeholder="VD: Trekking, Săn Mây, Cuối Tuần"
+                value={tagsInput}
+                onChange={(e) => setTagsInput(e.target.value)}
+                maxLength={200}
+                style={inputStyle}
+              />
+            </div>
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 10, borderTop: '1px solid var(--color-border)' }}>

@@ -1,7 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMapEvents, useMap } from 'react-leaflet';
 import L from 'leaflet';
-import { submitTrailContribution, updateTrailContribution, uploadImageToCloudinary } from '../../services/api.js';
+import {
+  submitTrailContribution,
+  updateTrailContribution,
+  uploadImageToCloudinary,
+  reverseGeocode,
+} from '../../services/api.js';
+import { scopedStorageKey } from '../../utils/storageScope.js';
 import { haversineMeters } from '../../utils/geoMath.js';
 import type { Region, UserProfile, Waypoint } from '../../types.js';
 import {
@@ -240,6 +246,62 @@ const WAYPOINT_TYPE_LABELS: Record<Waypoint['type'], string> = {
   charging: 'Trạm hỗ trợ / Điện',
 };
 
+function normalizeAdminName(text: string): string {
+  return String(text || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/\b(tinh|thanh pho|tp\.?|huyen|quan|thi xa|xa|phuong|thi tran)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function matchVietnamProvince(rawProvince: string): { region: Region; province: ProvinceData } | null {
+  const normInput = normalizeAdminName(rawProvince);
+  if (!normInput) return null;
+  for (const [regionKey, provinces] of Object.entries(VIETNAM_ADMINISTRATIVE_DATA)) {
+    for (const prov of provinces) {
+      const normProv = normalizeAdminName(prov.name);
+      if (normProv && (normProv === normInput || normProv.includes(normInput) || normInput.includes(normProv))) {
+        return { region: regionKey as Region, province: prov };
+      }
+    }
+  }
+  return null;
+}
+
+function inferWaypointTypeFromGpx(rawType: string, rawName: string): Waypoint['type'] {
+  const combined = `${rawType} ${rawName}`.toLowerCase();
+  if (/camp|tent|trại|trai|lán|lan|ngủ|ngu/.test(combined)) return 'campsite';
+  if (/water|suối|suoi|nước|nuoc|spring|stream/.test(combined)) return 'water';
+  if (/danger|hazard|cảnh báo|nguy hiểm|dốc|vách|sạt/.test(combined)) return 'danger';
+  if (/charge|sạc|điện|trạm kiểm lâm|station/.test(combined)) return 'charging';
+  if (/rest|nghỉ|nghi|dừng|dung/.test(combined)) return 'rest';
+  return 'viewpoint';
+}
+
+interface GeoSuggestion {
+  lat: number;
+  lng: number;
+  formattedAddress: string;
+  province: string;
+  district: string;
+  village: string;
+  matchedRegion?: Region;
+  matchedProvince?: string;
+}
+
+interface SavedContribDraft {
+  step: number;
+  formData: Record<string, unknown>;
+  gpxTrack: [number, number][];
+  gpxFileName: string;
+  isCustomWard: boolean;
+  customWardText: string;
+  savedAt: string;
+}
+
 interface WizardProps {
   onBack: () => void;
   onSuccess: () => void;
@@ -248,6 +310,7 @@ interface WizardProps {
 }
 
 export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSuccess, onShowToast, currentUser }) => {
+  const draftStorageKey = scopedStorageKey('lost_contrib_draft_v1', currentUser?.id);
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [isCustomWard, setIsCustomWard] = useState(false);
@@ -261,6 +324,33 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
   const [gpxFileName, setGpxFileName] = useState<string>('');
   const [mapFitVersion, setMapFitVersion] = useState<number>(0);
   const [uploadingImage, setUploadingImage] = useState<boolean>(false);
+  const [pendingDraft, setPendingDraft] = useState<SavedContribDraft | null>(() => {
+    try {
+      const editingStr = localStorage.getItem('lost_editing_contribution');
+      if (editingStr) {
+        const editingItem = JSON.parse(editingStr) as Record<string, unknown>;
+        if (editingItem && (editingItem.id || editingItem._id)) return null;
+      }
+      if (localStorage.getItem('lost_planner_draft_contribution')) return null;
+      const savedDraftRaw = localStorage.getItem(draftStorageKey);
+      if (!savedDraftRaw) return null;
+      const parsed = JSON.parse(savedDraftRaw) as SavedContribDraft;
+      const fd = parsed?.formData as Record<string, unknown> | undefined;
+      const hasMeaningfulContent = Boolean(
+        fd &&
+          ((typeof fd.name === 'string' && fd.name.trim().length > 0) ||
+            (typeof fd.description === 'string' && fd.description.trim().length > 0) ||
+            (Array.isArray(parsed.gpxTrack) && parsed.gpxTrack.length > 0))
+      );
+      return hasMeaningfulContent ? parsed : null;
+    } catch {
+      return null;
+    }
+  });
+  const [geoSuggestion, setGeoSuggestion] = useState<GeoSuggestion | null>(null);
+  const [isGeocoding, setIsGeocoding] = useState<boolean>(false);
+  const geocodeReqSeqRef = useRef<number>(0);
+  const hasHydratedDraftCheckRef = useRef<boolean>(false);
 
   // Optional Waypoint editor form state (Step 3)
   const [wpName, setWpName] = useState('');
@@ -465,12 +555,179 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
         }
       }
     }
+    hasHydratedDraftCheckRef.current = true;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Auto-save new contribution draft cleanly to user-scoped localStorage (debounced 400ms)
+  useEffect(() => {
+    if (!hasHydratedDraftCheckRef.current || isEditing || pendingDraft) return;
+    const hasContent =
+      formData.name.trim().length > 0 ||
+      formData.description.trim().length > 0 ||
+      formData.transportationInfo.trim().length > 0 ||
+      gpxTrack.length > 0 ||
+      formData.waypoints.length > 0;
+    if (!hasContent) return;
+
+    const timer = window.setTimeout(() => {
+      try {
+        const snapshot: SavedContribDraft = {
+          step,
+          formData: formData as unknown as Record<string, unknown>,
+          gpxTrack,
+          gpxFileName,
+          isCustomWard,
+          customWardText,
+          savedAt: new Date().toISOString(),
+        };
+        localStorage.setItem(draftStorageKey, JSON.stringify(snapshot));
+      } catch {
+        // Ignore storage quota errors
+      }
+    }, 400);
+
+    return () => window.clearTimeout(timer);
+  }, [draftStorageKey, isEditing, pendingDraft, step, formData, gpxTrack, gpxFileName, isCustomWard, customWardText]);
+
+  const handleRestoreDraft = () => {
+    if (!pendingDraft) return;
+    const fd = pendingDraft.formData;
+    if (fd && typeof fd === 'object') {
+      setFormData((prev) => ({ ...prev, ...(fd as Partial<typeof prev>) }));
+    }
+    if (Array.isArray(pendingDraft.gpxTrack)) {
+      setGpxTrack(pendingDraft.gpxTrack);
+    }
+    if (typeof pendingDraft.gpxFileName === 'string') {
+      setGpxFileName(pendingDraft.gpxFileName);
+    }
+    setIsCustomWard(Boolean(pendingDraft.isCustomWard));
+    setCustomWardText(String(pendingDraft.customWardText || ''));
+    if (typeof pendingDraft.step === 'number' && pendingDraft.step >= 1 && pendingDraft.step <= 5) {
+      setStep(pendingDraft.step);
+    }
+    setMapFitVersion((v) => v + 1);
+    setPendingDraft(null);
+    onShowToast?.('Đã khôi phục bản nháp đóng góp của bạn!', 'success');
+  };
+
+  const handleDiscardDraft = () => {
+    try {
+      localStorage.removeItem(draftStorageKey);
+    } catch {
+      // Ignore storage error
+    }
+    setPendingDraft(null);
+    onShowToast?.('Đã xóa bản nháp cũ.', 'info');
+  };
+
+  const applyGeoSuggestion = useCallback(
+    (suggestion: GeoSuggestion, silent = false) => {
+      const matched = matchVietnamProvince(suggestion.province);
+      setFormData((prev) => {
+        const nextRegion = matched?.region || prev.region;
+        const nextProvince = matched?.province.name || prev.province;
+        const nextDistrictCandidate = (suggestion.district || '').trim();
+        const nextHamletCandidate = (suggestion.village || '').trim();
+
+        let nextDistrict = prev.district;
+        if (nextDistrictCandidate) {
+          const wards = matched?.province.wards || [];
+          const matchedWard = wards.find(
+            (w) => normalizeAdminName(w) === normalizeAdminName(nextDistrictCandidate)
+          );
+          if (matchedWard) {
+            setIsCustomWard(false);
+            setCustomWardText('');
+            nextDistrict = matchedWard;
+          } else {
+            setIsCustomWard(true);
+            setCustomWardText(nextDistrictCandidate);
+            nextDistrict = nextDistrictCandidate;
+          }
+        }
+
+        return {
+          ...prev,
+          region: nextRegion,
+          province: nextProvince,
+          district: nextDistrict,
+          ...(nextHamletCandidate ? { hamlet: nextHamletCandidate } : {}),
+          ...(matched ? { rescueContact: getRescueContactForProvince(nextProvince) } : {}),
+        };
+      });
+      if (!silent) {
+        onShowToast?.(`Đã áp dụng địa danh thực địa: ${suggestion.formattedAddress}`, 'success');
+      }
+    },
+    [onShowToast]
+  );
+
+  const triggerReverseGeocode = useCallback(
+    async (lat: number, lng: number) => {
+      const reqSeq = ++geocodeReqSeqRef.current;
+      setIsGeocoding(true);
+      try {
+        const geo = await reverseGeocode(lat, lng);
+        if (reqSeq !== geocodeReqSeqRef.current || !geo) return;
+        const rawProv = String(geo.province || '').trim();
+        const rawDist = String(geo.district || '').trim();
+        const rawVillage = String(geo.village || '').trim();
+        const formattedAddress = String(geo.formattedAddress || geo.displayName || '').trim();
+        if (!rawProv && !rawDist && !rawVillage) return;
+
+        const matched = matchVietnamProvince(rawProv);
+        const suggestion: GeoSuggestion = {
+          lat,
+          lng,
+          formattedAddress: formattedAddress || [rawVillage, rawDist, rawProv].filter(Boolean).join(', '),
+          province: rawProv,
+          district: rawDist,
+          village: rawVillage,
+          matchedRegion: matched?.region,
+          matchedProvince: matched?.province.name,
+        };
+        setGeoSuggestion(suggestion);
+
+        // Auto-populate empty administrative fields seamlessly without overwriting user-entered values
+        setFormData((prev) => {
+          const updates: Partial<typeof prev> = {};
+          if (!prev.province.trim() && matched?.province.name) {
+            updates.region = matched.region;
+            updates.province = matched.province.name;
+            updates.rescueContact = getRescueContactForProvince(matched.province.name);
+          }
+          if (!prev.district.trim() && rawDist) {
+            setIsCustomWard(true);
+            setCustomWardText(rawDist);
+            updates.district = rawDist;
+          }
+          if (!prev.hamlet.trim() && rawVillage) {
+            updates.hamlet = rawVillage;
+          }
+          return Object.keys(updates).length > 0 ? { ...prev, ...updates } : prev;
+        });
+      } catch {
+        // Ignore offline reverse geocoding silently
+      } finally {
+        if (reqSeq === geocodeReqSeqRef.current) {
+          setIsGeocoding(false);
+        }
+      }
+    },
+    []
+  );
+
   const handleCancelAndBack = () => {
-    localStorage.removeItem('lost_editing_contribution');
     setEditingId(null);
     onBack();
+    window.setTimeout(() => {
+      try {
+        localStorage.removeItem('lost_editing_contribution');
+      } catch {
+        // ignore storage errors
+      }
+    }, 0);
   };
 
   if (!currentUser) {
@@ -666,20 +923,62 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
 
         const start = points[0];
         const end = points[points.length - 1];
+
+        // Parse <wpt> waypoint markers embedded inside the uploaded GPX file
+        const wptNodes = Array.from(xmlDoc.querySelectorAll('wpt'));
+        const extractedWaypoints: Waypoint[] = [];
+        wptNodes.forEach((node, idx) => {
+          const lat = parseFloat(node.getAttribute('lat') || 'NaN');
+          const lng = parseFloat(node.getAttribute('lon') || 'NaN');
+          if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+            return;
+          }
+          const rawName = (node.querySelector('name')?.textContent || '').trim() || `Mốc GPX #${idx + 1}`;
+          const rawDesc =
+            (node.querySelector('desc')?.textContent || node.querySelector('cmt')?.textContent || '').trim();
+          const rawType =
+            (node.querySelector('type')?.textContent || node.querySelector('sym')?.textContent || '').trim();
+          const eleRaw = parseFloat(node.querySelector('ele')?.textContent || 'NaN');
+          const mappedType = inferWaypointTypeFromGpx(rawType, rawName);
+          extractedWaypoints.push({
+            id: `gpx-wpt-${Date.now()}-${idx}`,
+            name: rawName.slice(0, 120),
+            type: mappedType,
+            description: (rawDesc || WAYPOINT_TYPE_LABELS[mappedType]).slice(0, 400),
+            elevationM: Number.isFinite(eleRaw) ? Math.round(eleRaw) : undefined,
+            lat: Number(lat.toFixed(5)),
+            lng: Number(lng.toFixed(5)),
+          });
+        });
+
         setGpxTrack(points);
         setMapFitVersion((v) => v + 1);
-        setFormData((prev) => ({
-          ...prev,
-          startLat: Number(start[0].toFixed(5)),
-          startLng: Number(start[1].toFixed(5)),
-          endLat: Number(end[0].toFixed(5)),
-          endLng: Number(end[1].toFixed(5)),
-          ...(computedDistanceKm > 0 ? { distanceKm: computedDistanceKm } : {}),
-          ...(maxAlt && maxAlt > 0 ? { maxAltitudeM: maxAlt } : {}),
-          ...(totalGain !== undefined && totalGain > 0 ? { elevationGainM: totalGain } : {}),
-        }));
+        const startLatRounded = Number(start[0].toFixed(5));
+        const startLngRounded = Number(start[1].toFixed(5));
+        setFormData((prev) => {
+          const existingKeys = new Set(
+            prev.waypoints.map((w) => `${w.lat.toFixed(4)},${w.lng.toFixed(4)}:${w.name.toLowerCase()}`)
+          );
+          const uniqueNewWaypoints = extractedWaypoints.filter(
+            (w) => !existingKeys.has(`${w.lat.toFixed(4)},${w.lng.toFixed(4)}:${w.name.toLowerCase()}`)
+          );
+          return {
+            ...prev,
+            startLat: startLatRounded,
+            startLng: startLngRounded,
+            endLat: Number(end[0].toFixed(5)),
+            endLng: Number(end[1].toFixed(5)),
+            ...(computedDistanceKm > 0 ? { distanceKm: computedDistanceKm } : {}),
+            ...(maxAlt && maxAlt > 0 ? { maxAltitudeM: maxAlt } : {}),
+            ...(totalGain !== undefined && totalGain > 0 ? { elevationGainM: totalGain } : {}),
+            ...(uniqueNewWaypoints.length > 0
+              ? { waypoints: [...prev.waypoints, ...uniqueNewWaypoints].slice(0, 60) }
+              : {}),
+          };
+        });
+        void triggerReverseGeocode(startLatRounded, startLngRounded);
         onShowToast?.(
-          `Đã trích xuất ${points.length} điểm GPS${computedDistanceKm > 0 ? ` • ${computedDistanceKm} km` : ''}${maxAlt ? ` • đỉnh ${maxAlt}m` : ''} từ tệp GPX!`,
+          `Đã trích xuất ${points.length} điểm GPS${computedDistanceKm > 0 ? ` • ${computedDistanceKm} km` : ''}${maxAlt ? ` • đỉnh ${maxAlt}m` : ''}${extractedWaypoints.length > 0 ? ` • ${extractedWaypoints.length} mốc tọa độ` : ''} từ tệp GPX!`,
           'success'
         );
       } catch (err) {
@@ -877,6 +1176,11 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
       }
 
       localStorage.removeItem('lost_editing_contribution');
+      try {
+        localStorage.removeItem(draftStorageKey);
+      } catch {
+        // Ignore storage errors
+      }
       setEditingId(null);
       setLoading(false);
 
@@ -929,6 +1233,64 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
           <ArrowLeft size={15} /> Hủy &amp; Quay lại
         </button>
       </div>
+
+      {/* Scoped LocalStorage Draft Restore / Discard Banner */}
+      {!isEditing && pendingDraft && (
+        <div
+          style={{
+            marginBottom: 18,
+            padding: '12px 16px',
+            borderRadius: 6,
+            background: 'color-mix(in srgb, var(--color-sky) 12%, var(--color-bg-card))',
+            border: '1px solid color-mix(in srgb, var(--color-sky) 38%, transparent)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: 10,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <IconClock size={17} color="var(--color-sky)" />
+            <div style={{ fontSize: '0.82rem', color: 'var(--color-text-main)' }}>
+              <strong>Phát hiện bản nháp đóng góp chưa hoàn tất</strong>
+              {pendingDraft.savedAt && (
+                <span style={{ color: 'var(--color-text-muted)', marginLeft: 6 }}>
+                  (lưu lúc{' '}
+                  {new Date(pendingDraft.savedAt).toLocaleTimeString('vi-VN', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}{' '}
+                  · {new Date(pendingDraft.savedAt).toLocaleDateString('vi-VN')})
+                </span>
+              )}
+              {typeof pendingDraft.formData?.name === 'string' && pendingDraft.formData.name.trim() && (
+                <div style={{ fontSize: '0.76rem', color: 'var(--color-sky)', fontWeight: 700, marginTop: 2 }}>
+                  Cung đường: {pendingDraft.formData.name}
+                </div>
+              )}
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={handleRestoreDraft}
+              style={{ padding: '6px 12px', fontSize: '0.76rem', borderRadius: 4 }}
+            >
+              Khôi phục bản nháp
+            </button>
+            <button
+              type="button"
+              className="btn btn-outline"
+              onClick={handleDiscardDraft}
+              style={{ padding: '6px 12px', fontSize: '0.76rem', borderRadius: 4 }}
+            >
+              Bỏ qua &amp; Xóa nháp
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Swiss Editorial 5-Column Hairline Stepper */}
       <div className="editorial-stat-strip" style={{ marginBottom: 22 }}>
@@ -1396,6 +1758,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                       onSelectCoords={(lat, lng) => {
                         if (pinMode === 'start') {
                           setFormData((prev) => ({ ...prev, startLat: lat, startLng: lng }));
+                          void triggerReverseGeocode(lat, lng);
                         } else if (pinMode === 'end') {
                           setFormData((prev) => ({ ...prev, endLat: lat, endLng: lng }));
                         } else {
@@ -1432,6 +1795,71 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                     />
                   </MapContainer>
                 </div>
+
+                {/* Reverse Geocode 1-Click Administrative Suggestion Banner */}
+                {(isGeocoding || geoSuggestion) && (
+                  <div
+                    style={{
+                      marginBottom: 12,
+                      padding: '10px 14px',
+                      borderRadius: 4,
+                      background: 'color-mix(in srgb, var(--color-primary) 10%, var(--color-bg-main))',
+                      border: '1px solid color-mix(in srgb, var(--color-primary) 35%, transparent)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      flexWrap: 'wrap',
+                      gap: 10,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
+                      <IconMapPin size={15} color="var(--color-primary)" style={{ flexShrink: 0 }} />
+                      <div style={{ fontSize: '0.78rem', color: 'var(--color-text-main)', minWidth: 0 }}>
+                        {isGeocoding ? (
+                          <span style={{ color: 'var(--color-text-muted)' }}>
+                            Đang nhận diện địa danh hành chính từ tọa độ xuất phát...
+                          </span>
+                        ) : (
+                          geoSuggestion && (
+                            <>
+                              <span style={{ color: 'var(--color-text-muted)' }}>Địa danh nhận diện: </span>
+                              <strong>{geoSuggestion.formattedAddress}</strong>
+                            </>
+                          )
+                        )}
+                      </div>
+                    </div>
+                    {!isGeocoding && geoSuggestion && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          onClick={() => applyGeoSuggestion(geoSuggestion)}
+                          style={{ padding: '5px 10px', fontSize: '0.74rem', borderRadius: 4 }}
+                        >
+                          Áp dụng địa danh tự động
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setGeoSuggestion(null)}
+                          aria-label="Ẩn gợi ý địa danh"
+                          style={{
+                            background: 'transparent',
+                            border: '1px solid var(--color-border)',
+                            borderRadius: 4,
+                            color: 'var(--color-text-muted)',
+                            padding: '4px 6px',
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                          }}
+                        >
+                          <IconX size={13} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* GPX Upload Bar */}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: '9px 14px', borderRadius: 4 }}>

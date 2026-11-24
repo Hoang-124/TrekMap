@@ -64,6 +64,53 @@ interface StampedPeakInfo {
   completionTimeHours?: number;
 }
 
+interface VerifiedPassportPublicData {
+  verified: boolean;
+  expeditionCode: string;
+  passportHolder: {
+    fullName: string;
+    username?: string;
+    avatarUrl?: string;
+    memberSince?: string | null;
+    reputationScore: number;
+    badgesCount: number;
+    rankTitle: string;
+  };
+  summary: {
+    totalStampedPeaks: number;
+    totalAvailableTrails: number;
+    verifiedGpsPeaks: number;
+    totalUniqueKm: number;
+    totalUniqueGainM: number;
+    highestAltitudeM: number;
+    highestPeakName: string;
+    claimedChallengesCount: number;
+  };
+  topPeaks: Array<{
+    trailSlug: string;
+    trailName: string;
+    province: string;
+    maxAltitudeM: number;
+    verified: boolean;
+    lastCheckinDate?: string;
+  }>;
+}
+
+function getChallengeMetricUnit(ruleType?: string): string {
+  if (ruleType === 'cumulative_km') return 'km';
+  if (ruleType === 'cumulative_gain') return 'm';
+  return 'đỉnh';
+}
+
+function readVerifyCodeFromLocation(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    return (new URLSearchParams(window.location.search).get('verify') || '').trim();
+  } catch {
+    return '';
+  }
+}
+
 type TrailWithMongoId = Trail & { _id?: string };
 type UserWithMongoId = UserProfile & { _id?: string };
 
@@ -765,8 +812,75 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
       .sort((a, b) => (b.maxAltitudeM || 0) - (a.maxAltitudeM || 0));
   }, [trails, regionFilter, searchQuery]);
 
+  const [verifyCode, setVerifyCode] = useState<string>(() => readVerifyCodeFromLocation());
+  const [verifyResult, setVerifyResult] = useState<{
+    code: string;
+    status: 'verified' | 'error';
+    data?: VerifiedPassportPublicData;
+    errorMessage?: string;
+  } | null>(null);
+  const isVerifyingPassport = Boolean(verifyCode) && verifyResult?.code !== verifyCode;
+
+  useEffect(() => {
+    const onPopState = () => {
+      setVerifyCode(readVerifyCodeFromLocation());
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  useEffect(() => {
+    if (!verifyCode) return;
+    const controller = new AbortController();
+    fetch(`/api/challenges/passport/verify/${encodeURIComponent(verifyCode)}`, {
+      headers: getApiHeaders(),
+      signal: controller.signal,
+    })
+      .then((res) => res.json().then((json) => ({ ok: res.ok, json })))
+      .then(({ ok, json }) => {
+        if (controller.signal.aborted) return;
+        if (ok && json?.success && json?.data) {
+          setVerifyResult({
+            code: verifyCode,
+            status: 'verified',
+            data: json.data as VerifiedPassportPublicData,
+          });
+        } else {
+          setVerifyResult({
+            code: verifyCode,
+            status: 'error',
+            errorMessage: json?.message || 'Không tìm thấy Hộ Chiếu Đỉnh Núi hợp lệ cho mã này.',
+          });
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setVerifyResult({
+            code: verifyCode,
+            status: 'error',
+            errorMessage: 'Không thể kết nối máy chủ để xác minh mã Hộ Chiếu lúc này.',
+          });
+        }
+      });
+    return () => controller.abort();
+  }, [verifyCode]);
+
+  const handleDismissVerifyBanner = () => {
+    setVerifyCode('');
+    setVerifyResult(null);
+    if (typeof window !== 'undefined') {
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('verify');
+        window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+      } catch {
+        // ignore history error
+      }
+    }
+  };
+
   const expeditionCode = `LS-${(userId || 'GUEST0').slice(-6).toUpperCase()}`;
-  const qrPayload = `LOST-PASSPORT|${expeditionCode}|PEAKS:${conqueredTrails.length}|GAIN:${totalElevationGainM}M|MAX:${highestPeak?.maxAltitudeM || 0}M`;
+  const qrPayload = `${typeof window !== 'undefined' ? window.location.origin : 'https://lost.vn'}/passport?verify=${encodeURIComponent(expeditionCode)}`;
   const qrData = useMemo(() => generateQrMatrix(qrPayload), [qrPayload]);
   const qrSvg = useMemo(() => buildQrSvgPath(qrData.matrix, 2), [qrData.matrix]);
 
@@ -905,6 +1019,111 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
           )}
         </div>
       </div>
+
+      {/* Public Passport Verification Banner (?verify=LS-XXXXXX) */}
+      {verifyCode && (
+        <div
+          className="card"
+          style={{
+            padding: '16px 18px',
+            marginBottom: 18,
+            borderLeft: `4px solid ${verifyResult?.status === 'error' ? 'var(--color-error)' : 'var(--color-primary)'}`,
+            background:
+              verifyResult?.status === 'error'
+                ? 'var(--banner-danger-bg)'
+                : 'color-mix(in srgb, var(--color-primary) 9%, var(--color-bg-card))',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <IconShieldCheck
+                size={18}
+                color={verifyResult?.status === 'error' ? 'var(--color-error-text, var(--color-error))' : 'var(--color-primary)'}
+              />
+              <strong style={{ fontSize: '0.92rem', color: 'var(--color-text-main)' }}>
+                {isVerifyingPassport
+                  ? `Đang xác minh Hộ Chiếu Đỉnh Núi mã ${verifyCode}...`
+                  : verifyResult?.status === 'verified' && verifyResult.data
+                    ? `Hộ Chiếu Đỉnh Núi Đã Xác Thực · ${verifyResult.data.expeditionCode}`
+                    : `Không thể xác minh mã Hộ Chiếu ${verifyCode}`}
+              </strong>
+              {verifyResult?.status === 'verified' && verifyResult.data && (
+                <span className="badge badge-success" style={{ fontSize: '0.68rem' }}>
+                  {verifyResult.data.passportHolder.rankTitle}
+                </span>
+              )}
+            </div>
+            <button
+              type="button"
+              className="btn btn-outline"
+              onClick={handleDismissVerifyBanner}
+              aria-label="Đóng bảng xác minh hộ chiếu"
+              style={{ padding: '4px 7px' }}
+            >
+              <IconX size={14} />
+            </button>
+          </div>
+
+          {verifyResult?.status === 'error' && (
+            <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--banner-danger-text)' }}>
+              {verifyResult.errorMessage}
+            </p>
+          )}
+
+          {verifyResult?.status === 'verified' && verifyResult.data && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                    {verifyResult.data.passportHolder.fullName}
+                    {verifyResult.data.passportHolder.username ? (
+                      <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--color-text-muted)', marginLeft: 6 }}>
+                        @{verifyResult.data.passportHolder.username}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>
+                    {verifyResult.data.summary.totalStampedPeaks}/{verifyResult.data.summary.totalAvailableTrails} đỉnh ({verifyResult.data.summary.verifiedGpsPeaks} GPS xác thực) ·{' '}
+                    {verifyResult.data.summary.totalUniqueKm.toLocaleString('vi-VN')} km · +{verifyResult.data.summary.totalUniqueGainM.toLocaleString('vi-VN')}m ·{' '}
+                    Đỉnh cao nhất: <strong style={{ color: 'var(--color-primary)' }}>{verifyResult.data.summary.highestPeakName} ({verifyResult.data.summary.highestAltitudeM.toLocaleString('vi-VN')}m)</strong>
+                  </div>
+                </div>
+                <div style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-sky)', fontVariantNumeric: 'tabular-nums' }}>
+                  {verifyResult.data.summary.claimedChallengesCount} thử thách · {verifyResult.data.passportHolder.reputationScore.toLocaleString('vi-VN')} điểm uy tín
+                </div>
+              </div>
+
+              {verifyResult.data.topPeaks.length > 0 && (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {verifyResult.data.topPeaks.map((pk) => (
+                    <span
+                      key={pk.trailSlug}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        padding: '3px 8px',
+                        borderRadius: 4,
+                        fontSize: '0.72rem',
+                        fontWeight: 700,
+                        background: 'var(--color-bg-main)',
+                        border: pk.verified ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+                        color: pk.verified ? 'var(--color-primary)' : 'var(--color-text-main)',
+                      }}
+                    >
+                      {pk.verified ? <IconShieldCheck size={11} color="var(--color-primary)" /> : <IconMountain size={11} />}
+                      <span>{pk.trailName} ({pk.maxAltitudeM.toLocaleString('vi-VN')}m)</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* Hairline Telemetry Strip */}
       <div className="editorial-stat-strip" style={{ marginBottom: 20 }}>
@@ -1059,6 +1278,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                 >
                   <div style={{ height: 150, position: 'relative', overflow: 'hidden', background: 'var(--color-surface-elevated)' }}>
                     <img
+                      decoding="async"
                       src={ch.coverImage || DEFAULT_VIETNAM_TRAIL_COVER}
                       alt={ch.title}
                       loading="lazy"
@@ -1137,7 +1357,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.74rem', marginBottom: 5 }}>
                         <span style={{ fontWeight: 700, color: 'var(--color-text-main)' }}>
-                          Tiến độ: {ch.progressCount}/{ch.targetCount} đỉnh
+                          Tiến độ: {ch.progressCount.toLocaleString('vi-VN')}/{ch.targetCount.toLocaleString('vi-VN')} {getChallengeMetricUnit(ch.ruleType)}
                         </span>
                         <span style={{ fontWeight: 800, color: ch.isCompleted ? 'var(--color-primary)' : 'var(--color-sky)', fontVariantNumeric: 'tabular-nums' }}>
                           {ch.progressPercent}%
@@ -1212,7 +1432,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                         </button>
                       ) : (
                         <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          <IconLock size={12} /> Cần thêm {Math.max(0, ch.targetCount - ch.progressCount)} đỉnh
+                          <IconLock size={12} /> Cần thêm {Math.max(0, ch.targetCount - ch.progressCount).toLocaleString('vi-VN')} {getChallengeMetricUnit(ch.ruleType)}
                         </span>
                       )}
                     </div>
@@ -1343,9 +1563,26 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto', paddingTop: 10, borderTop: '1px solid var(--color-border)', gap: 8, flexWrap: 'wrap' }}>
                     {isStamped ? (
-                      <span className="badge badge-success">
-                        <IconShieldCheck size={12} /> {stamp.verifiedBadge ? 'GPS Xác Thực' : 'Đã Đóng Dấu'}
-                      </span>
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <span className="badge badge-success">
+                          <IconShieldCheck size={12} /> {stamp.verifiedBadge ? 'GPS Xác Thực' : 'Đã Đóng Dấu'}
+                        </span>
+                        {!stamp.verifiedBadge && (
+                          <button
+                            type="button"
+                            className="btn btn-outline"
+                            onClick={() => {
+                              setCheckinModalTrail(trail);
+                              setCheckinHours(String(stamp.completionTimeHours || Math.max(4, (trail.durationDays || 1) * 7)));
+                              setCheckinGps(null);
+                            }}
+                            style={{ padding: '4px 9px', fontSize: '0.72rem', color: 'var(--color-sky)' }}
+                            title="Nâng cấp dấu thủ công lên Check-in GPS xác thực"
+                          >
+                            <IconMapPin size={11} color="var(--color-sky)" /> Xác Thực GPS
+                          </button>
+                        )}
+                      </div>
                     ) : (
                       <button
                         type="button"

@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { authMiddleware, optionalAuthMiddleware } from '../middleware/auth.middleware.js';
-import { routeCache } from '../middleware/cache.middleware.js';
 import { createRateLimiter } from '../middleware/rateLimiter.middleware.js';
 import {
   analyzeCustomRoute,
@@ -34,7 +33,7 @@ const routeWriteLimiter = createRateLimiter(
 router.post('/analyze', routeAnalyzeLimiter, optionalAuthMiddleware as any, analyzeCustomRoute as any);
 router.post('/', routeWriteLimiter, authMiddleware as any, createCustomRoute as any);
 router.get('/me', authMiddleware as any, getMyCustomRoutes as any);
-router.get('/public', routeCache(120), getPublicCustomRoutes);
+router.get('/public', optionalAuthMiddleware as any, getPublicCustomRoutes as any);
 router.get('/share/:shareSlug/gpx', optionalAuthMiddleware as any, exportCustomRouteGpx as any);
 router.get('/share/:shareSlug', optionalAuthMiddleware as any, getCustomRouteByShareSlug as any);
 router.put('/:id', routeWriteLimiter, authMiddleware as any, updateCustomRoute as any);

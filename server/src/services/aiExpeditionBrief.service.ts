@@ -568,14 +568,14 @@ export async function generateExpeditionBrief(
   if (!rawId) return null;
 
   let rawTrail: any =
-    pool.find((t) => t.id === rawId) ||
-    pool.find((t) => normalizeSearchText(t.name) === normalizeSearchText(rawId)) ||
+    pool.find((t) => t.id === rawId && (!t.status || t.status === 'approved')) ||
+    pool.find((t) => normalizeSearchText(t.name) === normalizeSearchText(rawId) && (!t.status || t.status === 'approved')) ||
     null;
 
   if (!rawTrail) {
     rawTrail = (await resolveTrailByIdOrSlug(rawId).catch(() => null)) || null;
   }
-  if (!rawTrail) return null;
+  if (!rawTrail || (rawTrail.status && rawTrail.status !== 'approved')) return null;
 
   // Normalize legacy DB trails safely so missing slug/numeric fields never throw 500
   const trail: Trail = {

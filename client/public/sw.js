@@ -1,13 +1,13 @@
 /**
- * LOST Service Worker - Offline 2D Basemap Tile & App Shell Caching
- * Provides resilient offline tile caching and SPA navigation across mountain areas with spotty or no cellular signal.
+ * LOST Service Worker - Offline 2D Basemap Tile & App Shell Caching (v3)
+ * Provides resilient offline tile caching, entry bundle precaching, and SPA navigation across mountain areas.
  * Never caches /api/*, /socket.io*, or AWS Terrarium 3D DEM heightmap tiles.
  */
 
-const CACHE_STATIC = 'lost-static-v2';
+const CACHE_STATIC = 'lost-static-v3';
 const CACHE_TILES = 'lost-tiles-v1';
 const CACHE_OFFLINE_PACKS = 'lost-offline-packs-v1';
-const MAX_STATIC_ITEMS = 120;
+const MAX_STATIC_ITEMS = 160;
 const MAX_TILES_IN_CACHE = 450;
 let tilePutCounter = 0;
 let staticPutCounter = 0;
@@ -17,7 +17,36 @@ const STATIC_PRECACHE = [
   '/index.html',
   '/manifest.json',
   '/favicon.svg',
+  '/icons/icon-192.png',
 ];
+
+async function precacheHtmlAssets(htmlText, cache) {
+  try {
+    const assetMatches = htmlText.match(/(?:href|src)=["'](\/assets\/[^"']+\.(?:js|css))["']/g) || [];
+    const urls = Array.from(
+      new Set(
+        assetMatches
+          .map((m) => {
+            const inner = m.match(/["'](\/assets\/[^"']+)["']/);
+            return inner ? inner[1] : null;
+          })
+          .filter(Boolean)
+      )
+    );
+    await Promise.all(
+      urls.map(async (assetUrl) => {
+        const existing = await cache.match(assetUrl);
+        if (existing) return;
+        const res = await fetch(assetUrl).catch(() => null);
+        if (res && res.ok && res.status === 200) {
+          await cache.put(assetUrl, res);
+        }
+      })
+    );
+  } catch {
+    // Non-fatal: runtime SWR still caches chunks as visited
+  }
+}
 
 const ALLOWED_2D_BASEMAP_HOST_PATTERNS = [
   /(^|\.)tile\.openstreetmap\.org$/i,
@@ -26,7 +55,6 @@ const ALLOWED_2D_BASEMAP_HOST_PATTERNS = [
   /(^|\.)cartocdn\.com$/i,
 ];
 
-// Helper: Trim cache in FIFO order to stay well within browser storage quota
 async function trimCache(cacheName, maxItems) {
   try {
     const cache = await caches.open(cacheName);
@@ -40,7 +68,6 @@ async function trimCache(cacheName, maxItems) {
   }
 }
 
-// Strict 2D basemap allowlist: NEVER intercept AWS Terrarium 3D DEM heightmaps or arbitrary CDN photo URLs
 function isMapTileUrl(parsedUrl) {
   const host = parsedUrl.hostname || '';
   const path = parsedUrl.pathname || '';
@@ -54,16 +81,12 @@ function isMapTileUrl(parsedUrl) {
   return ALLOWED_2D_BASEMAP_HOST_PATTERNS.some((pattern) => pattern.test(host));
 }
 
-// Extract canonical OSM Slippy tile URL (`https://tile.openstreetmap.org/{z}/{x}/{y}.png`)
-// so a/b/c OSM subdomains & offline basemap fallbacks resolve cleanly to downloaded Offline Trail Packs.
 function toCanonicalOsmTileUrl(url) {
-  // Esri ArcGIS World_Imagery uses /tile/{z}/{y}/{x} (y before x!)
   const esriMatch = url.match(/server\.arcgisonline\.com\/.*\/tile\/(\d+)\/(\d+)\/(\d+)/i);
   if (esriMatch) {
     const [, z, y, x] = esriMatch;
     return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
   }
-  // Standard Slippy Map /{z}/{x}/{y}[@2x].png (OSM a/b/c subdomains, OpenTopoMap, Carto standard & retina)
   const slippyMatch = url.match(/\/(\d+)\/(\d+)\/(\d+)(?:@\dx)?(?:\.(?:png|jpg|jpeg))?(?:\?.*)?$/i);
   if (slippyMatch) {
     const [, z, x, y] = slippyMatch;
@@ -72,7 +95,6 @@ function toCanonicalOsmTileUrl(url) {
   return null;
 }
 
-// Install Event: Pre-cache static app shell & PWA manifest
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
@@ -86,7 +108,6 @@ self.addEventListener('install', (event) => {
   );
 });
 
-// Activate Event: Purge legacy static shell caches while preserving downloaded Offline Trail Packs
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
@@ -105,12 +126,10 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Fetch Event: Intelligent offline strategy
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = request.url;
 
-  // 1. Ignore non-GET requests and non-HTTP(S) schemes
   if (request.method !== 'GET' || !url.startsWith('http')) {
     return;
   }
@@ -122,7 +141,6 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Never intercept Socket.IO or API endpoints (strictly bypass auth, profile & dynamic API calls)
   if (
     parsedUrl.origin === self.location.origin &&
     (parsedUrl.pathname === '/api' ||
@@ -132,10 +150,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 2. Allowlisted 2D Map Tiles: Cache-First checking Offline Trail Packs & bounded Dynamic Tile Cache
   if (isMapTileUrl(parsedUrl)) {
-    // Bypass SW tile caches & 1x1 fallback PNG for explicit reload/no-store requests
-    // (used by offlinePack.ts downloads & forceRefresh so fresh CORS tiles hit the network cleanly)
     if (request.cache === 'reload' || request.cache === 'no-store') {
       return;
     }
@@ -144,13 +159,11 @@ self.addEventListener('fetch', (event) => {
       (async () => {
         const offlinePackCache = await caches.open(CACHE_OFFLINE_PACKS);
 
-        // Exact match in Offline Trail Packs
         const packedTile = await offlinePackCache.match(request);
         if (packedTile) {
           return packedTile;
         }
 
-        // Normalize a/b/c.tile.openstreetmap.org -> canonical tile.openstreetmap.org in Offline Packs
         const canonicalOsmUrl = toCanonicalOsmTileUrl(url);
         if (canonicalOsmUrl && parsedUrl.hostname.includes('tile.openstreetmap.org') && canonicalOsmUrl !== url) {
           const normalizedPacked = await offlinePackCache.match(canonicalOsmUrl);
@@ -159,7 +172,6 @@ self.addEventListener('fetch', (event) => {
           }
         }
 
-        // Check dynamic tile cache
         const tileCache = await caches.open(CACHE_TILES);
         const cachedResponse = await tileCache.match(request);
         if (cachedResponse) {
@@ -168,7 +180,6 @@ self.addEventListener('fetch', (event) => {
 
         try {
           const networkResponse = await fetch(request);
-          // Only cache verified CORS image responses (never cache opaque responses, which incur ~7MB quota padding)
           const isValidCorsImage =
             networkResponse &&
             networkResponse.ok &&
@@ -184,8 +195,6 @@ self.addEventListener('fetch', (event) => {
           }
           return networkResponse;
         } catch {
-          // Offline basemap fallback: if Esri Satellite / OpenTopoMap / Carto fails offline,
-          // serve matching {z}/{x}/{y} tile from downloaded OSM Offline Trail Packs!
           if (canonicalOsmUrl) {
             const fallbackPacked = await offlinePackCache.match(canonicalOsmUrl);
             if (fallbackPacked) {
@@ -197,7 +206,6 @@ self.addEventListener('fetch', (event) => {
             }
           }
 
-          // Offline transparent 1x1 PNG fallback for 2D Leaflet tiles (tagged so pack downloader never saves it)
           return new Response(
             new Uint8Array([
               0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
@@ -220,10 +228,10 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 3. Same-origin Static Assets & App Shell: Stale-While-Revalidate with bounded cache size
   if (
     parsedUrl.origin === self.location.origin &&
     (parsedUrl.pathname.startsWith('/assets/') ||
+      parsedUrl.pathname.startsWith('/icons/') ||
       parsedUrl.pathname === '/manifest.json' ||
       parsedUrl.pathname.endsWith('.css') ||
       parsedUrl.pathname.endsWith('.js') ||
@@ -259,7 +267,6 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 4. Same-origin SPA navigation: Network-First & live refresh of cached /index.html for all hub routes
   if (parsedUrl.origin === self.location.origin && request.mode === 'navigate') {
     event.respondWith(
       (async () => {
@@ -268,19 +275,23 @@ self.addEventListener('fetch', (event) => {
           const contentType = (networkResponse.headers.get('content-type') || '').toLowerCase();
           if (networkResponse.ok && contentType.includes('text/html')) {
             const cache = await caches.open(CACHE_STATIC);
+            const htmlClone = networkResponse.clone();
             void cache.put('/index.html', networkResponse.clone());
+            void htmlClone.text().then((html) => precacheHtmlAssets(html, cache));
           }
           return networkResponse;
         } catch {
           const cache = await caches.open(CACHE_STATIC);
-          const cachedIndex =
-            (await cache.match('/index.html')) ||
-            (await cache.match('/')) ||
-            (await caches.match('/index.html')) ||
-            (await caches.match('/'));
+          const cachedIndex = (await cache.match('/index.html')) || (await cache.match('/'));
           return cachedIndex || new Response('Network offline', { status: 503, statusText: 'Offline' });
         }
       })()
     );
+  }
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
   }
 });

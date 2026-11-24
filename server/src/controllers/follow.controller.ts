@@ -117,28 +117,38 @@ export const toggleFollowUser = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// GET /api/users/:id/follow-status - Check if currently following
+// GET /api/users/:id/follow-status - Check if currently following + return live follower/following counts
 export const checkFollowStatus = async (req: AuthRequest, res: Response) => {
   try {
     const currentUserId = req.user?.userId;
     const targetUserId = String(req.params.id || '');
 
-    if (
-      !currentUserId ||
-      mongoose.connection.readyState !== 1 ||
-      !isValidObjectId(currentUserId) ||
-      !isValidObjectId(targetUserId)
-    ) {
-      return res.json({ success: true, isFollowing: false });
+    if (mongoose.connection.readyState !== 1 || !isValidObjectId(targetUserId)) {
+      return res.json({ success: true, isFollowing: false, followersCount: 0, followingCount: 0 });
     }
 
-    const follow = await FollowModel.exists({
-      followerId: new mongoose.Types.ObjectId(currentUserId),
-      followingId: new mongoose.Types.ObjectId(targetUserId),
+    const targetObjId = new mongoose.Types.ObjectId(targetUserId);
+    const hasViewer = Boolean(currentUserId && isValidObjectId(currentUserId));
+
+    const [follow, followersCount, followingCount] = await Promise.all([
+      hasViewer
+        ? FollowModel.exists({
+            followerId: new mongoose.Types.ObjectId(currentUserId!),
+            followingId: targetObjId,
+          })
+        : Promise.resolve(null),
+      FollowModel.countDocuments({ followingId: targetObjId }),
+      FollowModel.countDocuments({ followerId: targetObjId }),
+    ]);
+
+    return res.json({
+      success: true,
+      isFollowing: Boolean(follow),
+      followersCount,
+      followingCount,
     });
-    return res.json({ success: true, isFollowing: !!follow });
   } catch {
-    return res.json({ success: true, isFollowing: false });
+    return res.json({ success: true, isFollowing: false, followersCount: 0, followingCount: 0 });
   }
 };
 

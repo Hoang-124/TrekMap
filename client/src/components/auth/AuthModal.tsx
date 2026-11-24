@@ -16,6 +16,7 @@ import {
   IconSparkles,
   IconRotateCw,
   IconGoogle,
+  IconCheck,
 } from '../common/SvgIcons.js';
 
 interface AuthModalProps {
@@ -67,6 +68,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  const [username, setUsername] = useState('');
+  const [usernameCheckStatus, setUsernameCheckStatus] = useState<
+    'idle' | 'checking' | 'available' | 'taken' | 'invalid'
+  >('idle');
+  const [usernameCheckMessage, setUsernameCheckMessage] = useState('');
+  const [verifyNotice, setVerifyNotice] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [rememberMe, setRememberMe] = useState(() => {
     if (typeof window === 'undefined') return true;
@@ -86,6 +93,64 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }, 1000);
     return () => clearInterval(timer);
   }, [resendCooldown]);
+
+  // Debounced live username availability check on registration
+  useEffect(() => {
+    if (!isOpen || mode !== 'register') return;
+    const trimmed = username.trim();
+    if (!trimmed) return;
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      if (trimmed.length < 3 || trimmed.length > 30 || !/^[a-zA-Z0-9_-]+$/.test(trimmed)) {
+        setUsernameCheckStatus('invalid');
+        setUsernameCheckMessage(
+          'Handle gồm 3–30 ký tự không dấu, chữ số, gạch dưới (_) hoặc gạch ngang (-).'
+        );
+        setUsernameSuggestions([]);
+        return;
+      }
+
+      setUsernameCheckStatus('checking');
+      setUsernameCheckMessage('Đang kiểm tra tính khả dụng...');
+      try {
+        const res = await fetch(
+          `/api/auth/check-username?username=${encodeURIComponent(trimmed)}`,
+          { signal: controller.signal }
+        );
+        const data = (await res.json().catch(() => ({}))) as {
+          available?: boolean;
+          isDuplicate?: boolean;
+          suggestions?: string[];
+          message?: string;
+        };
+        if (controller.signal.aborted) return;
+        if (res.ok && data.available) {
+          setUsernameCheckStatus('available');
+          setUsernameCheckMessage(data.message || 'Tên tài khoản này có thể sử dụng!');
+          setUsernameSuggestions([]);
+        } else if (data.isDuplicate) {
+          setUsernameCheckStatus('taken');
+          setUsernameCheckMessage('Tên tài khoản đã có người sử dụng. Chọn một gợi ý bên dưới:');
+          setUsernameSuggestions(Array.isArray(data.suggestions) ? data.suggestions : []);
+        } else {
+          setUsernameCheckStatus('invalid');
+          setUsernameCheckMessage(data.message || 'Tên tài khoản không hợp lệ.');
+          setUsernameSuggestions([]);
+        }
+      } catch {
+        if (!controller.signal.aborted) {
+          setUsernameCheckStatus('idle');
+          setUsernameCheckMessage('');
+        }
+      }
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [isOpen, mode, username]);
 
   const [resetToken, setResetToken] = useState(initialResetToken || '');
   const [newPassword, setNewPassword] = useState('');
@@ -111,6 +176,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setPassword('');
       setConfirmPassword('');
       setFullName('');
+      setUsername('');
+      setUsernameCheckStatus('idle');
+      setUsernameCheckMessage('');
+      setVerifyNotice('');
       setOtpCode('');
       setNewPassword('');
       setConfirmNewPassword('');
@@ -143,6 +212,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setPassword('');
     setConfirmPassword('');
     setFullName('');
+    setUsername('');
+    setUsernameCheckStatus('idle');
+    setUsernameCheckMessage('');
+    setVerifyNotice('');
     setOtpCode('');
     setNewPassword('');
     setConfirmNewPassword('');
@@ -246,8 +319,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
       if (!fullName.trim() || fullName.trim().length < 2) {
-        setErrorMessage('Tên tài khoản phải có ít nhất 2 ký tự.');
+        setErrorMessage('Họ tên hiển thị phải có ít nhất 2 ký tự.');
         return;
+      }
+      const trimmedUsername = username.trim();
+      if (trimmedUsername) {
+        if (trimmedUsername.length < 3 || trimmedUsername.length > 30 || !/^[a-zA-Z0-9_-]+$/.test(trimmedUsername)) {
+          setErrorMessage(
+            'Tên tài khoản (handle) phải từ 3–30 ký tự, chỉ gồm chữ không dấu, số, gạch dưới (_) hoặc gạch ngang (-).'
+          );
+          return;
+        }
+        if (usernameCheckStatus === 'taken') {
+          setErrorMessage('Tên tài khoản này đã có người sử dụng. Vui lòng chọn tên khác hoặc gợi ý bên dưới.');
+          return;
+        }
       }
       const strength = getPasswordStrength(password);
       if (strength.score < 2) {
@@ -266,9 +352,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     try {
       const endpoint = mode === 'register' ? '/api/auth/register' : '/api/auth/login';
+      const trimmedUsername = username.trim();
       const body =
         mode === 'register'
-          ? { email: cleanEmail, password, fullName: fullName.trim() }
+          ? {
+              email: cleanEmail,
+              password,
+              fullName: fullName.trim(),
+              ...(trimmedUsername ? { username: trimmedUsername } : {}),
+            }
           : { email: cleanEmail, password };
 
       const res = await fetch(endpoint, {
@@ -282,16 +374,71 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setIsLoading(false);
 
       if (!res.ok || !data.success) {
+        // P0-11: Unverified existing registration (409) or unverified login (403) transitions directly to OTP verification
+        if (
+          mode === 'register' &&
+          res.status === 409 &&
+          (data.requiresActivation || data.isUnverifiedExisting)
+        ) {
+          const targetEmail =
+            typeof data.email === 'string' && data.email.trim() ? data.email.trim() : cleanEmail;
+          setEmail(targetEmail);
+          setOtpCode('');
+          setIsGoogleWarning(false);
+          setErrorMessage('');
+          setVerifyNotice(
+            data.message ||
+              `Email ${targetEmail} đã đăng ký nhưng chưa kích hoạt. Vui lòng nhập mã OTP 6 số hoặc bấm "Gửi lại mã OTP mới" bên dưới.`
+          );
+          setMode('verify-code');
+          onShowToast?.(
+            `Email ${targetEmail} chưa được kích hoạt. Hãy nhập mã OTP hoặc yêu cầu gửi lại mã mới.`,
+            'info'
+          );
+          return;
+        }
+
+        if (mode === 'login' && res.status === 403 && data.isNotVerified) {
+          const targetEmail =
+            typeof data.email === 'string' && data.email.trim() ? data.email.trim() : cleanEmail;
+          setEmail(targetEmail);
+          setOtpCode('');
+          setIsGoogleWarning(false);
+          setErrorMessage('');
+          setVerifyNotice(
+            data.message ||
+              `Tài khoản (${targetEmail}) chưa kích hoạt email. Vui lòng nhập mã OTP 6 số hoặc bấm "Gửi lại mã OTP mới" bên dưới.`
+          );
+          setMode('verify-code');
+          onShowToast?.(
+            `Tài khoản ${targetEmail} chưa xác thực email. Vui lòng hoàn tất xác thực OTP.`,
+            'info'
+          );
+          return;
+        }
+
+        if (data.isGoogleWarning || data.isGoogleAccount) {
+          setIsGoogleWarning(true);
+        }
         setErrorMessage(data.message || 'Thao tác thất bại, vui lòng thử lại.');
-        if (data.isDuplicateUsername && data.suggestions) {
+        if (data.isDuplicateUsername && Array.isArray(data.suggestions)) {
           setUsernameSuggestions(data.suggestions);
+          setUsernameCheckStatus('taken');
+          setUsernameCheckMessage('Tên tài khoản đã có người sử dụng. Chọn một gợi ý bên dưới:');
         }
         return;
       }
 
       if (mode === 'register' && data.requiresActivation) {
+        const targetEmail =
+          typeof data.email === 'string' && data.email.trim() ? data.email.trim() : cleanEmail;
+        setEmail(targetEmail);
+        setVerifyNotice(
+          data.message ||
+            `Mã 6 số và liên kết kích hoạt đã gửi tới ${targetEmail}. Bạn có thể nhập mã bên dưới hoặc bấm liên kết trong email.`
+        );
         onShowToast?.(
-          data.message || `Mã 6 số đã gửi tới email ${cleanEmail}. Vui lòng nhập mã để kích hoạt ngay!`,
+          data.message || `Mã 6 số đã gửi tới email ${targetEmail}. Vui lòng nhập mã để kích hoạt ngay!`,
           'info'
         );
         setMode('verify-code');
@@ -389,6 +536,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     try {
       const res = await fetch('/api/auth/reset-password-with-token', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ resetToken, newPassword }),
       });
@@ -817,70 +965,162 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           {(mode === 'register' || mode === 'login') && (
             <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 9, width: '100%' }}>
               {mode === 'register' && (
-                <div style={{ width: '100%' }}>
-                  <label
-                    style={{
-                      fontSize: '0.75rem',
-                      fontWeight: 700,
-                      marginBottom: 3,
-                      display: 'block',
-                      color: 'var(--color-text-muted)',
-                      textAlign: 'left',
-                    }}
-                  >
-                    Tên tài khoản (Họ tên hiển thị)
-                  </label>
-                  <div style={{ position: 'relative', width: '100%' }}>
-                    <div style={{ position: 'absolute', left: 10, top: 11, pointerEvents: 'none', display: 'flex', alignItems: 'center' }}>
-                      <IconUser size={15} color="var(--color-primary)" />
-                    </div>
-                    <input
-                      ref={primaryInputRef}
-                      type="text"
-                      placeholder="minh_trekker"
-                      style={inputBaseStyle}
-                      value={fullName}
-                      onChange={(e) => {
-                        setFullName(e.target.value);
-                        setUsernameSuggestions([]);
+                <>
+                  <div style={{ width: '100%' }}>
+                    <label
+                      style={{
+                        fontSize: '0.75rem',
+                        fontWeight: 700,
+                        marginBottom: 3,
+                        display: 'block',
+                        color: 'var(--color-text-muted)',
+                        textAlign: 'left',
                       }}
-                      required
-                    />
+                    >
+                      Họ và tên hiển thị
+                    </label>
+                    <div style={{ position: 'relative', width: '100%' }}>
+                      <div style={{ position: 'absolute', left: 10, top: 11, pointerEvents: 'none', display: 'flex', alignItems: 'center' }}>
+                        <IconUser size={15} color="var(--color-primary)" />
+                      </div>
+                      <input
+                        ref={primaryInputRef}
+                        type="text"
+                        placeholder="Nguyễn Minh Khôi"
+                        style={inputBaseStyle}
+                        value={fullName}
+                        onChange={(e) => setFullName(e.target.value)}
+                        required
+                      />
+                    </div>
                   </div>
 
-                  {usernameSuggestions.length > 0 && (
-                    <div style={{ marginTop: 5, textAlign: 'left' }}>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--color-primary)', fontWeight: 700, marginBottom: 3, display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <IconSparkles size={12} color="var(--color-primary)" /> Gợi ý tên:
-                      </div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                        {usernameSuggestions.map((sug) => (
-                          <button
-                            key={sug}
-                            type="button"
-                            onClick={() => {
-                              setFullName(sug);
-                              setUsernameSuggestions([]);
-                              setErrorMessage('');
-                            }}
-                            style={{
-                              background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
-                              border: '1px solid color-mix(in srgb, var(--color-primary) 35%, transparent)',
-                              color: 'var(--color-primary)',
-                              borderRadius: 4,
-                              padding: '2px 8px',
-                              fontSize: '0.72rem',
-                              fontWeight: 700,
-                              cursor: 'pointer',
-                            }}
-                          >
-                            + {sug}
-                          </button>
-                        ))}
-                      </div>
+                  <div style={{ width: '100%' }}>
+                    <label
+                      style={{
+                        fontSize: '0.75rem',
+                        fontWeight: 700,
+                        marginBottom: 3,
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        color: 'var(--color-text-muted)',
+                        textAlign: 'left',
+                      }}
+                    >
+                      <span>Tên tài khoản / Handle (Tùy chọn)</span>
+                      <span style={{ fontSize: '0.68rem', fontWeight: 500, color: 'var(--color-text-dim)' }}>
+                        Bỏ trống để tự tạo
+                      </span>
+                    </label>
+                    <div style={{ position: 'relative', width: '100%' }}>
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          position: 'absolute',
+                          left: 11,
+                          top: 9,
+                          pointerEvents: 'none',
+                          fontSize: '0.84rem',
+                          fontWeight: 800,
+                          color: 'var(--color-primary)',
+                        }}
+                      >
+                        @
+                      </span>
+                      <input
+                        type="text"
+                        placeholder="minh_trekker"
+                        maxLength={30}
+                        style={{
+                          ...inputBaseStyle,
+                          paddingLeft: 28,
+                          borderColor:
+                            usernameCheckStatus === 'available'
+                              ? 'var(--color-primary)'
+                              : usernameCheckStatus === 'taken' || usernameCheckStatus === 'invalid'
+                                ? 'var(--color-error)'
+                                : 'var(--color-border)',
+                        }}
+                        value={username}
+                        onChange={(e) => {
+                          const nextVal = e.target.value;
+                          setUsername(nextVal);
+                          setUsernameSuggestions([]);
+                          if (!nextVal.trim()) {
+                            setUsernameCheckStatus('idle');
+                            setUsernameCheckMessage('');
+                          }
+                        }}
+                        autoComplete="username"
+                      />
                     </div>
-                  )}
-                </div>
+
+                    {username.trim() && usernameCheckStatus !== 'idle' && (
+                      <div
+                        style={{
+                          marginTop: 4,
+                          fontSize: '0.71rem',
+                          fontWeight: 600,
+                          textAlign: 'left',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 5,
+                          color:
+                            usernameCheckStatus === 'available'
+                              ? 'var(--color-primary)'
+                              : usernameCheckStatus === 'checking'
+                                ? 'var(--color-text-dim)'
+                                : 'var(--color-error-text, var(--color-error))',
+                        }}
+                      >
+                        {usernameCheckStatus === 'available' && <IconCheck size={12} color="var(--color-primary)" />}
+                        {(usernameCheckStatus === 'taken' || usernameCheckStatus === 'invalid') && (
+                          <IconAlertTriangle size={12} color="var(--color-error-text, var(--color-error))" />
+                        )}
+                        {usernameCheckStatus === 'checking' && (
+                          <IconRotateCw size={12} color="currentColor" style={{ animation: 'spin 1s linear infinite' }} />
+                        )}
+                        <span>{usernameCheckMessage}</span>
+                      </div>
+                    )}
+
+                    {usernameSuggestions.length > 0 && (
+                      <div style={{ marginTop: 5, textAlign: 'left' }}>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--color-primary)', fontWeight: 700, marginBottom: 3, display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <IconSparkles size={12} color="var(--color-primary)" /> Gợi ý tên tài khoản khả dụng:
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          {usernameSuggestions.map((sug) => (
+                            <button
+                              key={sug}
+                              type="button"
+                              onClick={() => {
+                                setUsername(sug);
+                                setUsernameSuggestions([]);
+                                setUsernameCheckStatus('available');
+                                setUsernameCheckMessage('Tên tài khoản này có thể sử dụng!');
+                                setErrorMessage('');
+                              }}
+                              style={{
+                                background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
+                                border: '1px solid color-mix(in srgb, var(--color-primary) 35%, transparent)',
+                                color: 'var(--color-primary)',
+                                borderRadius: 4,
+                                padding: '2px 8px',
+                                fontSize: '0.72rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              @{sug}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
 
               {/* Email Field */}
@@ -977,7 +1217,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                           width: `${getPasswordStrength(password).percent}%`,
                           height: '100%',
                           background: getPasswordStrength(password).color,
-                          transition: 'all 0.25s ease',
+                          transition: 'width 0.25s ease, background-color 0.25s ease',
                         }}
                       />
                     </div>
@@ -1265,6 +1505,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           {/* 4. 6-Digit OTP Verification Screen */}
           {mode === 'verify-code' && (
             <form onSubmit={handleVerifyOtpCode} style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
+              {verifyNotice && (
+                <div
+                  role="status"
+                  style={{
+                    background: 'color-mix(in srgb, var(--color-sky) 12%, transparent)',
+                    border: '1px solid color-mix(in srgb, var(--color-sky) 40%, transparent)',
+                    color: 'var(--color-text-main)',
+                    borderRadius: 4,
+                    padding: '8px 11px',
+                    fontSize: '0.76rem',
+                    lineHeight: 1.4,
+                    textAlign: 'left',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 7,
+                  }}
+                >
+                  <IconShieldCheck size={15} color="var(--color-sky)" style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span>{verifyNotice}</span>
+                </div>
+              )}
               <div style={{ width: '100%', textAlign: 'center' }}>
                 <label style={{ fontSize: '0.78rem', fontWeight: 700, marginBottom: 6, display: 'block', color: 'var(--color-text-muted)' }}>
                   Mã xác nhận 6 chữ số

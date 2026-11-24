@@ -57,6 +57,7 @@ function sanitizePackItems(raw: unknown): { items: IGearPackItem[]; error?: stri
       quantity,
       worn: Boolean(entry.worn),
       consumable: Boolean(entry.consumable),
+      packed: entry.packed !== false,
     });
   }
 
@@ -68,9 +69,12 @@ function computePackSummary(items: IGearPackItem[], bodyWeightKg: number) {
   let wornWeightGrams = 0;
   let consumableWeightGrams = 0;
   let totalQuantity = 0;
+  let packedItemCount = 0;
   const categoryBreakdown: Record<string, number> = {};
 
   for (const item of items) {
+    if (item.packed === false) continue;
+    packedItemCount += 1;
     const lineWeight = Math.max(0, Number(item.weightGrams) || 0) * Math.max(1, Number(item.quantity) || 1);
     totalQuantity += Math.max(1, Number(item.quantity) || 1);
     const cat = item.category || 'Khác';
@@ -99,6 +103,7 @@ function computePackSummary(items: IGearPackItem[], bodyWeightKg: number) {
 
   return {
     itemCount: items.length,
+    packedItemCount,
     totalQuantity,
     baseWeightGrams,
     wornWeightGrams,

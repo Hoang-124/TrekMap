@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import type { ForumThread, Trail, UserProfile } from '../../types.js';
 import {
@@ -12,12 +12,18 @@ import {
   IconStar,
 } from '../common/SvgIcons.js';
 import { uploadImageToCloudinary } from '../../services/api.js';
+import { mockTrails } from '../../data/seedData.js';
 import { AlpineExpeditionFeed } from './AlpineExpeditionFeed.js';
+import { AuthorProfileModal } from './AuthorProfileModal.js';
+import type { AuthorProfileData } from './AuthorProfileModal.js';
 import { LiveTrekkerChatroom } from './LiveTrekkerChatroom.js';
 import { SummitAltitudeLadder } from '../landing/SummitAltitudeLadder.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import { useSocket } from '../../hooks/useSocket.js';
 import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
+
+type ForumSortOption = 'newest' | 'popular' | 'most_commented';
+type ForumThreadWithTrail = ForumThread & { trailId?: string; trailName?: string };
 
 interface TopTrekker {
   _id: string;
@@ -38,6 +44,8 @@ interface TrekForumViewProps {
   onSelectTrail?: (trail: Trail) => void;
 }
 
+const FORUM_PAGE_LIMIT = 12;
+
 export const TrekForumView: React.FC<TrekForumViewProps> = ({
   onBack,
   isEmbedded = false,
@@ -47,20 +55,40 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
   trails,
   onSelectTrail,
 }) => {
-  const [threads, setThreads] = useState<ForumThread[]>([]);
-  const [loadingThreads, setLoadingThreads] = useState<boolean>(true);
+  const [threads, setThreads] = useState<ForumThreadWithTrail[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [sortBy, setSortBy] = useState<ForumSortOption>('newest');
+  const [forumCategory, setForumCategory] = useState<string>('All');
+  const [page, setPage] = useState<number>(1);
+  const [hasMoreThreads, setHasMoreThreads] = useState<boolean>(false);
+  const [loadingMoreThreads, setLoadingMoreThreads] = useState<boolean>(false);
+  const [loadedQueryKey, setLoadedQueryKey] = useState<string | null>(null);
   const [topTrekkers, setTopTrekkers] = useState<TopTrekker[]>([]);
+  const [sidebarAuthor, setSidebarAuthor] = useState<AuthorProfileData | null>(null);
   const [isNewThreadOpen, setIsNewThreadOpen] = useState(false);
   const { socket } = useSocket();
 
   // New Thread Form state
   const [newTitle, setNewTitle] = useState('');
   const [newCategory, setNewCategory] = useState<'Hỏi Đáp' | 'Kinh Nghiệm' | 'Tìm Đồng Đội' | 'Cảnh Báo'>('Kinh Nghiệm');
+  const [newTrailId, setNewTrailId] = useState('');
   const [newContent, setNewContent] = useState('');
   const [newImages, setNewImages] = useState<string[]>([]);
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [isSubmittingThread, setIsSubmittingThread] = useState(false);
   const newThreadDialogRef = useRef<HTMLDivElement | null>(null);
+
+  const availableTrails = trails && trails.length > 0 ? trails : mockTrails;
+  const forumQueryKey = `${debouncedSearch}|${sortBy}|${forumCategory}`;
+  const loadingThreads = loadedQueryKey !== forumQueryKey;
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(searchQuery.trim());
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
 
   // LIFO Focus Trap for New Thread modal
   useFocusTrap(isNewThreadOpen, newThreadDialogRef);
@@ -152,10 +180,31 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
     setNewImages((prev) => prev.filter((_, idx) => idx !== indexToRemove));
   };
 
+  const sortPinnedFirst = useCallback((list: ForumThreadWithTrail[]) => {
+    return [...list].sort((a, b) => {
+      const pinDiff = Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned));
+      if (pinDiff !== 0) return pinDiff;
+      if (sortBy === 'popular') {
+        const upDiff = (b.upvotes || 0) - (a.upvotes || 0);
+        if (upDiff !== 0) return upDiff;
+      } else if (sortBy === 'most_commented') {
+        const repDiff = (b.repliesCount || 0) - (a.repliesCount || 0);
+        if (repDiff !== 0) return repDiff;
+      }
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+  }, [sortBy]);
+
   useEffect(() => {
     const controller = new AbortController();
+    const params = new URLSearchParams();
+    params.set('page', '1');
+    params.set('limit', String(FORUM_PAGE_LIMIT));
+    params.set('sort', sortBy);
+    if (debouncedSearch) params.set('search', debouncedSearch);
+    if (forumCategory && forumCategory !== 'All') params.set('category', forumCategory);
 
-    fetch('/api/forum', {
+    fetch(`/api/forum?${params.toString()}`, {
       headers: getApiHeaders(),
       signal: controller.signal,
     })
@@ -163,6 +212,16 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
       .then((data) => {
         if (!controller.signal.aborted && data.success && Array.isArray(data.data)) {
           setThreads(data.data);
+          setPage(1);
+          const pag = data.pagination;
+          setHasMoreThreads(
+            Boolean(
+              pag &&
+                ((typeof pag.hasMore === 'boolean' && pag.hasMore) ||
+                  (typeof pag.totalPages === 'number' && pag.totalPages > 1) ||
+                  (typeof pag.total === 'number' && data.data.length < pag.total))
+            )
+          );
         }
       })
       .catch((err) => {
@@ -172,10 +231,15 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
       })
       .finally(() => {
         if (!controller.signal.aborted) {
-          setLoadingThreads(false);
+          setLoadedQueryKey(forumQueryKey);
         }
       });
 
+    return () => controller.abort();
+  }, [forumQueryKey, debouncedSearch, sortBy, forumCategory]);
+
+  useEffect(() => {
+    const controller = new AbortController();
     fetch('/api/forum/top-trekkers', { signal: controller.signal })
       .then((res) => res.json())
       .then((data) => {
@@ -188,8 +252,64 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
           console.error('Failed to load top trekkers', err);
         }
       });
-
     return () => controller.abort();
+  }, []);
+
+  const handleLoadMoreThreads = useCallback(async () => {
+    if (loadingMoreThreads || !hasMoreThreads) return;
+    const nextPage = page + 1;
+    setLoadingMoreThreads(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('page', String(nextPage));
+      params.set('limit', String(FORUM_PAGE_LIMIT));
+      params.set('sort', sortBy);
+      if (debouncedSearch) params.set('search', debouncedSearch);
+      if (forumCategory && forumCategory !== 'All') params.set('category', forumCategory);
+
+      const res = await fetch(`/api/forum?${params.toString()}`, { headers: getApiHeaders() });
+      const data = await res.json();
+      if (res.ok && data.success && Array.isArray(data.data)) {
+        const incoming: ForumThreadWithTrail[] = data.data;
+        setThreads((prev) => {
+          const seen = new Set(prev.map((t) => String(t.id)));
+          return [...prev, ...incoming.filter((t) => !seen.has(String(t.id)))];
+        });
+        setPage(nextPage);
+        const pag = data.pagination;
+        setHasMoreThreads(
+          Boolean(
+            incoming.length > 0 &&
+              pag &&
+              ((typeof pag.hasMore === 'boolean' && pag.hasMore) ||
+                (typeof pag.totalPages === 'number' && nextPage < pag.totalPages))
+          )
+        );
+      }
+    } catch {
+      if (onShowToast) onShowToast('Không thể tải thêm bài viết lúc này.', 'error');
+    } finally {
+      setLoadingMoreThreads(false);
+    }
+  }, [loadingMoreThreads, hasMoreThreads, page, sortBy, debouncedSearch, forumCategory, onShowToast]);
+
+  const handleThreadUpdated = useCallback(
+    (updated: ForumThread) => {
+      setThreads((prev) =>
+        sortPinnedFirst(
+          prev.map((t) =>
+            String(t.id) === String(updated.id)
+              ? { ...t, ...updated, userReaction: updated.userReaction !== undefined ? updated.userReaction : t.userReaction }
+              : t
+          )
+        )
+      );
+    },
+    [sortPinnedFirst]
+  );
+
+  const handleThreadDeleted = useCallback((threadId: string) => {
+    setThreads((prev) => prev.filter((t) => String(t.id) !== String(threadId)));
   }, []);
 
   // Real-time socket listeners
@@ -220,14 +340,65 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
       );
     };
 
+    const handleSocketThreadUpdated = (data: { threadId?: string; thread?: ForumThreadWithTrail }) => {
+      if (!data?.thread) return;
+      const incoming = data.thread;
+      setThreads((prev) =>
+        sortPinnedFirst(
+          prev.map((t) =>
+            String(t.id) === String(data.threadId || incoming.id)
+              ? { ...t, ...incoming, userReaction: t.userReaction }
+              : t
+          )
+        )
+      );
+    };
+
+    const handleSocketThreadDeleted = (data: { threadId?: string }) => {
+      if (!data?.threadId) return;
+      setThreads((prev) => prev.filter((t) => String(t.id) !== String(data.threadId)));
+    };
+
+    const handleSocketThreadPinned = (data: { threadId?: string; isPinned?: boolean }) => {
+      if (!data?.threadId) return;
+      setThreads((prev) =>
+        sortPinnedFirst(
+          prev.map((t) =>
+            String(t.id) === String(data.threadId)
+              ? { ...t, isPinned: Boolean(data.isPinned) }
+              : t
+          )
+        )
+      );
+    };
+
+    const handleSocketThreadLocked = (data: { threadId?: string; isLocked?: boolean }) => {
+      if (!data?.threadId) return;
+      setThreads((prev) =>
+        prev.map((t) =>
+          String(t.id) === String(data.threadId)
+            ? { ...t, isLocked: Boolean(data.isLocked) }
+            : t
+        )
+      );
+    };
+
     socket.on('newComment', handleNewComment);
     socket.on('threadReactionUpdate', handleThreadReaction);
+    socket.on('threadUpdated', handleSocketThreadUpdated);
+    socket.on('threadDeleted', handleSocketThreadDeleted);
+    socket.on('threadPinned', handleSocketThreadPinned);
+    socket.on('threadLocked', handleSocketThreadLocked);
 
     return () => {
       socket.off('newComment', handleNewComment);
       socket.off('threadReactionUpdate', handleThreadReaction);
+      socket.off('threadUpdated', handleSocketThreadUpdated);
+      socket.off('threadDeleted', handleSocketThreadDeleted);
+      socket.off('threadPinned', handleSocketThreadPinned);
+      socket.off('threadLocked', handleSocketThreadLocked);
     };
-  }, [socket]);
+  }, [socket, sortPinnedFirst]);
 
   const handleCreateThread = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -259,12 +430,18 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
         }
       }
 
+      const chosenTrail = newTrailId
+        ? availableTrails.find((t) => t.id === newTrailId || (t as Trail & { _id?: string })._id === newTrailId)
+        : null;
+
       const res = await fetch('/api/forum', {
         method: 'POST',
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           title: newTitle.trim(),
           category: newCategory,
+          trailId: chosenTrail ? chosenTrail.id : '',
+          trailName: chosenTrail ? chosenTrail.name : '',
           content: newContent.trim(),
           images: uploadedImages,
         }),
@@ -272,9 +449,10 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
 
       const data = await res.json();
       if (res.ok && data.success) {
-        setThreads((prev) => [data.data, ...prev]);
+        setThreads((prev) => sortPinnedFirst([data.data, ...prev.filter((t) => String(t.id) !== String(data.data?.id))]));
         setIsNewThreadOpen(false);
         setNewTitle('');
+        setNewTrailId('');
         setNewContent('');
         setNewImages([]);
         setImageUrlInput('');
@@ -363,6 +541,18 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
             threads={threads}
             isLoadingThreads={loadingThreads}
             currentUser={currentUser}
+            trails={availableTrails}
+            onRequireLogin={onRequireLogin}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            sortBy={sortBy}
+            onSortChange={setSortBy}
+            onForumCategoryChange={setForumCategory}
+            hasMoreThreads={hasMoreThreads}
+            loadingMoreThreads={loadingMoreThreads}
+            onLoadMoreThreads={handleLoadMoreThreads}
+            onThreadUpdated={handleThreadUpdated}
+            onThreadDeleted={handleThreadDeleted}
             onOpenNewThreadModal={() => {
               const token = localStorage.getItem('lost_token');
               if (!currentUser && !token) {
@@ -460,25 +650,45 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
               Top Thành Viên Uy Tín
             </h3>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               {topTrekkers.length === 0 ? (
                 <div style={{ fontSize: '0.76rem', color: 'var(--color-text-dim)', textAlign: 'center', padding: '12px 0' }}>
                   Chưa có dữ liệu thành viên
                 </div>
               ) : (
                 topTrekkers.map((user, idx) => (
-                  <div
+                  <button
                     key={user._id}
+                    type="button"
+                    onClick={() =>
+                      setSidebarAuthor({
+                        userId: user._id,
+                        name: user.fullName,
+                        avatar: user.avatarUrl || '',
+                        reputationScore: user.reputationScore,
+                        badges: user.badges,
+                        role: user.role,
+                      })
+                    }
+                    title={`Xem hồ sơ ${user.fullName}`}
                     style={{
+                      width: '100%',
                       display: 'flex',
                       alignItems: 'center',
                       gap: 8,
-                      padding: '6px 0',
+                      padding: '7px 4px',
+                      background: 'none',
+                      border: 'none',
                       borderBottom: idx < topTrekkers.length - 1 ? '1px solid var(--color-border)' : 'none',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      fontFamily: 'var(--font-family)',
                     }}
                   >
                     {user.avatarUrl ? (
                       <img
+                        loading="lazy"
+                        decoding="async"
                         src={user.avatarUrl}
                         alt={user.fullName}
                         referrerPolicy="no-referrer"
@@ -520,13 +730,20 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
                         <span>{user.reputationScore} Điểm uy tín</span>
                       </div>
                     </div>
-                  </div>
+                  </button>
                 ))
               )}
             </div>
           </div>
         </div>
       </div>
+
+      <AuthorProfileModal
+        author={sidebarAuthor}
+        currentUser={currentUser}
+        onClose={() => setSidebarAuthor(null)}
+        onRequireLogin={onRequireLogin}
+      />
 
       {/* Create New Thread Modal */}
       {isNewThreadOpen && createPortal(
@@ -539,8 +756,6 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
             position: 'fixed',
             inset: 0,
             background: 'var(--overlay-bg)',
-            backdropFilter: 'blur(12px)',
-            WebkitBackdropFilter: 'blur(12px)',
             zIndex: 'var(--z-modal, 3000)',
             display: 'flex',
             alignItems: 'center',
@@ -616,21 +831,45 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
                 />
               </div>
 
-              <div className="form-group" style={{ marginBottom: 14 }}>
-                <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 6, display: 'block', color: 'var(--color-text-main)' }}>
-                  Chuyên mục
-                </label>
-                <select
-                  className="form-select"
-                  value={newCategory}
-                  onChange={(e) => setNewCategory(e.target.value as ForumThread['category'])}
-                  style={{ width: '100%', padding: '9px 12px', borderRadius: 4, fontSize: '0.84rem', background: 'var(--color-bg-main)', color: 'var(--color-text-main)', border: '1px solid var(--color-border)' }}
-                >
-                  <option value="Kinh Nghiệm">Cẩm nang &amp; Kinh nghiệm</option>
-                  <option value="Hỏi Đáp">Hỏi đáp kỹ thuật</option>
-                  <option value="Tìm Đồng Đội">Ghép đoàn &amp; Tìm bạn</option>
-                  <option value="Cảnh Báo">Radar cảnh báo an toàn</option>
-                </select>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 14 }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 6, display: 'block', color: 'var(--color-text-main)' }}>
+                    Chuyên mục
+                  </label>
+                  <select
+                    className="form-select"
+                    value={newCategory}
+                    onChange={(e) => setNewCategory(e.target.value as ForumThread['category'])}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 4, fontSize: '0.84rem', background: 'var(--color-bg-main)', color: 'var(--color-text-main)', border: '1px solid var(--color-border)' }}
+                  >
+                    <option value="Kinh Nghiệm">Cẩm nang &amp; Kinh nghiệm</option>
+                    <option value="Hỏi Đáp">Hỏi đáp kỹ thuật</option>
+                    <option value="Tìm Đồng Đội">Tìm đồng đội</option>
+                    <option value="Cảnh Báo">Radar cảnh báo an toàn</option>
+                  </select>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label" style={{ fontSize: '0.8rem', fontWeight: 700, marginBottom: 6, display: 'block', color: 'var(--color-text-main)' }}>
+                    Cung đường liên quan (tùy chọn)
+                  </label>
+                  <select
+                    className="form-select"
+                    value={newTrailId}
+                    onChange={(e) => setNewTrailId(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 4, fontSize: '0.84rem', background: 'var(--color-bg-main)', color: 'var(--color-text-main)', border: '1px solid var(--color-border)' }}
+                  >
+                    <option value="">-- Không gắn cung cụ thể --</option>
+                    {availableTrails.map((t) => {
+                      const tid = t.id || (t as Trail & { _id?: string })._id || '';
+                      return (
+                        <option key={tid} value={tid}>
+                          {t.name} ({t.province})
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
               </div>
 
               <div className="form-group" style={{ marginBottom: 20 }}>
@@ -676,6 +915,8 @@ export const TrekForumView: React.FC<TrekForumViewProps> = ({
                         }}
                       >
                         <img
+                          loading="lazy"
+                          decoding="async"
                           src={imgSrc}
                           alt={`Ảnh đính kèm ${idx + 1}`}
                           style={{ width: '100%', height: '100%', objectFit: 'cover' }}

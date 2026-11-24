@@ -18,7 +18,12 @@ interface ModalProps {
 }
 
 type TrailWithMongoId = Trail & { _id?: string };
-type IncidentWithMeta = Incident & { _id?: string; active?: boolean };
+type IncidentWithMeta = Incident & { _id?: string; active?: boolean; isSynthetic?: boolean };
+
+function isSyntheticTelemetryIncident(inc: IncidentWithMeta): boolean {
+  const id = String(inc.id || '');
+  return Boolean(inc.isSynthetic || id.startsWith('weather-live-') || id.startsWith('nasa-'));
+}
 
 function formatIncidentDate(raw?: string): string {
   if (!raw) return 'Gần đây';
@@ -113,6 +118,7 @@ const IncidentReportModalInner: React.FC<ModalProps> = ({
       ? incidents.find((i) => {
           const incExt = i as IncidentWithMeta;
           if (i.resolved || incExt.active === false) return false;
+          if (isSyntheticTelemetryIncident(incExt)) return false;
           if (selectedTrailId) {
             const matchId = i.trailId === selectedTrailId || incExt._id === selectedTrailId;
             const matchName = currentSelectedTrail && searchMatchVietnamese(i.trailName, currentSelectedTrail.name);
@@ -229,8 +235,6 @@ const IncidentReportModalInner: React.FC<ModalProps> = ({
         position: 'fixed',
         inset: 0,
         background: 'var(--overlay-bg)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
         zIndex: 'var(--z-modal, 3000)',
         display: 'flex',
         alignItems: 'center',

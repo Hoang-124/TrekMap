@@ -10,6 +10,7 @@ import {
   IconCheck,
   IconX,
   IconShieldCheck,
+  IconTrash,
 } from '../common/SvgIcons.js';
 
 type TrailWithMongoId = Trail & { _id?: string };
@@ -37,6 +38,8 @@ export interface RawCheckinInput {
   notes?: string;
   weatherObserved?: string;
   packWeightKg?: number;
+  companionsCount?: number;
+  isPublic?: boolean;
 }
 
 export type ProfileAnalyticsUser = (Partial<UserProfile> & { _id?: string }) | null;
@@ -77,6 +80,7 @@ export interface ProfileAnalyticsPanelProps {
   currentUser: ProfileAnalyticsUser;
   onSelectTrail?: (trail: Trail) => void;
   onShowToast?: (msg: string, type?: 'success' | 'error' | 'info') => void;
+  onLogbookChanged?: () => void;
 }
 
 interface MonthlyPoint {
@@ -103,6 +107,8 @@ interface LogbookItem {
   notes: string;
   weatherObserved: string;
   packWeightKg?: number;
+  companionsCount: number;
+  isPublic: boolean;
   isServerEntry: boolean;
 }
 
@@ -239,6 +245,7 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
   currentUser,
   onSelectTrail,
   onShowToast,
+  onLogbookChanged,
 }) => {
   const userId = String(currentUser?.id || currentUser?._id || '');
   const hasStoredToken = typeof window !== 'undefined' && Boolean(localStorage.getItem('lost_token'));
@@ -247,11 +254,20 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
   const [loading, setLoading] = useState<boolean>(() => Boolean(hasStoredToken && userId));
   const [hoveredMonthIdx, setHoveredMonthIdx] = useState<number | null>(null);
   const [logRegionFilter, setLogRegionFilter] = useState<string>('all');
+  const [logYearFilter, setLogYearFilter] = useState<string>('all');
+  const [logVerifiedOnly, setLogVerifiedOnly] = useState<boolean>(false);
   const [editingLogId, setEditingLogId] = useState<string | null>(null);
   const [editNotes, setEditNotes] = useState('');
   const [editWeather, setEditWeather] = useState('');
   const [editPackKg, setEditPackKg] = useState('');
+  const [editCompletionHours, setEditCompletionHours] = useState('');
+  const [editDistanceKm, setEditDistanceKm] = useState('');
+  const [editElevationGainM, setEditElevationGainM] = useState('');
+  const [editCompanionsCount, setEditCompanionsCount] = useState('1');
+  const [editIsPublic, setEditIsPublic] = useState(false);
   const [savingLog, setSavingLog] = useState(false);
+  const [confirmDeleteLogId, setConfirmDeleteLogId] = useState<string | null>(null);
+  const [deletingLogId, setDeletingLogId] = useState<string | null>(null);
 
   const [annualGoals, setAnnualGoals] = useState<AnnualTrekGoals>(
     () => readAnnualTrekGoals(userId).goals
@@ -466,6 +482,11 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
           notes: item.notes || '',
           weatherObserved: item.weatherObserved || '',
           packWeightKg: item.packWeightKg !== undefined ? Number(item.packWeightKg) : undefined,
+          companionsCount:
+            item.companionsCount !== undefined && Number.isFinite(Number(item.companionsCount))
+              ? Math.max(1, Math.round(Number(item.companionsCount)))
+              : 1,
+          isPublic: Boolean(item.isPublic),
           isServerEntry: Boolean(serverLogs && item._id),
         };
       })
@@ -744,11 +765,36 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
     }
   };
 
+  const refreshServerAnalytics = async () => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('lost_token') : null;
+    if (!token || !userId) return;
+    try {
+      const r = await fetch(`${API_BASE_URL}/logbook/analytics/me`, { headers: getApiHeaders() });
+      if (r.ok) {
+        const json = (await r.json().catch(() => null)) as {
+          success?: boolean;
+          data?: ServerAnalyticsPayload;
+        } | null;
+        if (json?.success && json.data) {
+          setServerAnalytics(json.data);
+        }
+      }
+    } catch {
+      // Ignore analytics refresh error
+    }
+  };
+
   const handleStartEdit = (entry: LogbookItem) => {
+    setConfirmDeleteLogId(null);
     setEditingLogId(entry.id);
     setEditNotes(entry.notes);
     setEditWeather(entry.weatherObserved);
     setEditPackKg(entry.packWeightKg !== undefined ? String(entry.packWeightKg) : '');
+    setEditCompletionHours(entry.completionTimeHours > 0 ? String(entry.completionTimeHours) : '');
+    setEditDistanceKm(entry.distanceKm > 0 ? String(entry.distanceKm) : '');
+    setEditElevationGainM(entry.elevationGainM >= 0 ? String(entry.elevationGainM) : '');
+    setEditCompanionsCount(String(entry.companionsCount || 1));
+    setEditIsPublic(entry.isPublic);
   };
 
   const handleSaveLogNote = async (entry: LogbookItem) => {
@@ -759,16 +805,59 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
       return;
     }
 
+    const payload: Record<string, unknown> = {
+      notes: editNotes.trim(),
+      weatherObserved: editWeather.trim(),
+      isPublic: editIsPublic,
+    };
+
+    if (editCompletionHours.trim() !== '') {
+      const hrs = Number(editCompletionHours);
+      if (!Number.isFinite(hrs) || hrs < 0.2 || hrs > 240) {
+        onShowToast?.('Thời gian hoàn thành phải nằm trong khoảng 0.2 – 240 giờ.', 'error');
+        return;
+      }
+      payload.completionTimeHours = hrs;
+    }
+    if (editDistanceKm.trim() !== '') {
+      const km = Number(editDistanceKm);
+      if (!Number.isFinite(km) || km < 0 || km > 500) {
+        onShowToast?.('Quãng đường ghi nhận phải nằm trong khoảng 0 – 500 km.', 'error');
+        return;
+      }
+      payload.distanceRecordedKm = Math.round(km * 100) / 100;
+    }
+    if (editElevationGainM.trim() !== '') {
+      const gain = Number(editElevationGainM);
+      if (!Number.isFinite(gain) || gain < 0 || gain > 30000) {
+        onShowToast?.('Tổng độ cao nâng phải nằm trong khoảng 0 – 30.000 m.', 'error');
+        return;
+      }
+      payload.elevationGainRecordedM = Math.round(gain);
+    }
+    if (editCompanionsCount.trim() !== '') {
+      const comp = Math.round(Number(editCompanionsCount));
+      if (!Number.isFinite(comp) || comp < 1 || comp > 100) {
+        onShowToast?.('Số thành viên đồng hành phải từ 1 đến 100 người.', 'error');
+        return;
+      }
+      payload.companionsCount = comp;
+    }
+    if (editPackKg.trim() !== '') {
+      const kg = Number(editPackKg);
+      if (!Number.isFinite(kg) || kg < 0 || kg > 60) {
+        onShowToast?.('Trọng lượng balo phải từ 0 đến 60 kg.', 'error');
+        return;
+      }
+      payload.packWeightKg = Math.round(kg * 10) / 10;
+    }
+
     setSavingLog(true);
     try {
       const res = await fetch(`/api/logbook/${encodeURIComponent(entry.id)}`, {
         method: 'PATCH',
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          notes: editNotes.trim(),
-          weatherObserved: editWeather.trim(),
-          ...(editPackKg !== '' ? { packWeightKg: Math.max(0, Number(editPackKg) || 0) } : {}),
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (res.ok && data.success) {
@@ -779,20 +868,69 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                   ...item,
                   notes: editNotes.trim(),
                   weatherObserved: editWeather.trim(),
-                  packWeightKg: editPackKg !== '' ? Number(editPackKg) || 0 : item.packWeightKg,
+                  isPublic: editIsPublic,
+                  ...(payload.completionTimeHours !== undefined
+                    ? { completionTimeHours: Number(payload.completionTimeHours) }
+                    : {}),
+                  ...(payload.distanceRecordedKm !== undefined
+                    ? {
+                        distanceRecordedKm: Number(payload.distanceRecordedKm),
+                        effectiveDistanceKm: Number(payload.distanceRecordedKm),
+                      }
+                    : {}),
+                  ...(payload.elevationGainRecordedM !== undefined
+                    ? {
+                        elevationGainRecordedM: Number(payload.elevationGainRecordedM),
+                        effectiveElevationGainM: Number(payload.elevationGainRecordedM),
+                      }
+                    : {}),
+                  ...(payload.companionsCount !== undefined
+                    ? { companionsCount: Number(payload.companionsCount) }
+                    : {}),
+                  ...(payload.packWeightKg !== undefined
+                    ? { packWeightKg: Number(payload.packWeightKg) }
+                    : {}),
                 }
               : item
           )
         );
-        onShowToast?.('Đã lưu ghi chú nhật ký hành trình!', 'success');
+        onShowToast?.('Đã lưu thông số & ghi chú nhật ký hành trình!', 'success');
         setEditingLogId(null);
+        void refreshServerAnalytics();
+        onLogbookChanged?.();
       } else {
-        onShowToast?.(data.message || 'Không thể cập nhật ghi chú nhật ký.', 'error');
+        onShowToast?.(data.message || 'Không thể cập nhật nhật ký hành trình.', 'error');
       }
     } catch {
       onShowToast?.('Lỗi kết nối khi lưu nhật ký.', 'error');
     } finally {
       setSavingLog(false);
+    }
+  };
+
+  const handleDeleteLogEntry = async (entry: LogbookItem) => {
+    if (deletingLogId || !entry.isServerEntry) return;
+    setDeletingLogId(entry.id);
+    try {
+      const res = await fetch(`/api/logbook/${encodeURIComponent(entry.id)}`, {
+        method: 'DELETE',
+        headers: getApiHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setServerLogs((prev) => (prev || []).filter((item) => String(item._id) !== entry.id));
+        if (editingLogId === entry.id) setEditingLogId(null);
+        setConfirmDeleteLogId(null);
+        onShowToast?.(data.message || 'Đã xóa bản ghi nhật ký hành trình.', 'success');
+        void refreshServerAnalytics();
+        onLogbookChanged?.();
+      } else {
+        onShowToast?.(data.message || 'Không thể xóa bản ghi nhật ký này.', 'error');
+      }
+    } catch {
+      onShowToast?.('Lỗi kết nối khi xóa bản ghi nhật ký.', 'error');
+    } finally {
+      setDeletingLogId(null);
     }
   };
 
@@ -856,7 +994,30 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
   const maxGain = Math.max(500, ...monthlySeries.map((m) => m.gainM));
   const activeHoverPoint = hoveredMonthIdx !== null ? monthlySeries[hoveredMonthIdx] : null;
 
-  const filteredLogs = logEntries.filter((e) => logRegionFilter === 'all' || e.region === logRegionFilter);
+  const availableYears = useMemo(() => {
+    const years = new Set<string>();
+    logEntries.forEach((entry) => {
+      const d = new Date(entry.checkinDate);
+      if (!Number.isNaN(d.getTime())) {
+        years.add(String(d.getFullYear()));
+      }
+    });
+    return Array.from(years).sort((a, b) => Number(b) - Number(a));
+  }, [logEntries]);
+
+  const filteredLogs = useMemo(
+    () =>
+      logEntries.filter((e) => {
+        if (logRegionFilter !== 'all' && e.region !== logRegionFilter) return false;
+        if (logYearFilter !== 'all') {
+          const d = new Date(e.checkinDate);
+          if (Number.isNaN(d.getTime()) || String(d.getFullYear()) !== logYearFilter) return false;
+        }
+        if (logVerifiedOnly && !e.verifiedBadge) return false;
+        return true;
+      }),
+    [logEntries, logRegionFilter, logYearFilter, logVerifiedOnly]
+  );
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18, animation: 'fadeIn 0.25s ease' }}>
@@ -1541,7 +1702,7 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
         </div>
       </div>
 
-      {/* 4. Personal Trek Logbook with Inline Note Editing & GPX Export */}
+      {/* 4. Personal Trek Logbook with Inline Editing, Delete & GPX Export */}
       <div className="card" style={{ padding: 18 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
           <div>
@@ -1549,22 +1710,65 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
               Nhật Ký Hành Trình Cá Nhân ({filteredLogs.length})
             </h3>
             <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-              Ghi chú thời tiết thực địa, trọng lượng balo và tải lại tracklog GPX từng chuyến đi.
+              Ghi chú thời tiết thực địa, trọng lượng balo, thông số hành trình và tải lại tracklog GPX từng chuyến đi.
             </div>
           </div>
 
-          <select
-            className="form-select"
-            value={logRegionFilter}
-            onChange={(e) => setLogRegionFilter(e.target.value)}
-            style={{ fontSize: '0.78rem', padding: '5px 10px' }}
-            aria-label="Lọc nhật ký theo vùng miền"
-          >
-            <option value="all">Tất cả vùng miền</option>
-            <option value="Miền Bắc">Miền Bắc</option>
-            <option value="Miền Trung">Miền Trung</option>
-            <option value="Miền Nam">Miền Nam</option>
-          </select>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <select
+              className="form-select"
+              value={logRegionFilter}
+              onChange={(e) => setLogRegionFilter(e.target.value)}
+              style={{ fontSize: '0.78rem', padding: '5px 10px' }}
+              aria-label="Lọc nhật ký theo vùng miền"
+            >
+              <option value="all">Tất cả vùng miền</option>
+              <option value="Miền Bắc">Miền Bắc</option>
+              <option value="Miền Trung">Miền Trung</option>
+              <option value="Miền Nam">Miền Nam</option>
+            </select>
+
+            <select
+              className="form-select"
+              value={logYearFilter}
+              onChange={(e) => setLogYearFilter(e.target.value)}
+              style={{ fontSize: '0.78rem', padding: '5px 10px', fontVariantNumeric: 'tabular-nums' }}
+              aria-label="Lọc nhật ký theo năm"
+            >
+              <option value="all">Tất cả các năm</option>
+              {availableYears.map((yr) => (
+                <option key={yr} value={yr}>
+                  Năm {yr}
+                </option>
+              ))}
+            </select>
+
+            <button
+              type="button"
+              onClick={() => setLogVerifiedOnly((prev) => !prev)}
+              aria-pressed={logVerifiedOnly}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+                padding: '5px 10px',
+                borderRadius: 4,
+                fontSize: '0.76rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+                border: logVerifiedOnly
+                  ? '1px solid var(--color-primary)'
+                  : '1px solid var(--color-border)',
+                background: logVerifiedOnly
+                  ? 'color-mix(in srgb, var(--color-primary) 14%, transparent)'
+                  : 'var(--color-bg-main)',
+                color: logVerifiedOnly ? 'var(--color-primary)' : 'var(--color-text-muted)',
+              }}
+            >
+              <IconShieldCheck size={13} color={logVerifiedOnly ? 'var(--color-primary)' : 'currentColor'} />
+              <span>Chỉ GPS xác thực</span>
+            </button>
+          </div>
         </div>
 
         {loading && filteredLogs.length === 0 ? (
@@ -1573,12 +1777,32 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
           </div>
         ) : filteredLogs.length === 0 ? (
           <div style={{ padding: 28, textAlign: 'center', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)', color: 'var(--color-text-muted)', fontSize: '0.82rem' }}>
-            Chưa có nhật ký hành trình nào. Hãy check-in cung đường vừa chinh phục để hệ thống tự động lập biểu đồ phân tích!
+            {logEntries.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+                <span>Không có nhật ký nào khớp bộ lọc hiện tại.</span>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={() => {
+                    setLogRegionFilter('all');
+                    setLogYearFilter('all');
+                    setLogVerifiedOnly(false);
+                  }}
+                  style={{ fontSize: '0.74rem', padding: '4px 12px' }}
+                >
+                  Đặt lại bộ lọc
+                </button>
+              </div>
+            ) : (
+              'Chưa có nhật ký hành trình nào. Hãy check-in cung đường vừa chinh phục để hệ thống tự động lập biểu đồ phân tích!'
+            )}
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {filteredLogs.map((entry) => {
               const isEditingThis = editingLogId === entry.id;
+              const isConfirmingDelete = confirmDeleteLogId === entry.id;
+              const isDeletingThis = deletingLogId === entry.id;
               const matchedTrail = trailLookup.get(entry.trailId);
               return (
                 <div
@@ -1586,7 +1810,11 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                   style={{
                     padding: '12px 14px',
                     background: 'var(--color-bg-main)',
-                    border: '1px solid var(--color-border)',
+                    border: isConfirmingDelete
+                      ? '1px solid var(--color-error)'
+                      : isEditingThis
+                        ? '1px solid var(--color-primary)'
+                        : '1px solid var(--color-border)',
                     borderRadius: 4,
                     display: 'flex',
                     flexDirection: 'column',
@@ -1616,32 +1844,101 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                           </span>
                         )}
                         <span className="badge badge-cloud">{entry.region}</span>
+                        {entry.isServerEntry && (
+                          <span className={entry.isPublic ? 'badge badge-sky' : 'badge badge-cloud'} style={{ fontSize: '0.66rem' }}>
+                            {entry.isPublic ? 'Công khai' : 'Riêng tư'}
+                          </span>
+                        )}
                       </div>
                       <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', marginTop: 3, fontVariantNumeric: 'tabular-nums' }}>
                         {new Date(entry.checkinDate).toLocaleDateString('vi-VN')} · {entry.distanceKm} km · +{entry.elevationGainM}m · Đỉnh {entry.maxAltitudeM}m · {entry.completionTimeHours}h
+                        {entry.companionsCount > 1 ? ` · ${entry.companionsCount} người` : ''}
                         {entry.packWeightKg !== undefined ? ` · Balo ${entry.packWeightKg}kg` : ''}
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', gap: 6 }}>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                       <button
                         type="button"
                         className="btn btn-outline"
+                        disabled={isDeletingThis}
                         onClick={() => handleStartEdit(entry)}
                         style={{ padding: '4px 9px', fontSize: '0.72rem' }}
                       >
-                        <IconEdit size={12} /> Ghi chú
+                        <IconEdit size={12} /> Chỉnh sửa
                       </button>
                       <button
                         type="button"
                         className="btn btn-outline"
+                        disabled={isDeletingThis}
                         onClick={() => void handleDownloadLogGpx(entry)}
                         style={{ padding: '4px 9px', fontSize: '0.72rem' }}
                       >
                         <IconDownload size={12} /> GPX
                       </button>
+                      {entry.isServerEntry && (
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          disabled={isDeletingThis}
+                          onClick={() => {
+                            setEditingLogId(null);
+                            setConfirmDeleteLogId(isConfirmingDelete ? null : entry.id);
+                          }}
+                          style={{
+                            padding: '4px 9px',
+                            fontSize: '0.72rem',
+                            color: 'var(--color-error-text, var(--color-error))',
+                            borderColor: 'color-mix(in srgb, var(--color-error) 38%, transparent)',
+                          }}
+                        >
+                          <IconTrash size={12} /> Xóa
+                        </button>
+                      )}
                     </div>
                   </div>
+
+                  {/* Inline Confirm Bar for Deleting Logbook Entry (zero window.confirm) */}
+                  {isConfirmingDelete && (
+                    <div
+                      role="alert"
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: 10,
+                        padding: '9px 12px',
+                        borderRadius: 4,
+                        background: 'color-mix(in srgb, var(--color-error) 10%, var(--color-bg-card))',
+                        border: '1px solid color-mix(in srgb, var(--color-error) 45%, transparent)',
+                      }}
+                    >
+                      <span style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--color-error-text, var(--color-error))' }}>
+                        Xác nhận xóa vĩnh viễn bản ghi nhật ký &ldquo;{entry.trailName}&rdquo;? Thao tác này không thể hoàn tác.
+                      </span>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          disabled={isDeletingThis}
+                          onClick={() => setConfirmDeleteLogId(null)}
+                          style={{ padding: '4px 10px', fontSize: '0.72rem' }}
+                        >
+                          Hủy
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-danger"
+                          disabled={isDeletingThis}
+                          onClick={() => void handleDeleteLogEntry(entry)}
+                          style={{ padding: '4px 12px', fontSize: '0.72rem', fontWeight: 800 }}
+                        >
+                          <IconTrash size={12} /> {isDeletingThis ? 'Đang xóa...' : 'Xác nhận xóa'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {!isEditingThis && (entry.notes || entry.weatherObserved) && (
                     <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', background: 'var(--color-bg-card)', padding: '8px 10px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
@@ -1655,34 +1952,99 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                   )}
 
                   {isEditingThis && (
-                    <div style={{ background: 'var(--color-bg-card)', padding: 12, borderRadius: 4, border: '1px solid var(--color-primary)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
+                    <div style={{ background: 'var(--color-bg-card)', padding: 12, borderRadius: 4, border: '1px solid var(--color-primary)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+                        <div>
+                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
+                            Thời gian hoàn thành (giờ)
+                          </label>
+                          <input
+                            type="number"
+                            min={0.2}
+                            max={240}
+                            step={0.5}
+                            className="form-input"
+                            placeholder="VD: 8.5"
+                            value={editCompletionHours}
+                            onChange={(e) => setEditCompletionHours(e.target.value)}
+                            style={{ width: '100%', padding: '6px 10px', fontSize: '0.8rem', fontVariantNumeric: 'tabular-nums' }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
+                            Quãng đường ghi nhận (km)
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={500}
+                            step={0.1}
+                            className="form-input"
+                            placeholder="VD: 22.5"
+                            value={editDistanceKm}
+                            onChange={(e) => setEditDistanceKm(e.target.value)}
+                            style={{ width: '100%', padding: '6px 10px', fontSize: '0.8rem', fontVariantNumeric: 'tabular-nums' }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
+                            Độ cao nâng tích lũy (+m)
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={30000}
+                            step={10}
+                            className="form-input"
+                            placeholder="VD: 1450"
+                            value={editElevationGainM}
+                            onChange={(e) => setEditElevationGainM(e.target.value)}
+                            style={{ width: '100%', padding: '6px 10px', fontSize: '0.8rem', fontVariantNumeric: 'tabular-nums' }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
+                            Số người đồng hành
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={100}
+                            step={1}
+                            className="form-input"
+                            placeholder="VD: 4"
+                            value={editCompanionsCount}
+                            onChange={(e) => setEditCompanionsCount(e.target.value)}
+                            style={{ width: '100%', padding: '6px 10px', fontSize: '0.8rem', fontVariantNumeric: 'tabular-nums' }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
+                            Trọng lượng balo (0–60 kg)
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={60}
+                            step={0.5}
+                            className="form-input"
+                            placeholder="VD: 9.5"
+                            value={editPackKg}
+                            onChange={(e) => setEditPackKg(e.target.value)}
+                            style={{ width: '100%', padding: '6px 10px', fontSize: '0.8rem', fontVariantNumeric: 'tabular-nums' }}
+                          />
+                        </div>
                         <div>
                           <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
                             Thời tiết ghi nhận
                           </label>
                           <input
                             type="text"
+                            maxLength={160}
                             className="form-input"
                             placeholder="VD: Nắng nhẹ, biển mây dày lúc 5h30"
                             value={editWeather}
                             onChange={(e) => setEditWeather(e.target.value)}
-                            style={{ width: '100%', padding: '6px 10px', fontSize: '0.8rem' }}
-                          />
-                        </div>
-                        <div>
-                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
-                            Trọng lượng balo (kg)
-                          </label>
-                          <input
-                            type="number"
-                            min={0}
-                            max={40}
-                            step={0.5}
-                            className="form-input"
-                            placeholder="VD: 9.5"
-                            value={editPackKg}
-                            onChange={(e) => setEditPackKg(e.target.value)}
                             style={{ width: '100%', padding: '6px 10px', fontSize: '0.8rem' }}
                           />
                         </div>
@@ -1694,12 +2056,33 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                         <textarea
                           className="form-textarea"
                           rows={2}
+                          maxLength={1500}
                           placeholder="Ghi lại trạng thái đường mòn, nguồn nước, kinh nghiệm cho chuyến sau..."
                           value={editNotes}
                           onChange={(e) => setEditNotes(e.target.value)}
                           style={{ width: '100%', padding: '6px 10px', fontSize: '0.8rem' }}
                         />
                       </div>
+                      <label
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          fontSize: '0.76rem',
+                          fontWeight: 600,
+                          color: 'var(--color-text-main)',
+                          cursor: 'pointer',
+                          userSelect: 'none',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={editIsPublic}
+                          onChange={(e) => setEditIsPublic(e.target.checked)}
+                          style={{ accentColor: 'var(--color-primary)', width: 15, height: 15, cursor: 'pointer' }}
+                        />
+                        <span>Công khai nhật ký &amp; tracklog GPX này cho cộng đồng</span>
+                      </label>
                       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                         <button
                           type="button"
@@ -1717,7 +2100,7 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                           disabled={savingLog}
                           style={{ padding: '5px 12px', fontSize: '0.75rem' }}
                         >
-                          <IconCheck size={13} /> {savingLog ? 'Đang lưu...' : 'Lưu Ghi Chú'}
+                          <IconCheck size={13} /> {savingLog ? 'Đang lưu...' : 'Lưu Nhật Ký'}
                         </button>
                       </div>
                     </div>

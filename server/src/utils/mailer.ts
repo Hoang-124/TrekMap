@@ -87,7 +87,12 @@ const getTransporter = async (): Promise<nodemailer.Transporter> => {
   return transporterInitPromise;
 };
 
-export const sendAccountActivationEmail = async (toEmail: string, fullName: string, activationCode: string) => {
+export const sendAccountActivationEmail = async (
+  toEmail: string,
+  fullName: string,
+  activationCode: string,
+  activationToken?: string
+) => {
   try {
     const transporter = await getTransporter();
     const senderEmail =
@@ -99,6 +104,23 @@ export const sendAccountActivationEmail = async (toEmail: string, fullName: stri
     const safeName = escapeHtml(rawName);
     const safeEmail = escapeHtml(toEmail);
     const safeCode = escapeHtml(activationCode);
+
+    const clientUrl = (process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const cleanToken = typeof activationToken === 'string' ? activationToken.trim() : '';
+    const activationUrl = cleanToken ? `${clientUrl}/?activateToken=${encodeURIComponent(cleanToken)}` : '';
+    const safeActivationUrl = activationUrl ? escapeHtml(activationUrl) : '';
+
+    const activationButtonHtml = safeActivationUrl
+      ? `
+              <div style="margin: 24px 0 8px 0; text-align: center;">
+                <a href="${safeActivationUrl}" target="_blank" rel="noopener noreferrer" style="background-color: #059669; color: #ffffff; padding: 13px 28px; font-size: 14px; font-weight: 700; text-decoration: none; border-radius: 8px; display: inline-block;">
+                  Kích hoạt tài khoản ngay
+                </a>
+              </div>
+              <p style="font-size: 12px; color: #64748b; text-align: center; margin: 8px 0 0 0; word-break: break-all;">
+                Hoặc mở trực tiếp liên kết: <a href="${safeActivationUrl}" target="_blank" rel="noopener noreferrer" style="color: #38bdf8; text-decoration: underline;">${safeActivationUrl}</a>
+              </p>`
+      : '';
 
     const mailOptions = {
       from: `"LOST" <${senderEmail}>`,
@@ -117,14 +139,15 @@ export const sendAccountActivationEmail = async (toEmail: string, fullName: stri
                 Xin chào <strong style="color: #f1f5f9;">${safeName}</strong>,
               </p>
               <p style="font-size: 14px; color: #94a3b8; margin: 0 0 20px 0;">
-                Cảm ơn bạn đã đăng ký tài khoản với địa chỉ email <strong style="color: #10b981;">${safeEmail}</strong>. Vui lòng nhập mã xác thực 6 chữ số dưới đây vào ứng dụng để kích hoạt tài khoản của bạn:
+                Cảm ơn bạn đã đăng ký tài khoản với địa chỉ email <strong style="color: #10b981;">${safeEmail}</strong>. Vui lòng nhập mã xác thực 6 chữ số dưới đây vào ứng dụng${safeActivationUrl ? ' hoặc nhấn nút kích hoạt nhanh bên dưới' : ''} để kích hoạt tài khoản của bạn:
               </p>
               <div style="background-color: #0b1319; border: 1px dashed #10b981; border-radius: 10px; padding: 22px; text-align: center; margin: 24px 0;">
                 <div style="font-size: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600;">Mã kích hoạt tài khoản của bạn</div>
                 <div style="font-size: 34px; font-weight: 800; color: #10b981; letter-spacing: 8px; margin-top: 8px; font-family: monospace;">${safeCode}</div>
               </div>
+              ${activationButtonHtml}
               <p style="font-size: 13px; color: #64748b; margin: 24px 0 0 0; border-top: 1px solid #1a2634; padding-top: 16px;">
-                Mã xác thực này có hiệu lực trong vòng 15 phút. Nếu bạn không thực hiện yêu cầu này, bạn có thể an tâm bỏ qua email này.
+                Mã xác thực${safeActivationUrl ? ' và liên kết kích hoạt' : ''} này có hiệu lực trong vòng 15 phút. Nếu bạn không thực hiện yêu cầu này, bạn có thể an tâm bỏ qua email này.
               </p>
             </div>
             <div style="border-top: 1px solid #1e2d3d; padding-top: 24px; font-size: 12px; color: #475569; text-align: left;">

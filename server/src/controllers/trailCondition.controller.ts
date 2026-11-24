@@ -201,6 +201,94 @@ export const upvoteTrailCondition = async (req: AuthRequest, res: Response) => {
   }
 };
 
+// PATCH /api/trail-conditions/:id - Owner/Staff edit of status/condition, description, section, weatherNote, photos
+export const updateTrailCondition = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    const isStaff = req.user?.role === 'admin' || req.user?.role === 'moderator';
+    const conditionId = String(req.params.id || '').trim();
+
+    if (!userId || !isValidObjectId(userId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để chỉnh sửa báo cáo.' });
+    }
+    if (!isValidObjectId(conditionId)) {
+      return res.status(400).json({ success: false, message: 'Mã báo cáo không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const existing = await TrailConditionModel.findById(conditionId);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy báo cáo.' });
+    }
+    if (!isStaff && String(existing.userId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền chỉnh sửa báo cáo này.' });
+    }
+
+    const { status, condition, description, section, weatherNote, photos } = req.body || {};
+    const nextStatus = condition ?? status;
+
+    if (nextStatus !== undefined) {
+      if (typeof nextStatus !== 'string' || !VALID_CONDITIONS.has(nextStatus)) {
+        return res.status(400).json({ success: false, message: 'Trạng thái tình trạng đường không hợp lệ.' });
+      }
+      existing.condition = nextStatus as 'safe' | 'caution' | 'dangerous' | 'closed';
+    }
+
+    if (description !== undefined) {
+      if (typeof description !== 'string' || !description.trim()) {
+        return res.status(400).json({ success: false, message: 'Mô tả tình trạng đường không được để trống.' });
+      }
+      const cleanDesc = sanitizeInput(description).slice(0, 1500);
+      if (!cleanDesc.trim()) {
+        return res.status(400).json({ success: false, message: 'Mô tả tình trạng đường không hợp lệ.' });
+      }
+      if (containsProfanity(cleanDesc)) {
+        const matched = getProfanityMatch(cleanDesc);
+        return res.status(400).json({
+          success: false,
+          message: `Báo cáo chứa từ ngữ vi phạm quy chuẩn cộng đồng ("${matched}").`,
+        });
+      }
+      existing.description = cleanDesc;
+    }
+
+    if (section !== undefined) {
+      existing.section = sanitizeInput(String(section || 'Toàn tuyến')).slice(0, 120) || 'Toàn tuyến';
+    }
+
+    if (weatherNote !== undefined) {
+      existing.weatherNote = sanitizeInput(String(weatherNote || '')).slice(0, 300);
+    }
+
+    if (photos !== undefined) {
+      if (!Array.isArray(photos)) {
+        return res.status(400).json({ success: false, message: 'Danh sách ảnh đính kèm không hợp lệ.' });
+      }
+      existing.photos = photos.filter((u: unknown) => isSafeHttpUrl(u)).slice(0, 4);
+    }
+
+    await existing.save();
+
+    const populated = await TrailConditionModel.findById(existing._id)
+      .populate('userId', 'fullName avatarUrl reputationScore')
+      .lean();
+
+    invalidateCache('/api/trails');
+    await recordAuditLog(req, 'UPDATE_TRAIL_CONDITION', 'trail_conditions', `Cập nhật báo cáo tình trạng đường ${conditionId}`);
+
+    return res.json({
+      success: true,
+      message: 'Đã cập nhật báo cáo tình trạng đường thành công!',
+      data: formatConditionForViewer(populated || existing.toObject(), userId),
+    });
+  } catch (err) {
+    console.error('[Update Trail Condition Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi cập nhật báo cáo tình trạng.' });
+  }
+};
+
 // DELETE /api/trail-conditions/:conditionId & DELETE /api/trails/:id/conditions/:conditionId
 export const deleteTrailCondition = async (req: AuthRequest, res: Response) => {
   try {

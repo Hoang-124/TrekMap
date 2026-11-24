@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Trail } from '../../types.js';
 import { mockTrails } from '../../data/seedData.js';
 import { VIETNAM_RANGER_STATIONS } from '../../data/vietnamDirectory.js';
@@ -136,6 +136,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
   activeFilterCount = 0,
 }) => {
   const [activeIndex, setActiveIndex] = useState(0);
+  const [fadingOutIndex, setFadingOutIndex] = useState<number | null>(null);
   const [loadedSlides, setLoadedSlides] = useState<Set<number>>(() => new Set([0, 1]));
   const [isPeakListPaused, setIsPeakListPaused] = useState(false);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
@@ -150,11 +151,17 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
     height: 54,
     ready: false,
   });
+  const gliderRectRef = useRef<{ top: number; height: number; ready: boolean }>({
+    top: 0,
+    height: 54,
+    ready: false,
+  });
   const heroSectionRef = useRef<HTMLElement | null>(null);
   const peakBtnRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const peakStageRef = useRef<HTMLDivElement | null>(null);
   const savedQueryBeforeCloudRef = useRef<string>('');
   const blurTimeoutRef = useRef<number | null>(null);
+  const fadeOutTimerRef = useRef<number | null>(null);
   const catalogBaselineRef = useRef<{ totalTrails: number; totalKm: number; maxAltitude: number }>({
     ...INITIAL_CATALOG_BASELINE,
   });
@@ -164,7 +171,22 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
       if (blurTimeoutRef.current !== null) {
         window.clearTimeout(blurTimeoutRef.current);
       }
+      if (fadeOutTimerRef.current !== null) {
+        window.clearTimeout(fadeOutTimerRef.current);
+      }
     };
+  }, []);
+
+  const scheduleFadeOutClear = useCallback((prevIdx: number) => {
+    setFadingOutIndex(prevIdx);
+    if (fadeOutTimerRef.current !== null) {
+      window.clearTimeout(fadeOutTimerRef.current);
+    }
+    // Keep previous slide visible only for the 900ms CSS dissolve, then hide so GPU stops painting it
+    fadeOutTimerRef.current = window.setTimeout(() => {
+      fadeOutTimerRef.current = null;
+      setFadingOutIndex(null);
+    }, 960);
   }, []);
 
   // Pause Hero auto-scene transitions when scrolled off-screen or browser tab is hidden (saves CPU/GPU on weak devices)
@@ -193,30 +215,53 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
     };
   }, []);
 
-  // Measure active peak row so the sliding highlight frame glides smoothly down from peak to peak
+  // Measure active peak row in a single batched rAF with debounced resize & numeric equality guard
   useLayoutEffect(() => {
+    let rafId = 0;
+    let resizeDebounceId = 0;
+
     const syncGlider = () => {
+      rafId = 0;
       const btn = peakBtnRefs.current[activeIndex];
       if (!btn) return;
-      setGliderRect({
-        top: btn.offsetTop,
-        height: btn.offsetHeight,
-        ready: true,
-      });
+      const nextTop = Math.round(btn.offsetTop);
+      const nextHeight = Math.round(btn.offsetHeight);
+      const prev = gliderRectRef.current;
+      if (prev.ready && prev.top === nextTop && prev.height === nextHeight) {
+        return;
+      }
+      const next = { top: nextTop, height: nextHeight, ready: true };
+      gliderRectRef.current = next;
+      setGliderRect(next);
     };
-    syncGlider();
-    const rafId = window.requestAnimationFrame(syncGlider);
+
+    const scheduleSync = () => {
+      if (rafId) return;
+      rafId = window.requestAnimationFrame(syncGlider);
+    };
+
+    const scheduleDebouncedSync = () => {
+      if (resizeDebounceId) window.clearTimeout(resizeDebounceId);
+      resizeDebounceId = window.setTimeout(() => {
+        resizeDebounceId = 0;
+        scheduleSync();
+      }, 64);
+    };
+
+    scheduleSync();
+
     const stageEl = peakStageRef.current;
     let observer: ResizeObserver | null = null;
     if (stageEl && typeof ResizeObserver !== 'undefined') {
-      observer = new ResizeObserver(syncGlider);
+      observer = new ResizeObserver(scheduleDebouncedSync);
       observer.observe(stageEl);
     }
-    window.addEventListener('resize', syncGlider, { passive: true });
+    window.addEventListener('resize', scheduleDebouncedSync, { passive: true });
     return () => {
-      window.cancelAnimationFrame(rafId);
+      if (rafId) window.cancelAnimationFrame(rafId);
+      if (resizeDebounceId) window.clearTimeout(resizeDebounceId);
       observer?.disconnect();
-      window.removeEventListener('resize', syncGlider);
+      window.removeEventListener('resize', scheduleDebouncedSync);
     };
   }, [activeIndex]);
 
@@ -235,11 +280,12 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
         next.add(preloadIdx);
         return next;
       });
+      scheduleFadeOutClear(activeIndex);
       setActiveIndex(nextIdx);
     }, AUTO_STEP_MS);
 
     return () => window.clearTimeout(timerId);
-  }, [activeIndex, isPeakListPaused, isSearchFocused, isHeroVisible, isTabVisible]);
+  }, [activeIndex, isPeakListPaused, isSearchFocused, isHeroVisible, isTabVisible, scheduleFadeOutClear]);
 
   // Fetch live platform telemetry once on mount (instant fallback to trails prop prevents layout shift)
   useEffect(() => {
@@ -254,46 +300,74 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
     };
   }, []);
 
-  const handleSelectPeakSlide = (idx: number) => {
-    const preloadNext = (idx + 1) % SHOWCASE_PEAKS.length;
-    setActiveIndex(idx);
-    setLoadedSlides((prev) => {
-      if (prev.has(idx) && prev.has(preloadNext)) return prev;
-      const next = new Set(prev);
-      next.add(idx);
-      next.add(preloadNext);
-      return next;
-    });
-  };
+  const handleSelectPeakSlide = useCallback(
+    (idx: number) => {
+      if (idx === activeIndex) return;
+      const preloadNext = (idx + 1) % SHOWCASE_PEAKS.length;
+      scheduleFadeOutClear(activeIndex);
+      setActiveIndex(idx);
+      setLoadedSlides((prev) => {
+        if (prev.has(idx) && prev.has(preloadNext)) return prev;
+        const next = new Set(prev);
+        next.add(idx);
+        next.add(preloadNext);
+        return next;
+      });
+    },
+    [activeIndex, scheduleFadeOutClear]
+  );
 
   const activePeak = SHOWCASE_PEAKS[activeIndex] || SHOWCASE_PEAKS[0];
 
-  const resolvePeakTrail = (peak: HeroPeakShowcase): Trail | null => {
-    const list = Array.isArray(trails) && trails.length > 0 ? trails : mockTrails;
-    const byId = list.find((t) => t.id === peak.id);
-    if (byId) return byId;
-    const clean = peak.name.split('—')[0].trim().toLowerCase();
-    return (
-      list.find(
-        (t) =>
-          t.name.toLowerCase().includes(clean) ||
-          (t.altNames && t.altNames.some((a) => a.toLowerCase().includes(clean)))
-      ) || null
-    );
-  };
+  // O(1) precomputed peak -> Trail lookup instead of running 6+ linear scans per keystroke
+  const peakTrailMap = useMemo(() => {
+    const primaryList = Array.isArray(trails) && trails.length > 0 ? trails : mockTrails;
+    const findIn = (pool: Trail[], peak: HeroPeakShowcase) => {
+      const byId = pool.find((t) => t.id === peak.id);
+      if (byId) return byId;
+      const clean = peak.name.split('—')[0].trim().toLowerCase();
+      return (
+        pool.find(
+          (t) =>
+            t.name.toLowerCase().includes(clean) ||
+            (t.altNames && t.altNames.some((a) => a.toLowerCase().includes(clean)))
+        ) || null
+      );
+    };
+    const map = new Map<string, Trail | null>();
+    for (const peak of SHOWCASE_PEAKS) {
+      map.set(peak.key, findIn(primaryList, peak) || findIn(mockTrails, peak));
+    }
+    return map;
+  }, [trails]);
 
-  const activePeakMatched = resolvePeakTrail(activePeak);
+  const activePeakMatched = peakTrailMap.get(activePeak.key) || null;
   const activePeakElevationM = activePeakMatched?.maxAltitudeM || activePeak.elevationM;
 
-  const handleOpenActivePeak = () => {
-    const matched = resolvePeakTrail(activePeak);
+  const handleOpenActivePeak = useCallback(() => {
+    const matched = peakTrailMap.get(activePeak.key) || null;
     if (matched && onSelectTrail) {
       onSelectTrail(matched);
     } else {
       onSearchChange(activePeak.name.split('—')[0].trim());
       onScrollToMap();
     }
-  };
+  }, [peakTrailMap, activePeak, onSelectTrail, onSearchChange, onScrollToMap]);
+
+  const searchAutocompleteMatches = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!isSearchFocused || !q) return [];
+    const list = Array.isArray(trails) ? trails : [];
+    return list
+      .filter(
+        (t) =>
+          (t?.name || '').toLowerCase().includes(q) ||
+          (t?.province || '').toLowerCase().includes(q) ||
+          (t?.district || '').toLowerCase().includes(q) ||
+          (t?.region || '').toLowerCase().includes(q)
+      )
+      .slice(0, 4);
+  }, [isSearchFocused, searchQuery, trails]);
 
   const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
@@ -353,9 +427,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
     } else {
       savedQueryBeforeCloudRef.current = searchQuery;
       setIsCloudChipActive(true);
-      if (!searchQuery.trim()) {
-        onSearchChange('mây');
-      }
+      onSearchChange('mây');
     }
   };
 
@@ -377,10 +449,11 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
         borderBottom: '1px solid var(--color-border)',
       }}
     >
-      {/* Crossfading Full-Bleed Authentic Vietnamese Mountain Photography (Cinematic Ken Burns + Dissolve) */}
+      {/* Crossfading Full-Bleed Authentic Vietnamese Mountain Photography (Only active + fading slide paint) */}
       {SHOWCASE_PEAKS.map((peak, idx) => {
         const shouldMountImage = loadedSlides.has(idx);
         if (!shouldMountImage) return null;
+        const isVisibleSlide = idx === activeIndex || idx === fadingOutIndex;
         const adaptiveHeroSrc = litePerf
           ? peak.image.replace('f_auto,q_auto,w_1800', 'f_auto,q_auto:eco,w_1200')
           : peak.image.replace('w_1800', 'w_1600');
@@ -393,6 +466,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
             decoding="async"
             fetchPriority={idx === 0 ? 'high' : 'auto'}
             className={`hero-bg-slide${idx === activeIndex ? ' active' : ''}`}
+            style={{ visibility: isVisibleSlide ? 'visible' : 'hidden' }}
           />
         );
       })}
@@ -465,7 +539,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
           fill="none"
           stroke="var(--color-sun)"
           strokeWidth="1.25"
-          style={{ transition: 'd 0.65s cubic-bezier(0.16, 1, 0.3, 1)' }}
+          style={litePerf ? undefined : { transition: 'd 0.65s cubic-bezier(0.16, 1, 0.3, 1)' }}
         />
       </svg>
 
@@ -779,7 +853,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
                 aria-hidden="true"
                 className="hero-peak-glider"
                 style={{
-                  transform: `translateY(${gliderRect.top}px)`,
+                  transform: `translate3d(0, ${gliderRect.top}px, 0)`,
                   height: gliderRect.height,
                   opacity: gliderRect.ready ? 1 : 0,
                 }}
@@ -792,7 +866,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
 
               {SHOWCASE_PEAKS.map((peak, idx) => {
                 const isSelected = idx === activeIndex;
-                const matched = resolvePeakTrail(peak);
+                const matched = peakTrailMap.get(peak.key) || null;
                 const displayElevationM = matched?.maxAltitudeM || peak.elevationM;
                 const displayDistanceKm = matched?.distanceKm || peak.distanceKm;
                 return (
@@ -994,71 +1068,55 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
             )}
 
             {/* Autocomplete */}
-            {isSearchFocused && searchQuery.trim().length > 0 && (() => {
-              const list = Array.isArray(trails) ? trails : [];
-              const q = searchQuery.trim().toLowerCase();
-              const matches = list
-                .filter(
-                  (t) =>
-                    (t?.name || '').toLowerCase().includes(q) ||
-                    (t?.province || '').toLowerCase().includes(q) ||
-                    (t?.district || '').toLowerCase().includes(q) ||
-                    (t?.region || '').toLowerCase().includes(q)
-                )
-                .slice(0, 4);
-
-              if (matches.length === 0) return null;
-
-              return (
-                <div
-                  className="dropdown-up-pop"
-                  style={{
-                    position: 'absolute',
-                    bottom: 'calc(100% + 10px)',
-                    left: 0,
-                    right: 0,
-                    zIndex: 'var(--z-dropdown, 1100)' as unknown as number,
-                    background: 'var(--color-bg-card)',
-                    border: '1px solid var(--color-border-strong)',
-                    borderRadius: 6,
-                    padding: 6,
-                    boxShadow: 'var(--shadow-3d)',
-                  }}
-                >
-                  {matches.map((m, idx) => (
-                    <div
-                      key={m.id || (m as Trail & { _id?: string })._id || `match-${idx}`}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        setIsSearchFocused(false);
-                        if (onSelectTrail) onSelectTrail(m);
-                        else onSearchChange(m.name);
-                      }}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        padding: '8px 10px',
-                        borderRadius: 4,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <div>
-                        <div style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                          {m.name}
-                        </div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)' }}>
-                          {m.province} · {m.region}
-                        </div>
+            {searchAutocompleteMatches.length > 0 && (
+              <div
+                className="dropdown-up-pop"
+                style={{
+                  position: 'absolute',
+                  bottom: 'calc(100% + 10px)',
+                  left: 0,
+                  right: 0,
+                  zIndex: 'var(--z-dropdown, 1100)' as unknown as number,
+                  background: 'var(--color-bg-card)',
+                  border: '1px solid var(--color-border-strong)',
+                  borderRadius: 6,
+                  padding: 6,
+                  boxShadow: 'var(--shadow-3d)',
+                }}
+              >
+                {searchAutocompleteMatches.map((m, idx) => (
+                  <div
+                    key={m.id || (m as Trail & { _id?: string })._id || `match-${idx}`}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setIsSearchFocused(false);
+                      if (onSelectTrail) onSelectTrail(m);
+                      else onSearchChange(m.name);
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '8px 10px',
+                      borderRadius: 4,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
+                        {m.name}
                       </div>
-                      <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
-                        {m.maxAltitudeM.toLocaleString('vi-VN')} m
+                      <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)' }}>
+                        {m.province} · {m.region}
                       </div>
                     </div>
-                  ))}
-                </div>
-              );
-            })()}
+                    <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
+                      {m.maxAltitudeM.toLocaleString('vi-VN')} m
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div style={{ width: 1, height: 24, background: 'var(--color-border)' }} />

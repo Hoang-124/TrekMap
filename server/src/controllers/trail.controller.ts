@@ -125,6 +125,18 @@ function sanitizeMonths(raw: unknown): number[] {
   );
 }
 
+/**
+ * Fast lean trail lookup by MongoDB ObjectId or canonical slug without Mongoose document hydration overhead.
+ */
+async function findTrailLeanByIdOrSlug(idOrSlug: string, projection?: string): Promise<any | null> {
+  if (!idOrSlug || mongoose.connection.readyState !== 1) return null;
+  if (isValidObjectId(idOrSlug)) {
+    const byObjId = await TrailModel.findById(idOrSlug, projection).lean().exec();
+    if (byObjId) return byObjId;
+  }
+  return TrailModel.findOne({ id: idOrSlug }, projection).lean().exec();
+}
+
 export const getTrails = async (req: Request, res: Response) => {
   const { region, difficulty, search, duration, season, campsite, kidFriendly, lat, lng, sortBy } = req.query;
 
@@ -148,7 +160,7 @@ export const getTrails = async (req: Request, res: Response) => {
       if (typeof duration === 'string' && duration) {
         const durNum = parseInt(duration, 10);
         if (Number.isInteger(durNum) && durNum >= 1 && durNum <= 30) {
-          query.durationDays = durNum;
+          query.durationDays = durNum >= 3 ? { $gte: 3 } : durNum;
         }
       }
       if (typeof season === 'string' && season) {
@@ -175,6 +187,7 @@ export const getTrails = async (req: Request, res: Response) => {
       }
 
       const sortOptions: any = {};
+      let hasSort = true;
       if (sortBy === 'rating_desc' || sortBy === 'rating') sortOptions.rating = -1;
       else if (sortBy === 'distance_asc') sortOptions.distanceKm = 1;
       else if (sortBy === 'distance_desc') sortOptions.distanceKm = -1;
@@ -183,12 +196,16 @@ export const getTrails = async (req: Request, res: Response) => {
       else if (sortBy === 'duration_asc') sortOptions.durationDays = 1;
       else if (sortBy === 'duration_desc') sortOptions.durationDays = -1;
       else if (sortBy === 'altitude_desc') sortOptions.maxAltitudeM = -1;
+      else hasSort = false;
 
       const page = parseInt(String(req.query.page || ''), 10);
       const rawLimit = parseInt(String(req.query.limit || ''), 10);
       const limit = !isNaN(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 100;
 
-      let queryBuilder = TrailModel.find(query).sort(sortOptions).limit(limit);
+      let queryBuilder = TrailModel.find(query).limit(limit);
+      if (hasSort) {
+        queryBuilder = queryBuilder.sort(sortOptions);
+      }
       if (!isNaN(page) && page > 0) {
         queryBuilder = queryBuilder.skip((page - 1) * limit);
       }
@@ -200,37 +217,49 @@ export const getTrails = async (req: Request, res: Response) => {
     // Fallthrough to in-memory store when DB fails
   }
 
-  let filtered = [...inMemoryTrails];
+  const regionLower = typeof region === 'string' && region !== 'All' ? region.toLowerCase() : null;
+  const diffNum = typeof difficulty === 'string' && difficulty ? parseInt(difficulty, 10) : NaN;
+  const durNum = typeof duration === 'string' && duration ? parseInt(duration, 10) : NaN;
+  const monthNum = typeof season === 'string' && season ? parseInt(season, 10) : NaN;
+  const needCampsite = campsite === 'true';
+  const needKidFriendly = kidFriendly === 'true';
+  const searchLower =
+    typeof search === 'string' && search.trim().length > 0 ? search.trim().slice(0, 100).toLowerCase() : null;
 
-  if (typeof region === 'string' && region !== 'All') {
-    filtered = filtered.filter((t) => (t.region || '').toLowerCase() === region.toLowerCase());
-  }
-  if (typeof difficulty === 'string' && difficulty) {
-    const diffNum = parseInt(difficulty, 10);
-    if (!isNaN(diffNum)) filtered = filtered.filter((t) => t.difficultyLevel === diffNum);
-  }
-  if (typeof duration === 'string' && duration) {
-    const durNum = parseInt(duration, 10);
-    if (!isNaN(durNum)) filtered = filtered.filter((t) => t.durationDays === durNum);
-  }
-  if (typeof season === 'string' && season) {
-    const monthNum = parseInt(season, 10);
-    if (!isNaN(monthNum)) filtered = filtered.filter((t) => (t.bestMonths || []).includes(monthNum));
-  }
-  if (campsite === 'true') filtered = filtered.filter((t) => t.hasCampsite);
-  if (kidFriendly === 'true') filtered = filtered.filter((t) => t.kidFriendly);
+  const hasFilters =
+    Boolean(regionLower) ||
+    !isNaN(diffNum) ||
+    !isNaN(durNum) ||
+    !isNaN(monthNum) ||
+    needCampsite ||
+    needKidFriendly ||
+    Boolean(searchLower);
 
-  if (typeof search === 'string' && search.trim().length > 0) {
-    const s = search.trim().slice(0, 100).toLowerCase();
-    filtered = filtered.filter(
-      (t) =>
-        (t.name || '').toLowerCase().includes(s) ||
-        (t.province || '').toLowerCase().includes(s) ||
-        (t.region || '').toLowerCase().includes(s) ||
-        (t.district || '').toLowerCase().includes(s) ||
-        (t.description || '').toLowerCase().includes(s)
-    );
-  }
+  const filtered = hasFilters
+    ? inMemoryTrails.filter((t) => {
+        if (regionLower && (t.region || '').toLowerCase() !== regionLower) return false;
+        if (!isNaN(diffNum) && t.difficultyLevel !== diffNum) return false;
+        if (!isNaN(durNum)) {
+          if (durNum >= 3 ? (t.durationDays || 0) < 3 : t.durationDays !== durNum) return false;
+        }
+        if (!isNaN(monthNum) && !(t.bestMonths || []).includes(monthNum)) return false;
+        if (needCampsite && !t.hasCampsite) return false;
+        if (needKidFriendly && !t.kidFriendly) return false;
+        if (searchLower) {
+          const matched =
+            (t.name || '').toLowerCase().includes(searchLower) ||
+            (Array.isArray(t.altNames) && t.altNames.some((alt) => (alt || '').toLowerCase().includes(searchLower))) ||
+            (t.province || '').toLowerCase().includes(searchLower) ||
+            (t.region || '').toLowerCase().includes(searchLower) ||
+            (t.district || '').toLowerCase().includes(searchLower) ||
+            (t.description || '').toLowerCase().includes(searchLower);
+          if (!matched) return false;
+        }
+        return true;
+      })
+    : sortBy
+      ? [...inMemoryTrails]
+      : inMemoryTrails;
 
   if (sortBy === 'rating_desc' || sortBy === 'rating') filtered.sort((a, b) => (b.rating || 0) - (a.rating || 0));
   else if (sortBy === 'distance_asc') filtered.sort((a, b) => (a.distanceKm || 0) - (b.distanceKm || 0));
@@ -356,7 +385,7 @@ export const getTrailById = async (req: AuthRequest, res: Response) => {
   const isStaff = req.user?.role === 'admin' || req.user?.role === 'moderator';
 
   try {
-    const dbTrail = await resolveTrailByIdOrSlug(id);
+    const dbTrail = await findTrailLeanByIdOrSlug(id);
     if (dbTrail) {
       if (dbTrail.status !== 'approved' && !isStaff) {
         return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường này.' });
@@ -475,7 +504,7 @@ export const getTrailGuides = async (req: Request, res: Response) => {
   let trailSlug = id;
 
   try {
-    const trail = await resolveTrailByIdOrSlug(id);
+    const trail = await findTrailLeanByIdOrSlug(id, 'id region province');
     if (trail) {
       region = trail.region || '';
       province = trail.province || '';
@@ -660,8 +689,9 @@ export const createReview = async (req: AuthRequest, res: Response) => {
   }
 };
 
-export const getTrailReviews = async (req: Request, res: Response) => {
+export const getTrailReviews = async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
+  const viewerId = req.user?.userId;
   try {
     const resolvedObjId = await resolveTrailObjectId(id);
     if (!resolvedObjId) {
@@ -677,17 +707,212 @@ export const getTrailReviews = async (req: Request, res: Response) => {
 
     const formatted = reviews.map((r: any) => {
       const liveUser = r.userId && typeof r.userId === 'object' ? r.userId : null;
+      const helpfulByArr = Array.isArray(r.helpfulBy) ? r.helpfulBy : [];
+      const helpfulCount = typeof r.helpfulCount === 'number' ? r.helpfulCount : helpfulByArr.length;
+      const hasMarkedHelpful = Boolean(
+        viewerId && helpfulByArr.some((uid: any) => String(uid) === String(viewerId))
+      );
+      const { helpfulBy: _stripHelpfulBy, ...restReview } = r;
       return {
-        ...r,
+        ...restReview,
         id: r._id?.toString(),
         userName: liveUser?.fullName || r.userName,
         userAvatar: liveUser?.avatarUrl || r.userAvatar || '',
+        helpfulCount,
+        hasMarkedHelpful,
+        helpful: hasMarkedHelpful,
       };
     });
 
     return res.json({ success: true, count: formatted.length, data: formatted });
   } catch {
     return res.json({ success: true, count: 0, data: [] });
+  }
+};
+
+export const updateReview = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId || !isValidObjectId(userId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để chỉnh sửa đánh giá.' });
+    }
+    const reviewId = String(req.params.reviewId || '').trim();
+    const scopedTrailParam = String(req.params.id || '').trim();
+    if (!isValidObjectId(reviewId)) {
+      return res.status(400).json({ success: false, message: 'Mã đánh giá không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const review = await ReviewModel.findById(reviewId);
+    if (!review) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy đánh giá.' });
+    }
+
+    if (scopedTrailParam) {
+      const trail = await resolveTrailByIdOrSlug(scopedTrailParam);
+      if (trail && review.trailId && String(review.trailId) !== String(trail._id)) {
+        return res.status(404).json({ success: false, message: 'Đánh giá này không thuộc cung đường đã chỉ định.' });
+      }
+    }
+
+    if (String(review.userId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'Bạn chỉ có thể chỉnh sửa đánh giá của chính mình.' });
+    }
+
+    const { rating, difficultyRating, comment, content, safetyNote, photos } = req.body || {};
+    const nextText = content !== undefined ? content : comment;
+
+    if (rating !== undefined) {
+      const numRating = Number(rating);
+      if (!Number.isFinite(numRating) || numRating < 1 || numRating > 5) {
+        return res.status(400).json({ success: false, message: 'Điểm đánh giá phải từ 1 đến 5 sao.' });
+      }
+      review.rating = Math.round(numRating);
+    }
+
+    if (difficultyRating !== undefined) {
+      const numDiff = Number(difficultyRating);
+      if (!Number.isFinite(numDiff) || numDiff < 1 || numDiff > 5) {
+        return res.status(400).json({ success: false, message: 'Đánh giá độ khó phải từ 1 đến 5.' });
+      }
+      review.difficultyRating = Math.round(numDiff);
+    }
+
+    if (nextText !== undefined) {
+      if (typeof nextText !== 'string' || nextText.trim().length < 5) {
+        return res.status(400).json({ success: false, message: 'Nội dung đánh giá phải có ít nhất 5 ký tự.' });
+      }
+      if (containsProfanity(nextText)) {
+        const matchedWord = getProfanityMatch(nextText);
+        return res.status(400).json({
+          success: false,
+          message: `Đánh giá chứa từ ngữ vi phạm quy chuẩn ("${matchedWord}").`,
+        });
+      }
+      review.content = sanitizeInput(nextText).slice(0, 2000);
+    }
+
+    if (safetyNote !== undefined) {
+      const rawSafety = typeof safetyNote === 'string' ? safetyNote : '';
+      if (rawSafety && containsProfanity(rawSafety)) {
+        const matchedWord = getProfanityMatch(rawSafety);
+        return res.status(400).json({
+          success: false,
+          message: `Cảnh báo an toàn chứa từ ngữ vi phạm quy chuẩn ("${matchedWord}").`,
+        });
+      }
+      review.safetyNote = sanitizeInput(rawSafety).slice(0, 500);
+    }
+
+    if (photos !== undefined) {
+      if (!Array.isArray(photos)) {
+        return res.status(400).json({ success: false, message: 'Danh sách ảnh đính kèm không hợp lệ.' });
+      }
+      review.photos = photos.filter((u: unknown) => isSafeHttpUrl(u)).slice(0, 6);
+    }
+
+    await review.save();
+
+    let updatedRating = 0;
+    let updatedReviewCount = 0;
+    if (review.trailId) {
+      const stats = await ReviewModel.aggregate([
+        { $match: { trailId: review.trailId } },
+        { $group: { _id: '$trailId', avgRating: { $avg: '$rating' }, count: { $sum: 1 } } },
+      ]);
+      updatedRating = stats.length > 0 ? Math.round(stats[0].avgRating * 10) / 10 : 0;
+      updatedReviewCount = stats.length > 0 ? stats[0].count : 0;
+      await TrailModel.updateOne(
+        { _id: review.trailId },
+        { $set: { rating: updatedRating, reviewCount: updatedReviewCount } }
+      ).catch(() => {});
+    }
+
+    invalidateCache('/api/trails');
+
+    const reviewObj: any = review.toObject();
+    const helpfulByArr = Array.isArray(reviewObj.helpfulBy) ? reviewObj.helpfulBy : [];
+    const hasMarkedHelpful = helpfulByArr.some((uid: any) => String(uid) === String(userId));
+    delete reviewObj.helpfulBy;
+
+    return res.json({
+      success: true,
+      message: 'Đã cập nhật đánh giá thành công!',
+      data: {
+        ...reviewObj,
+        id: review._id.toString(),
+        helpfulCount: typeof reviewObj.helpfulCount === 'number' ? reviewObj.helpfulCount : helpfulByArr.length,
+        hasMarkedHelpful,
+        helpful: hasMarkedHelpful,
+      },
+      ratingSummary: { rating: updatedRating, reviewCount: updatedReviewCount },
+    });
+  } catch (err) {
+    console.error('[Update Review Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi cập nhật đánh giá.' });
+  }
+};
+
+export const toggleReviewHelpful = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId || !isValidObjectId(userId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để bình chọn hữu ích.' });
+    }
+    const reviewId = String(req.params.reviewId || '').trim();
+    const scopedTrailParam = String(req.params.id || '').trim();
+    if (!isValidObjectId(reviewId)) {
+      return res.status(400).json({ success: false, message: 'Mã đánh giá không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const reviewObjId = new mongoose.Types.ObjectId(reviewId);
+    const userObjId = new mongoose.Types.ObjectId(userId);
+
+    if (scopedTrailParam) {
+      const [reviewCheck, trail] = await Promise.all([
+        ReviewModel.findById(reviewObjId).select('trailId').lean(),
+        resolveTrailByIdOrSlug(scopedTrailParam),
+      ]);
+      if (!reviewCheck) {
+        return res.status(404).json({ success: false, message: 'Không tìm thấy đánh giá.' });
+      }
+      if (trail && reviewCheck.trailId && String(reviewCheck.trailId) !== String(trail._id)) {
+        return res.status(404).json({ success: false, message: 'Đánh giá này không thuộc cung đường đã chỉ định.' });
+      }
+    }
+
+    // Atomic toggle: attempt $pull first if user already voted; otherwise atomic $addToSet
+    const removed = await ReviewModel.findOneAndUpdate(
+      { _id: reviewObjId, helpfulBy: userObjId },
+      { $pull: { helpfulBy: userObjId } },
+      { new: true }
+    );
+    if (removed) {
+      const helpfulCount = Array.isArray(removed.helpfulBy) ? removed.helpfulBy.length : 0;
+      await ReviewModel.updateOne({ _id: reviewObjId }, { $set: { helpfulCount } });
+      return res.json({ success: true, helpful: false, helpfulCount });
+    }
+
+    const added = await ReviewModel.findOneAndUpdate(
+      { _id: reviewObjId, helpfulBy: { $ne: userObjId } },
+      { $addToSet: { helpfulBy: userObjId } },
+      { new: true }
+    );
+    if (added) {
+      const helpfulCount = Array.isArray(added.helpfulBy) ? added.helpfulBy.length : 0;
+      await ReviewModel.updateOne({ _id: reviewObjId }, { $set: { helpfulCount } });
+      return res.json({ success: true, helpful: true, helpfulCount });
+    }
+
+    return res.status(404).json({ success: false, message: 'Không tìm thấy đánh giá.' });
+  } catch (err) {
+    console.error('[Toggle Review Helpful Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi cập nhật bình chọn hữu ích.' });
   }
 };
 
@@ -1065,7 +1290,10 @@ export const getNearbyTrailsForTrail = async (req: Request, res: Response) => {
 
     if (mongoose.connection.readyState === 1) {
       try {
-        const dbSource = await resolveTrailByIdOrSlug(id);
+        const dbSource = await findTrailLeanByIdOrSlug(
+          id,
+          'id name status startLat startLng maxAltitudeM'
+        );
         if (dbSource) {
           if (dbSource.status && dbSource.status !== 'approved') {
             return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường gốc.' });
@@ -1078,7 +1306,8 @@ export const getNearbyTrailsForTrail = async (req: Request, res: Response) => {
             .select(
               'id name province district region startLat startLng endLat endLng distanceKm elevationGainM maxAltitudeM durationDays durationHoursNote difficultyLevel coverImage rating reviewCount bestMonths'
             )
-            .lean();
+            .lean()
+            .exec();
         }
       } catch {
         // Fall back to in-memory seed catalog
@@ -1088,29 +1317,7 @@ export const getNearbyTrailsForTrail = async (req: Request, res: Response) => {
     if (!sourceTrail) {
       sourceTrail = inMemoryTrails.find((t) => t.id === id) || null;
       if (sourceTrail) {
-        candidateTrails = inMemoryTrails
-          .filter((t) => t.id !== sourceTrail.id)
-          .map((t) => ({
-            id: t.id,
-            name: t.name,
-            province: t.province,
-            district: t.district,
-            region: t.region,
-            startLat: t.startLat,
-            startLng: t.startLng,
-            endLat: t.endLat,
-            endLng: t.endLng,
-            distanceKm: t.distanceKm,
-            elevationGainM: t.elevationGainM,
-            maxAltitudeM: t.maxAltitudeM,
-            durationDays: t.durationDays,
-            durationHoursNote: t.durationHoursNote,
-            difficultyLevel: t.difficultyLevel,
-            coverImage: t.coverImage,
-            rating: t.rating,
-            reviewCount: t.reviewCount,
-            bestMonths: t.bestMonths,
-          }));
+        candidateTrails = inMemoryTrails;
       }
     }
 
@@ -1136,24 +1343,41 @@ export const getNearbyTrailsForTrail = async (req: Request, res: Response) => {
       });
     }
 
-    const ranked = candidateTrails
-      .filter((t) => Number.isFinite(Number(t.startLat)) && Number.isFinite(Number(t.startLng)))
-      .filter((t) => String(t.id || t._id || '') !== srcSlug)
-      .map((other) => {
-        const normalizedTrail = {
-          ...other,
-          id: other.id || String(other._id),
-        };
-        const distKm = calculateHaversineDistanceKm(srcLat, srcLng, Number(other.startLat), Number(other.startLng));
-        const altitudeDeltaM = Math.round((Number(other.maxAltitudeM) || 0) - srcAlt);
-        return {
-          trail: normalizedTrail,
-          distanceKm: distKm,
-          altitudeDeltaM,
-        };
-      })
-      .sort((a, b) => a.distanceKm - b.distanceKm)
-      .slice(0, limit);
+    const rankedCandidates: Array<{ trail: any; distanceKm: number; altitudeDeltaM: number }> = [];
+    for (const other of candidateTrails) {
+      const otherSlug = String(other.id || other._id || '');
+      if (!otherSlug || otherSlug === srcSlug) continue;
+      const otherLat = Number(other.startLat);
+      const otherLng = Number(other.startLng);
+      if (!Number.isFinite(otherLat) || !Number.isFinite(otherLng)) continue;
+
+      rankedCandidates.push({
+        trail: {
+          id: otherSlug,
+          name: other.name,
+          province: other.province,
+          district: other.district,
+          region: other.region,
+          startLat: other.startLat,
+          startLng: other.startLng,
+          endLat: other.endLat,
+          endLng: other.endLng,
+          distanceKm: other.distanceKm,
+          elevationGainM: other.elevationGainM,
+          maxAltitudeM: other.maxAltitudeM,
+          durationDays: other.durationDays,
+          durationHoursNote: other.durationHoursNote,
+          difficultyLevel: other.difficultyLevel,
+          coverImage: other.coverImage,
+          rating: other.rating,
+          reviewCount: other.reviewCount,
+          bestMonths: other.bestMonths,
+        },
+        distanceKm: calculateHaversineDistanceKm(srcLat, srcLng, otherLat, otherLng),
+        altitudeDeltaM: Math.round((Number(other.maxAltitudeM) || 0) - srcAlt),
+      });
+    }
+    const ranked = rankedCandidates.sort((a, b) => a.distanceKm - b.distanceKm).slice(0, limit);
 
     return res.json({
       success: true,
@@ -1181,7 +1405,10 @@ export const getTrailElevation = async (req: Request, res: Response) => {
   try {
     let trail: any = null;
     try {
-      trail = await resolveTrailByIdOrSlug(id);
+      trail = await findTrailLeanByIdOrSlug(
+        id,
+        'id gpxTrack startLat startLng endLat endLng distanceKm maxAltitudeM elevationGainM'
+      );
     } catch {
       // ignore offline
     }
@@ -1220,7 +1447,10 @@ export const getTrailPermitTemplate = async (req: Request, res: Response) => {
   const id = String(req.params.id || '').trim();
   let trail: any = null;
   try {
-    trail = await resolveTrailByIdOrSlug(id);
+    trail = await findTrailLeanByIdOrSlug(
+      id,
+      'id name province district distanceKm durationDays durationHoursNote difficultyLevel permitRequired permitInfo rescueContact'
+    );
   } catch {
     // offline fallback
   }
@@ -1306,7 +1536,10 @@ export const getTrailShareMetadata = async (req: Request, res: Response) => {
   const id = String(req.params.id || '').trim();
   let trail: any = null;
   try {
-    trail = await resolveTrailByIdOrSlug(id);
+    trail = await findTrailLeanByIdOrSlug(
+      id,
+      'id name province maxAltitudeM distanceKm difficultyLevel elevationGainM description coverImage'
+    );
   } catch {
     // offline fallback
   }

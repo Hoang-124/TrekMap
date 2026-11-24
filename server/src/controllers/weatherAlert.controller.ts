@@ -508,6 +508,172 @@ export const deleteWeatherAlert = async (req: AuthRequest, res: Response) => {
   }
 };
 
+const BACKGROUND_SWEEP_BATCH_LIMIT = 100;
+
+async function evaluateAndDispatchSingleSub(
+  sub: any,
+  now: Date,
+  todayIso: string,
+  cooldownCutoff: Date
+): Promise<{ item: WeatherAlertSubItem; notified: boolean; evaluated: boolean }> {
+  try {
+    const rawUid = sub?.userId ? String(sub.userId) : '';
+    if (!Types.ObjectId.isValid(rawUid)) {
+      return { item: serializeSub(sub, null), notified: false, evaluated: false };
+    }
+    const uid = new Types.ObjectId(rawUid);
+
+    const isExpiredTargetDate = Boolean(sub.targetDate && sub.targetDate < todayIso);
+    if (isExpiredTargetDate) {
+      await WeatherAlertSubModel.updateOne(
+        { _id: sub._id, userId: uid },
+        { $set: { lastEvaluatedAt: now } }
+      ).catch(() => {});
+      return {
+        item: serializeSub({ ...sub, lastEvaluatedAt: now }, null),
+        notified: false,
+        evaluated: false,
+      };
+    }
+
+    const liveEval = await computeLiveAlertEvaluation(sub);
+    if (!liveEval) {
+      return { item: serializeSub(sub, null), notified: false, evaluated: false };
+    }
+
+    const evalStamp: Record<string, any> = {
+      lastEvaluatedAt: now,
+      lastVerdict: liveEval.status,
+    };
+    if (liveEval.seaOfCloudsPercent !== null) {
+      evalStamp.lastSeaOfCloudsPct = liveEval.seaOfCloudsPercent;
+    }
+
+    if (liveEval.alertTriggered) {
+      const isSafetyDanger =
+        (sub.alertOnNoGo && liveEval.status === 'NO_GO') ||
+        (liveEval.rainMm !== null && liveEval.rainMm > sub.maxRainMm) ||
+        (liveEval.windKmh !== null && liveEval.windKmh > sub.maxWindKmh);
+
+      // Separate safety vs cloud cooldown fields so morning Sea-of-Clouds alerts NEVER suppress emergency NO_GO alerts
+      const cooldownField = isSafetyDanger ? 'lastSafetyNotifiedAt' : 'lastCloudNotifiedAt';
+      const prevChannelNotifiedAt = (isSafetyDanger ? sub.lastSafetyNotifiedAt : sub.lastCloudNotifiedAt) ?? null;
+      const prevLastNotifiedAt = sub.lastNotifiedAt ?? null;
+
+      const claimed: any = await WeatherAlertSubModel.findOneAndUpdate(
+        {
+          _id: sub._id,
+          userId: uid,
+          $or: [
+            { [cooldownField]: null },
+            { [cooldownField]: { $exists: false } },
+            { [cooldownField]: { $lte: cooldownCutoff } },
+          ],
+        },
+        { $set: { ...evalStamp, [cooldownField]: now, lastNotifiedAt: now } },
+        { new: true }
+      ).lean();
+
+      if (claimed) {
+        const dateTag = sub.targetDate ? ` (${sub.targetDate})` : '';
+        const title = isSafetyDanger
+          ? `Cảnh báo Thời tiết & An toàn: ${sub.trailName}${dateTag}`
+          : `Cơ hội Săn Biển Mây ${liveEval.seaOfCloudsPercent ?? ''}%: ${sub.trailName}${dateTag}`;
+        const tempSnippet = liveEval.tempMinC !== null ? ` Nhiệt độ đỉnh ~${liveEval.tempMinC}°C,` : '';
+        const message = `${liveEval.matchedConditions.join(' ')}${tempSnippet} điểm Go/No-Go ${liveEval.score}/100.`;
+
+        let createdNotif: any = null;
+        try {
+          createdNotif = await sendNotification({
+            recipientId: uid,
+            sender: {
+              id: 'lost-weather-radar',
+              name: 'Radar Thời Tiết LOST',
+              avatarUrl: '',
+            },
+            type: isSafetyDanger ? 'safety_alert' : 'system',
+            category: 'safety',
+            title,
+            message,
+            link: `/trails/${sub.trailId}`,
+            relatedId: `weather-alert:${sub.trailId}`,
+          });
+        } catch {
+          createdNotif = null;
+        }
+
+        if (createdNotif) {
+          return { item: serializeSub(claimed, liveEval), notified: true, evaluated: true };
+        }
+
+        // CAS rollback so failed sendNotification never poisons the 6h cooldown window
+        await WeatherAlertSubModel.updateOne(
+          { _id: sub._id, userId: uid, [cooldownField]: now },
+          { $set: { [cooldownField]: prevChannelNotifiedAt, lastNotifiedAt: prevLastNotifiedAt } }
+        ).catch(() => {});
+        return {
+          item: serializeSub(
+            { ...claimed, [cooldownField]: prevChannelNotifiedAt, lastNotifiedAt: prevLastNotifiedAt },
+            liveEval
+          ),
+          notified: false,
+          evaluated: true,
+        };
+      }
+    }
+
+    await WeatherAlertSubModel.updateOne({ _id: sub._id, userId: uid }, { $set: evalStamp }).catch(() => {});
+    return { item: serializeSub({ ...sub, ...evalStamp }, liveEval), notified: false, evaluated: true };
+  } catch (itemErr) {
+    console.warn('[Evaluate Single Weather Alert Warning]:', (itemErr as Error)?.message || itemErr);
+    return { item: serializeSub(sub, null), notified: false, evaluated: false };
+  }
+}
+
+/**
+ * Automated background sweeper for scheduled weather & sea-of-clouds alert subscriptions.
+ * Queries up to 100 active non-expired subs oldest-evaluated first, evaluates with concurrency 3,
+ * enforces separate atomic 6h per-channel cooldowns + CAS rollback, and dispatches via sendNotification().
+ */
+export async function processScheduledWeatherAlerts(): Promise<{ evaluated: number; notified: number }> {
+  if (mongoose.connection.readyState !== 1) {
+    return { evaluated: 0, notified: 0 };
+  }
+
+  const now = new Date();
+  const todayIso = getVietnamTodayIso(now);
+  const cooldownCutoff = new Date(now.getTime() - NOTIFY_COOLDOWN_MS);
+
+  const activeSubs = await WeatherAlertSubModel.find({
+    isActive: true,
+    $or: [
+      { targetDate: null },
+      { targetDate: { $exists: false } },
+      { targetDate: { $gte: todayIso } },
+    ],
+  })
+    .sort({ lastEvaluatedAt: 1, updatedAt: 1 })
+    .limit(BACKGROUND_SWEEP_BATCH_LIMIT)
+    .lean();
+
+  if (activeSubs.length === 0) {
+    return { evaluated: 0, notified: 0 };
+  }
+
+  const outcomes = await mapWithConcurrency(activeSubs as any[], EVAL_CONCURRENCY, (sub) =>
+    evaluateAndDispatchSingleSub(sub, now, todayIso, cooldownCutoff)
+  );
+
+  let evaluated = 0;
+  let notified = 0;
+  for (const outcome of outcomes) {
+    if (outcome.evaluated) evaluated += 1;
+    if (outcome.notified) notified += 1;
+  }
+
+  return { evaluated, notified };
+}
+
 // POST /api/weather-alerts/evaluate - Evaluate all active subs for current user & dispatch real notifications
 // Uses separate per-channel 6h atomic cooldowns (lastSafetyNotifiedAt vs lastCloudNotifiedAt) + CAS rollback on failure
 export const evaluateMyWeatherAlerts = async (req: AuthRequest, res: Response) => {
@@ -532,102 +698,31 @@ export const evaluateMyWeatherAlerts = async (req: AuthRequest, res: Response) =
     const now = new Date();
     const todayIso = getVietnamTodayIso(now);
     const cooldownCutoff = new Date(now.getTime() - NOTIFY_COOLDOWN_MS);
-    let notificationsCreated = 0;
 
-    const data: WeatherAlertSubItem[] = await mapWithConcurrency(activeSubs as any[], EVAL_CONCURRENCY, async (sub) => {
-      try {
-        const liveEval = await computeLiveAlertEvaluation(sub);
-        if (!liveEval) {
-          return serializeSub(sub, null);
+    const outcomes = await mapWithConcurrency(activeSubs as any[], EVAL_CONCURRENCY, async (sub) => {
+      // Preserve live evaluation visibility on expired dates for manual user refresh while still blocking notification dispatch
+      const isExpiredTargetDate = Boolean(sub.targetDate && sub.targetDate < todayIso);
+      if (isExpiredTargetDate) {
+        try {
+          const liveEval = await computeLiveAlertEvaluation(sub);
+          const evalStamp: Record<string, any> = liveEval
+            ? {
+                lastEvaluatedAt: now,
+                lastVerdict: liveEval.status,
+                ...(liveEval.seaOfCloudsPercent !== null ? { lastSeaOfCloudsPct: liveEval.seaOfCloudsPercent } : {}),
+              }
+            : { lastEvaluatedAt: now };
+          await WeatherAlertSubModel.updateOne({ _id: sub._id, userId: uid }, { $set: evalStamp }).catch(() => {});
+          return { item: serializeSub({ ...sub, ...evalStamp }, liveEval), notified: false, evaluated: Boolean(liveEval) };
+        } catch {
+          return { item: serializeSub(sub, null), notified: false, evaluated: false };
         }
-
-        const evalStamp: Record<string, any> = {
-          lastEvaluatedAt: now,
-          lastVerdict: liveEval.status,
-        };
-        if (liveEval.seaOfCloudsPercent !== null) {
-          evalStamp.lastSeaOfCloudsPct = liveEval.seaOfCloudsPercent;
-        }
-
-        const isExpiredTargetDate = Boolean(sub.targetDate && sub.targetDate < todayIso);
-
-        if (liveEval.alertTriggered && !isExpiredTargetDate) {
-          const isSafetyDanger =
-            (sub.alertOnNoGo && liveEval.status === 'NO_GO') ||
-            (liveEval.rainMm !== null && liveEval.rainMm > sub.maxRainMm) ||
-            (liveEval.windKmh !== null && liveEval.windKmh > sub.maxWindKmh);
-
-          // Separate safety vs cloud cooldown fields so morning Sea-of-Clouds alerts NEVER suppress emergency NO_GO alerts
-          const cooldownField = isSafetyDanger ? 'lastSafetyNotifiedAt' : 'lastCloudNotifiedAt';
-          const prevChannelNotifiedAt = (isSafetyDanger ? sub.lastSafetyNotifiedAt : sub.lastCloudNotifiedAt) ?? null;
-          const prevLastNotifiedAt = sub.lastNotifiedAt ?? null;
-
-          const claimed: any = await WeatherAlertSubModel.findOneAndUpdate(
-            {
-              _id: sub._id,
-              userId: uid,
-              $or: [
-                { [cooldownField]: null },
-                { [cooldownField]: { $exists: false } },
-                { [cooldownField]: { $lte: cooldownCutoff } },
-              ],
-            },
-            { $set: { ...evalStamp, [cooldownField]: now, lastNotifiedAt: now } },
-            { new: true }
-          ).lean();
-
-          if (claimed) {
-            const dateTag = sub.targetDate ? ` (${sub.targetDate})` : '';
-            const title = isSafetyDanger
-              ? `Cảnh báo Thời tiết & An toàn: ${sub.trailName}${dateTag}`
-              : `Cơ hội Săn Biển Mây ${liveEval.seaOfCloudsPercent ?? ''}%: ${sub.trailName}${dateTag}`;
-            const tempSnippet = liveEval.tempMinC !== null ? ` Nhiệt độ đỉnh ~${liveEval.tempMinC}°C,` : '';
-            const message = `${liveEval.matchedConditions.join(' ')}${tempSnippet} điểm Go/No-Go ${liveEval.score}/100.`;
-
-            let createdNotif: any = null;
-            try {
-              createdNotif = await sendNotification({
-                recipientId: uid,
-                sender: {
-                  id: 'lost-weather-radar',
-                  name: 'Radar Thời Tiết LOST',
-                  avatarUrl: '',
-                },
-                type: isSafetyDanger ? 'safety_alert' : 'system',
-                category: 'safety',
-                title,
-                message,
-                link: `/trails/${sub.trailId}`,
-                relatedId: `weather-alert:${sub.trailId}`,
-              });
-            } catch {
-              createdNotif = null;
-            }
-
-            if (createdNotif) {
-              notificationsCreated += 1;
-              return serializeSub(claimed, liveEval);
-            }
-
-            // CAS rollback so failed sendNotification never poisons the 6h cooldown window
-            await WeatherAlertSubModel.updateOne(
-              { _id: sub._id, userId: uid, [cooldownField]: now },
-              { $set: { [cooldownField]: prevChannelNotifiedAt, lastNotifiedAt: prevLastNotifiedAt } }
-            ).catch(() => {});
-            return serializeSub(
-              { ...claimed, [cooldownField]: prevChannelNotifiedAt, lastNotifiedAt: prevLastNotifiedAt },
-              liveEval
-            );
-          }
-        }
-
-        await WeatherAlertSubModel.updateOne({ _id: sub._id, userId: uid }, { $set: evalStamp }).catch(() => {});
-        return serializeSub({ ...sub, ...evalStamp }, liveEval);
-      } catch (itemErr) {
-        console.warn('[Evaluate Single Weather Alert Warning]:', (itemErr as Error)?.message || itemErr);
-        return serializeSub(sub, null);
       }
+      return evaluateAndDispatchSingleSub(sub, now, todayIso, cooldownCutoff);
     });
+
+    const data: WeatherAlertSubItem[] = outcomes.map((o) => o.item);
+    const notificationsCreated = outcomes.reduce((sum, o) => sum + (o.notified ? 1 : 0), 0);
 
     res.setHeader('Cache-Control', 'no-store, max-age=0');
     return res.json({

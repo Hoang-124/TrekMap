@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type { Trail } from '../../types.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
+import { scopedStorageKey } from '../../utils/storageScope.js';
 import { IconPlus, IconTrash } from '../common/SvgIcons.js';
 
 type GearCategory =
@@ -49,7 +50,7 @@ function normalizeCategory(raw?: string): GearCategory {
 }
 
 export const GearChecklistTab: React.FC<GearChecklistTabProps> = ({ trail }) => {
-  const storageKey = `lost_checklist_${trail.id}`;
+  const storageKey = scopedStorageKey(`lost_checklist_${trail.id}`);
 
   const generateDefaultItems = useCallback((): GearItem[] => {
     const base: GearItem[] = [
@@ -166,8 +167,10 @@ export const GearChecklistTab: React.FC<GearChecklistTabProps> = ({ trail }) => 
       .then((res) => (res.ok ? res.json() : null))
       .then((json) => {
         if (cancelled) return;
-        if (json?.success && json.data && Array.isArray(json.data.items) && json.data.items.length > 0) {
-          setItems(json.data.items);
+        if (json?.success && json.data && Array.isArray(json.data.items)) {
+          if (json.data.items.length > 0 || json.data.updatedAt) {
+            setItems(json.data.items);
+          }
           if (typeof json.data.bodyWeightKg === 'number' && json.data.bodyWeightKg >= 30) {
             setUserBodyWeightKg(json.data.bodyWeightKg);
             setBodyWeightInput(String(json.data.bodyWeightKg));

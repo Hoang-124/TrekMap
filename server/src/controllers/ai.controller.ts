@@ -92,12 +92,26 @@ function splitIntoStreamChunks(text: string): string[] {
   return chunks.length > 0 ? chunks : [text];
 }
 
-async function executeValidatedChatTurn(req: AuthRequest): Promise<
-  | { errorStatus: number; errorMessage: string }
-  | {
-      data: Awaited<ReturnType<typeof getAiResponse>> & { threadId?: string };
-    }
-> {
+const GEMINI_STREAM_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest'];
+let streamGeminiCircuitOpenUntil = 0;
+
+interface ValidatedChatContext {
+  cleanMessage: string;
+  safeEngineMode: AiEngineMode;
+  effectiveHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
+  safeCoords?: { lat: number; lng: number };
+  safePreferredRegion?: AiPreferredRegion;
+  safeTrailId?: string;
+  safePageView?: string;
+  safeUserName?: string;
+  authenticatedUserId?: string;
+  ownerFilter: { userId?: Types.ObjectId; sessionId?: string } | null;
+  existingThread: any;
+}
+
+async function parseAndValidateChatRequest(
+  req: AuthRequest
+): Promise<{ errorStatus: number; errorMessage: string } | { parsed: ValidatedChatContext }> {
   const body = (req.body || {}) as Partial<ChatRequestPayload>;
   const { message, threadId, conversationHistory, engineMode, context, currentTrailContext, userCoordinates, userName } = body;
 
@@ -165,7 +179,6 @@ async function executeValidatedChatTurn(req: AuthRequest): Promise<
       ? context.pageView.trim()
       : undefined;
 
-  // Hydrate authoritative MongoDB thread history BEFORE falling back to untrusted client history
   const ownerFilter = getOwnerFilter(req);
   let existingThread: any = null;
   if (mongoose.connection.readyState === 1 && ownerFilter && isStrictObjectId(threadId)) {
@@ -182,94 +195,288 @@ async function executeValidatedChatTurn(req: AuthRequest): Promise<
   // In stateless mode (no authoritative DB thread), ignore untrusted client-forged 'assistant' turns to prevent model-role spoofing
   const effectiveHistory = dbHistory.length > 0 ? dbHistory : safeHistory.filter((h) => h.role === 'user');
 
-  const response = await getAiResponse({
-    message: message.trim(),
-    threadId: existingThread ? String(existingThread._id) : undefined,
-    conversationHistory: effectiveHistory,
-    engineMode: safeEngineMode,
-    context: {
-      pageView: safePageView,
-      trailId: safeTrailId,
-      userCoordinates: safeCoords,
-      preferredRegion: safePreferredRegion,
+  return {
+    parsed: {
+      cleanMessage: message.trim(),
+      safeEngineMode,
+      effectiveHistory,
+      safeCoords,
+      safePreferredRegion,
+      safeTrailId,
+      safePageView,
+      safeUserName: typeof userName === 'string' ? userName.slice(0, 60) : undefined,
+      authenticatedUserId: isStrictObjectId(req.user?.userId) ? req.user.userId : undefined,
+      ownerFilter,
+      existingThread,
     },
-    userCoordinates: safeCoords,
-    userName: typeof userName === 'string' ? userName.slice(0, 60) : undefined,
-    authenticatedUserId: isStrictObjectId(req.user?.userId) ? req.user.userId : undefined,
+  };
+}
+
+async function persistAiThreadTurn(params: {
+  ownerFilter: { userId?: Types.ObjectId; sessionId?: string } | null;
+  existingThread: any;
+  userContent: string;
+  assistantContent: string;
+  modelUsed: 'gemini-live' | 'lost-knowledge-engine';
+  actions: unknown[];
+  trailContextId?: string;
+  trailContextName?: string;
+  fallbackTitle?: string;
+}): Promise<string | undefined> {
+  let persistedThreadId: string | undefined = params.existingThread ? String(params.existingThread._id) : undefined;
+  if (mongoose.connection.readyState !== 1 || !params.ownerFilter) {
+    return persistedThreadId;
+  }
+
+  try {
+    const now = new Date();
+    const randSuffix = Math.random().toString(36).slice(2, 7);
+    const userEntry = {
+      id: `u-${now.getTime()}-${randSuffix}`,
+      role: 'user' as const,
+      content: params.userContent.slice(0, MAX_MESSAGE_LENGTH),
+      createdAt: now,
+    };
+    const assistantEntry = {
+      id: `a-${now.getTime() + 1}-${randSuffix}`,
+      role: 'assistant' as const,
+      content: params.assistantContent,
+      modelUsed: params.modelUsed,
+      actions: params.actions,
+      createdAt: new Date(now.getTime() + 1),
+    };
+
+    if (params.existingThread) {
+      const setFields: Record<string, unknown> = { lastMessageAt: now };
+      if (
+        params.existingThread.title === 'Hội thoại LOST AI mới' ||
+        params.existingThread.title === 'Hội thoại LOST AI'
+      ) {
+        setFields.title = buildThreadTitleFromMessage(params.fallbackTitle || params.userContent);
+      }
+      if (params.trailContextId) {
+        setFields.trailContextId = params.trailContextId;
+        setFields.trailContextName = params.trailContextName;
+      }
+      const updatedDoc: any = await AiChatThreadModel.findOneAndUpdate(
+        { _id: params.existingThread._id, ...params.ownerFilter },
+        {
+          $push: {
+            messages: {
+              $each: [userEntry, assistantEntry],
+              $slice: -MAX_THREAD_MESSAGES,
+            },
+          },
+          $set: setFields,
+        },
+        { new: true }
+      )
+        .select('messages')
+        .lean();
+      if (updatedDoc) {
+        const finalLen = Array.isArray(updatedDoc.messages) ? updatedDoc.messages.length : 0;
+        await AiChatThreadModel.updateOne({ _id: params.existingThread._id }, { $set: { messageCount: finalLen } }).catch(
+          () => {}
+        );
+        persistedThreadId = String(params.existingThread._id);
+      }
+    } else {
+      const count = await AiChatThreadModel.countDocuments(params.ownerFilter);
+      if (count >= MAX_THREADS_PER_OWNER) {
+        const oldest = await AiChatThreadModel.findOne({ ...params.ownerFilter, pinned: false }).sort({
+          lastMessageAt: 1,
+        });
+        if (oldest) await AiChatThreadModel.deleteOne({ _id: oldest._id });
+      }
+
+      const created = await AiChatThreadModel.create({
+        ...params.ownerFilter,
+        title: buildThreadTitleFromMessage(params.fallbackTitle || params.userContent),
+        trailContextId: params.trailContextId,
+        trailContextName: params.trailContextName,
+        messages: [userEntry, assistantEntry],
+        messageCount: 2,
+        lastMessageAt: now,
+      });
+      persistedThreadId = String(created._id);
+    }
+  } catch (persistErr) {
+    console.warn('[AI Thread Persist Warning]:', (persistErr as Error)?.message);
+  }
+
+  return persistedThreadId;
+}
+
+async function streamConversationalGeminiUpstream(params: {
+  message: string;
+  history: Array<{ role: 'user' | 'assistant'; content: string }>;
+  referenceReply: string;
+  trailContextName?: string;
+  signal: AbortSignal;
+  onChunk: (cleanDelta: string) => void;
+}): Promise<string | null> {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (!apiKey || Date.now() < streamGeminiCircuitOpenUntil) return null;
+
+  const systemText = [
+    'Bạn là LOST Alpine AI — trợ lý chuyên gia leo núi & trekking thực địa tại Việt Nam của nền tảng LOST.',
+    'Trả lời bằng tiếng Việt tự nhiên, sắc bén, giàu kinh nghiệm địa hình núi Việt Nam, TUYỆT ĐỐI KHÔNG dùng emoji, KHÔNG bịa tọa độ hay số hotline.',
+    `Ngày hiện tại tại Việt Nam: ${getVietnamTodayIso()}.`,
+    params.trailContextName ? `Cung đường người dùng đang xem: ${params.trailContextName}.` : '',
+    params.referenceReply
+      ? `Dữ liệu thực địa xác thực từ hệ thống LOST (bám sát sự thật này, không mâu thuẫn số liệu/hotline):\n${params.referenceReply.slice(0, 2000)}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+  for (const h of params.history.slice(-6)) {
+    contents.push({
+      role: h.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: h.content.slice(0, 1000) }],
+    });
+  }
+  contents.push({
+    role: 'user',
+    parts: [{ text: params.message }],
   });
 
-  // Persist turn atomically into MongoDB thread ($push + $slice: -50 prevents concurrent turn loss)
-  let persistedThreadId: string | undefined = existingThread ? String(existingThread._id) : undefined;
-  if (mongoose.connection.readyState === 1 && ownerFilter) {
+  for (const modelName of GEMINI_STREAM_MODELS) {
+    if (params.signal.aborted) return null;
+    const timeoutController = new AbortController();
+    const timeoutId = setTimeout(() => timeoutController.abort(), 14000);
+    const onExternalAbort = () => timeoutController.abort();
+    params.signal.addEventListener('abort', onExternalAbort, { once: true });
+
+    let emittedAny = false;
+    let accumulated = '';
     try {
-      const now = new Date();
-      const randSuffix = Math.random().toString(36).slice(2, 7);
-      const userEntry = {
-        id: `u-${now.getTime()}-${randSuffix}`,
-        role: 'user' as const,
-        content: message.trim(),
-        createdAt: now,
-      };
-      const assistantEntry = {
-        id: `a-${now.getTime() + 1}-${randSuffix}`,
-        role: 'assistant' as const,
-        content: response.reply,
-        modelUsed: response.modelUsed,
-        actions: response.actions,
-        createdAt: new Date(now.getTime() + 1),
-      };
-
-      if (existingThread) {
-        const setFields: Record<string, unknown> = { lastMessageAt: now };
-        if (existingThread.title === 'Hội thoại LOST AI mới' || existingThread.title === 'Hội thoại LOST AI') {
-          setFields.title = buildThreadTitleFromMessage(message);
-        }
-        if (response.contextUsed.trailId) {
-          setFields.trailContextId = response.contextUsed.trailId;
-          setFields.trailContextName = response.contextUsed.trailName;
-        }
-        const updatedDoc: any = await AiChatThreadModel.findOneAndUpdate(
-          { _id: existingThread._id, ...ownerFilter },
-          {
-            $push: {
-              messages: {
-                $each: [userEntry, assistantEntry],
-                $slice: -MAX_THREAD_MESSAGES,
-              },
-            },
-            $set: setFields,
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?alt=sse`;
+      const upstreamRes = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        signal: timeoutController.signal,
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemText }] },
+          contents,
+          generationConfig: {
+            temperature: 0.35,
+            topP: 0.9,
+            maxOutputTokens: 2048,
           },
-          { new: true }
-        )
-          .select('messages')
-          .lean();
-        if (updatedDoc) {
-          const finalLen = Array.isArray(updatedDoc.messages) ? updatedDoc.messages.length : 0;
-          await AiChatThreadModel.updateOne({ _id: existingThread._id }, { $set: { messageCount: finalLen } }).catch(() => {});
-          persistedThreadId = String(existingThread._id);
-        }
-      } else {
-        const count = await AiChatThreadModel.countDocuments(ownerFilter);
-        if (count >= MAX_THREADS_PER_OWNER) {
-          const oldest = await AiChatThreadModel.findOne({ ...ownerFilter, pinned: false }).sort({ lastMessageAt: 1 });
-          if (oldest) await AiChatThreadModel.deleteOne({ _id: oldest._id });
-        }
+        }),
+      });
 
-        const created = await AiChatThreadModel.create({
-          ...ownerFilter,
-          title: buildThreadTitleFromMessage(message),
-          trailContextId: response.contextUsed.trailId,
-          trailContextName: response.contextUsed.trailName,
-          messages: [userEntry, assistantEntry],
-          messageCount: 2,
-          lastMessageAt: now,
-        });
-        persistedThreadId = String(created._id);
+      if (!upstreamRes.ok || !upstreamRes.body) {
+        if (upstreamRes.status === 400 || upstreamRes.status === 401 || upstreamRes.status === 403) {
+          return null;
+        }
+        if (upstreamRes.status === 429 || upstreamRes.status === 503) {
+          streamGeminiCircuitOpenUntil = Date.now() + 60_000;
+          return null;
+        }
+        continue;
       }
-    } catch (persistErr) {
-      console.warn('[AI Thread Persist Warning]:', (persistErr as Error)?.message);
+
+      const reader = upstreamRes.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (!params.signal.aborted) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let nlIdx: number;
+        while ((nlIdx = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, nlIdx).trim();
+          buffer = buffer.slice(nlIdx + 1);
+          if (!line.startsWith('data:')) continue;
+          const jsonStr = line.slice(5).trim();
+          if (!jsonStr || jsonStr === '[DONE]') continue;
+
+          try {
+            const parsedJson = JSON.parse(jsonStr) as {
+              candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+            };
+            const parts = parsedJson?.candidates?.[0]?.content?.parts;
+            if (!Array.isArray(parts)) continue;
+            for (const part of parts) {
+              if (typeof part?.text === 'string' && part.text.length > 0) {
+                const cleanChunk = removeEmojis(part.text);
+                if (cleanChunk) {
+                  emittedAny = true;
+                  accumulated += cleanChunk;
+                  params.onChunk(cleanChunk);
+                }
+              }
+            }
+          } catch {
+            // Skip malformed SSE JSON line cleanly
+          }
+        }
+      }
+
+      if (accumulated.trim().length > 0) {
+        return accumulated.trim();
+      }
+      if (emittedAny) {
+        return accumulated;
+      }
+    } catch (err) {
+      if (emittedAny && accumulated.trim().length > 0) {
+        return accumulated.trim();
+      }
+      console.warn(`[LOST AI Stream] Gemini upstream fallback on ${modelName}:`, (err as Error)?.message || err);
+    } finally {
+      clearTimeout(timeoutId);
+      params.signal.removeEventListener('abort', onExternalAbort);
     }
   }
+
+  return null;
+}
+
+async function executeValidatedChatTurn(req: AuthRequest): Promise<
+  | { errorStatus: number; errorMessage: string }
+  | {
+      data: Awaited<ReturnType<typeof getAiResponse>> & { threadId?: string };
+    }
+> {
+  const validated = await parseAndValidateChatRequest(req);
+  if ('errorStatus' in validated) return validated;
+  const { parsed } = validated;
+
+  const response = await getAiResponse({
+    message: parsed.cleanMessage,
+    threadId: parsed.existingThread ? String(parsed.existingThread._id) : undefined,
+    conversationHistory: parsed.effectiveHistory,
+    engineMode: parsed.safeEngineMode,
+    context: {
+      pageView: parsed.safePageView,
+      trailId: parsed.safeTrailId,
+      userCoordinates: parsed.safeCoords,
+      preferredRegion: parsed.safePreferredRegion,
+    },
+    userCoordinates: parsed.safeCoords,
+    userName: parsed.safeUserName,
+    authenticatedUserId: parsed.authenticatedUserId,
+  });
+
+  const persistedThreadId = await persistAiThreadTurn({
+    ownerFilter: parsed.ownerFilter,
+    existingThread: parsed.existingThread,
+    userContent: parsed.cleanMessage,
+    assistantContent: response.reply,
+    modelUsed: response.modelUsed,
+    actions: response.actions,
+    trailContextId: response.contextUsed.trailId,
+    trailContextName: response.contextUsed.trailName,
+  });
 
   return {
     data: {
@@ -300,26 +507,48 @@ export const chatWithAi = async (req: AuthRequest, res: Response) => {
 };
 
 /**
- * POST /api/ai/chat/stream (Wave 8A SSE Streaming)
- * Streams progressive `delta` chunks over Server-Sent Events followed by a final `done` payload with actions & threadId.
+ * POST /api/ai/chat/stream (Wave 8A SSE Streaming + True Upstream Gemini SSE Forwarding)
+ * - Keeps instant deterministic path for P0 Emergency & specialized Alpine domain cards (zero artificial delay).
+ * - Streams directly from Gemini `streamGenerateContent?alt=sse` for conversational Gemini queries when API key is present.
  */
 export const chatWithAiStream = async (req: AuthRequest, res: Response) => {
   let clientClosed = false;
+  const upstreamAbort = new AbortController();
   // Listen on `res` (NOT `req`, which fires 'close' immediately after express.json() consumes the POST body!)
   res.on('close', () => {
     if (!res.writableEnded) {
       clientClosed = true;
+      upstreamAbort.abort();
     }
   });
 
   const isClosed = () => clientClosed || res.destroyed || res.writableEnded;
 
   try {
-    const result = await executeValidatedChatTurn(req);
+    const validated = await parseAndValidateChatRequest(req);
     if (isClosed()) return;
-    if ('errorStatus' in result) {
-      return res.status(result.errorStatus).json({ success: false, message: result.errorMessage });
+    if ('errorStatus' in validated) {
+      return res.status(validated.errorStatus).json({ success: false, message: validated.errorMessage });
     }
+    const { parsed } = validated;
+
+    // 1. Run instant deterministic knowledge engine first (~0-100ms) to detect P0 Emergency & rich domain cards
+    const deterministicResponse = await getAiResponse({
+      message: parsed.cleanMessage,
+      threadId: parsed.existingThread ? String(parsed.existingThread._id) : undefined,
+      conversationHistory: parsed.effectiveHistory,
+      engineMode: 'knowledge',
+      context: {
+        pageView: parsed.safePageView,
+        trailId: parsed.safeTrailId,
+        userCoordinates: parsed.safeCoords,
+        preferredRegion: parsed.safePreferredRegion,
+      },
+      userCoordinates: parsed.safeCoords,
+      userName: parsed.safeUserName,
+      authenticatedUserId: parsed.authenticatedUserId,
+    });
+    if (isClosed()) return;
 
     res.status(200);
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -330,15 +559,84 @@ export const chatWithAiStream = async (req: AuthRequest, res: Response) => {
       (res as { flushHeaders: () => void }).flushHeaders();
     }
 
-    const chunks = splitIntoStreamChunks(result.data.reply);
-    for (const chunk of chunks) {
-      if (isClosed()) break;
-      res.write(`event: delta\ndata: ${JSON.stringify({ chunk })}\n\n`);
-      await new Promise((resolve) => setTimeout(resolve, 14));
+    const actions = Array.isArray(deterministicResponse.actions) ? deterministicResponse.actions : [];
+    const hasEmergencyTriage = actions.some((a: any) => a?.type === 'first_aid_triage');
+    const hasStructuredDomainCard = actions.some((a: any) =>
+      [
+        'first_aid_triage',
+        'go_no_go_card',
+        'pace_schedule_card',
+        'fuel_plan_card',
+        'readiness_audit_card',
+        'trail_compare_card',
+      ].includes(String(a?.type || ''))
+    );
+
+    const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
+    const shouldStreamGeminiUpstream =
+      hasGeminiKey &&
+      parsed.safeEngineMode !== 'knowledge' &&
+      !hasEmergencyTriage &&
+      (parsed.safeEngineMode === 'gemini' || !hasStructuredDomainCard);
+
+    let finalReply = deterministicResponse.reply;
+    let finalModelUsed: 'gemini-live' | 'lost-knowledge-engine' = 'lost-knowledge-engine';
+
+    if (shouldStreamGeminiUpstream) {
+      const streamedText = await streamConversationalGeminiUpstream({
+        message: parsed.cleanMessage,
+        history: parsed.effectiveHistory,
+        referenceReply: deterministicResponse.reply,
+        trailContextName: deterministicResponse.contextUsed?.trailName,
+        signal: upstreamAbort.signal,
+        onChunk: (chunk) => {
+          if (!isClosed()) {
+            res.write(`event: delta\ndata: ${JSON.stringify({ chunk })}\n\n`);
+          }
+        },
+      });
+
+      if (streamedText) {
+        finalReply = streamedText;
+        finalModelUsed = 'gemini-live';
+      } else if (!isClosed()) {
+        const chunks = splitIntoStreamChunks(deterministicResponse.reply);
+        for (const chunk of chunks) {
+          if (isClosed()) break;
+          res.write(`event: delta\ndata: ${JSON.stringify({ chunk })}\n\n`);
+        }
+      }
+    } else {
+      // Deterministic domain-card / knowledge-mode instant streaming (zero artificial sleep)
+      const chunks = splitIntoStreamChunks(deterministicResponse.reply);
+      for (const chunk of chunks) {
+        if (isClosed()) break;
+        res.write(`event: delta\ndata: ${JSON.stringify({ chunk })}\n\n`);
+      }
     }
 
+    if (isClosed()) return;
+
+    const persistedThreadId = await persistAiThreadTurn({
+      ownerFilter: parsed.ownerFilter,
+      existingThread: parsed.existingThread,
+      userContent: parsed.cleanMessage,
+      assistantContent: finalReply,
+      modelUsed: finalModelUsed,
+      actions: deterministicResponse.actions,
+      trailContextId: deterministicResponse.contextUsed.trailId,
+      trailContextName: deterministicResponse.contextUsed.trailName,
+    });
+
     if (!isClosed()) {
-      res.write(`event: done\ndata: ${JSON.stringify(result.data)}\n\n`);
+      res.write(
+        `event: done\ndata: ${JSON.stringify({
+          ...deterministicResponse,
+          reply: finalReply,
+          modelUsed: finalModelUsed,
+          threadId: persistedThreadId,
+        })}\n\n`
+      );
       res.end();
     }
   } catch (error) {
@@ -650,7 +948,7 @@ export const assessTrailGoNoGo = async (req: Request, res: Response) => {
  */
 export const analyzeGpxHandler = async (req: AuthRequest, res: Response) => {
   try {
-    const { fileName, points, bodyWeightKg, packWeightKg, fitnessLevel } = req.body || {};
+    const { fileName, points, bodyWeightKg, packWeightKg, fitnessLevel, threadId } = req.body || {};
     if (!Array.isArray(points) || points.length < 2) {
       return res.status(400).json({
         success: false,
@@ -683,34 +981,60 @@ export const analyzeGpxHandler = async (req: AuthRequest, res: Response) => {
         : ''
     }`;
 
+    const actions = [
+      {
+        type: 'gpx_analysis_card',
+        trailId: analysis.nearestTrail?.id,
+        trailName: analysis.nearestTrail?.name || analysis.fileName,
+        gpxData: analysis,
+      },
+      {
+        type: 'quick_reply',
+        suggestions: analysis.nearestTrail
+          ? [
+              `Đánh giá Go/No-Go ${analysis.nearestTrail.name}`,
+              `Checklist đồ phù hợp cho ${analysis.nearestTrail.name}`,
+              'Kỹ thuật bảo vệ khớp gối khi xuống dốc',
+            ]
+          : [
+              'Checklist đồ leo núi theo độ khó này',
+              'Kỹ thuật lọc nước suối trong rừng',
+              'Quy tắc S.T.O.P khi bị lạc đường',
+            ],
+      },
+    ];
+
+    // Persist GPX analysis turn into AiChatThreadModel (create or append cleanly)
+    const ownerFilter = getOwnerFilter(req);
+    let existingThread: any = null;
+    if (mongoose.connection.readyState === 1 && ownerFilter && isStrictObjectId(threadId)) {
+      existingThread = await AiChatThreadModel.findOne({ _id: new Types.ObjectId(threadId), ...ownerFilter })
+        .select('title messages trailContextId trailContextName')
+        .lean()
+        .catch(() => null);
+    }
+
+    const userGpxSummary = `Phân tích tracklog GPX: ${analysis.fileName} (${analysis.distanceKm} km, +${analysis.elevationGainM}m, đỉnh ${analysis.maxAltitudeM}m)`;
+    const persistedThreadId = await persistAiThreadTurn({
+      ownerFilter,
+      existingThread,
+      userContent: userGpxSummary,
+      assistantContent: reply,
+      modelUsed: 'lost-knowledge-engine',
+      actions,
+      trailContextId: analysis.nearestTrail?.id,
+      trailContextName: analysis.nearestTrail?.name || analysis.fileName,
+      fallbackTitle: `GPX: ${analysis.fileName}`,
+    });
+
     return res.json({
       success: true,
       data: {
         analysis,
         reply,
         modelUsed: 'lost-knowledge-engine' as const,
-        actions: [
-          {
-            type: 'gpx_analysis_card',
-            trailId: analysis.nearestTrail?.id,
-            trailName: analysis.nearestTrail?.name || analysis.fileName,
-            gpxData: analysis,
-          },
-          {
-            type: 'quick_reply',
-            suggestions: analysis.nearestTrail
-              ? [
-                  `Đánh giá Go/No-Go ${analysis.nearestTrail.name}`,
-                  `Checklist đồ phù hợp cho ${analysis.nearestTrail.name}`,
-                  'Kỹ thuật bảo vệ khớp gối khi xuống dốc',
-                ]
-              : [
-                  'Checklist đồ leo núi theo độ khó này',
-                  'Kỹ thuật lọc nước suối trong rừng',
-                  'Quy tắc S.T.O.P khi bị lạc đường',
-                ],
-          },
-        ],
+        actions,
+        threadId: persistedThreadId,
       },
     });
   } catch (error: any) {

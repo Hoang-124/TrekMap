@@ -169,7 +169,8 @@ async function getCachedWeatherTelemetry(): Promise<Incident[]> {
           verifiedAt: new Date().toISOString(),
           rescueContact: reg.rescue,
           images: [],
-        });
+          isSynthetic: true,
+        } as Incident & { isSynthetic: boolean });
       }
     });
 
@@ -187,13 +188,16 @@ async function getCachedWeatherTelemetry(): Promise<Incident[]> {
 export const getIncidents = async (req: Request, res: Response) => {
   const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10) || 50, 1), 100);
   const trailFilterParam = typeof req.query.trailId === 'string' ? req.query.trailId.trim() : '';
+  const includeResolved =
+    String(req.query.includeResolved || '').trim().toLowerCase() === 'true' ||
+    String(req.query.includeResolved || '').trim() === '1';
 
   let dbIncidents: any[] = [];
   const dbConnected = mongoose.connection.readyState === 1;
 
   if (dbConnected) {
     try {
-      const dbFilter: any = { active: { $ne: false }, resolved: { $ne: true } };
+      const dbFilter: any = includeResolved ? {} : { active: { $ne: false }, resolved: { $ne: true } };
       if (trailFilterParam) {
         const candidates: any[] = [trailFilterParam];
         const resolved = await resolveTrailByIdOrSlug(trailFilterParam);
@@ -267,13 +271,14 @@ export const getIncidents = async (req: Request, res: Response) => {
       verifiedAt: new Date().toISOString(),
       rescueContact: '112 / 114 - Tìm kiếm Cứu nạn Khẩn cấp',
       images: [],
-    };
+      isSynthetic: true,
+    } as Incident & { isSynthetic: boolean };
   });
 
   const activeCustomIncidents = dbConnected
     ? dbIncidents
     : inMemoryIncidents
-        .filter((i: any) => !i.resolved && i.active !== false)
+        .filter((i: any) => (includeResolved ? true : !i.resolved && i.active !== false))
         .map((i) => sanitizeIncidentPII(i));
 
   let merged = [...activeCustomIncidents, ...liveWeatherIncidents, ...nasaIncidents];
@@ -555,7 +560,7 @@ export const confirmIncident = async (req: AuthRequest, res: Response) => {
         type: 'dispute_alert',
         title: `Khiếu nại tin giả tại ${updatedIncident?.trailName || 'Cung đường'}`,
         message: `Trekker ${reporterName} phản ánh cảnh báo sự cố là tin sai sự thật: "${disputeReason}".`,
-        link: '/admin',
+        link: '/admin?tab=incidents',
         relatedId: id,
         includeModerators: true,
       }).catch(() => {});

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   IconBackpack,
   IconShieldAlert,
@@ -10,6 +10,8 @@ import {
 } from '../common/SvgIcons.js';
 import { mockTrails } from '../../data/seedData.js';
 import { auditPackApi, applyGearItemsToTrailChecklist } from '../../services/aiAssistant.service.js';
+import { getApiHeaders } from '../../utils/sessionHeaders.js';
+import { scopedStorageKey } from '../../utils/storageScope.js';
 import type { Trail } from '../../types.js';
 import type { PackAuditItemInput, PackAuditResult } from './ai.types.js';
 
@@ -21,7 +23,9 @@ interface AiPackAuditorProps {
 
 function hydrateChecklistForTrail(trailId: string): PackAuditItemInput[] {
   try {
-    const raw = localStorage.getItem(`lost_checklist_${trailId}`);
+    const legacyKey = `lost_checklist_${trailId}`;
+    const scopedKey = scopedStorageKey(legacyKey);
+    const raw = localStorage.getItem(scopedKey) ?? localStorage.getItem(legacyKey);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
@@ -54,14 +58,61 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
   const [bodyWeightKg, setBodyWeightKg] = useState<number>(62);
   const [packWeightKg, setPackWeightKg] = useState<number>(9);
   const [items, setItems] = useState<PackAuditItemInput[]>(() => hydrateChecklistForTrail(initialTrailId));
+  const [cloudChecklistSynced, setCloudChecklistSynced] = useState(false);
   const [customItemName, setCustomItemName] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<PackAuditResult | null>(null);
   const [appliedAll, setAppliedAll] = useState(false);
 
+  // Hydrate authoritative cloud checklist when logged in so cloud gear is audited accurately
+  useEffect(() => {
+    if (typeof window === 'undefined' || !localStorage.getItem('lost_token')) {
+      return;
+    }
+    const controller = new AbortController();
+    const targetTrailId = selectedTrailId;
+
+    fetch(`/api/gear-checklists/${encodeURIComponent(targetTrailId)}`, {
+      headers: getApiHeaders(),
+      signal: controller.signal,
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (controller.signal.aborted) return;
+        const cloudData = json?.success && json?.data ? json.data : null;
+        if (cloudData && Array.isArray(cloudData.items) && cloudData.items.length > 0) {
+          const mapped: PackAuditItemInput[] = cloudData.items.map(
+            (it: { name?: string; weightGrams?: number; checked?: boolean }) => ({
+              name: String(it.name || ''),
+              weightGrams: Number(it.weightGrams) || 250,
+              checked: it.checked !== false,
+            })
+          );
+          setItems(mapped);
+          if (typeof cloudData.bodyWeightKg === 'number' && cloudData.bodyWeightKg >= 30 && cloudData.bodyWeightKg <= 180) {
+            setBodyWeightKg(Math.round(cloudData.bodyWeightKg));
+          }
+          setCloudChecklistSynced(true);
+          try {
+            localStorage.setItem(scopedStorageKey(`lost_checklist_${targetTrailId}`), JSON.stringify(cloudData.items));
+          } catch {
+            // ignore storage errors
+          }
+        } else {
+          setCloudChecklistSynced(false);
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setCloudChecklistSynced(false);
+      });
+
+    return () => controller.abort();
+  }, [selectedTrailId]);
+
   const handleChangeTrail = (nextId: string) => {
     setSelectedTrailId(nextId);
     setItems(hydrateChecklistForTrail(nextId));
+    setCloudChecklistSynced(false);
     setResult(null);
     setAppliedAll(false);
   };
@@ -170,8 +221,16 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
             <IconBackpack size={15} color="var(--color-earth)" />
             <span>KIỂM TOÁN BALO &amp; MỨC ĐỘ SẴN SÀNG SINH TỒN</span>
           </div>
-          <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)' }}>
-            Đối chiếu nhiệt độ đỉnh · nguồn nước · giấy phép
+          <span
+            style={{
+              fontSize: '0.7rem',
+              color: cloudChecklistSynced ? 'var(--color-primary)' : 'var(--color-text-dim)',
+              fontWeight: cloudChecklistSynced ? 700 : 500,
+            }}
+          >
+            {cloudChecklistSynced
+              ? 'Đã đồng bộ Checklist Cloud · Đối chiếu thực địa'
+              : 'Đối chiếu nhiệt độ đỉnh · nguồn nước · giấy phép'}
           </span>
         </div>
 

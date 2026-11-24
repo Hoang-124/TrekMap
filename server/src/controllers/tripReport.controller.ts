@@ -184,6 +184,7 @@ export const getTripReports = async (req: AuthRequest, res: Response) => {
     const skip = (page - 1) * limit;
     const [reports, total] = await Promise.all([
       TripReportModel.find(query)
+        .select('-comments')
         .populate('authorId', 'fullName avatarUrl reputationScore badges')
         .populate('trailId', 'id name province region coverImage')
         .sort({ createdAt: -1 })
@@ -194,10 +195,12 @@ export const getTripReports = async (req: AuthRequest, res: Response) => {
     ]);
 
     const viewerId = req.user?.userId;
+    const totalPages = Math.ceil(total / limit);
+    const hasMore = skip + reports.length < total;
     return res.json({
       success: true,
       data: reports.map((r) => formatReportForViewer(r, viewerId)),
-      pagination: { total, page, limit },
+      pagination: { total, page, limit, totalPages, hasMore },
     });
   } catch (err) {
     console.error('[Get Trip Reports Error]:', err);
@@ -463,5 +466,162 @@ export const deleteTripReport = async (req: AuthRequest, res: Response) => {
   } catch (err) {
     console.error('[Delete Trip Report Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi khi xóa nhật ký.' });
+  }
+};
+
+// POST /api/trip-reports/:id/comments - Authenticated user posts a comment on a trip report
+export const addTripReportComment = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    const { id } = req.params;
+    const { content } = req.body || {};
+
+    if (!userId || !isValidObjectId(userId)) {
+      return res.status(401).json({ success: false, message: 'Bạn cần đăng nhập để bình luận nhật ký.' });
+    }
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: 'Mã nhật ký không hợp lệ.' });
+    }
+    if (typeof content !== 'string' || !content.trim()) {
+      return res.status(400).json({ success: false, message: 'Vui lòng nhập nội dung bình luận.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const cleanContent = sanitizeInput(content).slice(0, 2000);
+    if (!cleanContent.trim()) {
+      return res.status(400).json({ success: false, message: 'Nội dung bình luận không hợp lệ.' });
+    }
+    if (containsProfanity(cleanContent)) {
+      const matched = getProfanityMatch(cleanContent);
+      await deductReputationPoints(
+        userId,
+        PENALTY_POINTS.TOXIC_COMMENT,
+        `Bình luận nhật ký chứa từ ngữ vi phạm ("${matched}")`
+      );
+      return res.status(400).json({
+        success: false,
+        message: `Bình luận bị từ chối do chứa từ ngữ vi phạm ("${matched}").`,
+      });
+    }
+
+    const author = await UserModel.findById(userId).select('fullName username avatarUrl').lean();
+    const authorName = author?.fullName || author?.username || 'Trekker Cộng Đồng';
+    const authorAvatar = author?.avatarUrl || '';
+
+    const commentId = new mongoose.Types.ObjectId();
+    const newComment = {
+      _id: commentId,
+      authorId: new mongoose.Types.ObjectId(userId),
+      authorName,
+      authorAvatar,
+      content: cleanContent,
+      createdAt: new Date(),
+    };
+
+    const updated = await TripReportModel.findByIdAndUpdate(
+      id,
+      { $push: { comments: newComment } },
+      { new: true }
+    )
+      .select('comments commentsCount')
+      .lean();
+
+    if (!updated) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy nhật ký chuyến đi.' });
+    }
+
+    const nextCount = Array.isArray(updated.comments) ? updated.comments.length : 0;
+    await TripReportModel.updateOne({ _id: id }, { $set: { commentsCount: nextCount } });
+
+    return res.status(201).json({
+      success: true,
+      message: 'Đã gửi bình luận thành công!',
+      data: {
+        _id: commentId.toString(),
+        authorId: userId,
+        authorName,
+        authorAvatar,
+        content: cleanContent,
+        createdAt: newComment.createdAt.toISOString(),
+      },
+      comments: (updated.comments || []).map((c: any) => ({
+        _id: String(c._id),
+        authorId: String(c.authorId),
+        authorName: c.authorName,
+        authorAvatar: c.authorAvatar || '',
+        content: c.content,
+        createdAt: c.createdAt ? new Date(c.createdAt).toISOString() : new Date().toISOString(),
+      })),
+      commentsCount: nextCount,
+    });
+  } catch (err) {
+    console.error('[Add Trip Report Comment Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi lưu bình luận nhật ký.' });
+  }
+};
+
+// DELETE /api/trip-reports/:id/comments/:commentId - Comment author, report owner, or staff deletes a comment
+export const deleteTripReportComment = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    const isStaff = req.user?.role === 'admin' || req.user?.role === 'moderator';
+    const { id, commentId } = req.params;
+
+    if (!userId || !isValidObjectId(userId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    if (!isValidObjectId(id) || !isValidObjectId(commentId)) {
+      return res.status(400).json({ success: false, message: 'Mã nhật ký hoặc bình luận không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const report = await TripReportModel.findById(id).select('authorId comments').lean();
+    if (!report) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy nhật ký.' });
+    }
+
+    const targetComment = (report.comments || []).find((c: any) => String(c._id) === String(commentId));
+    if (!targetComment) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bình luận này.' });
+    }
+
+    const isReportOwner = String(report.authorId) === String(userId);
+    const isCommentAuthor = String(targetComment.authorId) === String(userId);
+    if (!isStaff && !isReportOwner && !isCommentAuthor) {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền xóa bình luận này.' });
+    }
+
+    const updated = await TripReportModel.findByIdAndUpdate(
+      id,
+      { $pull: { comments: { _id: new mongoose.Types.ObjectId(commentId) } } },
+      { new: true }
+    )
+      .select('comments')
+      .lean();
+
+    const nextCount = Array.isArray(updated?.comments) ? updated.comments.length : 0;
+    await TripReportModel.updateOne({ _id: id }, { $set: { commentsCount: nextCount } });
+    await recordAuditLog(req, 'DELETE_TRIP_REPORT_COMMENT', 'trip_reports', `Xóa bình luận ${commentId} trên nhật ký ${id}`);
+
+    return res.json({
+      success: true,
+      message: 'Đã xóa bình luận.',
+      comments: (updated?.comments || []).map((c: any) => ({
+        _id: String(c._id),
+        authorId: String(c.authorId),
+        authorName: c.authorName,
+        authorAvatar: c.authorAvatar || '',
+        content: c.content,
+        createdAt: c.createdAt ? new Date(c.createdAt).toISOString() : new Date().toISOString(),
+      })),
+      commentsCount: nextCount,
+    });
+  } catch (err) {
+    console.error('[Delete Trip Report Comment Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi xóa bình luận nhật ký.' });
   }
 };

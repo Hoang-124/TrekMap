@@ -93,7 +93,7 @@ export const TrailCard: React.FC<TrailCardProps> = React.memo(({
             style={{
               background: isSelectedForCompare
                 ? 'var(--color-primary)'
-                : 'color-mix(in srgb, var(--overlay-bg) 72%, transparent)',
+                : 'var(--overlay-bg)',
               color: isSelectedForCompare ? 'var(--color-on-primary)' : 'var(--color-on-media)',
               border: `1px solid ${
                 isSelectedForCompare
@@ -105,7 +105,6 @@ export const TrailCard: React.FC<TrailCardProps> = React.memo(({
               fontSize: '0.68rem',
               fontWeight: 700,
               cursor: 'pointer',
-              backdropFilter: 'blur(6px)',
             }}
           >
             {isSelectedForCompare ? 'Đã chọn' : '+ So sánh'}

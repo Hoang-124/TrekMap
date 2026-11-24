@@ -54,6 +54,35 @@ interface GuideDirectoryItem extends VerifiedGuideExtendedSeed {
   id?: string;
 }
 
+interface GuideReviewItem {
+  _id?: string;
+  userId?: string;
+  userName: string;
+  rating: number;
+  comment: string;
+  verifiedTrip?: boolean;
+  createdAt?: string;
+}
+
+interface GuideDetailPayload extends GuideDirectoryItem {
+  reviews?: GuideReviewItem[];
+  coveredTrails?: Array<{
+    id?: string;
+    _id?: string;
+    name: string;
+    province?: string;
+    maxAltitudeM?: number;
+    difficultyLevel?: number;
+  }>;
+}
+
+function formatDateVi(raw?: string): string {
+  if (!raw) return 'Chưa xác định';
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  return d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
 interface GuideInquiryRecord {
   _id: string;
   guideName?: string;
@@ -506,6 +535,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
   const [apiEstimate, setApiEstimate] = useState<CostEstimateSummary | null>(null);
 
   const inquiriesAbortRef = useRef<AbortController | null>(null);
+  const guideDetailAbortRef = useRef<AbortController | null>(null);
   const copiedTimerRef = useRef<number | null>(null);
   const lastSyncedTrailIdRef = useRef<string | undefined>(initialTrailId || initialUrlParams.trailId || undefined);
   const inquiryModalRef = useRef<HTMLDivElement | null>(null);
@@ -514,10 +544,11 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
   useFocusTrap(Boolean(inquiryGuide), inquiryModalRef);
   useFocusTrap(isInquiriesOpen, inquiriesDrawerRef);
 
-  // Cleanup timers & pending inquiry requests on unmount
+  // Cleanup timers & pending inquiry/detail requests on unmount
   useEffect(() => {
     return () => {
       inquiriesAbortRef.current?.abort();
+      guideDetailAbortRef.current?.abort();
       if (copiedTimerRef.current !== null) {
         window.clearTimeout(copiedTimerRef.current);
       }
@@ -685,12 +716,115 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
     void loadMyInquiries();
   }, [loadMyInquiries]);
 
+  // Guide Detail & Verified Reviews Modal state
+  const [detailGuide, setDetailGuide] = useState<GuideDetailPayload | null>(null);
+  const [loadingGuideDetail, setLoadingGuideDetail] = useState(false);
+  const [reviewRating, setReviewRating] = useState<number>(5);
+  const [reviewComment, setReviewComment] = useState<string>('');
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const guideDetailModalRef = useRef<HTMLDivElement>(null);
+
+  useFocusTrap(Boolean(detailGuide), guideDetailModalRef);
+
+  const openGuideDetailModal = useCallback(async (guide: GuideDirectoryItem) => {
+    guideDetailAbortRef.current?.abort();
+    const controller = new AbortController();
+    guideDetailAbortRef.current = controller;
+
+    setDetailGuide({ ...guide });
+    setReviewRating(5);
+    setReviewComment('');
+
+    const lookupId = guide._id || guide.slug || guide.id;
+    if (!lookupId) return;
+
+    setLoadingGuideDetail(true);
+    try {
+      const res = await fetch(`/api/directory/guides/${encodeURIComponent(lookupId)}`, {
+        headers: getApiHeaders(),
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      if (res.ok) {
+        const json = await res.json().catch(() => null);
+        if (!controller.signal.aborted && json?.success && json.data) {
+          setDetailGuide((prev) => ({ ...(prev || guide), ...(json.data as GuideDetailPayload) }));
+        }
+      }
+    } catch {
+      // Keep fallback seed guide details cleanly when offline
+    } finally {
+      if (!controller.signal.aborted) {
+        setLoadingGuideDetail(false);
+      }
+    }
+  }, []);
+
+  const handleSubmitGuideReview = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!detailGuide || submittingReview) return;
+    if (!currentUser) {
+      onShowToast?.('Vui lòng đăng nhập để gửi đánh giá Hướng dẫn viên / Porter.', 'info');
+      window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
+      return;
+    }
+    const targetGuideId = detailGuide._id || detailGuide.id || '';
+    if (!/^[a-fA-F0-9]{24}$/.test(targetGuideId)) {
+      onShowToast?.('Đơn vị này đang hiển thị từ dữ liệu ngoại tuyến — cần kết nối máy chủ để gửi đánh giá.', 'info');
+      return;
+    }
+    const cleanComment = reviewComment.trim();
+    if (cleanComment.length < 5) {
+      onShowToast?.('Vui lòng nhập nhận xét tối thiểu 5 ký tự.', 'error');
+      return;
+    }
+
+    setSubmittingReview(true);
+    try {
+      const res = await fetch(`/api/guides/${encodeURIComponent(targetGuideId)}/reviews`, {
+        method: 'POST',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ rating: reviewRating, comment: cleanComment }),
+      });
+      const json = await res.json().catch(() => null);
+      if (res.ok && json?.success) {
+        const updatedGuide = json.data as Partial<GuideDetailPayload> | undefined;
+        if (updatedGuide) {
+          setDetailGuide((prev) => (prev ? { ...prev, ...updatedGuide } : prev));
+          setGuides((prev) =>
+            prev.map((g) =>
+              g._id === targetGuideId || g.id === targetGuideId
+                ? {
+                    ...g,
+                    rating: typeof updatedGuide.rating === 'number' ? updatedGuide.rating : g.rating,
+                    reviewCount: typeof updatedGuide.reviewCount === 'number' ? updatedGuide.reviewCount : g.reviewCount,
+                  }
+                : g
+            )
+          );
+        }
+        setReviewComment('');
+        onShowToast?.(json.message || 'Đã gửi đánh giá Porter/Guide thành công!', 'success');
+      } else {
+        onShowToast?.(json?.message || 'Không thể gửi đánh giá lúc này.', 'error');
+      }
+    } catch {
+      onShowToast?.('Lỗi kết nối máy chủ khi gửi đánh giá.', 'error');
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
+
   // Escape key closes topmost inquiry modal / drawer (LIFO focus-trap + IME safe)
   useEffect(() => {
-    if (!inquiryGuide && !isInquiriesOpen) return;
+    if (!inquiryGuide && !isInquiriesOpen && !detailGuide) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.isComposing) return;
-      if (inquiryGuide && isTopmostFocusTrap(inquiryModalRef.current)) {
+      if (detailGuide && isTopmostFocusTrap(guideDetailModalRef.current)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (!submittingReview) setDetailGuide(null);
+      } else if (inquiryGuide && isTopmostFocusTrap(inquiryModalRef.current)) {
         e.preventDefault();
         e.stopImmediatePropagation();
         if (!isSubmittingInquiry) setInquiryGuide(null);
@@ -702,7 +836,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [inquiryGuide, isInquiriesOpen, isSubmittingInquiry]);
+  }, [inquiryGuide, isInquiriesOpen, isSubmittingInquiry, detailGuide, submittingReview]);
 
   // Local deterministic estimate + live backend cost estimate overlay
   const localEstimate = useMemo(
@@ -1775,6 +1909,8 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                     <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
                       <img
+                        loading="lazy"
+                        decoding="async"
                         src={guide.avatarUrl || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329095/trekmap/avatars/avatar_guide_1.jpg'}
                         alt={guide.name}
                         style={{
@@ -1809,7 +1945,25 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                           </span>
                         </div>
                         <h3 style={{ margin: 0, fontSize: '0.94rem', fontWeight: 700, color: 'var(--color-text-main)', lineHeight: 1.35 }}>
-                          {guide.name}
+                          <button
+                            type="button"
+                            onClick={() => void openGuideDetailModal(guide)}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              padding: 0,
+                              margin: 0,
+                              textAlign: 'left',
+                              color: 'inherit',
+                              font: 'inherit',
+                              cursor: 'pointer',
+                              textDecoration: 'underline',
+                              textDecorationColor: 'color-mix(in srgb, var(--color-primary) 40%, transparent)',
+                              textUnderlineOffset: 3,
+                            }}
+                          >
+                            {guide.name}
+                          </button>
                         </h3>
                       </div>
                     </div>
@@ -1871,7 +2025,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', gap: 8, paddingTop: 10, borderTop: '1px solid var(--color-border)' }}>
+                  <div style={{ display: 'flex', gap: 8, paddingTop: 10, borderTop: '1px solid var(--color-border)', flexWrap: 'wrap' }}>
                     <button
                       type="button"
                       className="btn btn-primary"
@@ -1879,7 +2033,16 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                       style={{ flex: 1, justifyContent: 'center', fontSize: '0.78rem', padding: '8px 10px', borderRadius: 4 }}
                     >
                       <IconSend size={13} color="var(--color-on-primary)" />
-                      <span>Gửi Yêu Cầu / Đặt Lịch</span>
+                      <span>Đặt Lịch</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => void openGuideDetailModal(guide)}
+                      style={{ padding: '8px 10px', fontSize: '0.78rem', borderRadius: 4 }}
+                    >
+                      <IconStar size={13} color="var(--color-sun)" />
+                      <span>Chi tiết &amp; Đánh giá</span>
                     </button>
                     <a
                       href={`tel:${dial}`}
@@ -2319,9 +2482,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
             style={{
               position: 'fixed',
               inset: 0,
-              background: 'color-mix(in srgb, var(--color-bg-main) 84%, transparent)',
-              backdropFilter: 'blur(12px)',
-              WebkitBackdropFilter: 'blur(12px)',
+              background: 'var(--overlay-bg)',
               zIndex: 'var(--z-modal, 3000)' as unknown as number,
               display: 'flex',
               alignItems: 'center',
@@ -2540,9 +2701,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
             style={{
               position: 'fixed',
               inset: 0,
-              background: 'color-mix(in srgb, var(--color-bg-main) 82%, transparent)',
-              backdropFilter: 'blur(10px)',
-              WebkitBackdropFilter: 'blur(10px)',
+              background: 'var(--overlay-bg)',
               zIndex: 'var(--z-modal, 3000)' as unknown as number,
               display: 'flex',
               justifyContent: 'flex-end',
@@ -2641,7 +2800,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                         </div>
                         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: '0.73rem', color: 'var(--color-text-dim)' }}>
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                            <IconCalendar size={12} /> {inq.plannedStartDate} ({inq.durationDays}N)
+                            <IconCalendar size={12} /> {formatDateVi(inq.plannedStartDate)} ({inq.durationDays}N)
                           </span>
                           <span>{inq.groupSize} người • {inq.needPortersCount} porter</span>
                         </div>
@@ -2660,6 +2819,305 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                       </div>
                     );
                   })
+                )}
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* ==================================================================== */}
+      {/* GUIDE DETAIL & VERIFIED REVIEWS MODAL                                */}
+      {/* ==================================================================== */}
+      {detailGuide &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            onClick={() => !submittingReview && setDetailGuide(null)}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'var(--overlay-bg)',
+              zIndex: 'var(--z-modal, 3000)' as unknown as number,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 16,
+              fontFamily: 'var(--font-family)',
+            }}
+          >
+            <div
+              ref={guideDetailModalRef}
+              tabIndex={-1}
+              role="dialog"
+              aria-modal="true"
+              aria-label={`Chi tiết và đánh giá ${detailGuide.name}`}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: 'min(620px, 96vw)',
+                maxHeight: '90dvh',
+                overflowY: 'auto',
+                background: 'var(--color-bg-card)',
+                border: '1px solid var(--color-border-strong)',
+                borderTop: '3px solid var(--color-primary)',
+                borderRadius: 6,
+                padding: 20,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 16,
+                outline: 'none',
+              }}
+            >
+              {/* Modal Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, paddingBottom: 12, borderBottom: '1px solid var(--color-border)' }}>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                  <img
+                    loading="lazy"
+                    decoding="async"
+                    src={detailGuide.avatarUrl || 'https://res.cloudinary.com/dsxbuk4pe/image/upload/v1785329095/trekmap/avatars/avatar_guide_1.jpg'}
+                    alt={detailGuide.name}
+                    style={{
+                      width: 54,
+                      height: 54,
+                      borderRadius: 6,
+                      objectFit: 'cover',
+                      border: '1px solid var(--color-border-strong)',
+                      flexShrink: 0,
+                    }}
+                  />
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <span className="badge badge-success" style={{ fontSize: '0.68rem' }}>
+                        <IconShieldCheck size={11} /> Chính thức
+                      </span>
+                      <span style={{ fontSize: '0.74rem', color: 'var(--color-text-dim)' }}>
+                        {detailGuide.region} • {detailGuide.experienceYears || 10}+ năm kinh nghiệm
+                      </span>
+                    </div>
+                    <h3 style={{ margin: '4px 0 2px', fontSize: '1.08rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                      {detailGuide.name}
+                    </h3>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: '0.76rem', color: 'var(--color-text-muted)' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <IconStar size={13} color="var(--color-sun)" fill={detailGuide.rating > 0 ? 'var(--color-sun)' : 'none'} />
+                        <strong style={{ color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
+                          {detailGuide.rating > 0 ? `${detailGuide.rating.toFixed(1)} (${detailGuide.reviewCount} đánh giá)` : 'Chưa có đánh giá'}
+                        </strong>
+                      </span>
+                      <span>• {formatVnd(detailGuide.basePricePerDayVnd || 600000)}/ngày</span>
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => !submittingReview && setDetailGuide(null)}
+                  aria-label="Đóng chi tiết hướng dẫn viên"
+                  style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', padding: 4 }}
+                >
+                  <IconX size={18} />
+                </button>
+              </div>
+
+              {/* Bio & Quick Contact */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--color-text-muted)', lineHeight: 1.55 }}>
+                  {detailGuide.bio || detailGuide.priceNote}
+                </p>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => {
+                      const target = detailGuide;
+                      setDetailGuide(null);
+                      openInquiryModal(target);
+                    }}
+                    style={{ fontSize: '0.78rem', padding: '6px 12px', borderRadius: 4 }}
+                  >
+                    <IconSend size={13} color="var(--color-on-primary)" /> Gửi Yêu Cầu Đặt Lịch
+                  </button>
+                  <a
+                    href={`tel:${extractPrimaryDialPhone(detailGuide.phone)}`}
+                    className="btn btn-outline"
+                    style={{ fontSize: '0.78rem', padding: '6px 12px', borderRadius: 4, textDecoration: 'none' }}
+                  >
+                    <IconPhone size={13} color="var(--color-sky)" /> {detailGuide.phone}
+                  </a>
+                </div>
+              </div>
+
+              {/* Covered Trails */}
+              {Array.isArray(detailGuide.coveredTrails) && detailGuide.coveredTrails.length > 0 && (
+                <div>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', marginBottom: 6 }}>
+                    Cung Đường Phụ Trách ({detailGuide.coveredTrails.length})
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {detailGuide.coveredTrails.map((ct) => {
+                      const matched = trails.find((t) => t.id === ct.id || t.name === ct.name);
+                      return (
+                        <button
+                          key={ct.id || ct._id || ct.name}
+                          type="button"
+                          onClick={() => {
+                            if (matched && onSelectTrail) {
+                              setDetailGuide(null);
+                              onSelectTrail(matched);
+                            }
+                          }}
+                          style={{
+                            padding: '4px 9px',
+                            borderRadius: 4,
+                            fontSize: '0.74rem',
+                            fontWeight: 700,
+                            border: '1px solid var(--color-border)',
+                            background: 'var(--color-bg-main)',
+                            color: 'var(--color-text-main)',
+                            cursor: matched && onSelectTrail ? 'pointer' : 'default',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                          }}
+                        >
+                          <IconMountain size={12} color="var(--color-primary)" />
+                          <span>{ct.name}</span>
+                          {ct.maxAltitudeM ? <span style={{ color: 'var(--color-text-dim)' }}>({ct.maxAltitudeM}m)</span> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Submit Verified Review Form */}
+              <form
+                onSubmit={(e) => void handleSubmitGuideReview(e)}
+                style={{
+                  padding: 12,
+                  borderRadius: 6,
+                  background: 'var(--color-bg-main)',
+                  border: '1px solid var(--color-border)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 10,
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <strong style={{ fontSize: '0.82rem', color: 'var(--color-text-main)' }}>
+                    Viết Đánh Giá Thực Tế
+                  </strong>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <button
+                        key={star}
+                        type="button"
+                        aria-label={`Chấm ${star} sao`}
+                        onClick={() => setReviewRating(star)}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          padding: 2,
+                          display: 'inline-flex',
+                        }}
+                      >
+                        <IconStar
+                          size={16}
+                          color={star <= reviewRating ? 'var(--color-sun)' : 'var(--color-text-dim)'}
+                          fill={star <= reviewRating ? 'var(--color-sun)' : 'none'}
+                        />
+                      </button>
+                    ))}
+                    <span style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-text-muted)', marginLeft: 4 }}>
+                      {reviewRating}/5
+                    </span>
+                  </div>
+                </div>
+                <textarea
+                  rows={2}
+                  className="form-input"
+                  value={reviewComment}
+                  onChange={(e) => setReviewComment(e.target.value)}
+                  placeholder="Chia sẻ trải nghiệm thực tế về thái độ hỗ trợ, kỹ năng dẫn đường, an toàn và ẩm thực trên núi..."
+                  maxLength={800}
+                  style={{ fontSize: '0.8rem', borderRadius: 4, resize: 'vertical' }}
+                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)' }}>
+                    Trekker đã check-in cung trong địa bàn sẽ tự động gắn huy hiệu &ldquo;Chuyến đi xác thực&rdquo;.
+                  </span>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={submittingReview}
+                    style={{ padding: '6px 14px', fontSize: '0.78rem', borderRadius: 4 }}
+                  >
+                    {submittingReview ? 'Đang gửi...' : 'Gửi Đánh Giá'}
+                  </button>
+                </div>
+              </form>
+
+              {/* Existing Reviews List */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
+                  Đánh Giá Cộng Đồng ({detailGuide.reviews?.length ?? 0})
+                </div>
+                {loadingGuideDetail ? (
+                  <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', padding: '12px 0' }}>
+                    Đang tải đánh giá thực tế...
+                  </div>
+                ) : !detailGuide.reviews || detailGuide.reviews.length === 0 ? (
+                  <div
+                    style={{
+                      padding: 14,
+                      borderRadius: 4,
+                      border: '1px dashed var(--color-border)',
+                      background: 'var(--color-bg-main)',
+                      fontSize: '0.78rem',
+                      color: 'var(--color-text-muted)',
+                      textAlign: 'center',
+                    }}
+                  >
+                    Chưa có đánh giá nào từ thành viên LOST. Hãy là người đầu tiên chia sẻ trải nghiệm sau chuyến đi!
+                  </div>
+                ) : (
+                  detailGuide.reviews.map((rev, idx) => (
+                    <div
+                      key={rev._id || `${rev.userName}-${idx}`}
+                      style={{
+                        padding: '10px 12px',
+                        borderRadius: 4,
+                        background: 'var(--color-bg-main)',
+                        border: '1px solid var(--color-border)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 5,
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <strong style={{ fontSize: '0.8rem', color: 'var(--color-text-main)' }}>{rev.userName}</strong>
+                          {rev.verifiedTrip && (
+                            <span className="badge badge-success" style={{ fontSize: '0.64rem' }}>
+                              <IconCheckCircle size={10} /> Chuyến đi xác thực
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.72rem', color: 'var(--color-sun)', fontWeight: 700 }}>
+                          <IconStar size={12} color="var(--color-sun)" fill="var(--color-sun)" />
+                          <span>{rev.rating}/5</span>
+                          {rev.createdAt && (
+                            <span style={{ color: 'var(--color-text-dim)', fontWeight: 500, marginLeft: 4 }}>
+                              • {formatDateVi(rev.createdAt)}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
+                        {rev.comment}
+                      </p>
+                    </div>
+                  ))
                 )}
               </div>
             </div>

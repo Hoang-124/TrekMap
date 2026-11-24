@@ -44,8 +44,6 @@ export const LogoutConfirmModal: React.FC<LogoutConfirmModalProps> = ({
         inset: 0,
         zIndex: 'var(--z-modal-nested, 3100)' as unknown as number,
         background: 'var(--overlay-bg)',
-        backdropFilter: 'blur(6px)',
-        WebkitBackdropFilter: 'blur(6px)',
       }}
       onClick={onClose}
     >

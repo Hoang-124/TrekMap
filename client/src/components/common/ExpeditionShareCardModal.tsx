@@ -277,8 +277,6 @@ export const ExpeditionShareCardModal: React.FC<ExpeditionShareCardModalProps> =
         inset: 0,
         zIndex: 'var(--z-lightbox, 4000)' as unknown as number,
         background: 'var(--overlay-bg)',
-        backdropFilter: 'blur(8px)',
-        WebkitBackdropFilter: 'blur(8px)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -371,6 +369,8 @@ export const ExpeditionShareCardModal: React.FC<ExpeditionShareCardModalProps> =
               </div>
             ) : previewUrl ? (
               <img
+                loading="lazy"
+                decoding="async"
                 src={previewUrl}
                 alt={`Xem trước thẻ hành trình ${initialData.peakName}`}
                 style={{

@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { deleteTrailCondition } from '../../services/api.js';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { deleteTrailCondition, uploadImageToCloudinary } from '../../services/api.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
+import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
 import {
   IconAlertTriangle,
   IconShieldCheck,
@@ -12,6 +14,8 @@ import {
   IconShieldAlert,
   IconX,
   IconTrash,
+  IconEdit,
+  IconCamera,
 } from '../common/SvgIcons.js';
 
 export interface ConditionItem {
@@ -27,6 +31,7 @@ export interface ConditionItem {
   description: string;
   section: string;
   weatherNote?: string;
+  photos?: string[];
   upvotes: number;
   hasUpvoted?: boolean;
   createdAt: string;
@@ -43,8 +48,10 @@ function resolveViewerFromToken(): { id: string; role: string } | null {
     if (!token) return null;
     const parts = token.split('.');
     if (parts.length < 2) return null;
-    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    const json = JSON.parse(atob(b64));
+    const payloadPart = parts.length === 2 ? parts[0] : parts[1];
+    const normalized = payloadPart.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    const json = JSON.parse(atob(padded));
     return {
       id: String(json?.userId || json?.id || json?._id || ''),
       role: String(json?.role || 'user'),
@@ -62,7 +69,7 @@ const SECTION_PRESETS = [
   'Khu vực hạ trại / Nguồn nước',
 ];
 
-export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ trailId, currentUser }) => {
+export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React.memo(({ trailId, currentUser }) => {
   const [conditions, setConditions] = useState<ConditionItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -72,10 +79,27 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ tr
   const [section, setSection] = useState('Toàn tuyến');
   const [weatherNote, setWeatherNote] = useState('');
   const [description, setDescription] = useState('');
+  const [photos, setPhotos] = useState<string[]>([]);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [feedback, setFeedback] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [upvotedIds, setUpvotedIds] = useState<Record<string, boolean>>({});
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  // Inline Edit Condition state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editCondition, setEditCondition] = useState<'safe' | 'caution' | 'dangerous' | 'closed'>('safe');
+  const [editSection, setEditSection] = useState('Toàn tuyến');
+  const [editWeatherNote, setEditWeatherNote] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editPhotos, setEditPhotos] = useState<string[]>([]);
+  const [uploadingEditPhoto, setUploadingEditPhoto] = useState(false);
+  const [savingEditId, setSavingEditId] = useState<string | null>(null);
+
+  // Condition photo lightbox
+  const [lightboxPhoto, setLightboxPhoto] = useState<string | null>(null);
+  const lightboxRef = useRef<HTMLDivElement | null>(null);
+  useFocusTrap(Boolean(lightboxPhoto), lightboxRef);
 
   const viewerIdentity = useMemo(() => {
     if (currentUser && (currentUser.id || currentUser._id || currentUser.role)) {
@@ -87,20 +111,28 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ tr
     return resolveViewerFromToken();
   }, [currentUser]);
 
-  // Close submission form or inline delete confirm with Escape key (only when no modal sits above)
+  // Close lightbox, submission form, inline edit or inline delete confirm with Escape key
   useEffect(() => {
-    if (!isFormOpen && !confirmDeleteId) return;
+    if (!isFormOpen && !confirmDeleteId && !editingId && !lightboxPhoto) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.isComposing) return;
       if (e.key === 'Escape') {
+        if (lightboxPhoto) {
+          if (!isTopmostFocusTrap(lightboxRef.current)) return;
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          setLightboxPhoto(null);
+          return;
+        }
         if (document.querySelector('[aria-modal="true"]')) return;
         if (confirmDeleteId) setConfirmDeleteId(null);
+        else if (editingId) setEditingId(null);
         else if (isFormOpen) setIsFormOpen(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isFormOpen, confirmDeleteId]);
+  }, [isFormOpen, confirmDeleteId, editingId, lightboxPhoto]);
 
   const fetchConditions = useCallback(async () => {
     setIsLoading(true);
@@ -176,6 +208,100 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ tr
     }
   };
 
+  const handleUploadPhotos = async (
+    files: FileList | null,
+    target: 'create' | 'edit'
+  ) => {
+    if (!files || files.length === 0) return;
+    const currentList = target === 'create' ? photos : editPhotos;
+    const remainingSlots = Math.max(0, 4 - currentList.length);
+    if (remainingSlots === 0) {
+      setFeedback({ text: 'Tối đa 4 ảnh thực địa cho mỗi báo cáo.', type: 'error' });
+      return;
+    }
+
+    const toProcess = Array.from(files).slice(0, remainingSlots);
+    if (target === 'create') setUploadingPhoto(true);
+    else setUploadingEditPhoto(true);
+    setFeedback(null);
+
+    try {
+      const uploadedUrls: string[] = [];
+      for (const file of toProcess) {
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ''));
+          reader.onerror = () => reject(new Error('Không thể đọc tệp ảnh.'));
+          reader.readAsDataURL(file);
+        });
+        const url = await uploadImageToCloudinary(base64, file.name, 'trails');
+        uploadedUrls.push(url);
+      }
+      if (target === 'create') {
+        setPhotos((prev) => [...prev, ...uploadedUrls].slice(0, 4));
+      } else {
+        setEditPhotos((prev) => [...prev, ...uploadedUrls].slice(0, 4));
+      }
+    } catch (err) {
+      setFeedback({
+        text: err instanceof Error ? err.message : 'Không thể tải ảnh lên máy chủ lúc này.',
+        type: 'error',
+      });
+    } finally {
+      if (target === 'create') setUploadingPhoto(false);
+      else setUploadingEditPhoto(false);
+    }
+  };
+
+  const handleStartEdit = (item: ConditionItem) => {
+    setConfirmDeleteId(null);
+    setEditingId(item._id);
+    setEditCondition(item.condition);
+    setEditSection(item.section || 'Toàn tuyến');
+    setEditWeatherNote(item.weatherNote || '');
+    setEditDescription(item.description || '');
+    setEditPhotos(Array.isArray(item.photos) ? item.photos.slice(0, 4) : []);
+  };
+
+  const handleSaveEdit = async (e: React.FormEvent, conditionId: string) => {
+    e.preventDefault();
+    if (savingEditId || !editDescription.trim()) return;
+    setSavingEditId(conditionId);
+    setFeedback(null);
+    try {
+      const res = await fetch(`/api/trail-conditions/${encodeURIComponent(conditionId)}`, {
+        method: 'PATCH',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          status: editCondition,
+          condition: editCondition,
+          section: editSection,
+          weatherNote: editWeatherNote,
+          description: editDescription.trim(),
+          photos: editPhotos.slice(0, 4),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || 'Không thể cập nhật báo cáo tình trạng đường.');
+      }
+      if (data.data) {
+        setConditions((prev) =>
+          prev.map((item) => (item._id === conditionId ? { ...item, ...data.data } : item))
+        );
+      }
+      setEditingId(null);
+      setFeedback({ text: data.message || 'Đã cập nhật báo cáo tình trạng đường thành công!', type: 'success' });
+    } catch (err) {
+      setFeedback({
+        text: err instanceof Error ? err.message : 'Không thể cập nhật báo cáo tình trạng đường lúc này.',
+        type: 'error',
+      });
+    } finally {
+      setSavingEditId(null);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmitting) return;
@@ -202,6 +328,7 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ tr
           section,
           weatherNote,
           description,
+          photos: photos.slice(0, 4),
         }),
       });
 
@@ -211,6 +338,7 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ tr
         setIsFormOpen(false);
         setDescription('');
         setWeatherNote('');
+        setPhotos([]);
         await fetchConditions();
       } else {
         setFeedback({ text: data.message || 'Không thể gửi báo cáo.', type: 'error' });
@@ -444,7 +572,7 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ tr
                   border: active ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
                   background: active ? 'color-mix(in srgb, var(--color-primary) 14%, transparent)' : 'var(--color-bg-main)',
                   color: active ? 'var(--color-primary)' : 'var(--color-text-muted)',
-                  transition: 'all 0.2s ease',
+                  transition: 'background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease',
                 }}
               >
                 {tab.label}
@@ -609,6 +737,87 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ tr
             />
           </div>
 
+          {/* Photo Upload (up to 4 photos via /api/upload) */}
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+              <label className="form-label" style={{ margin: 0 }}>
+                Ảnh hiện trường thực địa (tối đa 4 ảnh · {photos.length}/4)
+              </label>
+              <label
+                htmlFor="condition-create-photo-input"
+                className="btn btn-outline"
+                style={{
+                  padding: '5px 11px',
+                  fontSize: '0.74rem',
+                  borderRadius: 4,
+                  cursor: uploadingPhoto || photos.length >= 4 ? 'not-allowed' : 'pointer',
+                  opacity: uploadingPhoto || photos.length >= 4 ? 0.6 : 1,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+              >
+                <IconCamera size={13} color="var(--color-primary)" />
+                <span>{uploadingPhoto ? 'Đang tải ảnh...' : 'Thêm ảnh thực địa'}</span>
+              </label>
+              <input
+                id="condition-create-photo-input"
+                type="file"
+                accept="image/*"
+                multiple
+                disabled={uploadingPhoto || photos.length >= 4}
+                onChange={(e) => {
+                  void handleUploadPhotos(e.target.files, 'create');
+                  e.target.value = '';
+                }}
+                style={{ display: 'none' }}
+              />
+            </div>
+
+            {photos.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {photos.map((url, idx) => (
+                  <div
+                    key={`${url}-${idx}`}
+                    style={{
+                      position: 'relative',
+                      width: 78,
+                      height: 60,
+                      borderRadius: 4,
+                      overflow: 'hidden',
+                      border: '1px solid var(--color-border-strong)',
+                    }}
+                  >
+                    <img loading="lazy" decoding="async" src={url} alt={`Ảnh thực địa ${idx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                    <button
+                      type="button"
+                      onClick={() => setPhotos((prev) => prev.filter((_, i) => i !== idx))}
+                      aria-label={`Xóa ảnh ${idx + 1}`}
+                      style={{
+                        position: 'absolute',
+                        top: 2,
+                        right: 2,
+                        width: 20,
+                        height: 20,
+                        borderRadius: '50%',
+                        border: 'none',
+                        background: 'var(--overlay-bg)',
+                        color: 'var(--color-on-media)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'pointer',
+                        padding: 0,
+                      }}
+                    >
+                      <IconX size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
             <button
               type="button"
@@ -621,9 +830,9 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ tr
             </button>
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || uploadingPhoto}
               className="btn btn-primary"
-              style={{ padding: '8px 22px', borderRadius: 4, fontWeight: 800, opacity: isSubmitting ? 0.7 : 1 }}
+              style={{ padding: '8px 22px', borderRadius: 4, fontWeight: 800, opacity: isSubmitting || uploadingPhoto ? 0.7 : 1 }}
             >
               {isSubmitting ? 'Đang gửi báo cáo...' : 'Đăng Báo Cáo Thực Địa'}
             </button>
@@ -655,6 +864,15 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ tr
           {filteredConditions.map((c) => {
             const meta = getConditionMeta(c.condition);
             const isUpvoted = !!upvotedIds[c._id];
+            const isEditingThis = editingId === c._id;
+            const authorId =
+              c.userId && typeof c.userId === 'object'
+                ? String(c.userId._id || c.userId.id || '')
+                : String(c.userId || '');
+            const isPrivileged = viewerIdentity?.role === 'admin' || viewerIdentity?.role === 'moderator';
+            const isOwner = Boolean(viewerIdentity?.id && authorId && viewerIdentity.id === authorId);
+            const canModify = Boolean(viewerIdentity && (isOwner || isPrivileged));
+
             return (
               <div
                 key={c._id}
@@ -666,219 +884,510 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = ({ tr
                   borderLeft: `3px solid ${meta.accentColor}`,
                   borderRadius: 6,
                   display: 'flex',
-                  alignItems: 'flex-start',
-                  justifyContent: 'space-between',
-                  gap: 16,
-                  flexWrap: 'wrap',
+                  flexDirection: 'column',
+                  gap: 12,
                 }}
               >
-                <div style={{ flex: 1, minWidth: 220 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-                    <span className={meta.badgeClass} style={{ fontSize: '0.68rem', fontWeight: 800 }}>
-                      {meta.label}
-                    </span>
-                    <span
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 4,
-                        fontSize: '0.8rem',
-                        fontWeight: 700,
-                        color: 'var(--color-text-main)',
-                        background: 'var(--color-bg-card)',
-                        padding: '3px 9px',
-                        borderRadius: 4,
-                        border: '1px solid var(--color-border)',
-                      }}
-                    >
-                      <IconMapPin size={12} color="var(--color-sky)" />
-                      {c.section || 'Toàn tuyến'}
-                    </span>
-                    {c.weatherNote && (
-                      <span
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 4,
-                          fontSize: '0.75rem',
-                          fontWeight: 600,
-                          color: 'var(--color-sky)',
-                          background: 'color-mix(in srgb, var(--color-sky) 12%, transparent)',
-                          padding: '3px 9px',
-                          borderRadius: 4,
-                          border: '1px solid color-mix(in srgb, var(--color-sky) 28%, transparent)',
-                        }}
+                {isEditingThis ? (
+                  <form onSubmit={(e) => void handleSaveEdit(e, c._id)} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div style={{ fontSize: '0.86rem', fontWeight: 800, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <IconEdit size={15} color="var(--color-primary)" />
+                      <span>Chỉnh sửa báo cáo tình trạng thực địa</span>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
+                      <div>
+                        <label className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: '0.76rem' }}>
+                          Mức độ an toàn
+                        </label>
+                        <select
+                          value={editCondition}
+                          onChange={(e) => setEditCondition(e.target.value as 'safe' | 'caution' | 'dangerous' | 'closed')}
+                          className="form-select"
+                          style={{ width: '100%', fontSize: '0.82rem' }}
+                        >
+                          <option value="safe">An toàn • Đường khô ráo</option>
+                          <option value="caution">Thận trọng • Trơn trượt / Sương mù</option>
+                          <option value="dangerous">Nguy hiểm • Sạt lở / Lũ suối</option>
+                          <option value="closed">Tạm đóng • Kiểm lâm cấm tuyến</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: '0.76rem' }}>
+                          Phân đoạn
+                        </label>
+                        <input
+                          type="text"
+                          value={editSection}
+                          onChange={(e) => setEditSection(e.target.value)}
+                          className="form-input"
+                          style={{ width: '100%', fontSize: '0.82rem' }}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: '0.76rem' }}>
+                          Ghi chú thời tiết
+                        </label>
+                        <input
+                          type="text"
+                          value={editWeatherNote}
+                          onChange={(e) => setEditWeatherNote(e.target.value)}
+                          className="form-input"
+                          style={{ width: '100%', fontSize: '0.82rem' }}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: '0.76rem' }}>
+                        Mô tả thực địa
+                      </label>
+                      <textarea
+                        rows={3}
+                        required
+                        value={editDescription}
+                        onChange={(e) => setEditDescription(e.target.value)}
+                        className="form-textarea"
+                        style={{ width: '100%', fontSize: '0.84rem' }}
+                      />
+                    </div>
+
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-muted)' }}>
+                          Ảnh đính kèm ({editPhotos.length}/4)
+                        </span>
+                        <label
+                          htmlFor={`condition-edit-photo-${c._id}`}
+                          className="btn btn-outline"
+                          style={{
+                            padding: '4px 10px',
+                            fontSize: '0.72rem',
+                            borderRadius: 4,
+                            cursor: uploadingEditPhoto || editPhotos.length >= 4 ? 'not-allowed' : 'pointer',
+                            opacity: uploadingEditPhoto || editPhotos.length >= 4 ? 0.6 : 1,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 5,
+                          }}
+                        >
+                          <IconCamera size={12} color="var(--color-primary)" />
+                          <span>{uploadingEditPhoto ? 'Đang tải...' : 'Thêm ảnh'}</span>
+                        </label>
+                        <input
+                          id={`condition-edit-photo-${c._id}`}
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          disabled={uploadingEditPhoto || editPhotos.length >= 4}
+                          onChange={(e) => {
+                            void handleUploadPhotos(e.target.files, 'edit');
+                            e.target.value = '';
+                          }}
+                          style={{ display: 'none' }}
+                        />
+                      </div>
+                      {editPhotos.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                          {editPhotos.map((url, idx) => (
+                            <div
+                              key={`${url}-${idx}`}
+                              style={{
+                                position: 'relative',
+                                width: 72,
+                                height: 54,
+                                borderRadius: 4,
+                                overflow: 'hidden',
+                                border: '1px solid var(--color-border-strong)',
+                              }}
+                            >
+                              <img loading="lazy" decoding="async" src={url} alt={`Ảnh báo cáo ${idx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                              <button
+                                type="button"
+                                onClick={() => setEditPhotos((prev) => prev.filter((_, i) => i !== idx))}
+                                aria-label={`Xóa ảnh ${idx + 1}`}
+                                style={{
+                                  position: 'absolute',
+                                  top: 2,
+                                  right: 2,
+                                  width: 18,
+                                  height: 18,
+                                  borderRadius: '50%',
+                                  border: 'none',
+                                  background: 'var(--overlay-bg)',
+                                  color: 'var(--color-on-media)',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  cursor: 'pointer',
+                                  padding: 0,
+                                }}
+                              >
+                                <IconX size={10} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                      <button
+                        type="button"
+                        onClick={() => setEditingId(null)}
+                        disabled={savingEditId === c._id}
+                        className="btn btn-outline"
+                        style={{ padding: '6px 14px', fontSize: '0.78rem', borderRadius: 4 }}
                       >
-                        <IconCloudFog size={12} color="var(--color-sky)" />
-                        {c.weatherNote}
-                      </span>
-                    )}
-                  </div>
-
-                  <p
-                    style={{
-                      fontSize: '0.88rem',
-                      color: 'var(--color-text-main)',
-                      lineHeight: 1.55,
-                      margin: '0 0 10px 0',
-                    }}
-                  >
-                    {c.description}
-                  </p>
-
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 10,
-                      flexWrap: 'wrap',
-                      fontSize: '0.74rem',
-                      color: 'var(--color-text-dim)',
-                    }}
-                  >
-                    <span style={{ fontWeight: 700, color: 'var(--color-text-muted)' }}>
-                      Ghi nhận bởi: <strong style={{ color: 'var(--color-text-main)' }}>{c.userId?.fullName || 'Trekker Thực Địa'}</strong>
-                    </span>
-                    {c.userId?.reputationScore && (
-                      <span style={{ color: 'var(--color-sun)', fontWeight: 700 }}>
-                        · {c.userId.reputationScore} Điểm Uy Tín
-                      </span>
-                    )}
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                      <IconClock size={11} color="var(--color-text-dim)" />
-                      {new Date(c.createdAt).toLocaleDateString('vi-VN', {
-                        day: '2-digit',
-                        month: '2-digit',
-                        year: 'numeric',
-                      })}
-                    </span>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
-                  <button
-                    type="button"
-                    onClick={() => handleUpvote(c._id)}
-                    className="interactive-click"
-                    title="Xác nhận thông tin thực địa này là chính xác"
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      padding: '7px 12px',
-                      borderRadius: 4,
-                      border: isUpvoted ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
-                      background: isUpvoted ? 'color-mix(in srgb, var(--color-primary) 15%, transparent)' : 'var(--color-bg-card)',
-                      color: isUpvoted ? 'var(--color-primary)' : 'var(--color-text-muted)',
-                      fontSize: '0.78rem',
-                      fontWeight: 800,
-                      cursor: isUpvoted ? 'default' : 'pointer',
-                      flexShrink: 0,
-                    }}
-                  >
-                    <IconShieldCheck size={15} color={isUpvoted ? 'var(--color-primary)' : 'currentColor'} />
-                    <span>Xác thực ({c.upvotes || 0})</span>
-                  </button>
-
-                  {(() => {
-                    const authorId =
-                      c.userId && typeof c.userId === 'object'
-                        ? String(c.userId._id || c.userId.id || '')
-                        : String(c.userId || '');
-                    const isPrivileged = viewerIdentity?.role === 'admin' || viewerIdentity?.role === 'moderator';
-                    const isOwner = Boolean(viewerIdentity?.id && authorId && viewerIdentity.id === authorId);
-                    const canDelete = Boolean(viewerIdentity && (isOwner || isPrivileged));
-                    if (!canDelete) return null;
-
-                    const isConfirming = confirmDeleteId === c._id;
-                    const isDeleting = deletingId === c._id;
-
-                    if (isConfirming) {
-                      return (
-                        <div
+                        Hủy
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={savingEditId === c._id || uploadingEditPhoto}
+                        className="btn btn-primary"
+                        style={{ padding: '6px 16px', fontSize: '0.78rem', fontWeight: 800, borderRadius: 4 }}
+                      >
+                        {savingEditId === c._id ? 'Đang lưu...' : 'Lưu Thay Đổi'}
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+                    <div style={{ flex: 1, minWidth: 220 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                        <span className={meta.badgeClass} style={{ fontSize: '0.68rem', fontWeight: 800 }}>
+                          {meta.label}
+                        </span>
+                        <span
                           style={{
                             display: 'inline-flex',
                             alignItems: 'center',
-                            gap: 6,
-                            padding: '4px 8px',
+                            gap: 4,
+                            fontSize: '0.8rem',
+                            fontWeight: 700,
+                            color: 'var(--color-text-main)',
+                            background: 'var(--color-bg-card)',
+                            padding: '3px 9px',
                             borderRadius: 4,
-                            background: 'color-mix(in srgb, var(--color-error) 12%, transparent)',
-                            border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)',
+                            border: '1px solid var(--color-border)',
                           }}
                         >
-                          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-error-text, var(--color-error))' }}>
-                            Xóa?
-                          </span>
-                          <button
-                            type="button"
-                            disabled={isDeleting}
-                            onClick={() => handleDeleteCondition(c._id)}
+                          <IconMapPin size={12} color="var(--color-sky)" />
+                          {c.section || 'Toàn tuyến'}
+                        </span>
+                        {c.weatherNote && (
+                          <span
                             style={{
-                              padding: '3px 8px',
-                              borderRadius: 4,
-                              border: 'none',
-                              background: 'var(--color-error)',
-                              color: 'var(--color-on-danger)',
-                              fontSize: '0.72rem',
-                              fontWeight: 700,
-                              cursor: isDeleting ? 'wait' : 'pointer',
-                              opacity: isDeleting ? 0.7 : 1,
-                            }}
-                          >
-                            {isDeleting ? 'Đang xóa...' : 'Xác nhận'}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={isDeleting}
-                            onClick={() => setConfirmDeleteId(null)}
-                            style={{
-                              padding: '3px 8px',
-                              borderRadius: 4,
-                              border: '1px solid var(--color-border-strong)',
-                              background: 'var(--color-bg-card)',
-                              color: 'var(--color-text-muted)',
-                              fontSize: '0.72rem',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              fontSize: '0.75rem',
                               fontWeight: 600,
-                              cursor: 'pointer',
+                              color: 'var(--color-sky)',
+                              background: 'color-mix(in srgb, var(--color-sky) 12%, transparent)',
+                              padding: '3px 9px',
+                              borderRadius: 4,
+                              border: '1px solid color-mix(in srgb, var(--color-sky) 28%, transparent)',
                             }}
                           >
-                            Hủy
-                          </button>
-                        </div>
-                      );
-                    }
+                            <IconCloudFog size={12} color="var(--color-sky)" />
+                            {c.weatherNote}
+                          </span>
+                        )}
+                      </div>
 
-                    return (
+                      <p
+                        style={{
+                          fontSize: '0.88rem',
+                          color: 'var(--color-text-main)',
+                          lineHeight: 1.55,
+                          margin: '0 0 10px 0',
+                        }}
+                      >
+                        {c.description}
+                      </p>
+
+                      {Array.isArray(c.photos) && c.photos.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+                          {c.photos.slice(0, 4).map((photoUrl, idx) => (
+                            <button
+                              key={`${photoUrl}-${idx}`}
+                              type="button"
+                              onClick={() => setLightboxPhoto(photoUrl)}
+                              aria-label={`Phóng to ảnh hiện trường ${idx + 1}`}
+                              style={{
+                                width: 88,
+                                height: 64,
+                                borderRadius: 4,
+                                overflow: 'hidden',
+                                padding: 0,
+                                border: '1px solid var(--color-border-strong)',
+                                cursor: 'pointer',
+                                background: 'var(--color-bg-card)',
+                              }}
+                            >
+                              <img
+                                loading="lazy"
+                                decoding="async"
+                                src={photoUrl}
+                                alt={`Hiện trường ${idx + 1}`}
+                                style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                              />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          flexWrap: 'wrap',
+                          fontSize: '0.74rem',
+                          color: 'var(--color-text-dim)',
+                        }}
+                      >
+                        <span style={{ fontWeight: 700, color: 'var(--color-text-muted)' }}>
+                          Ghi nhận bởi: <strong style={{ color: 'var(--color-text-main)' }}>{c.userId?.fullName || 'Trekker Thực Địa'}</strong>
+                        </span>
+                        {c.userId?.reputationScore && (
+                          <span style={{ color: 'var(--color-sun)', fontWeight: 700 }}>
+                            · {c.userId.reputationScore} Điểm Uy Tín
+                          </span>
+                        )}
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <IconClock size={11} color="var(--color-text-dim)" />
+                          {new Date(c.createdAt).toLocaleDateString('vi-VN', {
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: 'numeric',
+                          })}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
                       <button
                         type="button"
-                        onClick={() => setConfirmDeleteId(c._id)}
-                        title="Xóa báo cáo tình trạng này"
+                        onClick={() => handleUpvote(c._id)}
+                        className="interactive-click"
+                        title="Xác nhận thông tin thực địa này là chính xác"
                         style={{
                           display: 'inline-flex',
                           alignItems: 'center',
-                          gap: 5,
-                          padding: '7px 10px',
+                          gap: 6,
+                          padding: '7px 12px',
                           borderRadius: 4,
-                          border: '1px solid color-mix(in srgb, var(--color-error) 28%, transparent)',
-                          background: 'color-mix(in srgb, var(--color-error) 8%, transparent)',
-                          color: 'var(--color-error-text, var(--color-error))',
-                          fontSize: '0.76rem',
-                          fontWeight: 700,
-                          cursor: 'pointer',
+                          border: isUpvoted ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
+                          background: isUpvoted ? 'color-mix(in srgb, var(--color-primary) 15%, transparent)' : 'var(--color-bg-card)',
+                          color: isUpvoted ? 'var(--color-primary)' : 'var(--color-text-muted)',
+                          fontSize: '0.78rem',
+                          fontWeight: 800,
+                          cursor: isUpvoted ? 'default' : 'pointer',
                           flexShrink: 0,
                         }}
                       >
-                        <IconTrash size={13} color="var(--color-error)" />
-                        <span>Xóa</span>
+                        <IconShieldCheck size={15} color={isUpvoted ? 'var(--color-primary)' : 'currentColor'} />
+                        <span>Xác thực ({c.upvotes || 0})</span>
                       </button>
-                    );
-                  })()}
-                </div>
+
+                      {canModify && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleStartEdit(c)}
+                            title="Chỉnh sửa báo cáo tình trạng này"
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 5,
+                              padding: '7px 10px',
+                              borderRadius: 4,
+                              border: '1px solid var(--color-border-strong)',
+                              background: 'var(--color-bg-card)',
+                              color: 'var(--color-text-main)',
+                              fontSize: '0.76rem',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                              flexShrink: 0,
+                            }}
+                          >
+                            <IconEdit size={13} color="var(--color-primary)" />
+                            <span>Sửa</span>
+                          </button>
+
+                          {(() => {
+                            const isConfirming = confirmDeleteId === c._id;
+                            const isDeleting = deletingId === c._id;
+
+                            if (isConfirming) {
+                              return (
+                                <div
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: 6,
+                                    padding: '4px 8px',
+                                    borderRadius: 4,
+                                    background: 'color-mix(in srgb, var(--color-error) 12%, transparent)',
+                                    border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)',
+                                  }}
+                                >
+                                  <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-error-text, var(--color-error))' }}>
+                                    Xóa?
+                                  </span>
+                                  <button
+                                    type="button"
+                                    disabled={isDeleting}
+                                    onClick={() => handleDeleteCondition(c._id)}
+                                    style={{
+                                      padding: '3px 8px',
+                                      borderRadius: 4,
+                                      border: 'none',
+                                      background: 'var(--color-error)',
+                                      color: 'var(--color-on-danger)',
+                                      fontSize: '0.72rem',
+                                      fontWeight: 700,
+                                      cursor: isDeleting ? 'wait' : 'pointer',
+                                      opacity: isDeleting ? 0.7 : 1,
+                                    }}
+                                  >
+                                    {isDeleting ? 'Đang xóa...' : 'Xác nhận'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={isDeleting}
+                                    onClick={() => setConfirmDeleteId(null)}
+                                    style={{
+                                      padding: '3px 8px',
+                                      borderRadius: 4,
+                                      border: '1px solid var(--color-border-strong)',
+                                      background: 'var(--color-bg-card)',
+                                      color: 'var(--color-text-muted)',
+                                      fontSize: '0.72rem',
+                                      fontWeight: 600,
+                                      cursor: 'pointer',
+                                    }}
+                                  >
+                                    Hủy
+                                  </button>
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteId(c._id)}
+                                title="Xóa báo cáo tình trạng này"
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 5,
+                                  padding: '7px 10px',
+                                  borderRadius: 4,
+                                  border: '1px solid color-mix(in srgb, var(--color-error) 28%, transparent)',
+                                  background: 'color-mix(in srgb, var(--color-error) 8%, transparent)',
+                                  color: 'var(--color-error-text, var(--color-error))',
+                                  fontSize: '0.76rem',
+                                  fontWeight: 700,
+                                  cursor: 'pointer',
+                                  flexShrink: 0,
+                                }}
+                              >
+                                <IconTrash size={13} color="var(--color-error)" />
+                                <span>Xóa</span>
+                              </button>
+                            );
+                          })()}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
       )}
+
+      {/* Condition Photo Lightbox */}
+      {lightboxPhoto &&
+        createPortal(
+          <div
+            onClick={() => setLightboxPhoto(null)}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'var(--overlay-bg)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 'var(--z-lightbox, 4000)' as unknown as number,
+              padding: 20,
+            }}
+          >
+            <div
+              ref={lightboxRef}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Ảnh tình trạng thực địa"
+              tabIndex={-1}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: 'relative',
+                maxWidth: '92vw',
+                maxHeight: '88vh',
+                background: 'var(--color-bg-card)',
+                borderRadius: 6,
+                overflow: 'hidden',
+                border: '1px solid var(--color-border-strong)',
+                boxShadow: 'var(--shadow-3d)',
+                outline: 'none',
+              }}
+            >
+              <button
+                type="button"
+                aria-label="Đóng ảnh (Esc)"
+                onClick={() => setLightboxPhoto(null)}
+                style={{
+                  position: 'absolute',
+                  top: 12,
+                  right: 12,
+                  width: 34,
+                  height: 34,
+                  borderRadius: 4,
+                  background: 'var(--overlay-bg)',
+                  border: '1px solid color-mix(in srgb, var(--color-on-media) 25%, transparent)',
+                  color: 'var(--color-on-media)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  zIndex: 2,
+                }}
+              >
+                <IconX size={16} />
+              </button>
+              <img
+                loading="lazy"
+                decoding="async"
+                src={lightboxPhoto}
+                alt="Ảnh tình trạng thực địa"
+                style={{
+                  width: '100%',
+                  maxHeight: '88vh',
+                  objectFit: 'contain',
+                  display: 'block',
+                }}
+              />
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
-};
+});

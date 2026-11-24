@@ -21,6 +21,11 @@ import {
 } from '../controllers/forum.controller.js';
 import { resolveDisputeIncidentAdmin } from '../controllers/incident.controller.js';
 import { getAuditLogsAdmin } from '../controllers/checkin.controller.js';
+import {
+  getAdminReviews,
+  getAdminPois,
+  getAdminLiveBeacons,
+} from '../controllers/adminExtra.controller.js';
 
 const router = Router();
 
@@ -47,6 +52,11 @@ router.put('/admin/threads/:id/pin', requireRole('admin', 'moderator') as any, p
 router.put('/admin/threads/:id/lock', requireRole('admin', 'moderator') as any, lockThreadAdmin as any);
 router.delete('/admin/threads/:id', requireRole('admin', 'moderator') as any, deleteThreadAdmin as any);
 router.put('/admin/incidents/:id/dispute-resolve', requireRole('admin', 'moderator') as any, resolveDisputeIncidentAdmin as any);
+
+// Field Moderation (Reviews, Trail POIs) & Live Safety Beacons (Admin + Moderator)
+router.get('/admin/reviews', requireRole('admin', 'moderator') as any, getAdminReviews as any);
+router.get('/admin/pois', requireRole('admin', 'moderator') as any, getAdminPois as any);
+router.get('/admin/live-beacons', requireRole('admin', 'moderator') as any, getAdminLiveBeacons as any);
 
 // Review deletion (Controller enforces Owner OR Admin/Moderator)
 router.delete('/reviews/:id', authMiddleware as any, deleteReview as any);

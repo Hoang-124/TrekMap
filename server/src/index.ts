@@ -4,9 +4,12 @@ import { connectDB, disconnectDB } from './config/db.js';
 import { seedAll13Collections } from './utils/seedDatabase.js';
 import { getIO } from './config/socket.js';
 import { processOverdueSafetyTimers } from './controllers/safetyTimer.controller.js';
+import { processScheduledWeatherAlerts } from './controllers/weatherAlert.controller.js';
 
 const PORT = Number(process.env.PORT) || 5000;
 let safetyTimerSweepInterval: NodeJS.Timeout | null = null;
+let weatherAlertSweepInterval: NodeJS.Timeout | null = null;
+let weatherAlertInitialTimeout: NodeJS.Timeout | null = null;
 let seededOnce = false;
 
 function startSafetyTimerSweeper() {
@@ -24,6 +27,22 @@ function startSafetyTimerSweeper() {
   safetyTimerSweepInterval.unref();
 }
 
+function startWeatherAlertSweeper() {
+  if (weatherAlertSweepInterval) return;
+
+  const runWeatherSweep = () => {
+    processScheduledWeatherAlerts().catch((err) =>
+      console.warn('[WeatherAlert Sweep Notice]:', (err as Error).message)
+    );
+  };
+
+  // Slight startup delay so DB & caches warm up before evaluating active subscriptions
+  weatherAlertInitialTimeout = setTimeout(runWeatherSweep, 45 * 1000);
+  weatherAlertInitialTimeout.unref();
+  weatherAlertSweepInterval = setInterval(runWeatherSweep, 30 * 60 * 1000);
+  weatherAlertSweepInterval.unref();
+}
+
 async function onDatabaseReady() {
   if (!seededOnce) {
     seededOnce = true;
@@ -31,6 +50,7 @@ async function onDatabaseReady() {
     if (!ok) seededOnce = false;
   }
   startSafetyTimerSweeper();
+  startWeatherAlertSweeper();
 }
 
 async function bootstrap() {
@@ -67,6 +87,14 @@ async function gracefulShutdown(signal: string) {
     if (safetyTimerSweepInterval) {
       clearInterval(safetyTimerSweepInterval);
       safetyTimerSweepInterval = null;
+    }
+    if (weatherAlertInitialTimeout) {
+      clearTimeout(weatherAlertInitialTimeout);
+      weatherAlertInitialTimeout = null;
+    }
+    if (weatherAlertSweepInterval) {
+      clearInterval(weatherAlertSweepInterval);
+      weatherAlertSweepInterval = null;
     }
 
     const io = getIO();

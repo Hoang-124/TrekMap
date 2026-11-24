@@ -157,7 +157,7 @@ function emitToast(
   }
 }
 
-export const TrailPoiSection: React.FC<TrailPoiSectionProps> = ({
+export const TrailPoiSection: React.FC<TrailPoiSectionProps> = React.memo(({
   trail,
   currentUser,
   onRequireLogin,
@@ -528,6 +528,9 @@ export const TrailPoiSection: React.FC<TrailPoiSectionProps> = ({
             : item
         ),
       }));
+      window.dispatchEvent(
+        new CustomEvent('lost:trail-pois-changed', { detail: { trailId: capturedTrailId } })
+      );
       emitToast(
         onShowToast,
         nextStatus === 'active'
@@ -587,6 +590,9 @@ export const TrailPoiSection: React.FC<TrailPoiSectionProps> = ({
         items: prev.items.filter((item) => item._id !== poi._id),
       }));
       setConfirmDeleteId(null);
+      window.dispatchEvent(
+        new CustomEvent('lost:trail-pois-changed', { detail: { trailId: capturedTrailId } })
+      );
       emitToast(onShowToast, `Đã xóa điểm thực địa "${poi.title}".`, 'info');
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return;
@@ -755,6 +761,9 @@ export const TrailPoiSection: React.FC<TrailPoiSectionProps> = ({
       if (activeCategory !== 'all' && activeCategory !== created.category) {
         setActiveCategory('all');
       }
+      window.dispatchEvent(
+        new CustomEvent('lost:trail-pois-changed', { detail: { trailId: capturedTrailId } })
+      );
       emitToast(onShowToast, `Đã đóng góp điểm thực địa "${created.title}" cho cộng đồng!`, 'success');
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return;
@@ -1769,6 +1778,6 @@ export const TrailPoiSection: React.FC<TrailPoiSectionProps> = ({
       )}
     </section>
   );
-};
+});
 
 export default TrailPoiSection;

@@ -13,7 +13,7 @@ export const HUB_VIEW_IDS: readonly HubViewId[] = [
   'radar',
 ] as const;
 
-export const HUB_PRESERVED_QUERY_KEYS = ['trailId', 'route', 'pack', 'tab', 'q'] as const;
+export const HUB_PRESERVED_QUERY_KEYS = ['trailId', 'route', 'pack', 'tab', 'q', 'verify'] as const;
 export type HubQueryParamKey = (typeof HUB_PRESERVED_QUERY_KEYS)[number];
 export type HubQueryParams = Partial<Record<HubQueryParamKey, string>>;
 
@@ -213,8 +213,22 @@ export function resolveAppRoute(path: string, hash: string, search?: string): Re
     }
   }
 
-  // Path-based named views (/explore, /forum, /profile, /admin, /contribute, /messages, /notifications, and all 8 hubs)
+  // Path-based /hub/<subview> aliases (e.g. /hub/passport, /hub/planner, /hub/gear)
   const lowerPath = cleanPath.toLowerCase();
+  if (lowerPath.startsWith('hub/')) {
+    const subKey = lowerPath.slice('hub/'.length).split('/')[0] || '';
+    const mappedHubView = (HASH_ALIASES[subKey] || subKey) as AppView;
+    if (NAMED_VIEWS.has(mappedHubView)) {
+      return {
+        view: mappedHubView,
+        trailId: isHubView(mappedHubView) ? queryTrailId : undefined,
+        queryParams: isHubView(mappedHubView) && hasHubParams ? mergedParams : undefined,
+        isProtected: PROTECTED_VIEWS.has(mappedHubView),
+      };
+    }
+  }
+
+  // Path-based named views (/explore, /forum, /profile, /admin, /contribute, /messages, /notifications, and all 8 hubs)
   const mappedPathView = (HASH_ALIASES[lowerPath] || lowerPath) as AppView;
   if (NAMED_VIEWS.has(mappedPathView)) {
     return {

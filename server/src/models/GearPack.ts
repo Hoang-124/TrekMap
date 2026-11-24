@@ -8,6 +8,7 @@ export interface IGearPackItem {
   quantity: number;
   worn: boolean;
   consumable: boolean;
+  packed: boolean;
 }
 
 export interface IGearPack extends Document {
@@ -31,6 +32,7 @@ const gearPackItemSchema = new Schema<IGearPackItem>(
     quantity: { type: Number, default: 1, min: 1, max: 99 },
     worn: { type: Boolean, default: false },
     consumable: { type: Boolean, default: false },
+    packed: { type: Boolean, default: true },
   },
   { _id: false }
 );

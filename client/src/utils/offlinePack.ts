@@ -7,6 +7,33 @@ const STORE_NAME = 'trail_packs';
 const TILE_CACHE_NAME = 'lost-offline-packs-v1';
 const DYNAMIC_TILE_CACHE_NAME = 'lost-tiles-v1';
 
+export interface OfflineElevationSnapshot {
+  source: string;
+  fetchedAt: string;
+  points: Array<{
+    lat: number;
+    lng: number;
+    elevationM: number;
+    distanceKm: number;
+    slopePercent: number;
+  }>;
+}
+
+export interface OfflineWeatherSnapshot {
+  fetchedAt: string;
+  hasWarning?: boolean;
+  warningMessage?: string | null;
+  days: Array<{
+    forecastDate: string;
+    tempMinC: number;
+    tempMaxC: number;
+    humidityPercent?: number;
+    windSpeedKmH?: number;
+    seaOfCloudsIndex?: number;
+    weatherCondition?: string;
+  }>;
+}
+
 export interface OfflineTrailPackRecord {
   trailId: string;
   trailName: string;
@@ -18,6 +45,8 @@ export interface OfflineTrailPackRecord {
   estimatedSizeMb: number;
   tileUrls: string[];
   trailData: Trail;
+  elevationSnapshot?: OfflineElevationSnapshot;
+  weatherSnapshot?: OfflineWeatherSnapshot;
 }
 
 export interface OfflineStorageStats {
@@ -171,7 +200,7 @@ export async function downloadOfflineTrailPack(
           [trail.endLat ?? trail.startLat, trail.endLng ?? trail.startLng],
         ];
 
-  const tileUrls = buildOfflineTileUrls(track, [12, 13, 14], 75);
+  const tileUrls = buildOfflineTileUrls(track, [12, 13, 14], 120);
   const totalRequestedTiles = tileUrls.length;
   let processedCount = 0;
   let succeededCount = 0;
@@ -183,6 +212,35 @@ export async function downloadOfflineTrailPack(
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     throw new Error('Bạn đang ngoại tuyến — vui lòng kết nối mạng trước khi tải gói bản đồ Offline.');
   }
+
+  // Opportunistically snapshot DEM elevation & 7-day weather in background for offline field access
+  const snapshotPromise = Promise.allSettled([
+    fetch(`/api/trails/${encodeURIComponent(trail.id)}/elevation`, { signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json): OfflineElevationSnapshot | undefined => {
+        if (json?.success && Array.isArray(json.data?.points) && json.data.points.length >= 2) {
+          return {
+            source: String(json.data.source || 'dem'),
+            fetchedAt: new Date().toISOString(),
+            points: json.data.points.slice(0, 120),
+          };
+        }
+        return undefined;
+      }),
+    fetch(`/api/weather/${encodeURIComponent(trail.id)}`, { signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json): OfflineWeatherSnapshot | undefined => {
+        if (json?.success && Array.isArray(json.data) && json.data.length > 0) {
+          return {
+            fetchedAt: new Date().toISOString(),
+            hasWarning: Boolean(json.hasWarning),
+            warningMessage: json.warningMessage ?? null,
+            days: json.data.slice(0, 7),
+          };
+        }
+        return undefined;
+      }),
+  ]);
 
   onProgress?.(0, 0, totalRequestedTiles);
 
@@ -252,8 +310,12 @@ export async function downloadOfflineTrailPack(
     onProgress?.(100, 0, totalRequestedTiles);
   }
 
-  // Average OSM PNG tile ≈ 28 KB + JSON trail metadata ≈ 0.15 MB
-  const estimatedSizeMb = Math.max(0.2, Math.round(((succeededCount * 28) / 1024 + 0.15) * 10) / 10);
+  const [elevSnapRes, weatherSnapRes] = await snapshotPromise;
+  const elevationSnapshot = elevSnapRes.status === 'fulfilled' ? elevSnapRes.value : undefined;
+  const weatherSnapshot = weatherSnapRes.status === 'fulfilled' ? weatherSnapRes.value : undefined;
+
+  // Average OSM PNG tile ≈ 28 KB + JSON trail metadata/snapshots ≈ 0.18 MB
+  const estimatedSizeMb = Math.max(0.2, Math.round(((succeededCount * 28) / 1024 + 0.18) * 10) / 10);
 
   const record: OfflineTrailPackRecord = {
     trailId: trail.id,
@@ -266,6 +328,8 @@ export async function downloadOfflineTrailPack(
     estimatedSizeMb,
     tileUrls: cachedTileUrls,
     trailData: trail,
+    ...(elevationSnapshot ? { elevationSnapshot } : {}),
+    ...(weatherSnapshot ? { weatherSnapshot } : {}),
   };
 
   const db = await openOfflineDb();

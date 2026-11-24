@@ -6,7 +6,8 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "seed": "tsx src/scripts/seed.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "tsx --test tests/core.test.ts"
   },
   "keywords": [],
   "author": "",

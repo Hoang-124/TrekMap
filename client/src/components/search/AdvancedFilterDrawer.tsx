@@ -68,8 +68,6 @@ export const AdvancedFilterDrawer: React.FC<FilterProps> = ({
         position: 'fixed',
         inset: 0,
         background: 'var(--overlay-bg)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
         zIndex: 'var(--z-drawer, 2000)' as unknown as number,
         display: 'flex',
         alignItems: 'center',

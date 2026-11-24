@@ -5,6 +5,7 @@ import { isTopmostFocusTrap, useFocusTrap } from '../../hooks/useFocusTrap.js';
 import { distanceToTrackMeters, haversineMeters } from '../../utils/geoMath.js';
 import { exportGpxXml, type PlannerWaypoint, type RouteVertex } from '../../utils/routeMetrics.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
+import { scopedStorageKey } from '../../utils/storageScope.js';
 import {
   calculateBearingDeg,
   calculateHaversineKm,
@@ -69,6 +70,7 @@ interface LiveSamplePoint {
 interface OfflineTrekLogEntry {
   id: string;
   trailId: string;
+  baseTrailId?: string;
   trailName: string;
   recordedAt: string;
   elapsedSec: number;
@@ -78,6 +80,10 @@ interface OfflineTrekLogEntry {
   pointsCount: number;
   pinsCount: number;
   syncedToServer: boolean;
+  lastLat?: number;
+  lastLng?: number;
+  trackPoints?: Array<[number, number, number | null]>;
+  fieldPins?: PlannerWaypoint[];
 }
 
 interface CustomTrackedRoute {
@@ -218,7 +224,9 @@ function normalizeCustomRouteRecord(raw: unknown): CustomTrackedRoute | null {
 
 function loadLocalCustomRoutes(): CustomTrackedRoute[] {
   try {
-    const raw = localStorage.getItem(LOCAL_CUSTOM_ROUTES_KEY);
+    const raw =
+      localStorage.getItem(scopedStorageKey(LOCAL_CUSTOM_ROUTES_KEY)) ||
+      localStorage.getItem(LOCAL_CUSTOM_ROUTES_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -298,19 +306,19 @@ function buildSimulatedPath(
     customRoute && customRoute.trackPoints.length >= 2
       ? customRoute.trackPoints
       : trail && Array.isArray(trail.gpxTrack) && trail.gpxTrack.length >= 2
-      ? trail.gpxTrack
-      : trail
-      ? [
-          [trail.startLat, trail.startLng],
-          [trail.endLat, trail.endLng],
-        ]
-      : [
-          [22.3522, 103.7769],
-          [22.339, 103.7765],
-          [22.326, 103.7758],
-          [22.314, 103.7754],
-          [22.3033, 103.775],
-        ];
+        ? trail.gpxTrack
+        : trail
+          ? [
+            [trail.startLat, trail.startLng],
+            [trail.endLat, trail.endLng],
+          ]
+          : [
+            [22.3522, 103.7769],
+            [22.339, 103.7765],
+            [22.326, 103.7758],
+            [22.314, 103.7754],
+            [22.3033, 103.775],
+          ];
 
   const maxAlt = customRoute?.maxAltitudeM ?? trail?.maxAltitudeM ?? 3143;
   const gainM = customRoute?.elevationGainM ?? trail?.elevationGainM ?? 1380;
@@ -358,8 +366,9 @@ function resolveLiveTrekStorageKey(user?: User | null): string {
     try {
       const token = window.localStorage.getItem('lost_token');
       const parts = token ? token.split('.') : [];
-      if (parts.length >= 2) {
-        const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const payloadSegment = parts.length === 2 ? parts[0] : parts[1];
+      if (parts.length >= 2 && payloadSegment) {
+        const b64 = payloadSegment.replace(/-/g, '+').replace(/_/g, '/');
         const padded = b64.padEnd(Math.ceil(b64.length / 4) * 4, '=');
         const decoded = JSON.parse(atob(padded)) as Record<string, unknown>;
         const candidate = decoded.id ?? decoded.userId ?? decoded._id ?? decoded.sub;
@@ -375,16 +384,52 @@ function resolveLiveTrekStorageKey(user?: User | null): string {
   return `${OFFLINE_TREKS_STORAGE_KEY}_guest`;
 }
 
-function saveOfflineTrekSummary(entry: OfflineTrekLogEntry, storageKey: string) {
+function loadOfflineTrekSummaries(storageKey: string): OfflineTrekLogEntry[] {
+  if (typeof window === 'undefined') return [];
   try {
     const raw = localStorage.getItem(storageKey);
-    const existing: OfflineTrekLogEntry[] = raw ? JSON.parse(raw) : [];
-    const safeList = Array.isArray(existing) ? existing : [];
-    localStorage.setItem(storageKey, JSON.stringify([entry, ...safeList].slice(0, 25)));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as OfflineTrekLogEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeOfflineTrekList(entries: OfflineTrekLogEntry[], storageKey: string) {
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(entries.slice(0, 25)));
     localStorage.removeItem(OFFLINE_TREKS_STORAGE_KEY);
   } catch {
-    // ignore storage errors
+    // ignore storage quota errors
   }
+}
+
+function saveOfflineTrekSummary(entry: OfflineTrekLogEntry, storageKey: string) {
+  const existing = loadOfflineTrekSummaries(storageKey);
+  writeOfflineTrekList([entry, ...existing.filter((e) => e.id !== entry.id)], storageKey);
+}
+
+function downsampleTrackForStorage(pts: LiveSamplePoint[], maxPoints = 250): Array<[number, number, number | null]> {
+  if (pts.length === 0) return [];
+  if (pts.length <= maxPoints) {
+    return pts.map((p) => [
+      Number(p.lat.toFixed(6)),
+      Number(p.lng.toFixed(6)),
+      p.altitudeM !== null ? Math.round(p.altitudeM) : null,
+    ]);
+  }
+  const out: Array<[number, number, number | null]> = [];
+  const step = (pts.length - 1) / (maxPoints - 1);
+  for (let i = 0; i < maxPoints; i++) {
+    const p = pts[Math.min(pts.length - 1, Math.round(i * step))];
+    out.push([
+      Number(p.lat.toFixed(6)),
+      Number(p.lng.toFixed(6)),
+      p.altitudeM !== null ? Math.round(p.altitudeM) : null,
+    ]);
+  }
+  return out;
 }
 
 export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
@@ -418,6 +463,15 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
     ExpeditionShareCardModalProps['initialData'] | null
   >(null);
   const showShareCardModal = Boolean(shareCardSnapshot);
+  const [historyTick, setHistoryTick] = useState<number>(0);
+  const [showLocalHistory, setShowLocalHistory] = useState<boolean>(false);
+  const [syncingHistoryId, setSyncingHistoryId] = useState<string | null>(null);
+  const scopedTrekStorageKey = useMemo(() => resolveLiveTrekStorageKey(currentUser), [currentUser]);
+  const savedLocalTreks = useMemo<OfflineTrekLogEntry[]>(() => {
+    void historyTick;
+    void isOpen;
+    return loadOfflineTrekSummaries(scopedTrekStorageKey);
+  }, [scopedTrekStorageKey, historyTick, isOpen]);
   const [simDeviateOffTrail, setSimDeviateOffTrail] = useState<boolean>(false);
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [isCheckingIn, setIsCheckingIn] = useState<boolean>(false);
@@ -508,6 +562,18 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
     const controller = new AbortController();
 
     const syncCustomRoutes = async () => {
+      let pendingCustomId: string | null = null;
+      try {
+        pendingCustomId = sessionStorage.getItem('lost_live_tracker_custom_route_id');
+        if (pendingCustomId) {
+          sessionStorage.removeItem('lost_live_tracker_custom_route_id');
+        }
+      } catch {
+        // ignore storage errors
+      }
+      if (pendingCustomId && !controller.signal.aborted) {
+        setManualSelection({ forPropTrailId: trail?.id, trailId: `custom:${pendingCustomId}` });
+      }
       if (!currentUserId) {
         if (!controller.signal.aborted) setCustomRoutes(localList);
         return;
@@ -545,7 +611,7 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
 
     void syncCustomRoutes();
     return () => controller.abort();
-  }, [isOpen, currentUserId]);
+  }, [isOpen, currentUserId, trail?.id]);
 
   const activeCustomRoute = useMemo<CustomTrackedRoute | null>(() => {
     if (!selectedTrailId.startsWith('custom:')) return null;
@@ -877,23 +943,23 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
     if (latest && (activeTrail || activeCustomRoute)) {
       const candidates: Array<{ name: string; lat: number; lng: number }> = activeCustomRoute
         ? [
-            ...(activeCustomRoute.waypoints || []).map((w) => ({ name: w.name, lat: w.lat, lng: w.lng })),
-            ...(activeCustomRoute.trackPoints.length > 0
-              ? [
-                  {
-                    name: `Đích ${activeCustomRoute.title}`,
-                    lat: activeCustomRoute.trackPoints[activeCustomRoute.trackPoints.length - 1][0],
-                    lng: activeCustomRoute.trackPoints[activeCustomRoute.trackPoints.length - 1][1],
-                  },
-                ]
-              : []),
-          ]
+          ...(activeCustomRoute.waypoints || []).map((w) => ({ name: w.name, lat: w.lat, lng: w.lng })),
+          ...(activeCustomRoute.trackPoints.length > 0
+            ? [
+              {
+                name: `Đích ${activeCustomRoute.title}`,
+                lat: activeCustomRoute.trackPoints[activeCustomRoute.trackPoints.length - 1][0],
+                lng: activeCustomRoute.trackPoints[activeCustomRoute.trackPoints.length - 1][1],
+              },
+            ]
+            : []),
+        ]
         : activeTrail
-        ? [
+          ? [
             ...(activeTrail.waypoints || []).map((w) => ({ name: w.name, lat: w.lat, lng: w.lng })),
             { name: `Đỉnh / Đích ${activeTrail.name}`, lat: activeTrail.endLat, lng: activeTrail.endLng },
           ]
-        : [];
+          : [];
       let best: { name: string; distanceKm: number; bearingDeg: number } | null = null;
       for (const c of candidates) {
         const distKm = calculateHaversineKm(latest.lat, latest.lng, c.lat, c.lng);
@@ -936,21 +1002,21 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
     const hasRecordedTrack = points.length >= 2;
     const recordedTrack: ExpeditionSharePoint[] = hasRecordedTrack
       ? points.map((p) => ({
-          lat: p.lat,
-          lng: p.lng,
-          altitudeM: p.altitudeM,
-        }))
+        lat: p.lat,
+        lng: p.lng,
+        altitudeM: p.altitudeM,
+      }))
       : referenceTrack.map(([lat, lng], idx) => {
-          const maxA = activeCustomRoute?.maxAltitudeM ?? activeTrail?.maxAltitudeM ?? 0;
-          const gainA = activeCustomRoute?.elevationGainM ?? activeTrail?.elevationGainM ?? 0;
-          const baseA = Math.max(60, maxA - gainA);
-          const ratio = referenceTrack.length > 1 ? idx / (referenceTrack.length - 1) : 1;
-          return {
-            lat,
-            lng,
-            altitudeM: maxA > 0 ? Math.round(baseA + (maxA - baseA) * ratio) : null,
-          };
-        });
+        const maxA = activeCustomRoute?.maxAltitudeM ?? activeTrail?.maxAltitudeM ?? 0;
+        const gainA = activeCustomRoute?.elevationGainM ?? activeTrail?.elevationGainM ?? 0;
+        const baseA = Math.max(60, maxA - gainA);
+        const ratio = referenceTrack.length > 1 ? idx / (referenceTrack.length - 1) : 1;
+        return {
+          lat,
+          lng,
+          altitudeM: maxA > 0 ? Math.round(baseA + (maxA - baseA) * ratio) : null,
+        };
+      });
 
     const peakName =
       activeCustomRoute?.title || activeTrail?.name || 'Hành Trình Trekking Tự Do LOST';
@@ -1333,8 +1399,8 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
         statusOverride: beaconSosRef.current
           ? 'sos'
           : statusRef.current === 'paused'
-          ? 'paused'
-          : 'active',
+            ? 'paused'
+            : 'active',
       });
     }, 0);
 
@@ -1350,8 +1416,8 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
       const nextStatus: 'active' | 'paused' | 'sos' = beaconSosRef.current
         ? 'sos'
         : status === 'paused'
-        ? 'paused'
-        : 'active';
+          ? 'paused'
+          : 'active';
       void pingBeaconRef.current({ statusOverride: nextStatus });
     }, BEACON_PING_INTERVAL_MS);
 
@@ -1499,13 +1565,13 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
       telemetry.latest ||
       (activeCustomRoute && activeCustomRoute.trackPoints.length > 0
         ? {
-            lat: activeCustomRoute.trackPoints[0][0],
-            lng: activeCustomRoute.trackPoints[0][1],
-            altitudeM: activeCustomRoute.elevations?.[0] ?? activeCustomRoute.maxAltitudeM,
-          }
+          lat: activeCustomRoute.trackPoints[0][0],
+          lng: activeCustomRoute.trackPoints[0][1],
+          altitudeM: activeCustomRoute.elevations?.[0] ?? activeCustomRoute.maxAltitudeM,
+        }
         : activeTrail
-        ? { lat: activeTrail.startLat, lng: activeTrail.startLng, altitudeM: activeTrail.maxAltitudeM }
-        : null);
+          ? { lat: activeTrail.startLat, lng: activeTrail.startLng, altitudeM: activeTrail.maxAltitudeM }
+          : null);
     if (!pos) {
       onShowToast?.('Chưa có vị trí GPS hiện tại để ghim mốc thực địa.', 'error');
       return;
@@ -1558,11 +1624,127 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
     onShowToast?.('Đã xuất tệp tracklog GPX 1.1 kèm các mốc thực địa.', 'success');
   };
 
+  const handleExportSavedTrekGpx = (entry: OfflineTrekLogEntry) => {
+    const storedPts = Array.isArray(entry.trackPoints) ? entry.trackPoints : [];
+    let vertices: RouteVertex[] = storedPts.map(([lat, lng, ele]) => ({
+      lat,
+      lng,
+      elevationM: typeof ele === 'number' ? ele : null,
+    }));
+
+    if (vertices.length < 2) {
+      const matched = trails.find((t) => t.id === entry.baseTrailId || t.id === entry.trailId);
+      if (matched && Array.isArray(matched.gpxTrack) && matched.gpxTrack.length >= 2) {
+        vertices = matched.gpxTrack.map(([lat, lng]) => ({ lat, lng, elevationM: null }));
+      } else if (typeof entry.lastLat === 'number' && typeof entry.lastLng === 'number') {
+        vertices = [
+          { lat: entry.lastLat, lng: entry.lastLng, elevationM: entry.maxAltitudeM || null },
+          { lat: entry.lastLat + 0.0001, lng: entry.lastLng + 0.0001, elevationM: entry.maxAltitudeM || null },
+        ];
+      } else {
+        onShowToast?.('Bản ghi cũ này chưa lưu chuỗi tọa độ GPX chi tiết.', 'info');
+        return;
+      }
+    }
+
+    const xml = exportGpxXml({
+      title: `LOST Live GPS - ${entry.trailName}`,
+      description: `Bản ghi ngoại tuyến (${entry.distanceKm.toFixed(2)} km, +${entry.elevationGainM}m, ${formatElapsedHms(entry.elapsedSec)}).`,
+      vertices,
+      waypoints: Array.isArray(entry.fieldPins) ? entry.fieldPins : [],
+    });
+
+    const slug = (entry.baseTrailId || entry.trailId || 'trek').replace(/[^a-zA-Z0-9_-]/g, '-');
+    const blob = new Blob([xml], { type: 'application/gpx+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `lost-offline-${slug}-${entry.recordedAt.slice(0, 10)}.gpx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+    onShowToast?.(`Đã xuất file GPX 1.1 cho "${entry.trailName}".`, 'success');
+  };
+
+  const handleSyncSavedTrek = async (entry: OfflineTrekLogEntry) => {
+    const canonicalTrailId =
+      entry.baseTrailId ||
+      (!entry.trailId.startsWith('custom:') && entry.trailId !== 'free-trek' ? entry.trailId : null);
+    if (!canonicalTrailId) {
+      onShowToast?.('Hành trình tự do hoặc cung tự vẽ không liên kết đỉnh LOST nên chỉ lưu cục bộ.', 'info');
+      return;
+    }
+    if (!currentUser) {
+      onShowToast?.('Vui lòng đăng nhập để đồng bộ bản ghi GPS lên Hộ Chiếu Đỉnh Núi.', 'info');
+      window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
+      return;
+    }
+    if (syncingHistoryId === entry.id) return;
+
+    const matchedTrail = trails.find((t) => t.id === canonicalTrailId);
+    const storedPts = Array.isArray(entry.trackPoints) ? entry.trackPoints : [];
+    const lastPt = storedPts[storedPts.length - 1];
+    const lat = entry.lastLat ?? lastPt?.[0] ?? matchedTrail?.endLat;
+    const lng = entry.lastLng ?? lastPt?.[1] ?? matchedTrail?.endLng;
+
+    setSyncingHistoryId(entry.id);
+    try {
+      const completionTimeHours = Math.max(0.2, Math.min(240, Math.round((entry.elapsedSec / 3600) * 100) / 100));
+      const res = await fetch('/api/checkins', {
+        method: 'POST',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          trailId: canonicalTrailId,
+          completionTimeHours,
+          lat,
+          lng,
+          gpxTrackRecorded: storedPts.slice(0, 1500).map((p) => [p[0], p[1]]),
+          distanceRecordedKm: Math.max(0.1, entry.distanceKm),
+          elevationGainRecordedM: entry.elevationGainM,
+          notes: `Đồng bộ bản ghi ngoại tuyến LOST Live GPS (${entry.trailName}, ${formatElapsedHms(entry.elapsedSec)}).`,
+          isPublic: true,
+        }),
+      });
+      const json = (await res.json().catch(() => null)) as { success?: boolean; message?: string } | null;
+      if (res.ok && json?.success) {
+        const nextList = loadOfflineTrekSummaries(scopedTrekStorageKey).map((item) =>
+          item.id === entry.id ? { ...item, syncedToServer: true } : item
+        );
+        writeOfflineTrekList(nextList, scopedTrekStorageKey);
+        setHistoryTick((t) => t + 1);
+        onShowToast?.(json.message || `Đã đồng bộ Check-in đỉnh "${entry.trailName}" lên máy chủ!`, 'success');
+      } else {
+        onShowToast?.(json?.message || 'Không thể đồng bộ bản ghi lúc này.', 'error');
+      }
+    } catch {
+      onShowToast?.('Đang mất kết nối mạng — vui lòng thử đồng bộ lại khi có sóng.', 'error');
+    } finally {
+      setSyncingHistoryId(null);
+    }
+  };
+
+  const handleDeleteSavedTrek = (entryId: string) => {
+    const nextList = loadOfflineTrekSummaries(scopedTrekStorageKey).filter((item) => item.id !== entryId);
+    writeOfflineTrekList(nextList, scopedTrekStorageKey);
+    setHistoryTick((t) => t + 1);
+    onShowToast?.('Đã xóa bản ghi hành trình khỏi bộ nhớ máy.', 'info');
+  };
+
   const handleFinishAndCheckin = async () => {
     setStatus('finished');
     closeAlarmAudioContext();
     await stopBeaconSession();
     if (!isMountedRef.current) return;
+
+    // P0-4 Anti-Spoof Guard: Simulation mode is preview-only and MUST NEVER submit simulated coordinates to /api/checkins
+    if (mode === 'sim') {
+      onShowToastRef.current?.(
+        'Chế độ mô phỏng chỉ dùng để xem trước bản đồ, không tính Check-in GPS xác thực.',
+        'info'
+      );
+      return;
+    }
 
     const latest = telemetry.latest;
     const resolvedCheckinTrailId = activeTrail?.id || activeCustomRoute?.baseTrailId || null;
@@ -1570,6 +1752,7 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
     const summaryEntry: OfflineTrekLogEntry = {
       id: `trek-${Date.now()}`,
       trailId: activeCustomRoute ? `custom:${activeCustomRoute.shareSlug}` : activeTrail?.id || 'free-trek',
+      baseTrailId: resolvedCheckinTrailId || undefined,
       trailName: displayName,
       recordedAt: new Date().toISOString(),
       elapsedSec,
@@ -1579,19 +1762,23 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
       pointsCount: points.length,
       pinsCount: fieldPins.length,
       syncedToServer: false,
+      lastLat: latest?.lat,
+      lastLng: latest?.lng,
+      trackPoints: downsampleTrackForStorage(points, 250),
+      fieldPins: fieldPins.slice(0, 40),
     };
 
-    const scopedTrekStorageKey = resolveLiveTrekStorageKey(currentUser);
     if (!currentUser || !resolvedCheckinTrailId) {
       saveOfflineTrekSummary(summaryEntry, scopedTrekStorageKey);
+      setHistoryTick((t) => t + 1);
       if (!isMountedRef.current) return;
       setCheckinCompleted(true);
       onShowToastRef.current?.(
         activeCustomRoute
           ? `Đã lưu nhật ký hành trình cho cung tự vẽ "${activeCustomRoute.title}" vào thiết bị!`
           : !currentUser
-          ? 'Đã lưu nhật ký hành trình vào bộ nhớ máy. Đăng nhập để Check-in Đỉnh & cộng điểm uy tín!'
-          : 'Đã lưu nhật ký hành trình tự do vào bộ nhớ máy.',
+            ? 'Đã lưu nhật ký hành trình vào bộ nhớ máy. Đăng nhập để Check-in Đỉnh & cộng điểm uy tín!'
+            : 'Đã lưu nhật ký hành trình tự do vào bộ nhớ máy.',
         'success'
       );
       return;
@@ -1607,8 +1794,8 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
         activeCustomRoute && activeCustomRoute.trackPoints.length > 0
           ? activeCustomRoute.trackPoints[activeCustomRoute.trackPoints.length - 1]
           : activeTrail
-          ? ([activeTrail.endLat, activeTrail.endLng] as [number, number])
-          : ([22.3033, 103.775] as [number, number]);
+            ? ([activeTrail.endLat, activeTrail.endLng] as [number, number])
+            : ([22.3033, 103.775] as [number, number]);
       const res = await fetch('/api/checkins', {
         method: 'POST',
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
@@ -1631,10 +1818,12 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
       if (res.ok && json?.success) {
         summaryEntry.syncedToServer = true;
         saveOfflineTrekSummary(summaryEntry, scopedTrekStorageKey);
+        setHistoryTick((t) => t + 1);
         setCheckinCompleted(true);
         onShowToastRef.current?.(json.message || `Check-in đỉnh ${displayName} thành công!`, 'success');
       } else {
         saveOfflineTrekSummary(summaryEntry, scopedTrekStorageKey);
+        setHistoryTick((t) => t + 1);
         setCheckinCompleted(true);
         onShowToastRef.current?.(
           json?.message || 'Đã lưu ngoại tuyến vào thiết bị (chưa đồng bộ được máy chủ lúc này).',
@@ -1644,6 +1833,7 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
     } catch (err) {
       if (checkinCtrl.signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) return;
       saveOfflineTrekSummary(summaryEntry, scopedTrekStorageKey);
+      setHistoryTick((t) => t + 1);
       if (!isMountedRef.current) return;
       setCheckinCompleted(true);
       onShowToastRef.current?.('Đang ngoại tuyến — đã lưu toàn bộ tracklog vào thiết bị!', 'info');
@@ -1660,795 +1850,948 @@ export const LiveTrekTrackerModal: React.FC<LiveTrekTrackerModalProps> = ({
     <>
       {createPortal(
         <div className="modal-overlay" onClick={handleRequestClose}>
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Máy Tính Hành Trình GPS Trực Tiếp LOST"
-        tabIndex={-1}
-        className="modal-content modal-fade-in"
-        onClick={(e) => e.stopPropagation()}
-        style={{ maxWidth: 820, padding: '22px 24px', display: 'flex', flexDirection: 'column', gap: 16, outline: 'none' }}
-      >
-        {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
-          <div>
-            <div className="section-eyebrow" style={{ marginBottom: 6 }}>
-              LOST LIVE GPS EXPEDITION COMPUTER
-            </div>
-            <h2 className="font-editorial" style={{ fontSize: '1.35rem', color: 'var(--color-text-main)' }}>
-              Chế Độ Leo Núi Trực Tiếp & Cảnh Báo Lệch Tuyến
-            </h2>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span
-              className={`badge ${
-                status === 'recording'
-                  ? 'badge-success'
-                  : status === 'paused'
-                  ? 'badge-sun'
-                  : status === 'finished'
-                  ? 'badge-info'
-                  : 'badge-cloud'
-              }`}
-            >
-              {status === 'recording'
-                ? mode === 'sim'
-                  ? 'Đang Mô Phỏng'
-                  : 'Đang Ghi GPS'
-                : status === 'paused'
-                ? 'Tạm Dừng'
-                : status === 'finished'
-                ? 'Đã Hoàn Thành'
-                : 'Sẵn Sàng'}
-            </span>
-            <button
-              type="button"
-              className="btn btn-outline"
-              style={{ padding: '6px 8px' }}
-              onClick={handleRequestClose}
-              aria-label="Đóng máy tính hành trình"
-            >
-              <IconX size={16} />
-            </button>
-          </div>
-        </div>
-
-        {/* Trail & Tracking Mode Bar */}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-            gap: 12,
-            padding: 12,
-            borderRadius: 6,
-            background: 'var(--color-surface-elevated)',
-            border: '1px solid var(--color-border)',
-          }}
-        >
-          <div>
-            <label className="form-label" htmlFor="live-trail-picker" style={{ display: 'block', marginBottom: 4 }}>
-              Tuyến đường theo dõi (cảnh báo lệch &gt;100m)
-            </label>
-            <select
-              id="live-trail-picker"
-              disabled={status === 'recording' || status === 'paused'}
-              value={selectedTrailId}
-              onChange={(e) =>
-                setManualSelection({ forPropTrailId: trail?.id, trailId: e.target.value })
-              }
-              style={{
-                width: '100%',
-                padding: '7px 10px',
-                borderRadius: 4,
-                border: '1px solid var(--color-border-strong)',
-                background: 'var(--color-bg-card)',
-                color: 'var(--color-text-main)',
-                fontSize: '0.84rem',
-              }}
-            >
-              <option value="free">Chế Độ Leo Tự Do (Không khóa tuyến)</option>
-              {customRoutes.length > 0 && (
-                <optgroup label="Cung Tự Vẽ Của Tôi">
-                  {customRoutes.map((cr) => (
-                    <option key={`custom-${cr.shareSlug}`} value={`custom:${cr.shareSlug}`}>
-                      {cr.title} ({cr.distanceKm > 0 ? `${cr.distanceKm} km` : `${cr.trackPoints.length} điểm`}
-                      {cr.maxAltitudeM > 0 ? ` • ${cr.maxAltitudeM}m` : ''})
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              <optgroup label="Cung Đường Thực Địa LOST">
-                {trails.map((tr) => (
-                  <option key={tr.id} value={tr.id}>
-                    {tr.name} ({tr.distanceKm} km • {tr.maxAltitudeM}m)
-                  </option>
-                ))}
-              </optgroup>
-            </select>
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            <span className="form-label">Nguồn Tín Hiệu Định Vị</span>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-              <button
-                type="button"
-                disabled={status === 'recording'}
-                className={mode === 'gps' ? 'btn btn-primary' : 'btn btn-secondary'}
-                style={{ padding: '7px 8px', fontSize: '0.78rem' }}
-                onClick={() => setMode('gps')}
-              >
-                <IconMapPin size={14} />
-                GPS Thực Địa
-              </button>
-              <button
-                type="button"
-                disabled={status === 'recording'}
-                className={mode === 'sim' ? 'btn btn-sky' : 'btn btn-secondary'}
-                style={{ padding: '7px 8px', fontSize: '0.78rem' }}
-                onClick={() => setMode('sim')}
-              >
-                <IconCompass size={14} />
-                Mô Phỏng Thực Địa
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* LIVE FAMILY GPS BEACON SHARING PANEL (/beacon/<token>) */}
-        <div
-          style={{
-            padding: '12px 14px',
-            borderRadius: 6,
-            background: beaconSosActive
-              ? 'var(--banner-danger-bg)'
-              : beaconToken && beaconState !== 'safe'
-              ? 'color-mix(in srgb, var(--color-primary) 10%, var(--color-surface-elevated))'
-              : 'var(--color-surface-elevated)',
-            border: beaconSosActive
-              ? '1px solid var(--banner-danger-border)'
-              : beaconToken && beaconState !== 'safe'
-              ? '1px solid var(--color-border-glow)'
-              : '1px solid var(--color-border)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 10,
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <label
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 8,
-                cursor: 'pointer',
-                color: beaconSosActive ? 'var(--banner-danger-text)' : 'var(--color-text-main)',
-                fontWeight: 700,
-                fontSize: '0.86rem',
-              }}
-            >
-              <input
-                type="checkbox"
-                aria-label="Chia Sẻ Vị Trí Cho Người Thân (Live Beacon)"
-                checked={beaconEnabled}
-                onChange={(e) => handleToggleBeaconShare(e.target.checked)}
-                style={{ accentColor: 'var(--color-primary)', width: 15, height: 15 }}
-              />
-              <IconRadio size={16} color={beaconSosActive ? 'var(--banner-danger-text)' : 'var(--color-primary)'} />
-              <span>Chia Sẻ Vị Trí Cho Người Thân (Live Beacon)</span>
-            </label>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-              {beaconBatteryPct !== null && (
-                <span
-                  className="badge badge-cloud"
-                  style={{ fontVariantNumeric: 'tabular-nums' }}
-                >
-                  Pin {beaconBatteryPct}%
-                </span>
-              )}
-              {beaconState === 'active' && (
-                <span className="badge badge-success">Đang phát • 20s/lần</span>
-              )}
-              {beaconState === 'starting' && (
-                <span className="badge badge-sun">Đang khởi tạo...</span>
-              )}
-              {beaconState === 'paused' && (
-                <span className="badge badge-sun">Tạm dừng phát</span>
-              )}
-              {beaconState === 'sos' && (
-                <span className="badge badge-error">SOS KHẨN CẤP</span>
-              )}
-              {beaconState === 'safe' && beaconSharePath && (
-                <span className="badge badge-info">Đã báo an toàn</span>
-              )}
-            </div>
-          </div>
-
-          {beaconEnabled && !currentUser && (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 10,
-                flexWrap: 'wrap',
-                padding: '8px 10px',
-                borderRadius: 4,
-                background: 'var(--color-bg-card)',
-                border: '1px solid var(--color-border)',
-                fontSize: '0.78rem',
-                color: 'var(--color-text-muted)',
-              }}
-            >
-              <span>
-                Đăng nhập tài khoản LOST để tạo liên kết theo dõi trực tiếp 48 giờ gửi cho gia đình (không tốn phí).
-              </span>
-              <button
-                type="button"
-                className="btn btn-primary"
-                style={{ padding: '5px 10px', fontSize: '0.74rem' }}
-                onClick={() => window.dispatchEvent(new CustomEvent('lost:open-auth-modal'))}
-              >
-                <IconShare size={13} />
-                Đăng nhập ngay
-              </button>
-            </div>
-          )}
-
-          {beaconEnabled && currentUser && !beaconSharePath && beaconState !== 'starting' && (
-            <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
-              Tự động tạo liên kết <strong>/beacon/...</strong> ngay khi bạn bấm <strong>Bắt Đầu Hành Trình</strong>, gửi tọa độ GPS + % pin mỗi 20 giây và tự báo an toàn khi kết thúc.
-            </div>
-          )}
-
-          {beaconSharePath && (
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 8,
-                padding: '9px 11px',
-                borderRadius: 4,
-                background: 'var(--color-bg-card)',
-                border: '1px solid var(--color-border)',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-                <code
-                  style={{
-                    fontSize: '0.78rem',
-                    fontFamily: 'var(--font-family)',
-                    fontWeight: 600,
-                    color: 'var(--color-primary)',
-                    fontVariantNumeric: 'tabular-nums',
-                    wordBreak: 'break-all',
-                  }}
-                >
-                  {typeof window !== 'undefined' ? `${window.location.origin}${beaconSharePath}` : beaconSharePath}
-                </code>
-                {beaconLastPingLabel && (
-                  <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
-                    Ping gần nhất: {beaconLastPingLabel}
-                  </span>
-                )}
+          <div
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Máy Tính Hành Trình GPS Trực Tiếp LOST"
+            tabIndex={-1}
+            className="modal-content modal-fade-in"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: 820, padding: '22px 24px', display: 'flex', flexDirection: 'column', gap: 16, outline: 'none' }}
+          >
+            {/* Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+              <div>
+                <div className="section-eyebrow" style={{ marginBottom: 6 }}>
+                  LOST LIVE GPS EXPEDITION COMPUTER
+                </div>
+                <h2 className="font-editorial" style={{ fontSize: '1.35rem', color: 'var(--color-text-main)' }}>
+                  Chế Độ Leo Núi Trực Tiếp & Cảnh Báo Lệch Tuyến
+                </h2>
               </div>
-
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span
+                  className={`badge ${status === 'recording'
+                    ? 'badge-success'
+                    : status === 'paused'
+                      ? 'badge-sun'
+                      : status === 'finished'
+                        ? 'badge-info'
+                        : 'badge-cloud'
+                    }`}
+                >
+                  {status === 'recording'
+                    ? mode === 'sim'
+                      ? 'Đang Mô Phỏng'
+                      : 'Đang Ghi GPS'
+                    : status === 'paused'
+                      ? 'Tạm Dừng'
+                      : status === 'finished'
+                        ? 'Đã Hoàn Thành'
+                        : 'Sẵn Sàng'}
+                </span>
                 <button
                   type="button"
-                  className="btn btn-secondary"
-                  style={{ padding: '6px 10px', fontSize: '0.76rem' }}
-                  onClick={handleCopyBeaconLink}
-                >
-                  <IconCopy size={13} />
-                  Sao Chép Liên Kết Người Thân
-                </button>
-                <a
-                  href={beaconSharePath}
-                  target="_blank"
-                  rel="noopener noreferrer"
                   className="btn btn-outline"
-                  style={{ padding: '6px 10px', fontSize: '0.76rem', textDecoration: 'none' }}
+                  style={{ padding: '6px 8px' }}
+                  onClick={handleRequestClose}
+                  aria-label="Đóng máy tính hành trình"
                 >
-                  <IconBeaconOpenSvg size={13} />
-                  Mở Trang Theo Dõi
-                </a>
-                {beaconToken && beaconState !== 'safe' && (
+                  <IconX size={16} />
+                </button>
+              </div>
+            </div>
+
+            {/* Trail & Tracking Mode Bar */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                gap: 12,
+                padding: 12,
+                borderRadius: 6,
+                background: 'var(--color-surface-elevated)',
+                border: '1px solid var(--color-border)',
+              }}
+            >
+              <div>
+                <label className="form-label" htmlFor="live-trail-picker" style={{ display: 'block', marginBottom: 4 }}>
+                  Tuyến đường theo dõi (cảnh báo lệch &gt;100m)
+                </label>
+                <select
+                  id="live-trail-picker"
+                  disabled={status === 'recording' || status === 'paused'}
+                  value={selectedTrailId}
+                  onChange={(e) =>
+                    setManualSelection({ forPropTrailId: trail?.id, trailId: e.target.value })
+                  }
+                  style={{
+                    width: '100%',
+                    padding: '7px 10px',
+                    borderRadius: 4,
+                    border: '1px solid var(--color-border-strong)',
+                    background: 'var(--color-bg-card)',
+                    color: 'var(--color-text-main)',
+                    fontSize: '0.84rem',
+                  }}
+                >
+                  <option value="free">Chế Độ Leo Tự Do (Không khóa tuyến)</option>
+                  {customRoutes.length > 0 && (
+                    <optgroup label="Cung Tự Vẽ Của Tôi">
+                      {customRoutes.map((cr) => (
+                        <option key={`custom-${cr.shareSlug}`} value={`custom:${cr.shareSlug}`}>
+                          {cr.title} ({cr.distanceKm > 0 ? `${cr.distanceKm} km` : `${cr.trackPoints.length} điểm`}
+                          {cr.maxAltitudeM > 0 ? ` • ${cr.maxAltitudeM}m` : ''})
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <optgroup label="Cung Đường Thực Địa LOST">
+                    {trails.map((tr) => (
+                      <option key={tr.id} value={tr.id}>
+                        {tr.name} ({tr.distanceKm} km • {tr.maxAltitudeM}m)
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                <span className="form-label">Nguồn Tín Hiệu Định Vị</span>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
                   <button
                     type="button"
-                    disabled={beaconBusy}
-                    className={beaconSosActive ? 'btn btn-secondary' : 'btn btn-danger'}
-                    style={{ padding: '6px 11px', fontSize: '0.76rem' }}
-                    onClick={() => void handleToggleBeaconSos()}
+                    disabled={status === 'recording'}
+                    className={mode === 'gps' ? 'btn btn-primary' : 'btn btn-secondary'}
+                    style={{ padding: '7px 8px', fontSize: '0.78rem' }}
+                    onClick={() => setMode('gps')}
                   >
-                    <IconShieldAlert size={14} />
-                    {beaconSosActive ? 'Hủy Trạng Thái SOS' : 'Bật Trạng Thái SOS Khẩn'}
+                    <IconMapPin size={14} />
+                    GPS Thực Địa
                   </button>
-                )}
+                  <button
+                    type="button"
+                    disabled={status === 'recording'}
+                    className={mode === 'sim' ? 'btn btn-sky' : 'btn btn-secondary'}
+                    style={{ padding: '7px 8px', fontSize: '0.78rem' }}
+                    onClick={() => setMode('sim')}
+                  >
+                    <IconCompass size={14} />
+                    Mô Phỏng Thực Địa
+                  </button>
+                </div>
               </div>
             </div>
-          )}
 
-          {beaconError && (
-            <div style={{ fontSize: '0.76rem', color: 'var(--color-error-text, var(--banner-danger-text))', fontWeight: 600 }}>
-              {beaconError}
-            </div>
-          )}
-        </div>
-
-        {/* LIVE OFF-TRAIL ALARM BANNER (> 100m) */}
-        {telemetry.isOffTrail && (
-          <div
-            role="alert"
-            style={{
-              padding: '12px 14px',
-              borderRadius: 6,
-              background: 'var(--banner-danger-bg)',
-              border: '1px solid var(--banner-danger-border)',
-              color: 'var(--banner-danger-text)',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              gap: 12,
-              flexWrap: 'wrap',
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <IconShieldAlert size={20} />
-              <div>
-                <strong style={{ display: 'block', fontSize: '0.92rem', fontVariantNumeric: 'tabular-nums' }}>
-                  CẢNH BÁO LỆCH TUYẾN: CÁCH ĐƯỜNG MÒN {telemetry.offTrailMeters} MÉT!
-                </strong>
-                <span style={{ fontSize: '0.78rem' }}>
-                  Áp dụng ngay quy tắc S.T.O.P — Dừng lại và quay ngược theo mũi tên về đường GPX chuẩn.
-                </span>
-              </div>
-            </div>
-            <button
-              type="button"
-              className="btn btn-danger"
-              style={{ padding: '5px 10px', fontSize: '0.74rem' }}
-              onClick={() => setAlarmSoundEnabled((v) => !v)}
-            >
-              <IconVolumeSvg size={14} />
-              {alarmSoundEnabled ? 'Tắt còi báo' : 'Bật còi báo'}
-            </button>
-          </div>
-        )}
-
-        {gpsError && (
-          <div
-            style={{
-              padding: '9px 12px',
-              borderRadius: 4,
-              background: 'var(--banner-danger-bg)',
-              border: '1px solid var(--banner-danger-border)',
-              color: 'var(--banner-danger-text)',
-              fontSize: '0.8rem',
-            }}
-          >
-            {gpsError}
-          </div>
-        )}
-
-        {/* Primary Tabular-Nums HUD Telemetry Strip */}
-        <div className="editorial-stat-strip">
-          <div className="editorial-stat-cell">
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-              <IconClock size={12} />
-              Thời Gian
-            </span>
-            <strong style={{ fontSize: '1.45rem', color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
-              {formatElapsedHms(elapsedSec)}
-            </strong>
-            <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-              {points.length} điểm GPS
-            </span>
-          </div>
-
-          <div className="editorial-stat-cell">
-            <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-              Quãng Đường
-            </span>
-            <strong style={{ fontSize: '1.45rem', color: 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
-              {telemetry.distanceKm.toFixed(2)} km
-            </strong>
-            <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-              Lệch tuyến: {telemetry.offTrailMeters} m
-            </span>
-          </div>
-
-          <div className="editorial-stat-cell">
-            <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-              Pace / Tốc Độ
-            </span>
-            <strong style={{ fontSize: '1.35rem', color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
-              {telemetry.paceLabel} <span style={{ fontSize: '0.78rem', fontWeight: 500 }}>/km</span>
-            </strong>
-            <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-              {telemetry.currentSpeedKmH.toFixed(1)} km/h
-            </span>
-          </div>
-
-          <div className="editorial-stat-cell">
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-              <IconMountain size={12} />
-              Cao Độ / Leo Tích Lũy
-            </span>
-            <strong style={{ fontSize: '1.35rem', color: 'var(--color-earth)', fontVariantNumeric: 'tabular-nums' }}>
-              {telemetry.currentAlt !== null ? `${telemetry.currentAlt}m` : '--'}
-            </strong>
-            <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-              +{telemetry.gainM}m • GPS {telemetry.accuracyM !== null ? `±${telemetry.accuracyM}m` : '--'}
-            </span>
-          </div>
-        </div>
-
-        {/* Next Waypoint Bearing Compass + Offline Pure-SVG Breadcrumb Track */}
-        <div className="hub-grid-2" style={{ gap: 14 }}>
-          {/* Next Waypoint Card with Pure-SVG Rotating Direction Arrow */}
-          <div
-            style={{
-              padding: 14,
-              borderRadius: 6,
-              background: 'var(--color-bg-main)',
-              border: '1px solid var(--color-border)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 14,
-            }}
-          >
-            <svg viewBox="0 0 68 68" width="64" height="64" aria-hidden="true" style={{ flexShrink: 0 }}>
-              <circle cx="34" cy="34" r="30" fill="var(--color-surface-elevated)" stroke="var(--color-border-strong)" strokeWidth="1.5" />
-              <text x="34" y="13" textAnchor="middle" fill="var(--color-error)" fontSize="8" fontWeight="800" style={{ fontFamily: 'var(--font-family)' }}>
-                B
-              </text>
-              <g transform={`rotate(${telemetry.nextWaypoint?.bearingDeg ?? 0} 34 34)`}>
-                <line x1="34" y1="46" x2="34" y2="20" stroke="var(--color-primary)" strokeWidth="3" strokeLinecap="round" />
-                <polygon points="34,14 28,25 40,25" fill="var(--color-primary)" />
-              </g>
-            </svg>
-            <div style={{ minWidth: 0, flex: 1 }}>
-              <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-primary)', textTransform: 'uppercase', marginBottom: 2 }}>
-                Mốc Tiếp Theo / Đích
-              </div>
-              <strong
-                style={{
-                  display: 'block',
-                  fontSize: '0.92rem',
-                  color: 'var(--color-text-main)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {telemetry.nextWaypoint ? telemetry.nextWaypoint.name : 'Chưa bắt đầu ghi GPS'}
-              </strong>
-              <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                {telemetry.nextWaypoint
-                  ? `Còn ${telemetry.nextWaypoint.distanceKm.toFixed(2)} km • Phương vị ${telemetry.nextWaypoint.bearingDeg}° (${getCardinalDirectionLabel(telemetry.nextWaypoint.bearingDeg).split(' ')[0]})`
-                  : 'Bấm Bắt Đầu để khóa hướng tới điểm mốc kế tiếp.'}
-              </span>
-            </div>
-          </div>
-
-          {/* Pure-SVG Live Breadcrumb Track Mini-Map */}
-          <div
-            style={{
-              padding: 10,
-              borderRadius: 6,
-              background: 'var(--color-bg-main)',
-              border: '1px solid var(--color-border)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 4,
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>
-              <span>Bản Đồ Vệt Di Chuyển (Offline SVG)</span>
-              <span style={{ fontVariantNumeric: 'tabular-nums' }}>
-                {telemetry.latest ? `${telemetry.latest.lat.toFixed(4)}, ${telemetry.latest.lng.toFixed(4)}` : 'Đang chờ tọa độ'}
-              </span>
-            </div>
-            <svg
-              viewBox={`0 0 ${miniMapSvg.W} ${miniMapSvg.H}`}
-              width="100%"
-              role="img"
-              aria-label="Sơ đồ vệt đường GPX trực tiếp"
-              style={{ display: 'block', width: '100%', height: 'auto', maxHeight: 140 }}
-            >
-              {miniMapSvg.refPolyline && (
-                <polyline
-                  points={miniMapSvg.refPolyline}
-                  fill="none"
-                  stroke="var(--color-border-strong)"
-                  strokeWidth="2.5"
-                  strokeDasharray="5 4"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              )}
-              {miniMapSvg.recPolyline && (
-                <polyline
-                  points={miniMapSvg.recPolyline}
-                  fill="none"
-                  stroke={telemetry.isOffTrail ? 'var(--color-error)' : 'var(--color-primary)'}
-                  strokeWidth="3.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              )}
-              {miniMapSvg.pinDots.map((d) => (
-                <circle key={d.id} cx={d.x} cy={d.y} r="4" fill={d.colorVar} stroke="var(--color-bg-card)" strokeWidth="1.5" />
-              ))}
-              {miniMapSvg.currentDot && (
-                <g>
-                  <circle
-                    cx={miniMapSvg.currentDot.x}
-                    cy={miniMapSvg.currentDot.y}
-                    r="8"
-                    fill="color-mix(in srgb, var(--color-primary) 24%, transparent)"
-                  />
-                  <circle
-                    cx={miniMapSvg.currentDot.x}
-                    cy={miniMapSvg.currentDot.y}
-                    r="4.5"
-                    fill={telemetry.isOffTrail ? 'var(--color-error)' : 'var(--color-primary)'}
-                    stroke="var(--color-on-media)"
-                    strokeWidth="1.5"
-                  />
-                </g>
-              )}
-            </svg>
-          </div>
-        </div>
-
-        {/* Simulation Off-Trail Alarm Test Switch + Audio Alarm Toggle */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {status !== 'recording' ? (
-              <button type="button" className="btn btn-primary" onClick={handleStart}>
-                <IconPlaySvg size={14} />
-                {status === 'paused' ? 'Tiếp Tục Ghi' : 'Bắt Đầu Hành Trình'}
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="btn btn-earth"
-                onClick={() => {
-                  setStatus('paused');
-                  if (beaconTokenRef.current) {
-                    void pingBeaconSession({
-                      force: true,
-                      statusOverride: beaconSosRef.current ? 'sos' : 'paused',
-                    });
-                  }
-                }}
-              >
-                <IconPauseSvg size={14} />
-                Tạm Dừng
-              </button>
-            )}
-
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={points.length < 2}
-              onClick={handleExportRecordedGpx}
-            >
-              <IconDownload size={15} />
-              Xuất GPX 1.1
-            </button>
-
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={points.length < 2 && status !== 'finished'}
-              onClick={handleOpenShareCard}
-              title="Tạo ảnh PNG hành trình từ tọa độ GPS đã ghi"
-            >
-              <IconImage size={15} />
-              Xuất Thẻ PNG
-            </button>
-
-            <button
-              type="button"
-              className="btn btn-sky"
-              disabled={isCheckingIn || (status === 'idle' && points.length === 0)}
-              onClick={() => void handleFinishAndCheckin()}
-            >
-              <IconStopSvg size={13} />
-              {isCheckingIn ? 'Đang gửi Check-in...' : 'Kết Thúc & Check-in Đỉnh'}
-            </button>
-          </div>
-
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            {mode === 'sim' && status === 'recording' && (
-              <button
-                type="button"
-                className={simDeviateOffTrail ? 'btn btn-danger' : 'btn btn-outline'}
-                style={{ padding: '6px 10px', fontSize: '0.75rem' }}
-                onClick={() => setSimDeviateOffTrail((v) => !v)}
-              >
-                <IconAlertTriangle size={14} />
-                {simDeviateOffTrail ? 'Quay Về Đúng Tuyến' : 'Thử Lệch Tuyến (+140m)'}
-              </button>
-            )}
-            <label
+            {/* LIVE FAMILY GPS BEACON SHARING PANEL (/beacon/<token>) */}
+            <div
               style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                fontSize: '0.78rem',
-                color: 'var(--color-text-muted)',
-                cursor: 'pointer',
+                padding: '12px 14px',
+                borderRadius: 6,
+                background: beaconSosActive
+                  ? 'var(--banner-danger-bg)'
+                  : beaconToken && beaconState !== 'safe'
+                    ? 'color-mix(in srgb, var(--color-primary) 10%, var(--color-surface-elevated))'
+                    : 'var(--color-surface-elevated)',
+                border: beaconSosActive
+                  ? '1px solid var(--banner-danger-border)'
+                  : beaconToken && beaconState !== 'safe'
+                    ? '1px solid var(--color-border-glow)'
+                    : '1px solid var(--color-border)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 10,
               }}
             >
-              <input
-                type="checkbox"
-                aria-label="Bật hoặc tắt âm báo lệch tuyến"
-                checked={alarmSoundEnabled}
-                onChange={(e) => setAlarmSoundEnabled(e.target.checked)}
-                style={{ accentColor: 'var(--color-error)' }}
-              />
-              Âm báo lệch tuyến
-            </label>
-          </div>
-        </div>
-
-        {/* Live Field Pin Drop Bar ("Đánh Dấu Điểm Bắt Gặp") */}
-        <div
-          style={{
-            padding: 12,
-            borderRadius: 6,
-            background: 'var(--color-surface-elevated)',
-            border: '1px solid var(--color-border)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 10,
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-            <strong style={{ fontSize: '0.86rem', color: 'var(--color-text-main)' }}>
-              Đánh Dấu Điểm Bắt Gặp Trên Đường ({fieldPins.length} mốc)
-            </strong>
-            <span style={{ fontSize: '0.74rem', color: 'var(--color-text-dim)' }}>
-              Lưu kèm vào file GPX 1.1 khi xuất
-            </span>
-          </div>
-
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <select
-              aria-label="Loại mốc bắt gặp"
-              value={pinKind}
-              onChange={(e) => setPinKind(e.target.value as FieldPinKind)}
-              style={{
-                padding: '7px 9px',
-                borderRadius: 4,
-                border: '1px solid var(--color-border-strong)',
-                background: 'var(--color-bg-card)',
-                color: 'var(--color-text-main)',
-                fontSize: '0.8rem',
-              }}
-            >
-              {(Object.keys(FIELD_PIN_META) as FieldPinKind[]).map((k) => (
-                <option key={k} value={k}>
-                  {FIELD_PIN_META[k].label}
-                </option>
-              ))}
-            </select>
-
-            <input
-              type="text"
-              aria-label="Ghi chú điểm bắt gặp trên đường"
-              value={pinNote}
-              onChange={(e) => setPinNote(e.target.value)}
-              placeholder="Ghi chú ngắn (VD: Suối nước sạch 2.200m, sạt lở nhẹ...)"
-              style={{
-                flex: 1,
-                minWidth: 180,
-                padding: '7px 10px',
-                borderRadius: 4,
-                border: '1px solid var(--color-border-strong)',
-                background: 'var(--color-bg-card)',
-                color: 'var(--color-text-main)',
-                fontSize: '0.82rem',
-              }}
-            />
-
-            <button type="button" className="btn btn-primary" style={{ padding: '7px 12px', fontSize: '0.8rem' }} onClick={handleDropFieldPin}>
-              <IconPlus size={14} />
-              Ghim Điểm
-            </button>
-          </div>
-
-          {fieldPins.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 120, overflowY: 'auto' }}>
-              {fieldPins.map((pin) => (
-                <div
-                  key={pin.id}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <label
                   style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
+                    display: 'inline-flex',
                     alignItems: 'center',
                     gap: 8,
-                    padding: '6px 10px',
+                    cursor: 'pointer',
+                    color: beaconSosActive ? 'var(--banner-danger-text)' : 'var(--color-text-main)',
+                    fontWeight: 700,
+                    fontSize: '0.86rem',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    aria-label="Chia Sẻ Vị Trí Cho Người Thân (Live Beacon)"
+                    checked={beaconEnabled}
+                    onChange={(e) => handleToggleBeaconShare(e.target.checked)}
+                    style={{ accentColor: 'var(--color-primary)', width: 15, height: 15 }}
+                  />
+                  <IconRadio size={16} color={beaconSosActive ? 'var(--banner-danger-text)' : 'var(--color-primary)'} />
+                  <span>Chia Sẻ Vị Trí Cho Người Thân (Live Beacon)</span>
+                </label>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  {beaconBatteryPct !== null && (
+                    <span
+                      className="badge badge-cloud"
+                      style={{ fontVariantNumeric: 'tabular-nums' }}
+                    >
+                      Pin {beaconBatteryPct}%
+                    </span>
+                  )}
+                  {beaconState === 'active' && (
+                    <span className="badge badge-success">Đang phát • 20s/lần</span>
+                  )}
+                  {beaconState === 'starting' && (
+                    <span className="badge badge-sun">Đang khởi tạo...</span>
+                  )}
+                  {beaconState === 'paused' && (
+                    <span className="badge badge-sun">Tạm dừng phát</span>
+                  )}
+                  {beaconState === 'sos' && (
+                    <span className="badge badge-error">SOS KHẨN CẤP</span>
+                  )}
+                  {beaconState === 'safe' && beaconSharePath && (
+                    <span className="badge badge-info">Đã báo an toàn</span>
+                  )}
+                </div>
+              </div>
+
+              {beaconEnabled && !currentUser && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                    flexWrap: 'wrap',
+                    padding: '8px 10px',
                     borderRadius: 4,
                     background: 'var(--color-bg-card)',
                     border: '1px solid var(--color-border)',
                     fontSize: '0.78rem',
+                    color: 'var(--color-text-muted)',
                   }}
                 >
-                  <span style={{ color: 'var(--color-text-main)', fontWeight: 600 }}>
-                    {pin.name}{' '}
-                    <span style={{ color: 'var(--color-text-dim)', fontWeight: 400, fontVariantNumeric: 'tabular-nums' }}>
-                      ({pin.lat.toFixed(4)}, {pin.lng.toFixed(4)}
-                      {typeof pin.elevationM === 'number' ? ` • ${pin.elevationM}m` : ''})
-                    </span>
+                  <span>
+                    Đăng nhập tài khoản LOST để tạo liên kết theo dõi trực tiếp 48 giờ gửi cho gia đình (không tốn phí).
                   </span>
                   <button
                     type="button"
-                    className="btn btn-outline"
-                    aria-label={`Xóa mốc ${pin.name}`}
-                    style={{ padding: '3px 6px', color: 'var(--color-error-text, var(--banner-danger-text))' }}
-                    onClick={() => setFieldPins((prev) => prev.filter((item) => item.id !== pin.id))}
+                    className="btn btn-primary"
+                    style={{ padding: '5px 10px', fontSize: '0.74rem' }}
+                    onClick={() => window.dispatchEvent(new CustomEvent('lost:open-auth-modal'))}
                   >
-                    <IconTrash size={12} />
+                    <IconShare size={13} />
+                    Đăng nhập ngay
                   </button>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
+              )}
 
-        {/* Post-Checkin Confirmation Strip */}
-        {checkinCompleted && (
-          <div
-            style={{
-              padding: '10px 14px',
-              borderRadius: 6,
-              background: 'color-mix(in srgb, var(--color-primary) 12%, var(--color-bg-card))',
-              border: '1px solid var(--color-border-glow)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 10,
-              flexWrap: 'wrap',
-              fontSize: '0.84rem',
-              color: 'var(--color-text-main)',
-            }}
-          >
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 600 }}>
-              <IconCheckCircle size={18} color="var(--color-primary)" />
-              Đã lưu nhật ký hành trình ({telemetry.distanceKm.toFixed(2)} km • +{telemetry.gainM}m • {formatElapsedHms(elapsedSec)}).
-            </span>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                style={{ padding: '5px 10px', fontSize: '0.76rem' }}
-                onClick={handleOpenShareCard}
-              >
-                <IconImage size={14} />
-                Xuất Thẻ PNG Hành Trình
-              </button>
-              {!currentUser && (
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  style={{ padding: '5px 10px', fontSize: '0.76rem' }}
-                  onClick={() => window.dispatchEvent(new CustomEvent('lost:open-auth-modal'))}
+              {beaconEnabled && currentUser && !beaconSharePath && beaconState !== 'starting' && (
+                <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
+                  Tự động tạo liên kết <strong>/beacon/...</strong> ngay khi bạn bấm <strong>Bắt Đầu Hành Trình</strong>, gửi tọa độ GPS + % pin mỗi 20 giây và tự báo an toàn khi kết thúc.
+                </div>
+              )}
+
+              {beaconSharePath && (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                    padding: '9px 11px',
+                    borderRadius: 4,
+                    background: 'var(--color-bg-card)',
+                    border: '1px solid var(--color-border)',
+                  }}
                 >
-                  <IconShieldCheck size={14} />
-                  Đăng nhập để đồng bộ Hộ chiếu
-                </button>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                    <code
+                      style={{
+                        fontSize: '0.78rem',
+                        fontFamily: 'var(--font-family)',
+                        fontWeight: 600,
+                        color: 'var(--color-primary)',
+                        fontVariantNumeric: 'tabular-nums',
+                        wordBreak: 'break-all',
+                      }}
+                    >
+                      {typeof window !== 'undefined' ? `${window.location.origin}${beaconSharePath}` : beaconSharePath}
+                    </code>
+                    {beaconLastPingLabel && (
+                      <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
+                        Ping gần nhất: {beaconLastPingLabel}
+                      </span>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      style={{ padding: '6px 10px', fontSize: '0.76rem' }}
+                      onClick={handleCopyBeaconLink}
+                    >
+                      <IconCopy size={13} />
+                      Sao Chép Liên Kết Người Thân
+                    </button>
+                    <a
+                      href={beaconSharePath}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn btn-outline"
+                      style={{ padding: '6px 10px', fontSize: '0.76rem', textDecoration: 'none' }}
+                    >
+                      <IconBeaconOpenSvg size={13} />
+                      Mở Trang Theo Dõi
+                    </a>
+                    {beaconToken && beaconState !== 'safe' && (
+                      <button
+                        type="button"
+                        disabled={beaconBusy}
+                        className={beaconSosActive ? 'btn btn-secondary' : 'btn btn-danger'}
+                        style={{ padding: '6px 11px', fontSize: '0.76rem' }}
+                        onClick={() => void handleToggleBeaconSos()}
+                      >
+                        <IconShieldAlert size={14} />
+                        {beaconSosActive ? 'Hủy Trạng Thái SOS' : 'Bật Trạng Thái SOS Khẩn'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {beaconError && (
+                <div style={{ fontSize: '0.76rem', color: 'var(--color-error-text, var(--banner-danger-text))', fontWeight: 600 }}>
+                  {beaconError}
+                </div>
               )}
             </div>
+
+            {/* LIVE OFF-TRAIL ALARM BANNER (> 100m) */}
+            {telemetry.isOffTrail && (
+              <div
+                role="alert"
+                style={{
+                  padding: '12px 14px',
+                  borderRadius: 6,
+                  background: 'var(--banner-danger-bg)',
+                  border: '1px solid var(--banner-danger-border)',
+                  color: 'var(--banner-danger-text)',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: 12,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <IconShieldAlert size={20} />
+                  <div>
+                    <strong style={{ display: 'block', fontSize: '0.92rem', fontVariantNumeric: 'tabular-nums' }}>
+                      CẢNH BÁO LỆCH TUYẾN: CÁCH ĐƯỜNG MÒN {telemetry.offTrailMeters} MÉT!
+                    </strong>
+                    <span style={{ fontSize: '0.78rem' }}>
+                      Áp dụng ngay quy tắc S.T.O.P — Dừng lại và quay ngược theo mũi tên về đường GPX chuẩn.
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  style={{ padding: '5px 10px', fontSize: '0.74rem' }}
+                  onClick={() => setAlarmSoundEnabled((v) => !v)}
+                >
+                  <IconVolumeSvg size={14} />
+                  {alarmSoundEnabled ? 'Tắt còi báo' : 'Bật còi báo'}
+                </button>
+              </div>
+            )}
+
+            {gpsError && (
+              <div
+                style={{
+                  padding: '9px 12px',
+                  borderRadius: 4,
+                  background: 'var(--banner-danger-bg)',
+                  border: '1px solid var(--banner-danger-border)',
+                  color: 'var(--banner-danger-text)',
+                  fontSize: '0.8rem',
+                }}
+              >
+                {gpsError}
+              </div>
+            )}
+
+            {/* Primary Tabular-Nums HUD Telemetry Strip */}
+            <div className="editorial-stat-strip">
+              <div className="editorial-stat-cell">
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
+                  <IconClock size={12} />
+                  Thời Gian
+                </span>
+                <strong style={{ fontSize: '1.45rem', color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
+                  {formatElapsedHms(elapsedSec)}
+                </strong>
+                <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                  {points.length} điểm GPS
+                </span>
+              </div>
+
+              <div className="editorial-stat-cell">
+                <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
+                  Quãng Đường
+                </span>
+                <strong style={{ fontSize: '1.45rem', color: 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
+                  {telemetry.distanceKm.toFixed(2)} km
+                </strong>
+                <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                  Lệch tuyến: {telemetry.offTrailMeters} m
+                </span>
+              </div>
+
+              <div className="editorial-stat-cell">
+                <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
+                  Pace / Tốc Độ
+                </span>
+                <strong style={{ fontSize: '1.35rem', color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
+                  {telemetry.paceLabel} <span style={{ fontSize: '0.78rem', fontWeight: 500 }}>/km</span>
+                </strong>
+                <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                  {telemetry.currentSpeedKmH.toFixed(1)} km/h
+                </span>
+              </div>
+
+              <div className="editorial-stat-cell">
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
+                  <IconMountain size={12} />
+                  Cao Độ / Leo Tích Lũy
+                </span>
+                <strong style={{ fontSize: '1.35rem', color: 'var(--color-earth)', fontVariantNumeric: 'tabular-nums' }}>
+                  {telemetry.currentAlt !== null ? `${telemetry.currentAlt}m` : '--'}
+                </strong>
+                <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                  +{telemetry.gainM}m • GPS {telemetry.accuracyM !== null ? `±${telemetry.accuracyM}m` : '--'}
+                </span>
+              </div>
+            </div>
+
+            {/* Next Waypoint Bearing Compass + Offline Pure-SVG Breadcrumb Track */}
+            <div className="hub-grid-2" style={{ gap: 14 }}>
+              {/* Next Waypoint Card with Pure-SVG Rotating Direction Arrow */}
+              <div
+                style={{
+                  padding: 14,
+                  borderRadius: 6,
+                  background: 'var(--color-bg-main)',
+                  border: '1px solid var(--color-border)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 14,
+                }}
+              >
+                <svg viewBox="0 0 68 68" width="64" height="64" aria-hidden="true" style={{ flexShrink: 0 }}>
+                  <circle cx="34" cy="34" r="30" fill="var(--color-surface-elevated)" stroke="var(--color-border-strong)" strokeWidth="1.5" />
+                  <text x="34" y="13" textAnchor="middle" fill="var(--color-error)" fontSize="8" fontWeight="800" style={{ fontFamily: 'var(--font-family)' }}>
+                    B
+                  </text>
+                  <g transform={`rotate(${telemetry.nextWaypoint?.bearingDeg ?? 0} 34 34)`}>
+                    <line x1="34" y1="46" x2="34" y2="20" stroke="var(--color-primary)" strokeWidth="3" strokeLinecap="round" />
+                    <polygon points="34,14 28,25 40,25" fill="var(--color-primary)" />
+                  </g>
+                </svg>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-primary)', textTransform: 'uppercase', marginBottom: 2 }}>
+                    Mốc Tiếp Theo / Đích
+                  </div>
+                  <strong
+                    style={{
+                      display: 'block',
+                      fontSize: '0.92rem',
+                      color: 'var(--color-text-main)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {telemetry.nextWaypoint ? telemetry.nextWaypoint.name : 'Chưa bắt đầu ghi GPS'}
+                  </strong>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                    {telemetry.nextWaypoint
+                      ? `Còn ${telemetry.nextWaypoint.distanceKm.toFixed(2)} km • Phương vị ${telemetry.nextWaypoint.bearingDeg}° (${getCardinalDirectionLabel(telemetry.nextWaypoint.bearingDeg).split(' ')[0]})`
+                      : 'Bấm Bắt Đầu để khóa hướng tới điểm mốc kế tiếp.'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Pure-SVG Live Breadcrumb Track Mini-Map */}
+              <div
+                style={{
+                  padding: 10,
+                  borderRadius: 6,
+                  background: 'var(--color-bg-main)',
+                  border: '1px solid var(--color-border)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>
+                  <span>Bản Đồ Vệt Di Chuyển (Offline SVG)</span>
+                  <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+                    {telemetry.latest ? `${telemetry.latest.lat.toFixed(4)}, ${telemetry.latest.lng.toFixed(4)}` : 'Đang chờ tọa độ'}
+                  </span>
+                </div>
+                <svg
+                  viewBox={`0 0 ${miniMapSvg.W} ${miniMapSvg.H}`}
+                  width="100%"
+                  role="img"
+                  aria-label="Sơ đồ vệt đường GPX trực tiếp"
+                  style={{ display: 'block', width: '100%', height: 'auto', maxHeight: 140 }}
+                >
+                  {miniMapSvg.refPolyline && (
+                    <polyline
+                      points={miniMapSvg.refPolyline}
+                      fill="none"
+                      stroke="var(--color-border-strong)"
+                      strokeWidth="2.5"
+                      strokeDasharray="5 4"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  )}
+                  {miniMapSvg.recPolyline && (
+                    <polyline
+                      points={miniMapSvg.recPolyline}
+                      fill="none"
+                      stroke={telemetry.isOffTrail ? 'var(--color-error)' : 'var(--color-primary)'}
+                      strokeWidth="3.2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  )}
+                  {miniMapSvg.pinDots.map((d) => (
+                    <circle key={d.id} cx={d.x} cy={d.y} r="4" fill={d.colorVar} stroke="var(--color-bg-card)" strokeWidth="1.5" />
+                  ))}
+                  {miniMapSvg.currentDot && (
+                    <g>
+                      <circle
+                        cx={miniMapSvg.currentDot.x}
+                        cy={miniMapSvg.currentDot.y}
+                        r="8"
+                        fill="color-mix(in srgb, var(--color-primary) 24%, transparent)"
+                      />
+                      <circle
+                        cx={miniMapSvg.currentDot.x}
+                        cy={miniMapSvg.currentDot.y}
+                        r="4.5"
+                        fill={telemetry.isOffTrail ? 'var(--color-error)' : 'var(--color-primary)'}
+                        stroke="var(--color-on-media)"
+                        strokeWidth="1.5"
+                      />
+                    </g>
+                  )}
+                </svg>
+              </div>
+            </div>
+
+            {/* Simulation Off-Trail Alarm Test Switch + Audio Alarm Toggle */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {status !== 'recording' ? (
+                  <button type="button" className="btn btn-primary" onClick={handleStart}>
+                    <IconPlaySvg size={14} />
+                    {status === 'paused' ? 'Tiếp Tục Ghi' : 'Bắt Đầu Hành Trình'}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-earth"
+                    onClick={() => {
+                      setStatus('paused');
+                      if (beaconTokenRef.current) {
+                        void pingBeaconSession({
+                          force: true,
+                          statusOverride: beaconSosRef.current ? 'sos' : 'paused',
+                        });
+                      }
+                    }}
+                  >
+                    <IconPauseSvg size={14} />
+                    Tạm Dừng
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={points.length < 2}
+                  onClick={handleExportRecordedGpx}
+                >
+                  <IconDownload size={15} />
+                  Xuất GPX 1.1
+                </button>
+
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={points.length < 2 && status !== 'finished'}
+                  onClick={handleOpenShareCard}
+                  title="Tạo ảnh PNG hành trình từ tọa độ GPS đã ghi"
+                >
+                  <IconImage size={15} />
+                  Xuất Thẻ PNG
+                </button>
+
+                <button
+                  type="button"
+                  className="btn btn-sky"
+                  disabled={isCheckingIn || (status === 'idle' && points.length === 0)}
+                  onClick={() => void handleFinishAndCheckin()}
+                  title={
+                    mode === 'sim'
+                      ? 'Chế độ mô phỏng chỉ xem trước bản đồ, không tính Check-in GPS xác thực'
+                      : 'Hoàn tất hành trình và đồng bộ Check-in GPS'
+                  }
+                >
+                  <IconStopSvg size={13} />
+                  {isCheckingIn
+                    ? 'Đang gửi Check-in...'
+                    : mode === 'sim'
+                      ? 'Kết Thúc Mô Phỏng'
+                      : 'Kết Thúc & Check-in Đỉnh'}
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                {mode === 'sim' && status === 'recording' && (
+                  <button
+                    type="button"
+                    className={simDeviateOffTrail ? 'btn btn-danger' : 'btn btn-outline'}
+                    style={{ padding: '6px 10px', fontSize: '0.75rem' }}
+                    onClick={() => setSimDeviateOffTrail((v) => !v)}
+                  >
+                    <IconAlertTriangle size={14} />
+                    {simDeviateOffTrail ? 'Quay Về Đúng Tuyến' : 'Thử Lệch Tuyến (+140m)'}
+                  </button>
+                )}
+                <label
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    fontSize: '0.78rem',
+                    color: 'var(--color-text-muted)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    aria-label="Bật hoặc tắt âm báo lệch tuyến"
+                    checked={alarmSoundEnabled}
+                    onChange={(e) => setAlarmSoundEnabled(e.target.checked)}
+                    style={{ accentColor: 'var(--color-error)' }}
+                  />
+                  Âm báo lệch tuyến
+                </label>
+              </div>
+            </div>
+
+            {/* Live Field Pin Drop Bar ("Đánh Dấu Điểm Bắt Gặp") */}
+            <div
+              style={{
+                padding: 12,
+                borderRadius: 6,
+                background: 'var(--color-surface-elevated)',
+                border: '1px solid var(--color-border)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 10,
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <strong style={{ fontSize: '0.86rem', color: 'var(--color-text-main)' }}>
+                  Đánh Dấu Điểm Bắt Gặp Trên Đường ({fieldPins.length} mốc)
+                </strong>
+                <span style={{ fontSize: '0.74rem', color: 'var(--color-text-dim)' }}>
+                  Lưu kèm vào file GPX 1.1 khi xuất
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <select
+                  aria-label="Loại mốc bắt gặp"
+                  value={pinKind}
+                  onChange={(e) => setPinKind(e.target.value as FieldPinKind)}
+                  style={{
+                    padding: '7px 9px',
+                    borderRadius: 4,
+                    border: '1px solid var(--color-border-strong)',
+                    background: 'var(--color-bg-card)',
+                    color: 'var(--color-text-main)',
+                    fontSize: '0.8rem',
+                  }}
+                >
+                  {(Object.keys(FIELD_PIN_META) as FieldPinKind[]).map((k) => (
+                    <option key={k} value={k}>
+                      {FIELD_PIN_META[k].label}
+                    </option>
+                  ))}
+                </select>
+
+                <input
+                  type="text"
+                  aria-label="Ghi chú điểm bắt gặp trên đường"
+                  value={pinNote}
+                  onChange={(e) => setPinNote(e.target.value)}
+                  placeholder="Ghi chú ngắn (VD: Suối nước sạch 2.200m, sạt lở nhẹ...)"
+                  style={{
+                    flex: 1,
+                    minWidth: 180,
+                    padding: '7px 10px',
+                    borderRadius: 4,
+                    border: '1px solid var(--color-border-strong)',
+                    background: 'var(--color-bg-card)',
+                    color: 'var(--color-text-main)',
+                    fontSize: '0.82rem',
+                  }}
+                />
+
+                <button type="button" className="btn btn-primary" style={{ padding: '7px 12px', fontSize: '0.8rem' }} onClick={handleDropFieldPin}>
+                  <IconPlus size={14} />
+                  Ghim Điểm
+                </button>
+              </div>
+
+              {fieldPins.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 120, overflowY: 'auto' }}>
+                  {fieldPins.map((pin) => (
+                    <div
+                      key={pin.id}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '6px 10px',
+                        borderRadius: 4,
+                        background: 'var(--color-bg-card)',
+                        border: '1px solid var(--color-border)',
+                        fontSize: '0.78rem',
+                      }}
+                    >
+                      <span style={{ color: 'var(--color-text-main)', fontWeight: 600 }}>
+                        {pin.name}{' '}
+                        <span style={{ color: 'var(--color-text-dim)', fontWeight: 400, fontVariantNumeric: 'tabular-nums' }}>
+                          ({pin.lat.toFixed(4)}, {pin.lng.toFixed(4)}
+                          {typeof pin.elevationM === 'number' ? ` • ${pin.elevationM}m` : ''})
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn-outline"
+                        aria-label={`Xóa mốc ${pin.name}`}
+                        style={{ padding: '3px 6px', color: 'var(--color-error-text, var(--banner-danger-text))' }}
+                        onClick={() => setFieldPins((prev) => prev.filter((item) => item.id !== pin.id))}
+                      >
+                        <IconTrash size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Local / Offline Recorded Trek History ("Lịch Sử Ghi Cục Bộ / Ngoại Tuyến") */}
+            <div
+              style={{
+                borderRadius: 6,
+                background: 'var(--color-surface-elevated)',
+                border: '1px solid var(--color-border)',
+                overflow: 'hidden',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setShowLocalHistory((prev) => !prev)}
+                aria-expanded={showLocalHistory}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  background: 'transparent',
+                  border: 'none',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: 8,
+                  cursor: 'pointer',
+                  color: 'var(--color-text-main)',
+                  fontFamily: 'var(--font-family)',
+                  fontSize: '0.84rem',
+                  fontWeight: 700,
+                }}
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                  <IconClock size={14} color="var(--color-sky)" />
+                  <span>Lịch Sử Ghi Cục Bộ / Ngoại Tuyến ({savedLocalTreks.length})</span>
+                </span>
+                <span style={{ fontSize: '0.73rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>
+                  {showLocalHistory ? 'Thu gọn' : 'Mở danh sách'}
+                </span>
+              </button>
+
+              {showLocalHistory && (
+                <div
+                  style={{
+                    padding: '0 12px 12px',
+                    borderTop: '1px solid var(--color-border)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                    maxHeight: 240,
+                    overflowY: 'auto',
+                  }}
+                >
+                  {savedLocalTreks.length === 0 ? (
+                    <div style={{ padding: '14px 8px', textAlign: 'center', fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
+                      Chưa có hành trình GPS nào lưu trên thiết bị. Hoàn tất ghi GPS thực địa để tự động lưu ngoại tuyến tại đây.
+                    </div>
+                  ) : (
+                    savedLocalTreks.map((entry) => {
+                      const canonicalTrailId =
+                        entry.baseTrailId ||
+                        (!entry.trailId.startsWith('custom:') && entry.trailId !== 'free-trek' ? entry.trailId : null);
+                      const canSync = Boolean(!entry.syncedToServer && canonicalTrailId);
+                      const isSyncing = syncingHistoryId === entry.id;
+                      const dateObj = new Date(entry.recordedAt);
+                      const dateLabel = Number.isNaN(dateObj.getTime())
+                        ? entry.recordedAt
+                        : dateObj.toLocaleString('vi-VN', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          year: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        });
+
+                      return (
+                        <div
+                          key={entry.id}
+                          style={{
+                            marginTop: 8,
+                            padding: '9px 10px',
+                            borderRadius: 4,
+                            background: 'var(--color-bg-card)',
+                            border: '1px solid var(--color-border)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 6,
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <div>
+                              <strong style={{ fontSize: '0.82rem', color: 'var(--color-text-main)' }}>
+                                {entry.trailName}
+                              </strong>
+                              <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                                {dateLabel} • {entry.distanceKm.toFixed(2)} km • +{entry.elevationGainM}m • {formatElapsedHms(entry.elapsedSec)}
+                              </div>
+                            </div>
+                            <span className={`badge ${entry.syncedToServer ? 'badge-success' : 'badge-cloud'}`} style={{ fontSize: '0.68rem' }}>
+                              {entry.syncedToServer ? 'Đã đồng bộ Check-in' : 'Lưu ngoại tuyến'}
+                            </span>
+                          </div>
+
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              onClick={() => handleExportSavedTrekGpx(entry)}
+                              style={{ padding: '4px 9px', fontSize: '0.72rem', borderRadius: 4 }}
+                            >
+                              <IconDownload size={12} /> Xuất GPX
+                            </button>
+                            {canSync && (
+                              <button
+                                type="button"
+                                className="btn btn-primary"
+                                disabled={isSyncing}
+                                onClick={() => void handleSyncSavedTrek(entry)}
+                                style={{ padding: '4px 9px', fontSize: '0.72rem', borderRadius: 4 }}
+                              >
+                                <IconShieldCheck size={12} />
+                                {isSyncing ? 'Đang đồng bộ...' : 'Đồng bộ Check-in'}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="btn btn-outline"
+                              onClick={() => handleDeleteSavedTrek(entry.id)}
+                              aria-label={`Xóa bản ghi ${entry.trailName}`}
+                              style={{
+                                padding: '4px 8px',
+                                fontSize: '0.72rem',
+                                borderRadius: 4,
+                                color: 'var(--color-error-text, var(--color-error))',
+                                marginLeft: 'auto',
+                              }}
+                            >
+                              <IconTrash size={12} /> Xóa
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Post-Checkin Confirmation Strip */}
+            {checkinCompleted && (
+              <div
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: 6,
+                  background: 'color-mix(in srgb, var(--color-primary) 12%, var(--color-bg-card))',
+                  border: '1px solid var(--color-border-glow)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                  flexWrap: 'wrap',
+                  fontSize: '0.84rem',
+                  color: 'var(--color-text-main)',
+                }}
+              >
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 600 }}>
+                  <IconCheckCircle size={18} color="var(--color-primary)" />
+                  Đã lưu nhật ký hành trình ({telemetry.distanceKm.toFixed(2)} km • +{telemetry.gainM}m • {formatElapsedHms(elapsedSec)}).
+                </span>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ padding: '5px 10px', fontSize: '0.76rem' }}
+                    onClick={handleOpenShareCard}
+                  >
+                    <IconImage size={14} />
+                    Xuất Thẻ PNG Hành Trình
+                  </button>
+                  {!currentUser && (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      style={{ padding: '5px 10px', fontSize: '0.76rem' }}
+                      onClick={() => window.dispatchEvent(new CustomEvent('lost:open-auth-modal'))}
+                    >
+                      <IconShieldCheck size={14} />
+                      Đăng nhập để đồng bộ Hộ chiếu
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
-        )}
-      </div>
-    </div>,
+        </div>,
         document.body
       )}
       {isOpen && shareCardSnapshot && (

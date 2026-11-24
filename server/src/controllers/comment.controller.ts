@@ -62,6 +62,7 @@ export const getComments = async (req: Request, res: Response) => {
         authorName: liveName,
         authorAvatar: liveAvatar,
         content: c.content,
+        isBestAnswer: Boolean(c.isBestAnswer),
         reactions: c.reactions || {
           like: 0,
           love: 0,
@@ -527,5 +528,83 @@ export const reactToComment = async (req: AuthRequest, res: Response) => {
   } catch (err) {
     console.error('[Comment Reaction API Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi khi lưu cảm xúc bình luận.' });
+  }
+};
+
+export const toggleBestAnswer = async (req: AuthRequest, res: Response) => {
+  try {
+    const currentUserId = req.user?.userId;
+    const isStaff = req.user?.role === 'admin' || req.user?.role === 'moderator';
+    const targetThreadId = String(req.params.threadId || '').trim();
+    const { commentId } = req.params;
+
+    if (!currentUserId || !isValidObjectId(currentUserId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    if (!targetThreadId || !isValidObjectId(commentId)) {
+      return res.status(400).json({ success: false, message: 'Mã bài viết hoặc bình luận không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const threadQuery = isValidObjectId(targetThreadId)
+      ? { $or: [{ id: targetThreadId }, { _id: new mongoose.Types.ObjectId(targetThreadId) }] }
+      : { id: targetThreadId };
+    const thread = await ThreadModel.findOne(threadQuery).select('_id id userId title').lean();
+    if (!thread) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết.' });
+    }
+
+    const isThreadAuthor = Boolean(thread.userId && String(thread.userId) === String(currentUserId));
+    if (!isStaff && !isThreadAuthor) {
+      return res.status(403).json({
+        success: false,
+        message: 'Chỉ tác giả bài viết hoặc Ban Quản Trị mới có quyền chọn câu trả lời hữu ích nhất.',
+      });
+    }
+
+    const comment = await CommentModel.findOne({ _id: commentId, threadId: thread.id })
+      .select('_id threadId isBestAnswer')
+      .lean();
+    if (!comment) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy bình luận trong bài viết này.' });
+    }
+
+    const nextIsBest = !comment.isBestAnswer;
+
+    // Atomically unset any previous best answer(s) in this thread, then apply the new flag
+    await CommentModel.updateMany(
+      { threadId: thread.id, isBestAnswer: true },
+      { $set: { isBestAnswer: false } }
+    );
+    if (nextIsBest) {
+      await CommentModel.updateOne({ _id: comment._id }, { $set: { isBestAnswer: true } });
+    }
+
+    const bestCommentId = nextIsBest ? comment._id.toString() : null;
+    await recordAuditLog(
+      req,
+      'TOGGLE_BEST_ANSWER',
+      'comments',
+      `${nextIsBest ? 'Ghim' : 'Bỏ ghim'} câu trả lời hữu ích nhất ${comment._id} cho bài ${thread.id}`
+    );
+
+    broadcastEvent('commentBestAnswerUpdated', {
+      threadId: thread.id,
+      bestCommentId,
+    });
+
+    return res.json({
+      success: true,
+      isBestAnswer: nextIsBest,
+      bestCommentId,
+      message: nextIsBest
+        ? 'Đã ghim Câu Trả Lời Hữu Ích Nhất lên đầu thảo luận!'
+        : 'Đã bỏ ghim câu trả lời hữu ích nhất.',
+    });
+  } catch (err) {
+    console.error('[Toggle Best Answer Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi cập nhật câu trả lời hữu ích nhất.' });
   }
 };

@@ -50,6 +50,10 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
   const [activeCategory, setActiveCategory] = useState<NotificationCategory | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState<boolean>(true);
+  const [page, setPage] = useState<number>(1);
+  const [totalCount, setTotalCount] = useState<number>(0);
+  const [loadingMore, setLoadingMore] = useState<boolean>(false);
+  const seenNotifIdsRef = React.useRef<Set<string>>(new Set());
   const { socket } = useSocket();
 
   const loadData = useCallback(
@@ -57,7 +61,11 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
       if (!currentUser) return;
       setLoading(true);
       const res = await fetchNotifications(1, 50, cat);
-      setNotifications(res.notifications || []);
+      const list = res.notifications || [];
+      seenNotifIdsRef.current = new Set(list.map((n) => n._id));
+      setNotifications(list);
+      setPage(1);
+      setTotalCount(res.totalCount || list.length);
       setUnreadCount(res.unreadCount || 0);
       setCategoryCounts(res.categoryCounts || {});
       setLoading(false);
@@ -65,13 +73,36 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
     [currentUser, activeCategory]
   );
 
+  const handleLoadMore = async () => {
+    if (!currentUser || loadingMore || notifications.length >= totalCount) return;
+    setLoadingMore(true);
+    try {
+      const nextPage = page + 1;
+      const res = await fetchNotifications(nextPage, 50, activeCategory);
+      const incoming = res.notifications || [];
+      incoming.forEach((n) => seenNotifIdsRef.current.add(n._id));
+      setNotifications((prev) => {
+        const existingIds = new Set(prev.map((p) => p._id));
+        return [...prev, ...incoming.filter((n) => !existingIds.has(n._id))];
+      });
+      setPage(nextPage);
+      setTotalCount(res.totalCount || totalCount);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
   useEffect(() => {
     if (!currentUser) return;
     let active = true;
     fetchNotifications(1, 50, activeCategory)
       .then((res) => {
         if (!active) return;
-        setNotifications(res.notifications || []);
+        const list = res.notifications || [];
+        seenNotifIdsRef.current = new Set(list.map((n) => n._id));
+        setNotifications(list);
+        setPage(1);
+        setTotalCount(res.totalCount || list.length);
         setUnreadCount(res.unreadCount || 0);
         setCategoryCounts(res.categoryCounts || {});
         setLoading(false);
@@ -93,29 +124,32 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
     return () => window.removeEventListener('lost:notifications-synced', handleSynced);
   }, [activeCategory, loadData]);
 
-  // Real-time socket event (respects activeCategory tab filter)
+  // Real-time socket event (deduplicated so duplicate delivery never inflates unread counts)
   useEffect(() => {
     if (!socket) return;
 
     const handleNewNotification = (newNotif: NotificationItem) => {
+      const isDuplicate = Boolean(newNotif._id && seenNotifIdsRef.current.has(newNotif._id));
+      if (newNotif._id) seenNotifIdsRef.current.add(newNotif._id);
       if (activeCategory === 'all' || newNotif.category === activeCategory) {
         setNotifications((prev) => [newNotif, ...prev.filter((n) => n._id !== newNotif._id)]);
       }
-      setUnreadCount((prev) => prev + 1);
-      const catKey = newNotif.category || 'system';
-      setCategoryCounts((prev) => ({
-        ...prev,
-        [catKey]: (prev[catKey] || 0) + 1,
-        all: (prev.all || 0) + 1,
-      }));
+      if (!isDuplicate) {
+        setTotalCount((prev) => prev + 1);
+        setUnreadCount((prev) => prev + 1);
+        const catKey = newNotif.category || 'system';
+        setCategoryCounts((prev) => ({
+          ...prev,
+          [catKey]: (prev[catKey] || 0) + 1,
+          all: (prev.all || 0) + 1,
+        }));
+      }
     };
 
     socket.on('newNotification', handleNewNotification);
-    socket.on('newSafetyAlert', handleNewNotification);
 
     return () => {
       socket.off('newNotification', handleNewNotification);
-      socket.off('newSafetyAlert', handleNewNotification);
     };
   }, [socket, activeCategory]);
 
@@ -450,7 +484,7 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
                   background: item.isRead
                     ? 'var(--color-bg-card)'
                     : 'color-mix(in srgb, var(--color-primary) 5%, var(--color-bg-card))',
-                  transition: 'all 0.2s ease',
+                  transition: 'background-color 0.2s ease, border-color 0.2s ease',
                 }}
               >
                 {renderCategoryIcon(item.type, item.category)}
@@ -540,6 +574,22 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
               </div>
             );
           })
+        )}
+
+        {!loading && notifications.length < totalCount && (
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: 12 }}>
+            <button
+              type="button"
+              className="btn btn-outline"
+              disabled={loadingMore}
+              onClick={() => void handleLoadMore()}
+              style={{ padding: '8px 18px', fontSize: '0.82rem', fontWeight: 700 }}
+            >
+              {loadingMore
+                ? 'Đang tải thêm thông báo...'
+                : `Tải thêm thông báo (${notifications.length}/${totalCount})`}
+            </button>
+          </div>
         )}
       </div>
     </div>

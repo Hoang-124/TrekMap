@@ -633,6 +633,12 @@ export function App() {
   const [resetTokenUrl, setResetTokenUrl] = useState<string | null>(null);
   const [isEmergencyContactsOpen, setIsEmergencyContactsOpen] = useState(false);
   const [isSafetyTimerOpen, setIsSafetyTimerOpen] = useState(false);
+  const [swWaitingWorker, setSwWaitingWorker] = useState<ServiceWorker | null>(null);
+  const [deferredPwaInstall, setDeferredPwaInstall] = useState<{
+    prompt: () => Promise<void>;
+    userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+  } | null>(null);
+  const [pwaBannerDismissed, setPwaBannerDismissed] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isShortcutsHelpOpen, setIsShortcutsHelpOpen] = useState(false);
   const [isLiveTrackerOpen, setIsLiveTrackerOpen] = useState(false);
@@ -704,7 +710,14 @@ export function App() {
     fetchTrails()
       .then((fullList) => {
         if (active && Array.isArray(fullList) && fullList.length > 0) {
-          setCatalogTrails(fullList);
+          setCatalogTrails((prev) => {
+            const byId = new Map<string, Trail>(fullList.map((t) => [t.id, t]));
+            // Preserve IndexedDB offline packs for community/non-seed trails when offline fallback returns mockTrails
+            prev.forEach((t) => {
+              if (t?.id && !byId.has(t.id)) byId.set(t.id, t);
+            });
+            return Array.from(byId.values());
+          });
         }
       })
       .catch(() => {
@@ -899,8 +912,15 @@ export function App() {
     };
 
     const handleGlobalLiveTrackerOpen = (event: Event) => {
-      const detail = (event as CustomEvent<{ trailId?: string }>)?.detail;
-      if (detail?.trailId) {
+      const detail = (event as CustomEvent<{ trailId?: string; customRouteId?: string }>)?.detail;
+      if (detail?.customRouteId) {
+        try {
+          sessionStorage.setItem('lost_live_tracker_custom_route_id', String(detail.customRouteId));
+        } catch {
+          // ignore storage failures
+        }
+        setLiveTrackerTrail(null);
+      } else if (detail?.trailId) {
         const matched =
           trailsRef.current.find(
             (t) => t.id === detail.trailId || (t as TrailWithMongoId)._id === detail.trailId
@@ -912,17 +932,41 @@ export function App() {
       setIsLiveTrackerOpen(true);
     };
 
+    const handleSwUpdateAvailable = (event: Event) => {
+      const worker = (event as CustomEvent<{ worker?: ServiceWorker }>)?.detail?.worker || null;
+      if (worker) {
+        setSwWaitingWorker(worker);
+      } else {
+        showToast('Đã có phiên bản LOST mới! Tải lại trang để áp dụng bản cập nhật.', 'info');
+      }
+    };
+
+    const handleBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      const promptEvt = event as unknown as {
+        prompt: () => Promise<void>;
+        userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+      };
+      if (typeof promptEvt.prompt === 'function') {
+        setDeferredPwaInstall(promptEvt);
+      }
+    };
+
     window.addEventListener('lost:show-toast', handleGlobalToast);
     window.addEventListener('lost:open-auth-modal', handleGlobalAuthOpen);
     window.addEventListener('lost:open-ai-assistant', handleGlobalAiOpen);
     window.addEventListener('lost:open-ai-with-prompt', handleGlobalAiOpen);
     window.addEventListener('lost:open-live-tracker', handleGlobalLiveTrackerOpen);
+    window.addEventListener('lost:sw-update-available', handleSwUpdateAvailable);
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     return () => {
       window.removeEventListener('lost:show-toast', handleGlobalToast);
       window.removeEventListener('lost:open-auth-modal', handleGlobalAuthOpen);
       window.removeEventListener('lost:open-ai-assistant', handleGlobalAiOpen);
       window.removeEventListener('lost:open-ai-with-prompt', handleGlobalAiOpen);
       window.removeEventListener('lost:open-live-tracker', handleGlobalLiveTrackerOpen);
+      window.removeEventListener('lost:sw-update-available', handleSwUpdateAvailable);
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     };
   }, [showToast]);
 
@@ -1069,6 +1113,7 @@ export function App() {
       didActivateRef.current = true;
       fetch('/api/auth/activate-account', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ activateToken }),
       })
@@ -1083,8 +1128,15 @@ export function App() {
               });
             }
             localStorage.setItem('lost_activated_signal', Date.now().toString());
-            showToast(data.message || 'Tài khoản của bạn đã được kích hoạt thành công!', 'success');
-            setIsAuthModalOpen(true);
+            if (data.token && data.user) {
+              localStorage.setItem('lost_token', data.token);
+              setCurrentUser(data.user);
+              window.dispatchEvent(new CustomEvent('lost:auth-changed'));
+              showToast(data.message || 'Kích hoạt thành công và đã tự động đăng nhập!', 'success');
+            } else {
+              showToast(data.message || 'Tài khoản của bạn đã được kích hoạt thành công!', 'success');
+              setIsAuthModalOpen(true);
+            }
             window.history.replaceState({}, document.title, window.location.pathname);
           } else {
             showToast(data.message || 'Mã kích hoạt không hợp lệ.', 'error');
@@ -1295,12 +1347,14 @@ export function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [currentView]);
 
-  // Apply selectedSeasonMonth filter cleanly to the displayed catalog trails
+  // Apply selectedSeasonMonth filter cleanly (consistent with SeasonExpeditionRadar & InteractiveMapShowcase)
   const displayedTrails = useMemo(() => {
     if (!selectedSeasonMonth) return trails;
-    return trails.filter(
-      (t) => Array.isArray(t.bestMonths) && t.bestMonths.includes(selectedSeasonMonth)
-    );
+    return trails.filter((t) => {
+      const avoid = Array.isArray(t.avoidMonths) && t.avoidMonths.includes(selectedSeasonMonth);
+      if (avoid) return false;
+      return !Array.isArray(t.bestMonths) || t.bestMonths.length === 0 || t.bestMonths.includes(selectedSeasonMonth);
+    });
   }, [trails, selectedSeasonMonth]);
 
   const allCatalogTrails = useMemo(
@@ -1325,8 +1379,8 @@ export function App() {
       if (exists) {
         return prev.filter((t) => t.id !== trail.id);
       }
-      if (prev.length >= 3) {
-        showToast('Chỉ có thể so sánh tối đa 3 cung đường cùng lúc.', 'info');
+      if (prev.length >= 4) {
+        showToast('Chỉ có thể so sánh tối đa 4 cung đường cùng lúc.', 'info');
         return prev;
       }
       showToast(`Đã thêm "${trail.name}" vào bảng so sánh.`, 'success');
@@ -1674,6 +1728,8 @@ export function App() {
         <EmergencyContactsModal
           isOpen={isEmergencyContactsOpen}
           onClose={() => setIsEmergencyContactsOpen(false)}
+          currentUser={currentUser}
+          trails={allCatalogTrails}
         />
         <Navbar
           currentView={currentView}
@@ -1765,7 +1821,15 @@ export function App() {
                   <SceneReveal id="gis-map-section">
                     <Suspense fallback={<PageLoadingFallback />}>
                       <InteractiveMapShowcase
-                        trails={displayedTrails}
+                        trails={
+                          debouncedSearch.trim() ||
+                            selectedDifficulty ||
+                            selectedDuration ||
+                            campsiteOnly ||
+                            kidFriendlyOnly
+                            ? displayedTrails
+                            : allCatalogTrails
+                        }
                         selectedTrail={null}
                         onSelectTrail={handleSelectTrail}
                         incidents={incidents}
@@ -1773,6 +1837,7 @@ export function App() {
                         onSelectRegion={setSelectedRegion}
                         selectedMonth={selectedSeasonMonth}
                         onClearMonthFilter={() => setSelectedSeasonMonth(null)}
+                        onExploreFullMap={() => handleNavigate('planner')}
                       />
                     </Suspense>
                   </SceneReveal>
@@ -1824,650 +1889,650 @@ export function App() {
 
                   {/* All Trails Catalog (Grid vs Compact Mode) */}
                   <SceneReveal className="cv-auto">
-                  <section id="all-trails-section" style={{ marginBottom: 56, paddingTop: 12 }}>
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'flex-end',
-                        justifyContent: 'space-between',
-                        marginBottom: 22,
-                        flexWrap: 'wrap',
-                        gap: 12,
-                      }}
-                    >
-                      <div>
-                        <div className="section-eyebrow">04 / Danh mục tuyến trek</div>
-                        <h2
-                          className="font-editorial"
-                          style={{
-                            fontSize: 'clamp(1.75rem, 3.2vw, 2.55rem)',
-                            fontWeight: 500,
-                            color: 'var(--color-text-main)',
-                            margin: 0,
-                            letterSpacing: '-0.025em',
-                            lineHeight: 1.12,
-                          }}
-                        >
-                          Kho cung đường{' '}
-                          <span style={{ color: 'var(--color-primary)', fontWeight: 700 }}>
-                            Việt Nam ({displayedTrails.length})
-                          </span>
-                        </h2>
-                        <p style={{ fontSize: '0.86rem', color: 'var(--color-text-muted)', margin: '6px 0 0 0' }}>
-                          Dữ liệu GPX, cự ly, độ dốc và lán hạ trại đã được cộng đồng xác thực.
-                          {selectedSeasonMonth ? ` Đang lọc theo mùa đẹp Tháng ${selectedSeasonMonth}.` : ''}
-                        </p>
-                      </div>
-
-                      {/* Clean View Mode Switcher + Filter Reset */}
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        {selectedSeasonMonth && (
-                          <button
-                            type="button"
-                            className="btn btn-outline"
-                            onClick={() => setSelectedSeasonMonth(null)}
-                            style={{
-                              fontSize: '0.78rem',
-                              padding: '6px 10px',
-                              borderRadius: 4,
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 5,
-                              borderColor: 'var(--color-primary)',
-                              color: 'var(--color-primary)',
-                            }}
-                          >
-                            <IconCalendar size={13} />
-                            <span>Tháng {selectedSeasonMonth}</span>
-                            <IconX size={12} />
-                          </button>
-                        )}
-
-                        <div
-                          ref={viewModeTrackRef}
-                          className="lost-glider-track"
-                          style={{
-                            display: 'flex',
-                            background: 'var(--color-bg-card)',
-                            padding: 3,
-                            borderRadius: 6,
-                            border: '1px solid var(--color-border)',
-                          }}
-                        >
-                          <span
-                            aria-hidden="true"
-                            className="lost-glider-pill with-accent"
-                            style={viewModeIndicatorStyle}
-                          />
-                          <button
-                            type="button"
-                            data-glider-active={viewMode === 'grid' ? 'true' : undefined}
-                            className="lost-glider-item"
-                            onClick={() => setViewMode('grid')}
-                            style={{
-                              padding: '6px 12px',
-                              borderRadius: 4,
-                              border: 'none',
-                              background: 'transparent',
-                              color:
-                                viewMode === 'grid'
-                                  ? 'var(--color-text-main)'
-                                  : 'var(--color-text-dim)',
-                              fontWeight: viewMode === 'grid' ? 700 : 500,
-                              fontSize: '0.78rem',
-                              cursor: 'pointer',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 6,
-                              transition: 'color 200ms ease',
-                            }}
-                          >
-                            <svg
-                              width="13"
-                              height="13"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2.1"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              aria-hidden="true"
-                            >
-                              <rect x="3" y="3" width="7" height="7" />
-                              <rect x="14" y="3" width="7" height="7" />
-                              <rect x="14" y="14" width="7" height="7" />
-                              <rect x="3" y="14" width="7" height="7" />
-                            </svg>
-                            <span>Lưới</span>
-                          </button>
-                          <button
-                            type="button"
-                            data-glider-active={viewMode === 'compact' ? 'true' : undefined}
-                            className="lost-glider-item"
-                            onClick={() => setViewMode('compact')}
-                            style={{
-                              padding: '6px 12px',
-                              borderRadius: 4,
-                              border: 'none',
-                              background: 'transparent',
-                              color:
-                                viewMode === 'compact'
-                                  ? 'var(--color-text-main)'
-                                  : 'var(--color-text-dim)',
-                              fontWeight: viewMode === 'compact' ? 700 : 500,
-                              fontSize: '0.78rem',
-                              cursor: 'pointer',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 6,
-                              transition: 'color 200ms ease',
-                            }}
-                          >
-                            <svg
-                              width="13"
-                              height="13"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2.1"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              aria-hidden="true"
-                            >
-                              <line x1="8" y1="6" x2="21" y2="6" />
-                              <line x1="8" y1="12" x2="21" y2="12" />
-                              <line x1="8" y1="18" x2="21" y2="18" />
-                              <line x1="3" y1="6" x2="3.01" y2="6" />
-                              <line x1="3" y1="12" x2="3.01" y2="12" />
-                              <line x1="3" y1="18" x2="3.01" y2="18" />
-                            </svg>
-                            <span>Danh sách</span>
-                          </button>
-                        </div>
-
-                        {hasAnyActiveFilter && (
-                          <button
-                            type="button"
-                            className="btn btn-outline"
-                            onClick={handleResetFilters}
-                            style={{ fontSize: '0.8rem', padding: '6px 12px', borderRadius: 4 }}
-                          >
-                            Xóa bộ lọc
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {displayedTrails.length === 0 ? (
+                    <section id="all-trails-section" style={{ marginBottom: 56, paddingTop: 12 }}>
                       <div
-                        className="card"
                         style={{
-                          textAlign: 'center',
-                          padding: '48px 24px',
-                          color: 'var(--color-text-muted)',
                           display: 'flex',
-                          flexDirection: 'column',
-                          alignItems: 'center',
-                          gap: 14,
+                          alignItems: 'flex-end',
+                          justifyContent: 'space-between',
+                          marginBottom: 22,
+                          flexWrap: 'wrap',
+                          gap: 12,
                         }}
                       >
-                        <IconMountain size={28} color="var(--color-text-dim)" />
-                        <div style={{ fontSize: '0.92rem', fontWeight: 600 }}>
-                          Không tìm thấy cung đường phù hợp với bộ lọc hiện tại.
-                        </div>
-                        {hasAnyActiveFilter && (
-                          <button
-                            type="button"
-                            className="btn btn-primary"
-                            onClick={handleResetFilters}
-                            style={{ padding: '8px 18px', fontSize: '0.84rem', borderRadius: 4 }}
-                          >
-                            Xóa bộ lọc &amp; Xem tất cả
-                          </button>
-                        )}
-                      </div>
-                    ) : viewMode === 'compact' ? (
-                      /* Swiss Cartographic Expedition Manifest Table */
-                      <div
-                        key="compact"
-                        className="tab-content-slide"
-                        style={{
-                          borderTop: '1px solid var(--color-border-strong)',
-                          background: 'var(--color-bg-card)',
-                        }}
-                      >
-                        <div
-                          className="manifest-table-row"
-                          style={{
-                            cursor: 'default',
-                            paddingTop: 11,
-                            paddingBottom: 11,
-                            fontSize: '0.68rem',
-                            fontWeight: 700,
-                            letterSpacing: '0.12em',
-                            textTransform: 'uppercase',
-                            color: 'var(--color-text-dim)',
-                            background: 'var(--color-surface-elevated)',
-                          }}
-                        >
-                          <span>#</span>
-                          <span>Cung đường &amp; Địa danh</span>
-                          <span className="manifest-col-hide-sm">Đỉnh cao</span>
-                          <span className="manifest-col-hide-sm">Cự ly</span>
-                          <span className="manifest-col-hide-sm">Độ khó</span>
-                          <span className="manifest-col-hide-sm">Thời gian</span>
-                          <span style={{ textAlign: 'right' }}>Hồ sơ</span>
-                        </div>
-
-                        {displayedTrails.slice(0, visibleTrailCount).map((t, idx) => {
-                          const isSelected = comparedTrails.some((ct) => ct.id === t.id);
-                          const diffLabel =
-                            t.difficultyLevel >= 4
-                              ? `Khó ${t.difficultyLevel}/5`
-                              : t.difficultyLevel === 3
-                                ? 'Trung bình 3/5'
-                                : `Dễ ${t.difficultyLevel}/5`;
-                          const diffColor =
-                            t.difficultyLevel >= 4
-                              ? 'var(--color-earth)'
-                              : t.difficultyLevel === 3
-                                ? 'var(--color-sun)'
-                                : 'var(--color-primary)';
-
-                          return (
-                            <div
-                              key={t.id}
-                              role="button"
-                              tabIndex={0}
-                              onClick={() => handleSelectTrail(t)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' || e.key === ' ') {
-                                  e.preventDefault();
-                                  handleSelectTrail(t);
-                                }
-                              }}
-                              className="manifest-table-row"
-                              style={{
-                                borderLeft: isSelected
-                                  ? '2px solid var(--color-primary)'
-                                  : '2px solid transparent',
-                              }}
-                            >
-                              <span
-                                className="font-editorial"
-                                style={{
-                                  fontSize: '0.96rem',
-                                  color: 'var(--color-text-dim)',
-                                  fontVariantNumeric: 'tabular-nums',
-                                }}
-                              >
-                                {String(idx + 1).padStart(2, '0')}
-                              </span>
-
-                              <div style={{ minWidth: 0 }}>
-                                <div
-                                  style={{
-                                    fontWeight: 700,
-                                    fontSize: '0.94rem',
-                                    color: 'var(--color-text-main)',
-                                    whiteSpace: 'nowrap',
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                  }}
-                                >
-                                  {t.name}
-                                </div>
-                                <div
-                                  style={{
-                                    fontSize: '0.74rem',
-                                    color: 'var(--color-text-dim)',
-                                    marginTop: 2,
-                                  }}
-                                >
-                                  {t.province} · {t.region}
-                                  {t.hasCampsite ? ' · Có bãi trại' : ''}
-                                </div>
-                              </div>
-
-                              <span
-                                className="manifest-col-hide-sm"
-                                style={{
-                                  fontSize: '0.82rem',
-                                  fontWeight: 700,
-                                  color: 'var(--color-text-main)',
-                                  fontVariantNumeric: 'tabular-nums',
-                                }}
-                              >
-                                {t.maxAltitudeM.toLocaleString('vi-VN')} m
-                              </span>
-
-                              <span
-                                className="manifest-col-hide-sm"
-                                style={{
-                                  fontSize: '0.82rem',
-                                  color: 'var(--color-text-muted)',
-                                  fontVariantNumeric: 'tabular-nums',
-                                }}
-                              >
-                                {t.distanceKm} km
-                              </span>
-
-                              <span
-                                className="manifest-col-hide-sm"
-                                style={{ fontSize: '0.78rem', fontWeight: 700, color: diffColor }}
-                              >
-                                {diffLabel}
-                              </span>
-
-                              <span
-                                className="manifest-col-hide-sm"
-                                style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)' }}
-                              >
-                                {t.durationHoursNote || `${t.durationDays} ngày`}
-                              </span>
-
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  justifyContent: 'flex-end',
-                                  alignItems: 'center',
-                                  gap: 10,
-                                }}
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleCompare(t)}
-                                  aria-label={isSelected ? 'Bỏ khỏi bảng so sánh' : 'Thêm vào so sánh'}
-                                  style={{
-                                    background: 'transparent',
-                                    border: 'none',
-                                    color: isSelected
-                                      ? 'var(--color-primary)'
-                                      : 'var(--color-text-dim)',
-                                    fontSize: '0.72rem',
-                                    fontWeight: 700,
-                                    cursor: 'pointer',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                  }}
-                                >
-                                  {isSelected ? <IconCheck size={13} color="var(--color-primary)" /> : '+SS'}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="manifest-row-arrow"
-                                  onClick={() => handleSelectTrail(t)}
-                                  style={{
-                                    background: 'transparent',
-                                    border: 'none',
-                                    color: 'var(--color-text-main)',
-                                    fontSize: '0.78rem',
-                                    fontWeight: 700,
-                                    cursor: 'pointer',
-                                  }}
-                                >
-                                  Mở →
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      /* Asymmetric Editorial Spread + Gallery Poster Grid */
-                      <div key="grid" className="tab-content-slide">
-                        {displayedTrails[0] && (
-                          <article
-                            role="button"
-                            tabIndex={0}
-                            className="editorial-lead-spread"
-                            onClick={() => handleSelectTrail(displayedTrails[0])}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                handleSelectTrail(displayedTrails[0]);
-                              }
+                        <div>
+                          <div className="section-eyebrow">04 / Danh mục tuyến trek</div>
+                          <h2
+                            className="font-editorial"
+                            style={{
+                              fontSize: 'clamp(1.75rem, 3.2vw, 2.55rem)',
+                              fontWeight: 500,
+                              color: 'var(--color-text-main)',
+                              margin: 0,
+                              letterSpacing: '-0.025em',
+                              lineHeight: 1.12,
                             }}
                           >
-                            <div className="editorial-lead-media">
-                              <img
-                                src={displayedTrails[0].coverImage}
-                                alt={displayedTrails[0].name}
-                                loading="lazy"
-                                decoding="async"
-                              />
-                              <span
-                                style={{
-                                  position: 'absolute',
-                                  top: 14,
-                                  left: 14,
-                                  zIndex: 2,
-                                  background: 'var(--overlay-bg)',
-                                  color: 'var(--color-sun)',
-                                  padding: '4px 10px',
-                                  borderRadius: 4,
-                                  fontSize: '0.68rem',
-                                  fontWeight: 700,
-                                  letterSpacing: '0.14em',
-                                  textTransform: 'uppercase',
-                                  border:
-                                    '1px solid color-mix(in srgb, var(--color-sun) 40%, transparent)',
-                                }}
-                              >
-                                Tuyến tiêu điểm
-                              </span>
-                            </div>
+                            Kho cung đường{' '}
+                            <span style={{ color: 'var(--color-primary)', fontWeight: 700 }}>
+                              Việt Nam ({displayedTrails.length})
+                            </span>
+                          </h2>
+                          <p style={{ fontSize: '0.86rem', color: 'var(--color-text-muted)', margin: '6px 0 0 0' }}>
+                            Dữ liệu GPX, cự ly, độ dốc và lán hạ trại đã được cộng đồng xác thực.
+                            {selectedSeasonMonth ? ` Đang lọc theo mùa đẹp Tháng ${selectedSeasonMonth}.` : ''}
+                          </p>
+                        </div>
 
-                            <div
+                        {/* Clean View Mode Switcher + Filter Reset */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          {selectedSeasonMonth && (
+                            <button
+                              type="button"
+                              className="btn btn-outline"
+                              onClick={() => setSelectedSeasonMonth(null)}
                               style={{
-                                padding: '22px 26px',
-                                display: 'flex',
-                                flexDirection: 'column',
-                                justifyContent: 'space-between',
-                                minWidth: 0,
+                                fontSize: '0.78rem',
+                                padding: '6px 10px',
+                                borderRadius: 4,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 5,
+                                borderColor: 'var(--color-primary)',
+                                color: 'var(--color-primary)',
                               }}
                             >
-                              <div>
-                                <div
-                                  style={{
-                                    fontSize: '0.7rem',
-                                    fontWeight: 700,
-                                    letterSpacing: '0.14em',
-                                    textTransform: 'uppercase',
-                                    color: 'var(--color-primary)',
-                                    marginBottom: 8,
-                                  }}
-                                >
-                                  {displayedTrails[0].province} · {displayedTrails[0].region}
-                                </div>
-                                <h3
+                              <IconCalendar size={13} />
+                              <span>Tháng {selectedSeasonMonth}</span>
+                              <IconX size={12} />
+                            </button>
+                          )}
+
+                          <div
+                            ref={viewModeTrackRef}
+                            className="lost-glider-track"
+                            style={{
+                              display: 'flex',
+                              background: 'var(--color-bg-card)',
+                              padding: 3,
+                              borderRadius: 6,
+                              border: '1px solid var(--color-border)',
+                            }}
+                          >
+                            <span
+                              aria-hidden="true"
+                              className="lost-glider-pill with-accent"
+                              style={viewModeIndicatorStyle}
+                            />
+                            <button
+                              type="button"
+                              data-glider-active={viewMode === 'grid' ? 'true' : undefined}
+                              className="lost-glider-item"
+                              onClick={() => setViewMode('grid')}
+                              style={{
+                                padding: '6px 12px',
+                                borderRadius: 4,
+                                border: 'none',
+                                background: 'transparent',
+                                color:
+                                  viewMode === 'grid'
+                                    ? 'var(--color-text-main)'
+                                    : 'var(--color-text-dim)',
+                                fontWeight: viewMode === 'grid' ? 700 : 500,
+                                fontSize: '0.78rem',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                transition: 'color 200ms ease',
+                              }}
+                            >
+                              <svg
+                                width="13"
+                                height="13"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2.1"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                              >
+                                <rect x="3" y="3" width="7" height="7" />
+                                <rect x="14" y="3" width="7" height="7" />
+                                <rect x="14" y="14" width="7" height="7" />
+                                <rect x="3" y="14" width="7" height="7" />
+                              </svg>
+                              <span>Lưới</span>
+                            </button>
+                            <button
+                              type="button"
+                              data-glider-active={viewMode === 'compact' ? 'true' : undefined}
+                              className="lost-glider-item"
+                              onClick={() => setViewMode('compact')}
+                              style={{
+                                padding: '6px 12px',
+                                borderRadius: 4,
+                                border: 'none',
+                                background: 'transparent',
+                                color:
+                                  viewMode === 'compact'
+                                    ? 'var(--color-text-main)'
+                                    : 'var(--color-text-dim)',
+                                fontWeight: viewMode === 'compact' ? 700 : 500,
+                                fontSize: '0.78rem',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                transition: 'color 200ms ease',
+                              }}
+                            >
+                              <svg
+                                width="13"
+                                height="13"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2.1"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                              >
+                                <line x1="8" y1="6" x2="21" y2="6" />
+                                <line x1="8" y1="12" x2="21" y2="12" />
+                                <line x1="8" y1="18" x2="21" y2="18" />
+                                <line x1="3" y1="6" x2="3.01" y2="6" />
+                                <line x1="3" y1="12" x2="3.01" y2="12" />
+                                <line x1="3" y1="18" x2="3.01" y2="18" />
+                              </svg>
+                              <span>Danh sách</span>
+                            </button>
+                          </div>
+
+                          {hasAnyActiveFilter && (
+                            <button
+                              type="button"
+                              className="btn btn-outline"
+                              onClick={handleResetFilters}
+                              style={{ fontSize: '0.8rem', padding: '6px 12px', borderRadius: 4 }}
+                            >
+                              Xóa bộ lọc
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {displayedTrails.length === 0 ? (
+                        <div
+                          className="card"
+                          style={{
+                            textAlign: 'center',
+                            padding: '48px 24px',
+                            color: 'var(--color-text-muted)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            gap: 14,
+                          }}
+                        >
+                          <IconMountain size={28} color="var(--color-text-dim)" />
+                          <div style={{ fontSize: '0.92rem', fontWeight: 600 }}>
+                            Không tìm thấy cung đường phù hợp với bộ lọc hiện tại.
+                          </div>
+                          {hasAnyActiveFilter && (
+                            <button
+                              type="button"
+                              className="btn btn-primary"
+                              onClick={handleResetFilters}
+                              style={{ padding: '8px 18px', fontSize: '0.84rem', borderRadius: 4 }}
+                            >
+                              Xóa bộ lọc &amp; Xem tất cả
+                            </button>
+                          )}
+                        </div>
+                      ) : viewMode === 'compact' ? (
+                        /* Swiss Cartographic Expedition Manifest Table */
+                        <div
+                          key="compact"
+                          className="tab-content-slide"
+                          style={{
+                            borderTop: '1px solid var(--color-border-strong)',
+                            background: 'var(--color-bg-card)',
+                          }}
+                        >
+                          <div
+                            className="manifest-table-row"
+                            style={{
+                              cursor: 'default',
+                              paddingTop: 11,
+                              paddingBottom: 11,
+                              fontSize: '0.68rem',
+                              fontWeight: 700,
+                              letterSpacing: '0.12em',
+                              textTransform: 'uppercase',
+                              color: 'var(--color-text-dim)',
+                              background: 'var(--color-surface-elevated)',
+                            }}
+                          >
+                            <span>#</span>
+                            <span>Cung đường &amp; Địa danh</span>
+                            <span className="manifest-col-hide-sm">Đỉnh cao</span>
+                            <span className="manifest-col-hide-sm">Cự ly</span>
+                            <span className="manifest-col-hide-sm">Độ khó</span>
+                            <span className="manifest-col-hide-sm">Thời gian</span>
+                            <span style={{ textAlign: 'right' }}>Hồ sơ</span>
+                          </div>
+
+                          {displayedTrails.slice(0, visibleTrailCount).map((t, idx) => {
+                            const isSelected = comparedTrails.some((ct) => ct.id === t.id);
+                            const diffLabel =
+                              t.difficultyLevel >= 4
+                                ? `Khó ${t.difficultyLevel}/5`
+                                : t.difficultyLevel === 3
+                                  ? 'Trung bình 3/5'
+                                  : `Dễ ${t.difficultyLevel}/5`;
+                            const diffColor =
+                              t.difficultyLevel >= 4
+                                ? 'var(--color-earth)'
+                                : t.difficultyLevel === 3
+                                  ? 'var(--color-sun)'
+                                  : 'var(--color-primary)';
+
+                            return (
+                              <div
+                                key={t.id}
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => handleSelectTrail(t)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    handleSelectTrail(t);
+                                  }
+                                }}
+                                className="manifest-table-row"
+                                style={{
+                                  borderLeft: isSelected
+                                    ? '2px solid var(--color-primary)'
+                                    : '2px solid transparent',
+                                }}
+                              >
+                                <span
                                   className="font-editorial"
                                   style={{
-                                    fontSize: 'clamp(1.38rem, 2.1vw, 1.78rem)',
-                                    fontWeight: 600,
-                                    color: 'var(--color-text-main)',
-                                    margin: '0 0 10px 0',
-                                    lineHeight: 1.18,
-                                    display: '-webkit-box',
-                                    WebkitLineClamp: 2,
-                                    WebkitBoxOrient: 'vertical',
-                                    overflow: 'hidden',
-                                  }}
-                                >
-                                  {displayedTrails[0].name}
-                                </h3>
-                                <p
-                                  style={{
-                                    fontSize: '0.84rem',
-                                    color: 'var(--color-text-muted)',
-                                    lineHeight: 1.58,
-                                    margin: '0 0 14px 0',
-                                    display: '-webkit-box',
-                                    WebkitLineClamp: 3,
-                                    WebkitBoxOrient: 'vertical',
-                                    overflow: 'hidden',
-                                  }}
-                                >
-                                  {displayedTrails[0].description}
-                                </p>
-                              </div>
-
-                              <div>
-                                <div
-                                  style={{
-                                    display: 'grid',
-                                    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-                                    gap: 12,
-                                    padding: '11px 0',
-                                    borderTop: '1px solid var(--color-border)',
-                                    borderBottom: '1px solid var(--color-border)',
-                                    marginBottom: 14,
+                                    fontSize: '0.96rem',
+                                    color: 'var(--color-text-dim)',
                                     fontVariantNumeric: 'tabular-nums',
                                   }}
                                 >
-                                  <div>
-                                    <div
-                                      style={{
-                                        fontSize: '0.68rem',
-                                        color: 'var(--color-text-dim)',
-                                        textTransform: 'uppercase',
-                                        letterSpacing: '0.08em',
-                                      }}
-                                    >
-                                      Đỉnh cao
-                                    </div>
-                                    <div
-                                      style={{
-                                        fontSize: '1.02rem',
-                                        fontWeight: 700,
-                                        color: 'var(--color-text-main)',
-                                        marginTop: 2,
-                                      }}
-                                    >
-                                      {displayedTrails[0].maxAltitudeM.toLocaleString('vi-VN')} m
-                                    </div>
+                                  {String(idx + 1).padStart(2, '0')}
+                                </span>
+
+                                <div style={{ minWidth: 0 }}>
+                                  <div
+                                    style={{
+                                      fontWeight: 700,
+                                      fontSize: '0.94rem',
+                                      color: 'var(--color-text-main)',
+                                      whiteSpace: 'nowrap',
+                                      overflow: 'hidden',
+                                      textOverflow: 'ellipsis',
+                                    }}
+                                  >
+                                    {t.name}
                                   </div>
-                                  <div>
-                                    <div
-                                      style={{
-                                        fontSize: '0.68rem',
-                                        color: 'var(--color-text-dim)',
-                                        textTransform: 'uppercase',
-                                        letterSpacing: '0.08em',
-                                      }}
-                                    >
-                                      Cự ly
-                                    </div>
-                                    <div
-                                      style={{
-                                        fontSize: '1.02rem',
-                                        fontWeight: 700,
-                                        color: 'var(--color-text-main)',
-                                        marginTop: 2,
-                                      }}
-                                    >
-                                      {displayedTrails[0].distanceKm} km
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <div
-                                      style={{
-                                        fontSize: '0.68rem',
-                                        color: 'var(--color-text-dim)',
-                                        textTransform: 'uppercase',
-                                        letterSpacing: '0.08em',
-                                      }}
-                                    >
-                                      Độ khó
-                                    </div>
-                                    <div
-                                      style={{
-                                        fontSize: '1.02rem',
-                                        fontWeight: 700,
-                                        color: 'var(--color-earth)',
-                                        marginTop: 2,
-                                      }}
-                                    >
-                                      {displayedTrails[0].difficultyLevel}/5
-                                    </div>
+                                  <div
+                                    style={{
+                                      fontSize: '0.74rem',
+                                      color: 'var(--color-text-dim)',
+                                      marginTop: 2,
+                                    }}
+                                  >
+                                    {t.province} · {t.region}
+                                    {t.hasCampsite ? ' · Có bãi trại' : ''}
                                   </div>
                                 </div>
+
+                                <span
+                                  className="manifest-col-hide-sm"
+                                  style={{
+                                    fontSize: '0.82rem',
+                                    fontWeight: 700,
+                                    color: 'var(--color-text-main)',
+                                    fontVariantNumeric: 'tabular-nums',
+                                  }}
+                                >
+                                  {t.maxAltitudeM.toLocaleString('vi-VN')} m
+                                </span>
+
+                                <span
+                                  className="manifest-col-hide-sm"
+                                  style={{
+                                    fontSize: '0.82rem',
+                                    color: 'var(--color-text-muted)',
+                                    fontVariantNumeric: 'tabular-nums',
+                                  }}
+                                >
+                                  {t.distanceKm} km
+                                </span>
+
+                                <span
+                                  className="manifest-col-hide-sm"
+                                  style={{ fontSize: '0.78rem', fontWeight: 700, color: diffColor }}
+                                >
+                                  {diffLabel}
+                                </span>
+
+                                <span
+                                  className="manifest-col-hide-sm"
+                                  style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)' }}
+                                >
+                                  {t.durationHoursNote || `${t.durationDays} ngày`}
+                                </span>
 
                                 <div
                                   style={{
                                     display: 'flex',
+                                    justifyContent: 'flex-end',
                                     alignItems: 'center',
-                                    justifyContent: 'space-between',
                                     gap: 10,
                                   }}
+                                  onClick={(e) => e.stopPropagation()}
                                 >
-                                  <span
-                                    style={{
-                                      fontSize: '0.82rem',
-                                      fontWeight: 700,
-                                      color: 'var(--color-primary)',
-                                    }}
-                                  >
-                                    Mở hồ sơ địa hình &amp; GPX →
-                                  </span>
                                   <button
                                     type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleToggleCompare(displayedTrails[0]);
+                                    onClick={() => handleToggleCompare(t)}
+                                    aria-label={isSelected ? 'Bỏ khỏi bảng so sánh' : 'Thêm vào so sánh'}
+                                    style={{
+                                      background: 'transparent',
+                                      border: 'none',
+                                      color: isSelected
+                                        ? 'var(--color-primary)'
+                                        : 'var(--color-text-dim)',
+                                      fontSize: '0.72rem',
+                                      fontWeight: 700,
+                                      cursor: 'pointer',
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
                                     }}
-                                    className="btn btn-outline"
-                                    style={{ padding: '6px 12px', fontSize: '0.74rem', borderRadius: 4 }}
                                   >
-                                    {comparedTrails.some((ct) => ct.id === displayedTrails[0].id)
-                                      ? 'Đã chọn so sánh'
-                                      : '+ So sánh'}
+                                    {isSelected ? <IconCheck size={13} color="var(--color-primary)" /> : '+SS'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="manifest-row-arrow"
+                                    onClick={() => handleSelectTrail(t)}
+                                    style={{
+                                      background: 'transparent',
+                                      border: 'none',
+                                      color: 'var(--color-text-main)',
+                                      fontSize: '0.78rem',
+                                      fontWeight: 700,
+                                      cursor: 'pointer',
+                                    }}
+                                  >
+                                    Mở →
                                   </button>
                                 </div>
                               </div>
-                            </div>
-                          </article>
-                        )}
-
-                        <div className="trail-catalog-grid">
-                          {displayedTrails.slice(1, visibleTrailCount).map((trail, idx) => (
-                            <div
-                              key={trail.id}
-                              className="scene-card-enter"
-                              style={{ ['--stagger-i' as string]: idx % 6 }}
-                            >
-                              <TrailCard
-                                trail={trail}
-                                onSelect={handleSelectTrail}
-                                isSelectedForCompare={comparedTrails.some((ct) => ct.id === trail.id)}
-                                onToggleCompare={handleToggleCompare}
-                              />
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
-                      </div>
-                    )}
+                      ) : (
+                        /* Asymmetric Editorial Spread + Gallery Poster Grid */
+                        <div key="grid" className="tab-content-slide">
+                          {displayedTrails[0] && (
+                            <article
+                              role="button"
+                              tabIndex={0}
+                              className="editorial-lead-spread"
+                              onClick={() => handleSelectTrail(displayedTrails[0])}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  handleSelectTrail(displayedTrails[0]);
+                                }
+                              }}
+                            >
+                              <div className="editorial-lead-media">
+                                <img
+                                  src={displayedTrails[0].coverImage}
+                                  alt={displayedTrails[0].name}
+                                  loading="lazy"
+                                  decoding="async"
+                                />
+                                <span
+                                  style={{
+                                    position: 'absolute',
+                                    top: 14,
+                                    left: 14,
+                                    zIndex: 2,
+                                    background: 'var(--overlay-bg)',
+                                    color: 'var(--color-sun)',
+                                    padding: '4px 10px',
+                                    borderRadius: 4,
+                                    fontSize: '0.68rem',
+                                    fontWeight: 700,
+                                    letterSpacing: '0.14em',
+                                    textTransform: 'uppercase',
+                                    border:
+                                      '1px solid color-mix(in srgb, var(--color-sun) 40%, transparent)',
+                                  }}
+                                >
+                                  Tuyến tiêu điểm
+                                </span>
+                              </div>
 
-                    {/* Load More Pagination Action Bar */}
-                    {visibleTrailCount < displayedTrails.length && (
-                      <div style={{ textAlign: 'center', marginTop: 28 }}>
-                        <button
-                          type="button"
-                          className="btn btn-primary"
-                          onClick={() => setVisibleTrailCount((prev) => prev + 6)}
-                          style={{
-                            padding: '11px 28px',
-                            fontSize: '0.88rem',
-                            fontWeight: 800,
-                            borderRadius: 6,
-                          }}
-                        >
-                          Xem Thêm {displayedTrails.length - visibleTrailCount} Cung Đường Khác
-                        </button>
-                      </div>
-                    )}
-                  </section>
+                              <div
+                                style={{
+                                  padding: '22px 26px',
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  justifyContent: 'space-between',
+                                  minWidth: 0,
+                                }}
+                              >
+                                <div>
+                                  <div
+                                    style={{
+                                      fontSize: '0.7rem',
+                                      fontWeight: 700,
+                                      letterSpacing: '0.14em',
+                                      textTransform: 'uppercase',
+                                      color: 'var(--color-primary)',
+                                      marginBottom: 8,
+                                    }}
+                                  >
+                                    {displayedTrails[0].province} · {displayedTrails[0].region}
+                                  </div>
+                                  <h3
+                                    className="font-editorial"
+                                    style={{
+                                      fontSize: 'clamp(1.38rem, 2.1vw, 1.78rem)',
+                                      fontWeight: 600,
+                                      color: 'var(--color-text-main)',
+                                      margin: '0 0 10px 0',
+                                      lineHeight: 1.18,
+                                      display: '-webkit-box',
+                                      WebkitLineClamp: 2,
+                                      WebkitBoxOrient: 'vertical',
+                                      overflow: 'hidden',
+                                    }}
+                                  >
+                                    {displayedTrails[0].name}
+                                  </h3>
+                                  <p
+                                    style={{
+                                      fontSize: '0.84rem',
+                                      color: 'var(--color-text-muted)',
+                                      lineHeight: 1.58,
+                                      margin: '0 0 14px 0',
+                                      display: '-webkit-box',
+                                      WebkitLineClamp: 3,
+                                      WebkitBoxOrient: 'vertical',
+                                      overflow: 'hidden',
+                                    }}
+                                  >
+                                    {displayedTrails[0].description}
+                                  </p>
+                                </div>
+
+                                <div>
+                                  <div
+                                    style={{
+                                      display: 'grid',
+                                      gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+                                      gap: 12,
+                                      padding: '11px 0',
+                                      borderTop: '1px solid var(--color-border)',
+                                      borderBottom: '1px solid var(--color-border)',
+                                      marginBottom: 14,
+                                      fontVariantNumeric: 'tabular-nums',
+                                    }}
+                                  >
+                                    <div>
+                                      <div
+                                        style={{
+                                          fontSize: '0.68rem',
+                                          color: 'var(--color-text-dim)',
+                                          textTransform: 'uppercase',
+                                          letterSpacing: '0.08em',
+                                        }}
+                                      >
+                                        Đỉnh cao
+                                      </div>
+                                      <div
+                                        style={{
+                                          fontSize: '1.02rem',
+                                          fontWeight: 700,
+                                          color: 'var(--color-text-main)',
+                                          marginTop: 2,
+                                        }}
+                                      >
+                                        {displayedTrails[0].maxAltitudeM.toLocaleString('vi-VN')} m
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <div
+                                        style={{
+                                          fontSize: '0.68rem',
+                                          color: 'var(--color-text-dim)',
+                                          textTransform: 'uppercase',
+                                          letterSpacing: '0.08em',
+                                        }}
+                                      >
+                                        Cự ly
+                                      </div>
+                                      <div
+                                        style={{
+                                          fontSize: '1.02rem',
+                                          fontWeight: 700,
+                                          color: 'var(--color-text-main)',
+                                          marginTop: 2,
+                                        }}
+                                      >
+                                        {displayedTrails[0].distanceKm} km
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <div
+                                        style={{
+                                          fontSize: '0.68rem',
+                                          color: 'var(--color-text-dim)',
+                                          textTransform: 'uppercase',
+                                          letterSpacing: '0.08em',
+                                        }}
+                                      >
+                                        Độ khó
+                                      </div>
+                                      <div
+                                        style={{
+                                          fontSize: '1.02rem',
+                                          fontWeight: 700,
+                                          color: 'var(--color-earth)',
+                                          marginTop: 2,
+                                        }}
+                                      >
+                                        {displayedTrails[0].difficultyLevel}/5
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div
+                                    style={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'space-between',
+                                      gap: 10,
+                                    }}
+                                  >
+                                    <span
+                                      style={{
+                                        fontSize: '0.82rem',
+                                        fontWeight: 700,
+                                        color: 'var(--color-primary)',
+                                      }}
+                                    >
+                                      Mở hồ sơ địa hình &amp; GPX →
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleToggleCompare(displayedTrails[0]);
+                                      }}
+                                      className="btn btn-outline"
+                                      style={{ padding: '6px 12px', fontSize: '0.74rem', borderRadius: 4 }}
+                                    >
+                                      {comparedTrails.some((ct) => ct.id === displayedTrails[0].id)
+                                        ? 'Đã chọn so sánh'
+                                        : '+ So sánh'}
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            </article>
+                          )}
+
+                          <div className="trail-catalog-grid">
+                            {displayedTrails.slice(1, visibleTrailCount).map((trail, idx) => (
+                              <div
+                                key={trail.id}
+                                className="scene-card-enter"
+                                style={{ ['--stagger-i' as string]: idx % 6 }}
+                              >
+                                <TrailCard
+                                  trail={trail}
+                                  onSelect={handleSelectTrail}
+                                  isSelectedForCompare={comparedTrails.some((ct) => ct.id === trail.id)}
+                                  onToggleCompare={handleToggleCompare}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Load More Pagination Action Bar */}
+                      {visibleTrailCount < displayedTrails.length && (
+                        <div style={{ textAlign: 'center', marginTop: 28 }}>
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            onClick={() => setVisibleTrailCount((prev) => prev + 6)}
+                            style={{
+                              padding: '11px 28px',
+                              fontSize: '0.88rem',
+                              fontWeight: 800,
+                              borderRadius: 6,
+                            }}
+                          >
+                            Xem Thêm {displayedTrails.length - visibleTrailCount} Cung Đường Khác
+                          </button>
+                        </div>
+                      )}
+                    </section>
                   </SceneReveal>
 
                   {/* Safety & Leave No Trace Pledge */}
@@ -2487,6 +2552,8 @@ export function App() {
                 <Suspense fallback={<PageLoadingFallback />}>
                   <TrailDetailView
                     trail={selectedTrail}
+                    allTrails={allCatalogTrails}
+                    onSelectTrail={handleSelectTrail}
                     currentUser={currentUser}
                     onBack={() => {
                       const target = previousView && previousView !== 'detail' ? previousView : 'home';
@@ -3414,7 +3481,7 @@ export function App() {
               }}
             >
               <IconScale size={16} color="var(--color-primary)" />
-              <span>Đã chọn {comparedTrails.length}/3 cung đường</span>
+              <span>Đã chọn {comparedTrails.length}/4 cung đường</span>
             </div>
 
             <button
@@ -3591,6 +3658,88 @@ export function App() {
               onViewTrail={(tId) => handleSelectTrailById(tId)}
             />
           </Suspense>
+        )}
+
+        {/* 1-Click PWA Service Worker Update or App Install Pill */}
+        {(swWaitingWorker || (deferredPwaInstall && !pwaBannerDismissed)) && (
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              position: 'fixed',
+              bottom: 24,
+              left: 24,
+              zIndex: 'var(--z-dropdown, 1100)' as unknown as number,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '10px 14px',
+              borderRadius: 6,
+              background: 'var(--color-bg-card)',
+              border: '1px solid var(--color-border-strong)',
+              boxShadow: 'var(--shadow-card)',
+              color: 'var(--color-text-main)',
+              maxWidth: 'calc(100vw - 96px)',
+              fontSize: '0.8rem',
+            }}
+          >
+            <span style={{ fontWeight: 700 }}>
+              {swWaitingWorker
+                ? 'Đã có bản cập nhật LOST mới'
+                : 'Cài đặt ứng dụng LOST dùng ngoại tuyến'}
+            </span>
+            {swWaitingWorker ? (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  swWaitingWorker.postMessage({ type: 'SKIP_WAITING' });
+                  setSwWaitingWorker(null);
+                  window.location.reload();
+                }}
+                style={{ padding: '5px 12px', fontSize: '0.75rem', borderRadius: 4 }}
+              >
+                Cập nhật ngay
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={async () => {
+                  if (!deferredPwaInstall) return;
+                  try {
+                    await deferredPwaInstall.prompt();
+                    await deferredPwaInstall.userChoice;
+                  } catch {
+                    // ignore prompt cancel
+                  }
+                  setDeferredPwaInstall(null);
+                }}
+                style={{ padding: '5px 12px', fontSize: '0.75rem', borderRadius: 4 }}
+              >
+                Cài đặt
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                if (swWaitingWorker) setSwWaitingWorker(null);
+                else setPwaBannerDismissed(true);
+              }}
+              aria-label="Đóng thông báo ứng dụng"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--color-text-dim)',
+                cursor: 'pointer',
+                padding: 2,
+                display: 'inline-flex',
+                alignItems: 'center',
+              }}
+            >
+              <IconX size={14} />
+            </button>
+          </div>
         )}
 
         <Footer />

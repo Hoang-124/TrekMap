@@ -429,6 +429,8 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
               <div style={{ padding: 10, display: 'flex', gap: 10, alignItems: 'center' }}>
                 {t.coverImage ? (
                   <img
+                    loading="lazy"
+                    decoding="async"
                     src={t.coverImage}
                     alt={t.name}
                     style={{
@@ -580,6 +582,8 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
         <div style={{ padding: 10, display: 'flex', gap: 10, alignItems: 'center' }}>
           {t.coverImage ? (
             <img
+              loading="lazy"
+              decoding="async"
               src={t.coverImage}
               alt={t.name || 'Trail'}
               style={{ width: 68, height: 68, borderRadius: 4, objectFit: 'cover', flexShrink: 0, border: '1px solid var(--color-border)' }}

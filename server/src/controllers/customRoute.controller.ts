@@ -341,8 +341,8 @@ export const getMyCustomRoutes = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// GET /api/custom-routes/public - Community-shared public custom routes
-export const getPublicCustomRoutes = async (req: Request, res: Response) => {
+// GET /api/custom-routes/public - Community-shared public custom routes (viewer-aware isLiked, strips likedBy)
+export const getPublicCustomRoutes = async (req: AuthRequest, res: Response) => {
   try {
     if (mongoose.connection.readyState !== 1) {
       return res.json({ success: true, count: 0, data: [] });
@@ -352,6 +352,7 @@ export const getPublicCustomRoutes = async (req: Request, res: Response) => {
     const page = Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(String(req.query.limit || '18'), 10) || 18, 1), 50);
     const skip = (page - 1) * limit;
+    const viewerId = req.user?.userId ? String(req.user.userId) : '';
 
     const filter: any = { visibility: 'public' };
     if (typeof region === 'string' && VALID_REGIONS.has(region)) {
@@ -365,9 +366,8 @@ export const getPublicCustomRoutes = async (req: Request, res: Response) => {
 
     const sortSpec: any = sortBy === 'newest' ? { createdAt: -1 } : { likesCount: -1, viewsCount: -1, createdAt: -1 };
 
-    const [routes, total] = await Promise.all([
+    const [rawRoutes, total] = await Promise.all([
       CustomRouteModel.find(filter)
-        .select('-likedBy')
         .populate('creatorId', 'username fullName avatarUrl reputationScore')
         .sort(sortSpec)
         .skip(skip)
@@ -375,6 +375,22 @@ export const getPublicCustomRoutes = async (req: Request, res: Response) => {
         .lean(),
       CustomRouteModel.countDocuments(filter),
     ]);
+
+    const routes = rawRoutes.map((route: any) => {
+      const isLiked = Boolean(
+        viewerId && Array.isArray(route.likedBy) && route.likedBy.some((id: any) => String(id) === viewerId)
+      );
+      const { likedBy: _hidden, ...publicRoute } = route;
+      return {
+        ...publicRoute,
+        isLiked,
+        hasLiked: isLiked,
+      };
+    });
+
+    if (viewerId) {
+      res.setHeader('Cache-Control', 'no-store, max-age=0');
+    }
 
     return res.json({
       success: true,

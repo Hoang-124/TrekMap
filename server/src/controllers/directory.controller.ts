@@ -244,7 +244,7 @@ export const createGuideInquiry = async (req: AuthRequest, res: Response) => {
       category: 'system',
       title: `Yêu cầu đặt Porter/Guide: ${guide.name}`,
       message: `${user?.fullName || 'Trekker'} đặt lịch ${guide.name} cho cung ${resolvedTrailName} (${safeDays} ngày, ${safeGroupSize} người, SĐT ${phoneCheck.cleanPhone}).`,
-      link: '/admin',
+      link: '/admin?tab=inquiries',
       relatedId: inquiry._id.toString(),
     }).catch(() => {});
 
@@ -281,6 +281,48 @@ export const getMyGuideInquiries = async (req: AuthRequest, res: Response) => {
   } catch (err) {
     console.error('[Get My Inquiries Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi khi tải lịch sử đặt Porter/Guide.' });
+  }
+};
+
+// GET /api/directory/inquiries - Admin/Moderator view of all Guide/Porter inquiries populated with user, guide & trail
+export const getAllGuideInquiriesAdmin = async (req: AuthRequest, res: Response) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.json({ success: true, count: 0, total: 0, data: [] });
+    }
+
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '100'), 10) || 100, 1), 200);
+    const page = Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1);
+    const skip = (page - 1) * limit;
+    const rawStatus = typeof req.query.status === 'string' ? req.query.status.trim() : '';
+
+    const filter: any = {};
+    if (rawStatus && VALID_INQUIRY_STATUSES.has(rawStatus as GuideInquiryStatus)) {
+      filter.status = rawStatus;
+    }
+
+    const [list, total] = await Promise.all([
+      GuideInquiryModel.find(filter)
+        .populate('userId', 'fullName username email avatarUrl phone')
+        .populate('guideId', 'name phone avatarUrl region roleType priceNote basePricePerDayVnd verified')
+        .populate('trailId', 'id name province region maxAltitudeM')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      GuideInquiryModel.countDocuments(filter),
+    ]);
+
+    return res.json({
+      success: true,
+      count: list.length,
+      total,
+      pagination: { page, limit, total },
+      data: list,
+    });
+  } catch (err) {
+    console.error('[Get Admin Inquiries Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi khi tải danh sách yêu cầu HDV/Porter cho quản trị.' });
   }
 };
 

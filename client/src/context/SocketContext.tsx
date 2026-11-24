@@ -1,19 +1,31 @@
-import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type { UserProfile } from '../types.js';
+import { clearSensitiveSessionStorage } from '../utils/storageScope.js';
 
-interface SocketContextType {
+interface SocketConnectionContextType {
   socket: Socket | null;
   isConnected: boolean;
+}
+
+interface SocketContextType extends SocketConnectionContextType {
   onlineUsers: Set<string>;
   isUserOnline: (userId?: string, userEmail?: string) => boolean;
 }
 
+const EMPTY_ONLINE_USERS = new Set<string>();
+const NOOP_IS_ONLINE = () => false;
+
+const SocketConnectionContext = createContext<SocketConnectionContextType>({
+  socket: null,
+  isConnected: false,
+});
+
 const SocketContext = createContext<SocketContextType>({
   socket: null,
   isConnected: false,
-  onlineUsers: new Set(),
-  isUserOnline: () => false,
+  onlineUsers: EMPTY_ONLINE_USERS,
+  isUserOnline: NOOP_IS_ONLINE,
 });
 
 interface SocketProviderProps {
@@ -24,7 +36,7 @@ interface SocketProviderProps {
 export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, children }) => {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-  const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
+  const [onlineUsers, setOnlineUsers] = useState<Set<string>>(() => new Set());
 
   // Depend strictly on primitive identity so profile object re-renders do not tear down sockets
   const currentUserId =
@@ -58,8 +70,8 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
     });
 
     socketInstance.on('connect', () => {
-      setIsConnected(true);
-      setSocket(socketInstance);
+      setIsConnected((prev) => (prev ? prev : true));
+      setSocket((prev) => (prev === socketInstance ? prev : socketInstance));
 
       const userId = userIdentityRef.current.id || userIdentityRef.current.email;
       if (userId) {
@@ -74,16 +86,35 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
     }, 30000);
 
     socketInstance.on('onlineUsersList', (users: string[]) => {
-      setOnlineUsers(new Set(users.map(String)));
+      const normalized = Array.isArray(users) ? users.map(String) : [];
+      setOnlineUsers((prev) => {
+        const nextSet = new Set(normalized);
+        if (prev.size === nextSet.size) {
+          let identical = true;
+          for (const id of nextSet) {
+            if (!prev.has(id)) {
+              identical = false;
+              break;
+            }
+          }
+          if (identical) return prev;
+        }
+        return nextSet;
+      });
     });
 
     socketInstance.on('userStatus', ({ userId, isOnline }: { userId: string; isOnline: boolean }) => {
+      const key = String(userId);
       setOnlineUsers((prev) => {
+        const alreadyOnline = prev.has(key);
+        if (Boolean(isOnline) === alreadyOnline) {
+          return prev;
+        }
         const next = new Set(prev);
         if (isOnline) {
-          next.add(String(userId));
+          next.add(key);
         } else {
-          next.delete(String(userId));
+          next.delete(key);
         }
         return next;
       });
@@ -96,7 +127,9 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
         (data.userId && myId && String(myId) === String(data.userId)) ||
         (data.email && myEmail && myEmail === data.email.toLowerCase())
       ) {
+        clearSensitiveSessionStorage();
         localStorage.removeItem('lost_token');
+        window.dispatchEvent(new CustomEvent('lost:auth-changed'));
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
             detail: {
@@ -113,31 +146,90 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
       }
     });
 
+    socketInstance.on('userRoleUpdated', async (data: { userId?: string; role?: string }) => {
+      const myId = userIdentityRef.current.id;
+      if (data.userId && myId && String(myId) !== String(data.userId)) return;
+      try {
+        const res = await fetch('/api/auth/refresh', {
+          method: 'POST',
+          credentials: 'include',
+        });
+        if (res.ok) {
+          const json = await res.json().catch(() => ({}));
+          if (json?.token) {
+            localStorage.setItem('lost_token', json.token);
+          }
+        }
+      } catch {
+        // Non-fatal: user will refresh on next navigation
+      }
+      window.dispatchEvent(new CustomEvent('lost:auth-changed'));
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: {
+            message: `Quyền tài khoản của bạn đã được cập nhật${data.role ? ` (${data.role})` : ''}. Phiên đã tự động đồng bộ.`,
+            type: 'info',
+          },
+        })
+      );
+    });
+
+    socketInstance.on('safetyTimerOverdue', (data: { trailName?: string; message?: string }) => {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: {
+            message:
+              data?.message ||
+              `Lịch báo bình an${data?.trailName ? ` (${data.trailName})` : ''} đã quá hạn! Hãy mở mục Hẹn giờ an toàn để xác nhận bạn đã an toàn.`,
+            type: 'error',
+          },
+        })
+      );
+    });
+
     socketInstance.on('disconnect', () => {
-      setIsConnected(false);
+      setIsConnected((prev) => (prev ? false : prev));
     });
 
     return () => {
       clearInterval(pingInterval);
       socketInstance.disconnect();
-      setSocket(null);
-      setIsConnected(false);
+      setSocket((prev) => (prev === null ? prev : null));
+      setIsConnected((prev) => (prev ? false : prev));
     };
   }, [currentUserId]);
 
-  const isUserOnline = (userId?: string, userEmail?: string): boolean => {
-    if (!userId && !userEmail) return false;
-    if (userId && onlineUsers.has(String(userId))) return true;
-    if (userEmail && onlineUsers.has(String(userEmail))) return true;
-    return false;
-  };
+  const isUserOnline = useCallback(
+    (userId?: string, userEmail?: string): boolean => {
+      if (!userId && !userEmail) return false;
+      if (userId && onlineUsers.has(String(userId))) return true;
+      if (userEmail && onlineUsers.has(String(userEmail))) return true;
+      return false;
+    },
+    [onlineUsers]
+  );
+
+  const connectionValue = useMemo<SocketConnectionContextType>(
+    () => ({ socket, isConnected }),
+    [socket, isConnected]
+  );
+
+  const contextValue = useMemo<SocketContextType>(
+    () => ({ socket, isConnected, onlineUsers, isUserOnline }),
+    [socket, isConnected, onlineUsers, isUserOnline]
+  );
 
   return (
-    <SocketContext.Provider value={{ socket, isConnected, onlineUsers, isUserOnline }}>
-      {children}
-    </SocketContext.Provider>
+    <SocketConnectionContext.Provider value={connectionValue}>
+      <SocketContext.Provider value={contextValue}>
+        {children}
+      </SocketContext.Provider>
+    </SocketConnectionContext.Provider>
   );
 };
+
+// eslint-disable-next-line react-refresh/only-export-components -- co-exported context hooks imported by App, Navbar, NotificationBell & NotificationsPage
+export const useSocketConnection = () => useContext(SocketConnectionContext);
 
 // eslint-disable-next-line react-refresh/only-export-components -- co-exported context hook imported by App, NotificationBell & NotificationsPage
 export const useSocket = () => useContext(SocketContext);

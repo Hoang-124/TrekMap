@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useRef, Suspense, lazy } from 'react';
+import React, { useEffect, useState, useMemo, useRef, useCallback, Suspense, lazy } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Tooltip, Polyline, Circle, CircleMarker, useMap, useMapEvents } from 'react-leaflet';
 import MarkerClusterGroup from 'react-leaflet-cluster';
 import L from 'leaflet';
@@ -155,12 +155,20 @@ const matchTrailIncident = (trail: Trail, incidents: MapIncident[] = []): MapInc
   });
 };
 
+// Module-level DivIcon cache keyed by (difficultyColor, alertSeverity, isFocused)
+// Prevents Leaflet from tearing down & recreating DOM pins on unrelated state/hover/focus updates
+const trailSvgIconCache = new Map<string, L.DivIcon>();
+
 // Lightweight SVG Teardrop Pin with white border & center dot (Leaflet DivIcon)
 const createTrailSvgIcon = (trail: Trail, incident?: MapIncident, isFocused = false) => {
   const diffInfo = getDifficultyInfo(trail.difficultyLevel);
 
   const hasAlert = !!incident;
   const severity = incident?.severity || 'high';
+  const cacheKey = `${diffInfo.color}|${hasAlert ? severity : 'none'}|${isFocused ? '1' : '0'}`;
+  const cached = trailSvgIconCache.get(cacheKey);
+  if (cached) return cached;
+
   const alertColor = severity === 'critical' ? '#dc2626' : severity === 'high' ? '#ea580c' : '#d97706';
 
   const alertBadgeHtml = hasAlert
@@ -241,13 +249,15 @@ const createTrailSvgIcon = (trail: Trail, incident?: MapIncident, isFocused = fa
     </div>
   `;
 
-  return L.divIcon({
+  const icon = L.divIcon({
     html: customSvg,
     className: 'custom-trail-svg-marker',
     iconSize: [30, 40],
     iconAnchor: [15, 40],
     popupAnchor: [0, -40],
   });
+  trailSvgIconCache.set(cacheKey, icon);
+  return icon;
 };
 
 // Auto-Positioned Hover Tooltip Component (Strict Dual-Theme Tokens)
@@ -255,7 +265,7 @@ export const TacticalTrailTooltip: React.FC<{
   trail: Trail;
   incident?: MapIncident;
   onSelect?: () => void;
-}> = ({ trail, incident, onSelect }) => {
+}> = React.memo(({ trail, incident, onSelect }) => {
   const diffInfo = getDifficultyInfo(trail.difficultyLevel);
   const hasAlert = !!incident;
   const alertMeta = getAlertToken(incident?.severity);
@@ -473,7 +483,7 @@ export const TacticalTrailTooltip: React.FC<{
       </div>
     </div>
   );
-};
+});
 
 // Tactical Incidents Quick Inspection Drawer
 export const TacticalIncidentsDrawer: React.FC<{
@@ -484,7 +494,7 @@ export const TacticalIncidentsDrawer: React.FC<{
   onSelectTrail?: (trail: Trail) => void;
   onFilterAlerts: () => void;
   isFilterActive: boolean;
-}> = ({ isOpen, onClose, alertTrails, onFlyTo, onSelectTrail, onFilterAlerts, isFilterActive }) => {
+}> = React.memo(({ isOpen, onClose, alertTrails, onFlyTo, onSelectTrail, onFilterAlerts, isFilterActive }) => {
   if (!isOpen) return null;
 
   return (
@@ -741,10 +751,12 @@ export const TacticalIncidentsDrawer: React.FC<{
       </div>
     </div>
   );
-};
+});
 
-// User GPS Pulse Location Marker Icon Helper (Leaflet DivIcon)
+// User GPS Pulse Location Marker Icon Helper (Cached Module Singleton Leaflet DivIcon)
+let cachedUserGpsIcon: L.DivIcon | null = null;
 const createUserGpsIcon = () => {
+  if (cachedUserGpsIcon) return cachedUserGpsIcon;
   const customSvg = `
     <div style="
       position: relative;
@@ -772,17 +784,23 @@ const createUserGpsIcon = () => {
     </div>
   `;
 
-  return L.divIcon({
+  cachedUserGpsIcon = L.divIcon({
     html: customSvg,
     className: 'user-gps-marker',
     iconSize: [34, 34],
     iconAnchor: [17, 17],
     popupAnchor: [0, -17],
   });
+  return cachedUserGpsIcon;
 };
 
-// Start & Finish Peak Marker Icon Helper for GPX Polylines (Leaflet DivIcon)
+// Start & Finish Peak Marker Icon Helper for GPX Polylines (Cached Leaflet DivIcon)
+const startEndIconCache = new Map<string, L.DivIcon>();
 const createStartEndIcon = (type: 'start' | 'finish', label?: string) => {
+  const cacheKey = `${type}|${label || ''}`;
+  const cached = startEndIconCache.get(cacheKey);
+  if (cached) return cached;
+
   const isStart = type === 'start';
   const color = isStart ? '#10b981' : '#d97706';
   const iconSvg = isStart
@@ -811,18 +829,176 @@ const createStartEndIcon = (type: 'start' | 'finish', label?: string) => {
     </div>
   `;
 
-  return L.divIcon({
+  const icon = L.divIcon({
     html,
     className: 'start-finish-marker',
     iconSize: [74, 20],
     iconAnchor: [37, 24],
   });
+  startEndIconCache.set(cacheKey, icon);
+  return icon;
 };
 
+// Pure-SVG Waypoint Marker Icon Helper (distinct icon & accent color by waypoint type - Rule 12)
+const WAYPOINT_META: Record<string, { label: string; hex: string; token: string; svg: string }> = {
+  campsite: {
+    label: 'Bãi cắm trại / Lán',
+    hex: '#10b981',
+    token: 'var(--color-primary)',
+    svg: '<path d="M19 20 10 4"/><path d="m5 20 9-16"/><path d="M3 20h18"/>',
+  },
+  water: {
+    label: 'Nguồn nước suối',
+    hex: '#0284c7',
+    token: 'var(--color-sky)',
+    svg: '<path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/>',
+  },
+  viewpoint: {
+    label: 'Điểm ngắm cảnh',
+    hex: '#d97706',
+    token: 'var(--color-sun)',
+    svg: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+  },
+  danger: {
+    label: 'Cảnh báo nguy hiểm',
+    hex: '#dc2626',
+    token: 'var(--color-error)',
+    svg: '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  },
+  summit: {
+    label: 'Đỉnh núi / Cột mốc',
+    hex: '#eab308',
+    token: 'var(--color-sun)',
+    svg: '<path d="m8 3 4 8 5-5 5 15H2L8 3z"/>',
+  },
+  rest: {
+    label: 'Trạm dừng chân',
+    hex: '#0d9488',
+    token: 'var(--color-primary)',
+    svg: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>',
+  },
+  charging: {
+    label: 'Trạm hỗ trợ / Lán',
+    hex: '#0d9488',
+    token: 'var(--color-primary)',
+    svg: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+  },
+};
+
+const waypointIconCache = new Map<string, L.DivIcon>();
+const createWaypointSvgIcon = (type: string): L.DivIcon => {
+  const key = WAYPOINT_META[type] ? type : 'rest';
+  const cached = waypointIconCache.get(key);
+  if (cached) return cached;
+
+  const meta = WAYPOINT_META[key];
+  const icon = L.divIcon({
+    html: `<div style="
+      width:26px;height:26px;border-radius:50%;
+      background:${meta.hex};
+      border:2px solid #ffffff;
+      box-shadow:0 2px 7px rgba(0,0,0,0.48);
+      display:flex;align-items:center;justify-content:center;
+      cursor:pointer;
+    "><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${meta.svg}</svg></div>`,
+    className: 'lost-waypoint-svg-marker',
+    iconSize: [26, 26],
+    iconAnchor: [13, 13],
+    popupAnchor: [0, -14],
+  });
+  waypointIconCache.set(key, icon);
+  return icon;
+};
+
+// Pure-SVG Community Field POI Marker Icon Helper (water / camp / signal / danger / viewpoint)
+const FIELD_POI_META: Record<string, { label: string; hex: string; token: string; svg: string }> = {
+  water: {
+    label: 'Nguồn nước thực địa',
+    hex: '#0284c7',
+    token: 'var(--color-sky)',
+    svg: '<path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/>',
+  },
+  camp: {
+    label: 'Lán / Bãi trại cộng đồng',
+    hex: '#10b981',
+    token: 'var(--color-primary)',
+    svg: '<path d="M19 20 10 4"/><path d="m5 20 9-16"/><path d="M3 20h18"/>',
+  },
+  signal: {
+    label: 'Điểm có sóng 4G',
+    hex: '#0891b2',
+    token: 'var(--color-sky)',
+    svg: '<path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><circle cx="12" cy="12" r="2"/><path d="M19.1 4.9c3.9 3.9 3.9 10.3 0 14.2"/>',
+  },
+  danger: {
+    label: 'Điểm nguy hiểm thực địa',
+    hex: '#dc2626',
+    token: 'var(--color-error)',
+    svg: '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  },
+  viewpoint: {
+    label: 'Điểm săn mây / Ngắm cảnh',
+    hex: '#d97706',
+    token: 'var(--color-sun)',
+    svg: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+  },
+};
+
+const fieldPoiIconCache = new Map<string, L.DivIcon>();
+const createFieldPoiSvgIcon = (category: string, status?: string): L.DivIcon => {
+  const normCategory = FIELD_POI_META[category] ? category : 'water';
+  const isClosed = status === 'dry_or_closed';
+  const cacheKey = `${normCategory}|${isClosed ? 'closed' : 'open'}`;
+  const cached = fieldPoiIconCache.get(cacheKey);
+  if (cached) return cached;
+
+  const meta = FIELD_POI_META[normCategory];
+  const bg = isClosed ? '#64748b' : meta.hex;
+  const icon = L.divIcon({
+    html: `<div style="
+      width:24px;height:24px;border-radius:6px;
+      background:${bg};
+      border:2px ${isClosed ? 'dashed' : 'solid'} #ffffff;
+      box-shadow:0 2px 6px rgba(0,0,0,0.45);
+      display:flex;align-items:center;justify-content:center;
+      opacity:${isClosed ? '0.82' : '1'};
+      cursor:pointer;
+    "><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${meta.svg}</svg></div>`,
+    className: 'lost-field-poi-svg-marker',
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
+    popupAnchor: [0, -13],
+  });
+  fieldPoiIconCache.set(cacheKey, icon);
+  return icon;
+};
+
+function findNearestTrackIndex(lat: number, lng: number, track: [number, number][]): number {
+  let bestIdx = 0;
+  let bestDistSq = Infinity;
+  for (let i = 0; i < track.length; i++) {
+    const pt = track[i];
+    if (!Array.isArray(pt) || pt.length < 2) continue;
+    const dLat = pt[0] - lat;
+    const cosLat = Math.cos(((pt[0] + lat) * 0.5 * Math.PI) / 180);
+    const dLng = (pt[1] - lng) * cosLat;
+    const dSq = dLat * dLat + dLng * dLng;
+    if (dSq < bestDistSq) {
+      bestDistSq = dSq;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+const clusterIconCache = new Map<number, L.DivIcon>();
 const createClusterCustomIcon = (cluster: { getChildCount: () => number }): L.DivIcon => {
   const count = cluster.getChildCount();
+  const cached = clusterIconCache.get(count);
+  if (cached) return cached;
+
   const size = count >= 10 ? 40 : 34;
-  return L.divIcon({
+  const icon = L.divIcon({
     html: `<div style="
       width:${size}px;height:${size}px;
       background:rgba(12,15,13,0.92);
@@ -843,10 +1019,12 @@ const createClusterCustomIcon = (cluster: { getChildCount: () => number }): L.Di
     iconSize: L.point(size, size, true),
     iconAnchor: [size / 2, size / 2],
   });
+  clusterIconCache.set(count, icon);
+  return icon;
 };
 
 // Rich Interactive Trail Popup with Live Realtime Weather & Safety Alert
-export const TrailPopupContent: React.FC<{ trail: Trail; incident?: MapIncident; onSelect: () => void }> = ({
+export const TrailPopupContent: React.FC<{ trail: Trail; incident?: MapIncident; onSelect: () => void }> = React.memo(({
   trail,
   incident,
   onSelect,
@@ -939,6 +1117,8 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: MapIncident;
         <img
           src={trail.coverImage}
           alt={trail.name}
+          loading="lazy"
+          decoding="async"
           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
         />
         <div
@@ -961,13 +1141,12 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: MapIncident;
             position: 'absolute',
             bottom: 8,
             right: 8,
-            background: 'var(--color-bg-glass)',
+            background: 'var(--color-bg-hud)',
             color: 'var(--color-primary)',
             fontWeight: 800,
             fontSize: '0.7rem',
             padding: '2px 8px',
             borderRadius: 3,
-            backdropFilter: 'blur(10px)',
             border: '1px solid var(--color-border)',
           }}
         >
@@ -1106,7 +1285,17 @@ export const TrailPopupContent: React.FC<{ trail: Trail; incident?: MapIncident;
       </button>
     </div>
   );
-};
+});
+
+export interface MapFieldPoi {
+  id: string;
+  title: string;
+  category: string;
+  lat: number;
+  lng: number;
+  status?: string;
+  notes?: string;
+}
 
 export interface MapViewProps {
   trails: Trail[];
@@ -1119,6 +1308,8 @@ export interface MapViewProps {
   allTrails?: Trail[];
   onSelectRegion?: (region: string) => void;
   highlightedPoint?: [number, number] | null;
+  trailPois?: MapFieldPoi[];
+  onHoverTrackIndex?: (index: number | null) => void;
 }
 
 const TILE_PROVIDERS = {
@@ -1251,8 +1442,7 @@ const CustomMapControls: React.FC<{ onResetView: () => void }> = ({ onResetView 
         style={{
           display: 'flex',
           flexDirection: 'column',
-          background: 'var(--color-bg-glass)',
-          backdropFilter: 'blur(16px)',
+          background: 'var(--color-bg-hud)',
           borderRadius: 4,
           border: '1px solid var(--color-border-strong)',
           boxShadow: 'var(--shadow-card)',
@@ -1317,8 +1507,7 @@ const CustomMapControls: React.FC<{ onResetView: () => void }> = ({ onResetView 
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          background: 'var(--color-bg-glass)',
-          backdropFilter: 'blur(16px)',
+          background: 'var(--color-bg-hud)',
           borderRadius: 4,
           border: '1px solid var(--color-border-strong)',
           boxShadow: 'var(--shadow-card)',
@@ -1335,7 +1524,7 @@ const CustomMapControls: React.FC<{ onResetView: () => void }> = ({ onResetView 
   );
 };
 
-export const MapView: React.FC<MapViewProps> = ({
+export const MapView: React.FC<MapViewProps> = React.memo(({
   trails,
   selectedTrail,
   onSelectTrail,
@@ -1346,6 +1535,8 @@ export const MapView: React.FC<MapViewProps> = ({
   allTrails,
   onSelectRegion,
   highlightedPoint,
+  trailPois = [],
+  onHoverTrackIndex,
 }) => {
   const [currentTileKey, setCurrentTileKey] = useState<keyof typeof TILE_PROVIDERS>(() =>
     typeof navigator !== 'undefined' && navigator.onLine === false ? 'roadmap' : 'satellite'
@@ -1355,6 +1546,7 @@ export const MapView: React.FC<MapViewProps> = ({
   const [flyToPos, setFlyToPos] = useState<[number, number] | null>(null);
   const [flyToZoom, setFlyToZoom] = useState<number>(13);
   const [flyTick, setFlyTick] = useState<number>(0);
+  const [trackedSelectedTrailId, setTrackedSelectedTrailId] = useState<string | undefined>(selectedTrail?.id);
   const [isScrollZoomUnlocked, setIsScrollZoomUnlocked] = useState<boolean>(() => Boolean(selectedTrail));
   const [isLocating, setIsLocating] = useState(false);
   const [isLiveTracking, setIsLiveTracking] = useState(false);
@@ -1365,9 +1557,56 @@ export const MapView: React.FC<MapViewProps> = ({
   const [offTrailMeters, setOffTrailMeters] = useState<number | null>(null);
   const [isTerrain3DOpen, setIsTerrain3DOpen] = useState(false);
   const [focusedTrailId, setFocusedTrailId] = useState<string | null>(null);
+  const [showWaypoints, setShowWaypoints] = useState<boolean>(true);
   const lastOffTrailBeepRef = useRef<number>(0);
   const watchIdRef = useRef<number | null>(null);
   const locateAbortRef = useRef<AbortController | null>(null);
+  const hoverRafRef = useRef<number | null>(null);
+  const lastHoverTrackIdxRef = useRef<number | null>(null);
+  const pendingHoverRef = useRef<{ lat: number; lng: number; track: [number, number][] } | null>(null);
+  const onHoverTrackIndexRef = useRef(onHoverTrackIndex);
+
+  useEffect(() => {
+    onHoverTrackIndexRef.current = onHoverTrackIndex;
+  }, [onHoverTrackIndex]);
+
+  const handleTrackMouseMove = useCallback((lat: number, lng: number, track: [number, number][]) => {
+    pendingHoverRef.current = { lat, lng, track };
+    if (hoverRafRef.current !== null) return;
+    hoverRafRef.current = window.requestAnimationFrame(() => {
+      hoverRafRef.current = null;
+      const pending = pendingHoverRef.current;
+      if (!pending) return;
+      const nearestIdx = findNearestTrackIndex(pending.lat, pending.lng, pending.track);
+      if (nearestIdx !== lastHoverTrackIdxRef.current) {
+        lastHoverTrackIdxRef.current = nearestIdx;
+        onHoverTrackIndexRef.current?.(nearestIdx);
+      }
+    });
+  }, []);
+
+  const handleTrackMouseOut = useCallback(() => {
+    pendingHoverRef.current = null;
+    if (hoverRafRef.current !== null) {
+      window.cancelAnimationFrame(hoverRafRef.current);
+      hoverRafRef.current = null;
+    }
+    if (lastHoverTrackIdxRef.current !== null) {
+      lastHoverTrackIdxRef.current = null;
+      onHoverTrackIndexRef.current?.(null);
+    }
+  }, []);
+
+  const recordedTrackPositions = useMemo(
+    () => recordedTrack.map((p) => [p.lat, p.lng] as [number, number]),
+    [recordedTrack]
+  );
+
+  // Reset stale flyToPos cleanly whenever selectedTrail.id changes so MapController always flies to the newly selected trail
+  if (trackedSelectedTrailId !== selectedTrail?.id) {
+    setTrackedSelectedTrailId(selectedTrail?.id);
+    setFlyToPos(null);
+  }
   const canHover = useMemo(
     () =>
       typeof window !== 'undefined' && typeof window.matchMedia === 'function'
@@ -1486,6 +1725,38 @@ export const MapView: React.FC<MapViewProps> = ({
     }
     return map;
   }, [activeGpxTrails]);
+
+  const activeDetailTrail = useMemo(() => {
+    if (selectedTrail) return selectedTrail;
+    if (focusedTrailId) {
+      return filteredTrails.find((t) => (t.id || (t as TrailWithMeta)._id) === focusedTrailId) || null;
+    }
+    return null;
+  }, [selectedTrail, focusedTrailId, filteredTrails]);
+
+  const waypointMarkerData = useMemo(() => {
+    const wps = activeDetailTrail?.waypoints;
+    if (!Array.isArray(wps) || wps.length === 0) return [];
+    return wps
+      .filter((wp) => Number.isFinite(Number(wp.lat)) && Number.isFinite(Number(wp.lng)))
+      .map((wp, idx) => ({
+        wp,
+        key: wp.id || `wp-${activeDetailTrail?.id || 't'}-${idx}`,
+        meta: WAYPOINT_META[wp.type] || WAYPOINT_META.rest,
+        icon: createWaypointSvgIcon(wp.type),
+      }));
+  }, [activeDetailTrail]);
+
+  const fieldPoiMarkerData = useMemo(() => {
+    if (!Array.isArray(trailPois) || trailPois.length === 0) return [];
+    return trailPois
+      .filter((poi) => Number.isFinite(Number(poi.lat)) && Number.isFinite(Number(poi.lng)))
+      .map((poi) => ({
+        poi,
+        meta: FIELD_POI_META[poi.category] || FIELD_POI_META.water,
+        icon: createFieldPoiSvgIcon(poi.category, poi.status),
+      }));
+  }, [trailPois]);
 
   const handleToggleAlertFilter = () => {
     if (difficultyFilter === 'alert') {
@@ -1667,9 +1938,13 @@ export const MapView: React.FC<MapViewProps> = ({
     }
   };
 
-  // Single clean unmount cleanup for active GPS watcher & pending locate requests
+  // Single clean unmount cleanup for active GPS watcher, rAF hover sync & pending locate requests
   useEffect(() => {
     return () => {
+      if (hoverRafRef.current !== null) {
+        window.cancelAnimationFrame(hoverRafRef.current);
+        hoverRafRef.current = null;
+      }
       locateAbortRef.current?.abort();
       if (watchIdRef.current !== null && navigator.geolocation) {
         navigator.geolocation.clearWatch(watchIdRef.current);
@@ -1690,8 +1965,7 @@ export const MapView: React.FC<MapViewProps> = ({
           display: 'flex',
           alignItems: 'center',
           gap: 4,
-          background: 'var(--color-bg-glass)',
-          backdropFilter: 'blur(16px)',
+          background: 'var(--color-bg-hud)',
           padding: '4px 5px',
           borderRadius: 6,
           border: '1px solid var(--color-border-strong)',
@@ -1727,6 +2001,39 @@ export const MapView: React.FC<MapViewProps> = ({
           <Activity size={13} color={showGpxTracks ? 'var(--color-primary)' : 'var(--color-text-muted)'} />
           <span>GPX</span>
         </button>
+
+        {/* Waypoints & Field POIs Layer Toggle Chip */}
+        {(waypointMarkerData.length > 0 || fieldPoiMarkerData.length > 0) && (
+          <button
+            type="button"
+            onClick={() => setShowWaypoints((prev) => !prev)}
+            aria-pressed={showWaypoints}
+            aria-label="Bật tắt điểm mốc và điểm thực địa POI"
+            title="Bật/tắt hiển thị điểm mốc (Waypoints) và điểm thực địa cộng đồng (POI)"
+            style={{
+              height: 28,
+              background: showWaypoints ? 'color-mix(in srgb, var(--color-sky) 16%, transparent)' : 'transparent',
+              color: showWaypoints ? 'var(--color-sky)' : 'var(--color-text-muted)',
+              border: showWaypoints ? '1px solid color-mix(in srgb, var(--color-sky) 42%, transparent)' : '1px solid transparent',
+              borderRadius: 4,
+              padding: '0 8px',
+              fontSize: '0.72rem',
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" />
+              <circle cx="12" cy="10" r="3" />
+            </svg>
+            <span>Mốc ({waypointMarkerData.length + fieldPoiMarkerData.length})</span>
+          </button>
+        )}
 
         {/* Scroll-Wheel Zoom Lock Toggle (Prevents accidental page-scroll hijack on homepage) */}
         {!selectedTrail && (
@@ -2018,8 +2325,7 @@ export const MapView: React.FC<MapViewProps> = ({
           display: 'flex',
           alignItems: 'center',
           gap: 3,
-          background: 'var(--color-bg-glass)',
-          backdropFilter: 'blur(16px)',
+          background: 'var(--color-bg-hud)',
           padding: '4px 6px',
           borderRadius: 6,
           border: '1px solid var(--color-border-strong)',
@@ -2567,6 +2873,31 @@ export const MapView: React.FC<MapViewProps> = ({
                       lineJoin: 'round',
                     }}
                   />
+                  {/* Wide transparent hit-target polyline for smooth Map -> Elevation Chart hover sync */}
+                  {onHoverTrackIndex && (
+                    <Polyline
+                      positions={track}
+                      pathOptions={{
+                        color: '#10b981',
+                        weight: 16,
+                        opacity: 0.001,
+                        lineCap: 'round',
+                        lineJoin: 'round',
+                      }}
+                      eventHandlers={{
+                        mousemove: (e) => {
+                          handleTrackMouseMove(e.latlng.lat, e.latlng.lng, track);
+                        },
+                        mouseout: () => {
+                          handleTrackMouseOut();
+                        },
+                        click: () => {
+                          setFocusedTrailId(trail.id);
+                          onFocusTrail?.(trail);
+                        },
+                      }}
+                    />
+                  )}
                   {startPos && (
                     <Marker
                       position={startPos}
@@ -2586,6 +2917,137 @@ export const MapView: React.FC<MapViewProps> = ({
                     />
                   )}
                 </React.Fragment>
+              );
+            })}
+
+          {/* Focused/Selected Trail Waypoints as crisp pure-SVG markers */}
+          {showWaypoints &&
+            waypointMarkerData.map(({ wp, key, meta, icon }) => (
+              <Marker key={key} position={[Number(wp.lat), Number(wp.lng)]} icon={icon}>
+                {canHover && (
+                  <Tooltip direction="top" offset={[0, -14]} opacity={0.98}>
+                    <div
+                      style={{
+                        fontFamily: 'var(--font-family)',
+                        color: 'var(--color-text-main)',
+                        fontSize: '0.74rem',
+                        fontWeight: 700,
+                      }}
+                    >
+                      <span>{wp.name}</span>
+                      {typeof wp.elevationM === 'number' && (
+                        <span style={{ color: 'var(--color-sky)', marginLeft: 5 }}>
+                          ({Math.round(wp.elevationM).toLocaleString('vi-VN')}m)
+                        </span>
+                      )}
+                    </div>
+                  </Tooltip>
+                )}
+                <Popup className="custom-leaflet-popup">
+                  <div style={{ minWidth: 185, maxWidth: 240, fontFamily: 'var(--font-family)', padding: '2px 0' }}>
+                    <div
+                      style={{
+                        fontSize: '0.66rem',
+                        fontWeight: 800,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.06em',
+                        color: meta.token,
+                        marginBottom: 3,
+                      }}
+                    >
+                      {meta.label}
+                    </div>
+                    <div style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 4 }}>
+                      {wp.name}
+                    </div>
+                    {typeof wp.elevationM === 'number' && Number.isFinite(wp.elevationM) && (
+                      <div style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-sky)', marginBottom: 4 }}>
+                        Cao độ: {Math.round(wp.elevationM).toLocaleString('vi-VN')}m
+                      </div>
+                    )}
+                    {wp.description && (
+                      <div style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', lineHeight: 1.45, marginBottom: 5 }}>
+                        {wp.description}
+                      </div>
+                    )}
+                    <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
+                      GPS: {Number(wp.lat).toFixed(5)}, {Number(wp.lng).toFixed(5)}
+                    </div>
+                  </div>
+                </Popup>
+              </Marker>
+            ))}
+
+          {/* Community Field POIs (Water / Camp / 4G Signal / Danger / Viewpoint) */}
+          {showWaypoints &&
+            fieldPoiMarkerData.map(({ poi, meta, icon }) => {
+              const isDryOrClosed = poi.status === 'dry_or_closed';
+              return (
+                <Marker key={`poi-${poi.id}`} position={[Number(poi.lat), Number(poi.lng)]} icon={icon}>
+                  {canHover && (
+                    <Tooltip direction="top" offset={[0, -13]} opacity={0.98}>
+                      <div
+                        style={{
+                          fontFamily: 'var(--font-family)',
+                          color: 'var(--color-text-main)',
+                          fontSize: '0.74rem',
+                          fontWeight: 700,
+                        }}
+                      >
+                        <span>{poi.title}</span>
+                        {isDryOrClosed && (
+                          <span style={{ color: 'var(--color-error-text, var(--color-error))', marginLeft: 5 }}>
+                            (Đã cạn / Đóng)
+                          </span>
+                        )}
+                      </div>
+                    </Tooltip>
+                  )}
+                  <Popup className="custom-leaflet-popup">
+                    <div style={{ minWidth: 190, maxWidth: 250, fontFamily: 'var(--font-family)', padding: '2px 0' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginBottom: 4 }}>
+                        <span
+                          style={{
+                            fontSize: '0.65rem',
+                            fontWeight: 800,
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.05em',
+                            color: meta.token,
+                          }}
+                        >
+                          POI · {meta.label}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: '0.64rem',
+                            fontWeight: 800,
+                            padding: '1px 6px',
+                            borderRadius: 3,
+                            background: isDryOrClosed
+                              ? 'color-mix(in srgb, var(--color-error) 16%, transparent)'
+                              : 'color-mix(in srgb, var(--color-primary) 16%, transparent)',
+                            color: isDryOrClosed
+                              ? 'var(--color-error-text, var(--color-error))'
+                              : 'var(--color-primary)',
+                          }}
+                        >
+                          {isDryOrClosed ? 'Đã cạn / Đóng' : 'Hoạt động'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 4 }}>
+                        {poi.title}
+                      </div>
+                      {poi.notes && (
+                        <div style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', lineHeight: 1.45, marginBottom: 5 }}>
+                          {poi.notes}
+                        </div>
+                      )}
+                      <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
+                        GPS: {Number(poi.lat).toFixed(5)}, {Number(poi.lng).toFixed(5)}
+                      </div>
+                    </div>
+                  </Popup>
+                </Marker>
               );
             })}
 
@@ -2643,9 +3105,9 @@ export const MapView: React.FC<MapViewProps> = ({
           })()}
 
           {/* Live Recorded GPS Breadcrumb Polyline */}
-          {recordedTrack.length >= 2 && (
+          {recordedTrackPositions.length >= 2 && (
             <Polyline
-              positions={recordedTrack.map((p) => [p.lat, p.lng])}
+              positions={recordedTrackPositions}
               pathOptions={{ color: '#22d3ee', weight: 4, opacity: 0.95, dashArray: '6 4' }}
             />
           )}
@@ -2674,8 +3136,7 @@ export const MapView: React.FC<MapViewProps> = ({
               left: '50%',
               transform: 'translate(-50%, -50%)',
               zIndex: 'var(--z-map-hud, 400)' as unknown as number,
-              background: 'var(--color-bg-glass)',
-              backdropFilter: 'blur(14px)',
+              background: 'var(--color-bg-hud)',
               border: '1px solid var(--color-border-strong)',
               borderRadius: 6,
               padding: '12px 16px',
@@ -2759,8 +3220,7 @@ export const MapView: React.FC<MapViewProps> = ({
             {recordedTrack.length >= 2 && (
               <div
                 style={{
-                  background: 'var(--color-bg-glass)',
-                  backdropFilter: 'blur(16px)',
+                  background: 'var(--color-bg-hud)',
                   border: '1px solid var(--color-border-glow)',
                   borderRadius: 6,
                   padding: '8px 12px',
@@ -2993,4 +3453,4 @@ export const MapView: React.FC<MapViewProps> = ({
       )}
     </div>
   );
-};
+});

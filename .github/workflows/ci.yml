@@ -30,6 +30,9 @@ jobs:
       - name: TypeScript build
         run: npm run build
 
+      - name: Run Server automated tests
+        run: npm test
+
   client-verify:
     name: Client Build & Lint
     runs-on: ubuntu-latest
@@ -55,3 +58,6 @@ jobs:
 
       - name: Run ESLint verification
         run: npm run lint -- --quiet
+
+      - name: Run Client automated tests
+        run: npm test

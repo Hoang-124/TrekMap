@@ -6,6 +6,7 @@ export interface ITimelineStep {
   title?: string;
   activity?: string;
   description?: string;
+  notes?: string;
   location?: string;
   locationNote?: string;
   altitudeM?: number;
@@ -17,7 +18,9 @@ export interface IItinerary extends Document {
   title: string;
   startDate: Date;
   endDate: Date;
+  totalDays?: number;
   memberCount: number;
+  notes?: string;
   timelineSteps: ITimelineStep[];
   shareToken: string;
   status: 'draft' | 'active' | 'completed';
@@ -32,7 +35,9 @@ const itinerarySchema = new Schema<IItinerary>(
     title: { type: String, required: true, trim: true },
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },
+    totalDays: { type: Number, min: 1, max: 30 },
     memberCount: { type: Number, default: 1, min: 1, max: 100 },
+    notes: { type: String, default: '' },
     timelineSteps: [
       {
         day: Number,
@@ -40,6 +45,7 @@ const itinerarySchema = new Schema<IItinerary>(
         title: String,
         activity: String,
         description: String,
+        notes: String,
         location: String,
         locationNote: String,
         altitudeM: Number,

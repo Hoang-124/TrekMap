@@ -11,6 +11,11 @@ import { ContributionModel } from '../models/Contribution.js';
 import { NotificationModel } from '../models/Notification.js';
 import { GuideModel } from '../models/Guide.js';
 import { TripPlanModel } from '../models/TripPlan.js';
+import { FollowModel } from '../models/Follow.js';
+import { SavedTrailModel } from '../models/SavedTrail.js';
+import { CheckinModel } from '../models/Checkin.js';
+import { SafetyTimerModel } from '../models/SafetyTimer.js';
+import { ActivityModel } from '../models/Activity.js';
 import {
   hashPasswordAsync,
   verifyPasswordAsync,
@@ -432,7 +437,7 @@ export const register = async (req: Request, res: Response) => {
       badges: ['Trekker Mới'],
     });
 
-    sendAccountActivationEmail(cleanEmail, fnRes.cleanName, rawActivationCode).catch((err) =>
+    sendAccountActivationEmail(cleanEmail, fnRes.cleanName, rawActivationCode, rawActivationToken).catch((err) =>
       console.error('[Background Email Error]:', err)
     );
 
@@ -605,15 +610,20 @@ export const resendOtp = async (req: Request, res: Response) => {
     }
 
     const newActivationCode = generateSecureOtp();
+    const newActivationToken = generateSecureToken();
     user.activationCode = hashTokenValue(newActivationCode);
+    user.activationToken = hashTokenValue(newActivationToken);
     user.activationExpires = new Date(Date.now() + OTP_TTL_MS);
     user.otpFailedAttempts = 0;
     user.otpLastSentAt = new Date();
     await user.save();
 
-    sendAccountActivationEmail(cleanEmail, user.fullName || user.username, newActivationCode).catch((err) =>
-      console.error('[Background Resend Email Error]:', err)
-    );
+    sendAccountActivationEmail(
+      cleanEmail,
+      user.fullName || user.username,
+      newActivationCode,
+      newActivationToken
+    ).catch((err) => console.error('[Background Resend Email Error]:', err));
 
     return res.json({
       success: true,
@@ -1206,5 +1216,177 @@ export const refreshSession = async (req: Request, res: Response) => {
   } catch (err) {
     console.error('[Refresh Session Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi làm mới phiên đăng nhập.' });
+  }
+};
+
+/**
+ * POST /api/auth/change-password
+ * Verifies current password (for accounts with local password), validates new password strength,
+ * hashes with PBKDF2, increments tokenVersion to revoke older sessions, and issues fresh tokens.
+ */
+export const changePassword = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+    return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để đổi mật khẩu.' });
+  }
+
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+  }
+
+  const { currentPassword, newPassword } = req.body || {};
+  const pwdCheck = validatePasswordStrength(newPassword);
+  if (!pwdCheck.isValid) {
+    return res.status(400).json({ success: false, message: pwdCheck.message });
+  }
+
+  try {
+    const user = await UserModel.findById(userId).select('+passwordHash');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy tài khoản người dùng.' });
+    }
+
+    if (user.authProvider === 'google') {
+      return res.status(400).json({
+        success: false,
+        isGoogleAccount: true,
+        message: 'Tài khoản đăng nhập bằng Google được quản lý bảo mật trực tiếp bởi Google và không dùng mật khẩu cục bộ.',
+      });
+    }
+
+    if (user.passwordHash) {
+      if (typeof currentPassword !== 'string' || !currentPassword) {
+        return res.status(400).json({ success: false, message: 'Vui lòng nhập mật khẩu hiện tại.' });
+      }
+      const isCurrentValid = await verifyPasswordAsync(currentPassword, user.passwordHash);
+      if (!isCurrentValid) {
+        return res.status(400).json({ success: false, message: 'Mật khẩu hiện tại không chính xác.' });
+      }
+      if (currentPassword === newPassword) {
+        return res.status(400).json({
+          success: false,
+          message: 'Mật khẩu mới không được trùng với mật khẩu hiện tại.',
+        });
+      }
+    }
+
+    user.passwordHash = await hashPasswordAsync(newPassword);
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    await user.save();
+
+    const uid = String(user._id);
+    const resolvedRole = (user.role || 'user') as any;
+    const token = generateToken(uid, user.email, resolvedRole, user.tokenVersion);
+    setRefreshTokenCookie(res, generateRefreshToken(uid, user.email, resolvedRole, user.tokenVersion));
+
+    return res.json({
+      success: true,
+      message: 'Đổi mật khẩu thành công! Các phiên đăng nhập trên thiết bị khác đã được thu hồi.',
+      token,
+      user: buildFullUserPayload(user),
+    });
+  } catch (err) {
+    console.error('[Change Password Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi đổi mật khẩu.' });
+  }
+};
+
+/**
+ * DELETE /api/auth/me
+ * Permanently deletes the authenticated user account after strict confirmation ("XÓA TÀI KHOẢN")
+ * and current password verification (for local password accounts), clears personal data & cookies.
+ */
+export const deleteMyAccount = async (req: AuthRequest, res: Response) => {
+  const userId = req.user?.userId;
+  if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+    return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để xóa tài khoản.' });
+  }
+
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+  }
+
+  const { confirmText, currentPassword } = req.body || {};
+  const normalizedConfirm = typeof confirmText === 'string' ? confirmText.trim().normalize('NFC') : '';
+  if (normalizedConfirm !== 'XÓA TÀI KHOẢN') {
+    return res.status(400).json({
+      success: false,
+      message: 'Vui lòng nhập chính xác cụm từ "XÓA TÀI KHOẢN" để xác nhận xóa vĩnh viễn.',
+    });
+  }
+
+  try {
+    const user = await UserModel.findById(userId).select('+passwordHash');
+    if (!user) {
+      clearRefreshTokenCookie(res);
+      return res.status(404).json({ success: false, message: 'Không tìm thấy tài khoản người dùng.' });
+    }
+
+    if (user.authProvider !== 'google' && user.passwordHash) {
+      if (typeof currentPassword !== 'string' || !currentPassword) {
+        return res.status(400).json({
+          success: false,
+          message: 'Vui lòng nhập mật khẩu hiện tại để xác nhận xóa tài khoản.',
+        });
+      }
+      const isPasswordValid = await verifyPasswordAsync(currentPassword, user.passwordHash);
+      if (!isPasswordValid) {
+        return res.status(400).json({
+          success: false,
+          message: 'Mật khẩu xác nhận không chính xác.',
+        });
+      }
+    }
+
+    const uid = user._id;
+    const uidStr = uid.toString();
+
+    // Update follower/following counters for peers before deleting follow edges
+    try {
+      const [userFollows, userFollowers] = await Promise.all([
+        FollowModel.find({ followerId: uid }).select('followingId').lean(),
+        FollowModel.find({ followingId: uid }).select('followerId').lean(),
+      ]);
+      const followedUserIds = userFollows.map((f) => f.followingId);
+      const followerUserIds = userFollowers.map((f) => f.followerId);
+      await FollowModel.deleteMany({ $or: [{ followerId: uid }, { followingId: uid }] });
+      await Promise.allSettled([
+        ...followedUserIds.map((targetId) =>
+          UserModel.updateOne({ _id: targetId, followersCount: { $gt: 0 } }, { $inc: { followersCount: -1 } })
+        ),
+        ...followerUserIds.map((peerId) =>
+          UserModel.updateOne({ _id: peerId, followingCount: { $gt: 0 } }, { $inc: { followingCount: -1 } })
+        ),
+      ]);
+    } catch {
+      // Best-effort peer counter adjustment
+    }
+
+    // Delete private personal records and anonymize public community contributions cleanly
+    await Promise.allSettled([
+      SavedTrailModel.deleteMany({ userId: uid }),
+      CheckinModel.deleteMany({ userId: uid }),
+      SafetyTimerModel.deleteMany({ userId: uid }),
+      ActivityModel.deleteMany({ userId: uid }),
+      NotificationModel.deleteMany({ recipient: { $in: [uid, uidStr] } }),
+      ThreadModel.updateMany({ userId: uid }, { $set: { authorName: 'Tài khoản đã xóa', authorAvatar: '' } }),
+      CommentModel.updateMany({ userId: uid }, { $set: { authorName: 'Tài khoản đã xóa', authorAvatar: '' } }),
+      ReviewModel.updateMany({ userId: uid }, { $set: { userName: 'Tài khoản đã xóa', userAvatar: '' } }),
+      CommunityMessageModel.updateMany(
+        { senderId: uid },
+        { $set: { senderName: 'Tài khoản đã xóa', senderAvatar: '' } }
+      ),
+    ]);
+
+    await UserModel.deleteOne({ _id: uid });
+    clearRefreshTokenCookie(res);
+
+    return res.json({
+      success: true,
+      message: 'Tài khoản của bạn đã được xóa vĩnh viễn khỏi hệ thống LOST.',
+    });
+  } catch (err) {
+    console.error('[Delete Account Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi xóa tài khoản.' });
   }
 };

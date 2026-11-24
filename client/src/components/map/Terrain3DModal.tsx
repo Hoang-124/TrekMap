@@ -19,6 +19,47 @@ interface FlyTrackData {
   totalDistM: number;
 }
 
+function getWaypoint3DMeta(type?: string): { color: string; label: string; svg: string } {
+  switch (type) {
+    case 'campsite':
+      return {
+        color: '#10b981',
+        label: 'Bãi cắm trại / Lán nghỉ',
+        svg: '<path d="M19 20 10 4"/><path d="m5 20 9-16"/><path d="M3 20h18"/>',
+      };
+    case 'water':
+      return {
+        color: '#0284c7',
+        label: 'Nguồn nước',
+        svg: '<path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/>',
+      };
+    case 'danger':
+      return {
+        color: '#dc2626',
+        label: 'Cảnh báo nguy hiểm',
+        svg: '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+      };
+    case 'viewpoint':
+      return {
+        color: '#d97706',
+        label: 'Điểm ngắm cảnh',
+        svg: '<path d="m8 3 4 8 5-5 5 15H2L8 3z"/>',
+      };
+    case 'summit':
+      return {
+        color: '#eab308',
+        label: 'Đỉnh / Cột mốc',
+        svg: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
+      };
+    default:
+      return {
+        color: '#0d9488',
+        label: 'Trạm dừng chân',
+        svg: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>',
+      };
+  }
+}
+
 function escapePopupHtml(text: string): string {
   return String(text || '')
     .replace(/&/g, '&amp;')
@@ -460,6 +501,57 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
             )
           )
           .addTo(map);
+
+        // Render trail.waypoints as crisp custom HTML/SVG markers with MapLibre popups on 3D terrain
+        if (Array.isArray(currentTrail.waypoints) && currentTrail.waypoints.length > 0) {
+          for (const wp of currentTrail.waypoints) {
+            const wpLat = Number(wp.lat);
+            const wpLng = Number(wp.lng);
+            if (!Number.isFinite(wpLat) || !Number.isFinite(wpLng)) continue;
+
+            const wpMeta = getWaypoint3DMeta(wp.type);
+            const markerEl = document.createElement('div');
+            markerEl.setAttribute('role', 'button');
+            markerEl.setAttribute('aria-label', wp.name || wpMeta.label);
+            markerEl.style.width = '28px';
+            markerEl.style.height = '28px';
+            markerEl.style.borderRadius = '50%';
+            markerEl.style.background = wpMeta.color;
+            markerEl.style.border = '2px solid #ffffff';
+            markerEl.style.boxShadow = '0 3px 8px rgba(0, 0, 0, 0.48)';
+            markerEl.style.display = 'flex';
+            markerEl.style.alignItems = 'center';
+            markerEl.style.justifyContent = 'center';
+            markerEl.style.cursor = 'pointer';
+            markerEl.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${wpMeta.svg}</svg>`;
+
+            const safeWpName = escapePopupHtml(wp.name || 'Mốc tọa độ');
+            const safeWpDesc = escapePopupHtml(wp.description || '');
+            const wpEleHtml =
+              typeof wp.elevationM === 'number' && Number.isFinite(wp.elevationM)
+                ? `<div style="color:#0284c7;font-size:11px;font-weight:700;margin-top:2px;">Cao độ: ${Math.round(wp.elevationM).toLocaleString('vi-VN')}m</div>`
+                : '';
+            const wpDescHtml = safeWpDesc
+              ? `<div style="color:#374151;font-size:11px;line-height:1.4;margin-top:4px;">${safeWpDesc}</div>`
+              : '';
+
+            const popupHtml = `
+              <div style="color:#171c19;font-family:var(--font-family);min-width:160px;max-width:230px;padding:3px 4px;">
+                <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;color:${wpMeta.color};margin-bottom:2px;">
+                  ${escapePopupHtml(wpMeta.label)}
+                </div>
+                <div style="font-size:12.5px;font-weight:800;color:#111827;">${safeWpName}</div>
+                ${wpEleHtml}
+                ${wpDescHtml}
+              </div>
+            `;
+
+            new maplibregl.Marker({ element: markerEl, anchor: 'center' })
+              .setLngLat([wpLng, wpLat])
+              .setPopup(new maplibregl.Popup({ offset: 16 }).setHTML(popupHtml))
+              .addTo(map);
+          }
+        }
       });
 
       map.on('error', (evt: { error?: { message?: string } }) => {
@@ -635,8 +727,6 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
         position: 'fixed',
         inset: 0,
         background: 'var(--overlay-bg)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -843,9 +933,7 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
                 left: '50%',
                 transform: 'translateX(-50%)',
                 width: 'min(640px, calc(100% - 24px))',
-                background: 'var(--color-bg-glass)',
-                backdropFilter: 'blur(14px)',
-                WebkitBackdropFilter: 'blur(14px)',
+                background: 'var(--color-bg-hud)',
                 border: '1px solid var(--color-border-strong)',
                 borderRadius: 6,
                 padding: '7px 11px',

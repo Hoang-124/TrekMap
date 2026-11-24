@@ -6,10 +6,21 @@ import {
   IconEye,
   IconStar,
   IconMountain,
+  IconCheckCircle,
+  IconSparkles,
 } from '../common/SvgIcons.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import type { UserProfile } from '../../types.js';
 import { TripReportDetailModal } from './TripReportDetailModal.js';
+
+export interface TripReportCommentItem {
+  _id: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  content: string;
+  createdAt: string;
+}
 
 export interface TripReportItem {
   _id: string;
@@ -23,6 +34,7 @@ export interface TripReportItem {
   };
   trailId?: {
     _id?: string;
+    id?: string;
     name: string;
     province?: string;
     region?: string;
@@ -49,6 +61,7 @@ export interface TripReportItem {
   };
   userReaction?: 'like' | 'love' | 'wow' | null;
   userReactionsMap?: Record<string, string>;
+  comments?: TripReportCommentItem[];
   commentsCount: number;
   viewsCount: number;
 }
@@ -69,7 +82,7 @@ function getInitialUserReaction(report: TripReportItem, currentUserId: string): 
   return null;
 }
 
-export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentUser }) => {
+export const TripReportCard: React.FC<TripReportCardProps> = React.memo(({ report, currentUser }) => {
   const loggedInUser = currentUser || null;
   const currentUserId = String(loggedInUser?.id || (loggedInUser as (UserProfile & { _id?: string }) | null)?._id || '');
 
@@ -78,6 +91,10 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
     userId: string;
     reactions: { like: number; love: number; wow: number };
     userReaction: 'like' | 'love' | 'wow' | null;
+  } | null>(null);
+  const [commentsCountOverride, setCommentsCountOverride] = useState<{
+    reportId: string;
+    count: number;
   } | null>(null);
   const [isReacting, setIsReacting] = useState(false);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
@@ -97,6 +114,10 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
   const userReaction = hasReactionOverride
     ? reactionOverride.userReaction
     : getInitialUserReaction(report, currentUserId);
+  const displayedCommentsCount =
+    commentsCountOverride && commentsCountOverride.reportId === report._id
+      ? commentsCountOverride.count
+      : report.commentsCount || 0;
 
   const isAuthorSelf = Boolean(
     currentUserId && report.authorId?._id && String(report.authorId._id) === currentUserId
@@ -107,7 +128,21 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
       ? loggedInUser.avatarUrl || loggedInUser.avatar
       : report.authorId?.avatarUrl || '';
 
-  const liked = userReaction === 'like';
+  const hasActiveReaction = userReaction !== null;
+  const activeReactionAccent =
+    userReaction === 'love'
+      ? 'var(--color-error-text, var(--color-error))'
+      : userReaction === 'wow'
+        ? 'var(--color-sky)'
+        : 'var(--color-primary)';
+  const activeReactionLabel =
+    userReaction === 'love'
+      ? 'Yêu thích'
+      : userReaction === 'wow'
+        ? 'Ấn tượng'
+        : userReaction === 'like'
+          ? 'Hữu ích'
+          : 'Cảm xúc';
   const totalReactions = (reactions.like || 0) + (reactions.love || 0) + (reactions.wow || 0);
 
   const handleReact = async (e: React.MouseEvent) => {
@@ -127,10 +162,11 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
 
     setIsReacting(true);
     try {
+      const targetType: 'like' | 'love' | 'wow' = userReaction || 'like';
       const res = await fetch(`/api/trip-reports/${encodeURIComponent(report._id)}/react`, {
         method: 'POST',
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ type: 'like' }),
+        body: JSON.stringify({ type: targetType }),
       });
       const data = await res.json();
       if (res.ok && data.success && data.reactions) {
@@ -218,6 +254,8 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
           >
             {showImageCover ? (
               <img
+                loading="lazy"
+                decoding="async"
                 src={rawCoverPhoto}
                 alt={report.title}
                 onError={() => setCoverFailed(true)}
@@ -269,7 +307,6 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
                 alignItems: 'center',
                 gap: 5,
                 background: 'var(--color-bg-hud)',
-                backdropFilter: 'blur(8px)',
                 border: '1px solid var(--color-border-strong)',
                 borderRadius: 4,
                 padding: '3px 9px',
@@ -291,7 +328,6 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
                   top: 12,
                   right: 12,
                   background: 'var(--color-bg-hud)',
-                  backdropFilter: 'blur(8px)',
                   border: '1px solid var(--color-border-strong)',
                   borderRadius: 4,
                   padding: '3px 8px',
@@ -312,6 +348,8 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                 {effectiveAuthorAvatar ? (
                   <img
+                    loading="lazy"
+                    decoding="async"
                     src={effectiveAuthorAvatar}
                     alt={authorName}
                     referrerPolicy="no-referrer"
@@ -345,9 +383,35 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
                   </div>
                 )}
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--color-text-main)', lineHeight: 1.15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const target = report.authorId?._id || authorName;
+                      if (!target) return;
+                      window.history.pushState(null, '', `#profile-${encodeURIComponent(target)}`);
+                      window.dispatchEvent(new HashChangeEvent('hashchange'));
+                    }}
+                    title={`Xem hồ sơ ${authorName}`}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      padding: 0,
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      fontSize: '0.8rem',
+                      fontWeight: 800,
+                      color: 'var(--color-text-main)',
+                      lineHeight: 1.15,
+                      maxWidth: '100%',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      display: 'block',
+                    }}
+                  >
                     {authorName}
-                  </div>
+                  </button>
                   <div style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)', lineHeight: 1, marginTop: 2 }}>
                     {formattedDate}
                   </div>
@@ -409,28 +473,45 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
             disabled={isReacting}
             onClick={handleReact}
             style={{
-              background: liked ? 'color-mix(in srgb, var(--color-error) 14%, transparent)' : 'var(--color-bg-main)',
-              border: liked ? '1px solid var(--color-error)' : '1px solid var(--color-border)',
+              background: hasActiveReaction
+                ? `color-mix(in srgb, ${activeReactionAccent} 12%, transparent)`
+                : 'var(--color-bg-main)',
+              border: hasActiveReaction
+                ? `1px solid ${activeReactionAccent}`
+                : '1px solid var(--color-border)',
               borderRadius: 4,
               padding: '4px 10px',
               fontSize: '0.76rem',
               fontWeight: 800,
-              color: liked ? 'var(--color-error-text, var(--color-error))' : 'var(--color-text-muted)',
+              color: hasActiveReaction ? activeReactionAccent : 'var(--color-text-muted)',
               display: 'inline-flex',
               alignItems: 'center',
-              gap: 4,
+              gap: 5,
               cursor: isReacting ? 'wait' : 'pointer',
-              transition: 'all 0.15s ease',
+              transition: 'background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease',
             }}
+            title={hasActiveReaction ? `Bấm để bỏ cảm xúc (${activeReactionLabel})` : 'Thả cảm xúc hữu ích'}
           >
-            <IconHeart size={13} color={liked ? 'var(--color-error-text, var(--color-error))' : 'var(--color-text-muted)'} fill={liked ? 'var(--color-error-text, var(--color-error))' : 'none'} />
-            <span>{totalReactions} Cảm xúc</span>
+            {userReaction === 'wow' ? (
+              <IconSparkles size={13} color={activeReactionAccent} />
+            ) : userReaction === 'like' ? (
+              <IconCheckCircle size={13} color={activeReactionAccent} />
+            ) : (
+              <IconHeart
+                size={13}
+                color={hasActiveReaction ? activeReactionAccent : 'var(--color-text-muted)'}
+                fill={userReaction === 'love' ? activeReactionAccent : 'none'}
+              />
+            )}
+            <span>
+              {totalReactions} {activeReactionLabel}
+            </span>
           </button>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'var(--color-text-dim)' }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <IconMessageSquare size={13} color="var(--color-sky)" />
-              <span>{report.commentsCount || 0}</span>
+              <span>{displayedCommentsCount}</span>
             </span>
 
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -443,7 +524,7 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
 
       {isDetailOpen && (
         <TripReportDetailModal
-          report={{ ...report, reactions, userReaction }}
+          report={{ ...report, reactions, userReaction, commentsCount: displayedCommentsCount }}
           currentUser={currentUser}
           onClose={() => setIsDetailOpen(false)}
           onReactionUpdated={(_id, updatedReactions, updatedUserReaction) => {
@@ -454,8 +535,13 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
               userReaction: updatedUserReaction,
             });
           }}
+          onReportUpdated={(updated) => {
+            if (typeof updated.commentsCount === 'number') {
+              setCommentsCountOverride({ reportId: report._id, count: updated.commentsCount });
+            }
+          }}
         />
       )}
     </>
   );
-};
+});

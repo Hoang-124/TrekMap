@@ -28,6 +28,7 @@ export interface TripPlanItem {
   region?: string;
   title: string;
   description: string;
+  requirements?: string;
   startDate: string;
   endDate: string;
   maxMembers: number;
@@ -37,6 +38,7 @@ export interface TripPlanItem {
   difficultyLevel: number;
   status: 'recruiting' | 'full' | 'in_progress' | 'completed' | 'cancelled';
   tags: string[];
+  hasPendingRequest?: boolean;
 }
 
 interface TripPlanCardProps {
@@ -45,11 +47,24 @@ interface TripPlanCardProps {
   onJoinSuccess?: () => void;
 }
 
-export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, onJoinSuccess }) => {
+const TRIP_STATUS_META: Record<
+  TripPlanItem['status'],
+  { label: string; badgeClass: string; joinDisabledText: string }
+> = {
+  recruiting: { label: 'Đang Tuyển', badgeClass: 'badge-success', joinDisabledText: 'Hết chỗ (Đủ thành viên)' },
+  full: { label: 'Đã Đủ', badgeClass: 'badge-error', joinDisabledText: 'Đã Đủ Thành Viên' },
+  in_progress: { label: 'Đang Diễn Ra', badgeClass: 'badge-info', joinDisabledText: 'Đoàn Đang Diễn Ra' },
+  completed: { label: 'Đã Hoàn Thành', badgeClass: 'badge-cloud', joinDisabledText: 'Chuyến Đi Đã Kết Thúc' },
+  cancelled: { label: 'Đã Hủy', badgeClass: 'badge-error', joinDisabledText: 'Chuyến Đi Đã Hủy' },
+};
+
+export const TripPlanCard: React.FC<TripPlanCardProps> = React.memo(({ trip, currentUser, onJoinSuccess }) => {
   const [showJoinForm, setShowJoinForm] = useState(false);
   const [isSubmittingJoin, setIsSubmittingJoin] = useState(false);
   const [joinMsg, setJoinMsg] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [withdrewPending, setWithdrewPending] = useState(false);
+  const [isWithdrawing, setIsWithdrawing] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [isSquadModalOpen, setIsSquadModalOpen] = useState(false);
   const [confirmLeave, setConfirmLeave] = useState(false);
@@ -70,6 +85,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
           return String(memberId) === currentUserId;
         }))
   );
+  const isPendingRequest = !isSquadMember && (submitted || Boolean(trip.hasPendingRequest && !withdrewPending));
   const creatorName = trip.creatorId?.fullName || 'Trưởng đoàn';
   const effectiveCreatorAvatar =
     isCreatorSelf && (loggedInUser?.avatarUrl || loggedInUser?.avatar)
@@ -90,6 +106,11 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
   const maxCount = Math.max(1, Number(trip.maxMembers) || 8);
   const remainingSeats = Math.max(0, maxCount - memberCount);
   const isFull = trip.status === 'full' || remainingSeats === 0;
+  const isClosedForJoin = trip.status !== 'recruiting' || isFull;
+  const effectiveStatusMeta =
+    trip.status === 'recruiting' && isFull
+      ? TRIP_STATUS_META.full
+      : TRIP_STATUS_META[trip.status] || TRIP_STATUS_META.recruiting;
   const fillRatioPercent = Math.min(100, Math.round((memberCount / maxCount) * 100));
 
   const handleJoin = async (e: React.FormEvent) => {
@@ -117,6 +138,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
       const data = await res.json();
       if (res.ok && data.success) {
         setSubmitted(true);
+        setWithdrewPending(false);
         setShowJoinForm(false);
         setJoinMsg('');
         window.dispatchEvent(
@@ -132,6 +154,42 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
       setErrorMsg('Lỗi kết nối máy chủ.');
     } finally {
       setIsSubmittingJoin(false);
+    }
+  };
+
+  const handleWithdrawRequest = async () => {
+    if (isWithdrawing) return;
+    setIsWithdrawing(true);
+    try {
+      const res = await fetch(`/api/trips/${encodeURIComponent(trip._id)}/leave`, {
+        method: 'POST',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setSubmitted(false);
+        setWithdrewPending(true);
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: data.message || 'Đã rút yêu cầu ghép đoàn.', type: 'info' },
+          })
+        );
+        onJoinSuccess?.();
+      } else {
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: data.message || 'Không thể rút yêu cầu lúc này.', type: 'error' },
+          })
+        );
+      }
+    } catch {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: { message: 'Lỗi kết nối máy chủ khi rút yêu cầu.', type: 'error' },
+        })
+      );
+    } finally {
+      setIsWithdrawing(false);
     }
   };
 
@@ -189,6 +247,8 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
             {effectiveCreatorAvatar ? (
               <img
+                loading="lazy"
+                decoding="async"
                 src={effectiveCreatorAvatar}
                 alt={creatorName}
                 referrerPolicy="no-referrer"
@@ -222,9 +282,35 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
               </div>
             )}
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--color-text-main)', lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const target = trip.creatorId?._id || creatorName;
+                  if (!target) return;
+                  window.history.pushState(null, '', `#profile-${encodeURIComponent(target)}`);
+                  window.dispatchEvent(new HashChangeEvent('hashchange'));
+                }}
+                title={`Xem hồ sơ trưởng đoàn ${creatorName}`}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  padding: 0,
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontSize: '0.84rem',
+                  fontWeight: 700,
+                  color: 'var(--color-text-main)',
+                  lineHeight: 1.2,
+                  maxWidth: '100%',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  display: 'block',
+                }}
+              >
                 {creatorName}
-              </div>
+              </button>
               <div style={{ fontSize: '0.7rem', color: 'var(--color-primary)', fontWeight: 600, marginTop: 2, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                 <IconStar size={11} color="var(--color-primary)" fill="var(--color-primary)" />
                 <span>{trip.creatorId?.reputationScore ?? 0} Uy tín</span>
@@ -232,8 +318,8 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
             </div>
           </div>
 
-          <span className={`badge ${isFull ? 'badge-error' : 'badge-success'}`}>
-            {isFull ? 'Hết chỗ' : 'Đang Tuyển'}
+          <span className={`badge ${effectiveStatusMeta.badgeClass}`}>
+            {effectiveStatusMeta.label}
           </span>
         </div>
 
@@ -411,25 +497,43 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
           </>
         )}
 
-        {isSquadMember ? null : submitted ? (
+        {isSquadMember ? null : isPendingRequest ? (
           <div
             style={{
               background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
               border: '1px solid var(--color-primary)',
               borderRadius: 4,
-              padding: '10px 14px',
-              textAlign: 'center',
+              padding: '9px 12px',
               color: 'var(--color-primary)',
-              fontSize: '0.82rem',
+              fontSize: '0.8rem',
               fontWeight: 700,
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center',
-              gap: 6,
+              justifyContent: 'space-between',
+              gap: 8,
+              flexWrap: 'wrap',
             }}
           >
-            <IconCheckCircle size={16} color="var(--color-primary)" />
-            Đã gửi yêu cầu ghép đoàn tới Leader!
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <IconCheckCircle size={15} color="var(--color-primary)" />
+              <span>Đang chờ Trưởng đoàn duyệt</span>
+            </span>
+            <button
+              type="button"
+              disabled={isWithdrawing}
+              onClick={handleWithdrawRequest}
+              className="btn btn-outline"
+              style={{
+                padding: '4px 10px',
+                fontSize: '0.74rem',
+                fontWeight: 700,
+                borderRadius: 4,
+                color: 'var(--color-error-text, var(--color-error))',
+                borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)',
+              }}
+            >
+              {isWithdrawing ? 'Đang rút...' : 'Rút yêu cầu'}
+            </button>
           </div>
         ) : showJoinForm ? (
           <form onSubmit={handleJoin} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -470,9 +574,9 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
         ) : (
           <button
             type="button"
-            disabled={isFull}
+            disabled={isClosedForJoin}
             onClick={() => setShowJoinForm(true)}
-            className={`btn ${isFull ? 'btn-outline' : 'btn-primary'} interactive-click`}
+            className={`btn ${isClosedForJoin ? 'btn-outline' : 'btn-primary'} interactive-click`}
             style={{
               width: '100%',
               borderRadius: 4,
@@ -483,12 +587,12 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
               alignItems: 'center',
               justifyContent: 'center',
               gap: 6,
-              opacity: isFull ? 0.65 : 1,
-              cursor: isFull ? 'default' : 'pointer',
+              opacity: isClosedForJoin ? 0.65 : 1,
+              cursor: isClosedForJoin ? 'default' : 'pointer',
             }}
           >
-            <IconUserPlus size={15} color={isFull ? 'var(--color-text-dim)' : 'var(--color-on-primary)'} />
-            {isFull ? 'Hết chỗ (Đủ thành viên)' : 'Xin Ghép Đoàn Ngay'}
+            <IconUserPlus size={15} color={isClosedForJoin ? 'var(--color-text-dim)' : 'var(--color-on-primary)'} />
+            {isClosedForJoin ? effectiveStatusMeta.joinDisabledText : 'Xin Ghép Đoàn Ngay'}
           </button>
         )}
       </div>
@@ -498,6 +602,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
           tripId={trip._id}
           tripTitle={trip.title}
           memberCount={memberCount}
+          currentUserId={currentUserId}
           isCreator={isCreatorSelf}
           isMember={isSquadMember}
           isOpen={isSquadModalOpen}
@@ -510,4 +615,4 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
       )}
     </div>
   );
-};
+});

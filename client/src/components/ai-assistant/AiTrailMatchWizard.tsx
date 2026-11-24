@@ -346,6 +346,8 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
                 <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
                   {m.coverImage ? (
                     <img
+                      loading="lazy"
+                      decoding="async"
                       src={m.coverImage}
                       alt={m.name}
                       style={{

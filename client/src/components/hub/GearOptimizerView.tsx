@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import type { Trail, User } from '../../types.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
+import { scopedStorageKey } from '../../utils/storageScope.js';
 import { queueAiAssistantPrompt } from '../../services/aiAssistant.service.js';
 import {
   IconArrowLeft,
@@ -81,6 +82,7 @@ interface ServerGearPackItem {
   quantity?: number;
   worn?: boolean;
   consumable?: boolean;
+  packed?: boolean;
 }
 
 interface ServerGearPack {
@@ -123,6 +125,7 @@ function toServerGearItems(items: GearItem[]): ServerGearPackItem[] {
     quantity: Math.max(1, Math.min(99, Math.round(it.qty))),
     worn: it.carryType === 'worn',
     consumable: it.carryType === 'consumable',
+    packed: it.packed !== false,
   }));
 }
 
@@ -135,7 +138,7 @@ function fromServerGearPack(pack: ServerGearPack): PackList {
         weightG: Math.max(0, Math.round(Number(it.weightGrams) || 0)),
         qty: Math.max(1, Math.min(99, Math.round(Number(it.quantity) || 1))),
         carryType: it.worn ? 'worn' : it.consumable ? 'consumable' : 'base',
-        packed: true,
+        packed: it.packed !== false,
       }))
     : [];
 
@@ -261,10 +264,10 @@ function createDefaultPresets(): PackList[] {
   ];
 }
 
-function loadStoredState(): StoredGearState {
+function loadStoredState(storageKey: string): StoredGearState {
   const defaults = createDefaultPresets();
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey) ?? localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.lists) && parsed.lists.length > 0) {
@@ -295,13 +298,20 @@ function formatKg(grams: number): string {
   return (grams / 1000).toFixed(2);
 }
 
-export const GearOptimizerView: React.FC<GearOptimizerViewProps> = ({
+export const GearOptimizerView: React.FC<GearOptimizerViewProps> = (props) => {
+  const userKey = String(props.currentUser?.id || (props.currentUser as (User & { _id?: string }) | null)?._id || 'guest');
+  return <GearOptimizerViewInner key={userKey} {...props} />;
+};
+
+const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
   trails,
   currentUser,
   onShowToast,
   onBack,
 }) => {
-  const [state, setState] = useState<StoredGearState>(() => loadStoredState());
+  const currentUserId = String(currentUser?.id || (currentUser as (User & { _id?: string }) | null)?._id || '');
+  const storageKey = useMemo(() => scopedStorageKey(STORAGE_KEY, currentUserId || null), [currentUserId]);
+  const [state, setState] = useState<StoredGearState>(() => loadStoredState(scopedStorageKey(STORAGE_KEY, currentUserId || null)));
   const [selectedTrailId, setSelectedTrailId] = useState<string>(() => trails[0]?.id || 'trail-fansipan');
   const [hoveredCat, setHoveredCat] = useState<GearCategoryId | null>(null);
   const [isSyncingProfile, setIsSyncingProfile] = useState(false);
@@ -309,10 +319,14 @@ export const GearOptimizerView: React.FC<GearOptimizerViewProps> = ({
   const [isDeletingCloud, setIsDeletingCloud] = useState(false);
   const [cloudSyncedCount, setCloudSyncedCount] = useState(0);
 
-  // Rename & delete inline state (no native browser dialogs)
+  // Rename, delete & inline item edit state (no native browser dialogs)
   const [isRenamingList, setIsRenamingList] = useState(false);
   const [renameDraft, setRenameDraft] = useState('');
   const [confirmDeleteList, setConfirmDeleteList] = useState(false);
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [editItemName, setEditItemName] = useState('');
+  const [editItemWeightG, setEditItemWeightG] = useState('250');
+  const [editItemCat, setEditItemCat] = useState<GearCategoryId>('shelter');
 
   // New custom item form
   const [newItemName, setNewItemName] = useState('');
@@ -321,16 +335,14 @@ export const GearOptimizerView: React.FC<GearOptimizerViewProps> = ({
   const [newItemQty, setNewItemQty] = useState('1');
   const [newItemCarry, setNewItemCarry] = useState<CarryType>('base');
 
-  const currentUserId = String(currentUser?.id || (currentUser as (User & { _id?: string }) | null)?._id || '');
-
-  // Persist automatically to localStorage
+  // Persist automatically to per-user scoped localStorage
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem(storageKey, JSON.stringify(state));
     } catch {
       // ignore quota errors
     }
-  }, [state]);
+  }, [state, storageKey]);
 
   // Hydrate cloud-synced GearPacks for logged-in user (GET /api/gear-packs/me) + optional ?pack=<shareSlug>
   useEffect(() => {
@@ -532,10 +544,72 @@ export const GearOptimizerView: React.FC<GearOptimizerViewProps> = ({
   };
 
   const handleDeleteItem = (itemId: string) => {
+    if (editingItemId === itemId) setEditingItemId(null);
     updateActiveList((list) => ({
       ...list,
       items: list.items.filter((item) => item.id !== itemId),
     }));
+  };
+
+  const handleStartEditItem = (item: GearItem) => {
+    setEditingItemId(item.id);
+    setEditItemName(item.name);
+    setEditItemWeightG(String(item.weightG));
+    setEditItemCat(item.category);
+  };
+
+  const handleSaveEditItem = (itemId: string) => {
+    const cleanName = editItemName.trim().slice(0, 140);
+    const weightNum = Math.round(Number(editItemWeightG));
+    if (!cleanName || !Number.isFinite(weightNum) || weightNum < 0) {
+      notify('Vui lòng nhập tên vật dụng hợp lệ và trọng lượng (>= 0g).', 'error');
+      return;
+    }
+    updateActiveList((list) => ({
+      ...list,
+      items: list.items.map((item) =>
+        item.id === itemId
+          ? {
+              ...item,
+              name: cleanName,
+              weightG: Math.min(50000, weightNum),
+              category: editItemCat,
+            }
+          : item
+      ),
+    }));
+    setEditingItemId(null);
+    notify(`Đã cập nhật "${cleanName}" (${weightNum}g).`, 'success');
+  };
+
+  const handleTogglePackVisibility = async () => {
+    const nextPublic = activeList.isPublic === false;
+    updateActiveList((list) => ({ ...list, isPublic: nextPublic }));
+    const token = localStorage.getItem('lost_token');
+    if (activeList.cloudId && (currentUser || token)) {
+      try {
+        const res = await fetch(`/api/gear-packs/${encodeURIComponent(activeList.cloudId)}`, {
+          method: 'PUT',
+          headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ isPublic: nextPublic }),
+        });
+        if (res.ok) {
+          notify(
+            nextPublic
+              ? 'Đã chuyển cấu hình balo sang Công khai (có thể chia sẻ qua liên kết).'
+              : 'Đã chuyển cấu hình balo sang Riêng tư (chỉ mình bạn xem được).',
+            'success'
+          );
+          return;
+        }
+      } catch {
+        // local toggle already applied
+      }
+    }
+    notify(
+      nextPublic ? 'Chế độ chia sẻ: Công khai (sẽ đồng bộ khi lưu Cloud).' : 'Chế độ chia sẻ: Riêng tư.',
+      'info'
+    );
   };
 
   const handleAddItem = (e: React.FormEvent) => {
@@ -1179,6 +1253,35 @@ export const GearOptimizerView: React.FC<GearOptimizerViewProps> = ({
             <button
               type="button"
               className="btn btn-outline"
+              onClick={() => void handleTogglePackVisibility()}
+              title={
+                activeList.isPublic === false
+                  ? 'Đang ở chế độ Riêng tư — bấm để chuyển sang Công khai'
+                  : 'Đang ở chế độ Công khai — bấm để chuyển sang Riêng tư'
+              }
+              style={{
+                padding: '5px 10px',
+                fontSize: '0.74rem',
+                borderRadius: 4,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                color: activeList.isPublic === false ? 'var(--color-sun)' : 'var(--color-primary)',
+                borderColor:
+                  activeList.isPublic === false
+                    ? 'color-mix(in srgb, var(--color-sun) 45%, transparent)'
+                    : 'color-mix(in srgb, var(--color-primary) 45%, transparent)',
+              }}
+            >
+              <IconShare
+                size={12}
+                color={activeList.isPublic === false ? 'var(--color-sun)' : 'var(--color-primary)'}
+              />
+              <span>{activeList.isPublic === false ? 'Riêng tư' : 'Công khai'}</span>
+            </button>
+            <button
+              type="button"
+              className="btn btn-outline"
               onClick={handleResetPresets}
               title="Khôi phục 3 bộ preset chuẩn"
               style={{ padding: '5px 10px', fontSize: '0.74rem', borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 4 }}
@@ -1624,6 +1727,76 @@ export const GearOptimizerView: React.FC<GearOptimizerViewProps> = ({
                     {catItems.map((item) => {
                       const totalItemG = item.weightG * item.qty;
                       const meta = CARRY_TYPE_META[item.carryType];
+                      const isEditingItem = editingItemId === item.id;
+                      if (isEditingItem) {
+                        return (
+                          <div
+                            key={item.id}
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 8,
+                              padding: '10px',
+                              borderRadius: 4,
+                              background: 'var(--color-bg-main)',
+                              border: '1px solid var(--color-primary)',
+                            }}
+                          >
+                            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, 1.8fr) minmax(90px, 0.7fr) minmax(130px, 1fr)', gap: 6 }}>
+                              <input
+                                type="text"
+                                className="form-input"
+                                aria-label="Sửa tên vật dụng"
+                                value={editItemName}
+                                onChange={(e) => setEditItemName(e.target.value)}
+                                maxLength={140}
+                                style={{ padding: '5px 8px', fontSize: '0.78rem', borderRadius: 4 }}
+                              />
+                              <input
+                                type="number"
+                                className="form-input"
+                                aria-label="Sửa trọng lượng (gram)"
+                                min={0}
+                                max={50000}
+                                value={editItemWeightG}
+                                onChange={(e) => setEditItemWeightG(e.target.value)}
+                                style={{ padding: '5px 8px', fontSize: '0.78rem', borderRadius: 4 }}
+                              />
+                              <select
+                                className="form-select"
+                                aria-label="Sửa danh mục vật dụng"
+                                value={editItemCat}
+                                onChange={(e) => setEditItemCat(e.target.value as GearCategoryId)}
+                                style={{ padding: '5px 8px', fontSize: '0.78rem', borderRadius: 4 }}
+                              >
+                                {CATEGORIES.map((opt) => (
+                                  <option key={opt.id} value={opt.id}>
+                                    {opt.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                              <button
+                                type="button"
+                                className="btn btn-outline"
+                                onClick={() => setEditingItemId(null)}
+                                style={{ padding: '4px 10px', fontSize: '0.72rem', borderRadius: 4 }}
+                              >
+                                Hủy
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-primary"
+                                onClick={() => handleSaveEditItem(item.id)}
+                                style={{ padding: '4px 12px', fontSize: '0.72rem', borderRadius: 4 }}
+                              >
+                                <IconCheck size={12} color="var(--color-on-primary)" /> Lưu thay đổi
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      }
                       return (
                         <div
                           key={item.id}
@@ -1688,7 +1861,7 @@ export const GearOptimizerView: React.FC<GearOptimizerViewProps> = ({
                             </span>
                           </button>
 
-                          {/* Controls: CarryType pills + Qty Stepper + Weight + Delete */}
+                          {/* Controls: CarryType pills + Qty Stepper + Weight + Edit + Delete */}
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                             <div style={{ display: 'inline-flex', borderRadius: 4, border: '1px solid var(--color-border)', overflow: 'hidden' }}>
                               {(['base', 'consumable', 'worn'] as CarryType[]).map((ct) => {
@@ -1760,6 +1933,16 @@ export const GearOptimizerView: React.FC<GearOptimizerViewProps> = ({
                             >
                               {totalItemG >= 1000 ? `${(totalItemG / 1000).toFixed(2)}kg` : `${totalItemG}g`}
                             </span>
+
+                            <button
+                              type="button"
+                              onClick={() => handleStartEditItem(item)}
+                              aria-label={`Sửa ${item.name}`}
+                              title="Chỉnh sửa tên, trọng lượng, danh mục"
+                              style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', padding: 3, display: 'inline-flex' }}
+                            >
+                              <IconEdit size={13} />
+                            </button>
 
                             <button
                               type="button"
