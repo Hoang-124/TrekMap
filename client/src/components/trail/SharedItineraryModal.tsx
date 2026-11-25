@@ -158,8 +158,13 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
       });
   };
 
-  const handleExportCanvasImage = () => {
+  const handleExportCanvasImage = async () => {
     if (!itinerary) return;
+    try {
+      await document.fonts?.ready;
+    } catch {
+      // ignore font loading timeout
+    }
     const rowHeight = 84;
     const computedHeight = Math.max(820, 250 + steps.length * rowHeight + 80);
 
@@ -169,34 +174,46 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    const rootStyle = getComputedStyle(document.documentElement);
+    const readToken = (name: string, fallback: string) =>
+      rootStyle.getPropertyValue(name).trim() || fallback;
+
+    const bgMain = readToken('--color-bg-main', 'rgb(12, 15, 13)');
+    const bgCard = readToken('--color-bg-card', 'rgb(20, 25, 22)');
+    const primaryColor = readToken('--color-primary', 'rgb(82, 183, 136)');
+    const textMain = readToken('--color-text-main', 'rgb(244, 243, 238)');
+    const textMuted = readToken('--color-text-muted', 'rgb(168, 176, 170)');
+    const textDim = readToken('--color-text-dim', 'rgb(117, 126, 120)');
+    const skyColor = readToken('--color-sky', 'rgb(111, 168, 199)');
+
     const grad = ctx.createLinearGradient(0, 0, 0, computedHeight);
-    grad.addColorStop(0, '#0c0f0d');
-    grad.addColorStop(1, '#141916');
+    grad.addColorStop(0, bgMain);
+    grad.addColorStop(1, bgCard);
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 800, computedHeight);
 
     const canvasFont = "'Plus Jakarta Sans', 'Inter', 'Be Vietnam Pro', sans-serif";
 
-    ctx.fillStyle = '#52b788';
+    ctx.fillStyle = primaryColor;
     ctx.font = `bold 24px ${canvasFont}`;
     ctx.fillText('LOST — LỊCH TRÌNH THÁM HIỂM', 50, 58);
 
-    ctx.fillStyle = '#f4f3ee';
+    ctx.fillStyle = textMain;
     ctx.font = `bold 21px ${canvasFont}`;
     ctx.fillText((itinerary.title || 'Kế Hoạch Leo Núi').slice(0, 56), 50, 102);
 
-    ctx.fillStyle = '#a8b0aa';
+    const parsedStart = itinerary.startDate ? new Date(itinerary.startDate) : null;
+    const startLabel =
+      parsedStart && Number.isFinite(parsedStart.getTime())
+        ? parsedStart.toLocaleDateString('vi-VN')
+        : 'Chưa ấn định';
+
+    ctx.fillStyle = textMuted;
     ctx.font = `15px ${canvasFont}`;
-    ctx.fillText(
-      `Cung đường: ${resolvedTrailName} | Khởi hành: ${
-        itinerary.startDate ? new Date(itinerary.startDate).toLocaleDateString('vi-VN') : 'Chưa ấn định'
-      }`,
-      50,
-      138
-    );
+    ctx.fillText(`Cung đường: ${resolvedTrailName} | Khởi hành: ${startLabel}`, 50, 138);
     ctx.fillText(`Thành viên: ${itinerary.memberCount || 1} người | Mã lịch trình: ${itinerary.shareToken}`, 50, 166);
 
-    ctx.strokeStyle = '#52b788';
+    ctx.strokeStyle = primaryColor;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(50, 190);
@@ -209,18 +226,21 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
       const locationLabel = s.location || s.locationNote || '';
       const stepNote = s.notes || s.description || '';
 
-      ctx.fillStyle = '#52b788';
+      ctx.fillStyle = primaryColor;
       ctx.font = `bold 17px ${canvasFont}`;
       ctx.fillText(`Ngày ${s.day} · ${s.time || '--:--'}`, 50, y);
 
-      ctx.fillStyle = '#f4f3ee';
+      ctx.fillStyle = textMain;
       ctx.font = `bold 17px ${canvasFont}`;
       ctx.fillText((locationLabel ? `${activityLabel} - ${locationLabel}` : activityLabel).slice(0, 48), 220, y);
 
-      if (s.altitudeM || stepNote) {
-        ctx.fillStyle = '#6fa8c7';
+      if ((typeof s.altitudeM === 'number' && s.altitudeM > 0) || stepNote) {
+        ctx.fillStyle = skyColor;
         ctx.font = `14px ${canvasFont}`;
-        const detail = [s.altitudeM ? `Cao độ: ${s.altitudeM}m` : '', stepNote ? `Ghi chú: ${stepNote}` : '']
+        const detail = [
+          typeof s.altitudeM === 'number' && s.altitudeM > 0 ? `Cao độ: ${s.altitudeM}m` : '',
+          stepNote ? `Ghi chú: ${stepNote}` : '',
+        ]
           .filter(Boolean)
           .join(' | ');
         ctx.fillText(detail.slice(0, 66), 220, y + 25);
@@ -229,7 +249,7 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
       y += rowHeight;
     });
 
-    ctx.fillStyle = '#757e78';
+    ctx.fillStyle = textDim;
     ctx.font = `13px ${canvasFont}`;
     ctx.fillText('Tạo bởi Hệ Thống Bản Đồ Trekking LOST Việt Nam · Cứu Hộ Quốc Gia: 112 / 114 / 115', 50, computedHeight - 30);
 
@@ -392,7 +412,9 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
                     NGÀY KHỞI HÀNH
                   </div>
                   <div style={{ fontSize: '0.94rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 4 }}>
-                    {itinerary.startDate ? new Date(itinerary.startDate).toLocaleDateString('vi-VN') : 'Chưa định ngày'}
+                    {itinerary.startDate && Number.isFinite(new Date(itinerary.startDate).getTime())
+                      ? new Date(itinerary.startDate).toLocaleDateString('vi-VN')
+                      : 'Chưa định ngày'}
                   </div>
                 </div>
 
@@ -457,7 +479,7 @@ export const SharedItineraryModal: React.FC<SharedItineraryModalProps> = ({
                             </span>
                           </div>
 
-                          {step.altitudeM && (
+                          {typeof step.altitudeM === 'number' && step.altitudeM > 0 && (
                             <span
                               style={{
                                 fontSize: '0.74rem',

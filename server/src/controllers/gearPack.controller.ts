@@ -10,6 +10,26 @@ import { isValidObjectId } from '../utils/resolveTrail.js';
 const MAX_PACKS_PER_USER = 15;
 const MAX_ITEMS_PER_PACK = 120;
 
+function parseStrictFiniteNumber(val: unknown): number | null {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseSafeBoolean(val: unknown, fallback: boolean): boolean {
+  if (typeof val === 'boolean') return val;
+  if (typeof val === 'string') {
+    const lower = val.trim().toLowerCase();
+    if (lower === 'true' || lower === '1') return true;
+    if (lower === 'false' || lower === '0' || lower === '') return false;
+  }
+  if (typeof val === 'number') {
+    if (val === 1) return true;
+    if (val === 0) return false;
+  }
+  return fallback;
+}
+
 function generateShareSlug(): string {
   return `pack-${crypto.randomBytes(6).toString('hex')}`;
 }
@@ -43,11 +63,11 @@ function sanitizePackItems(raw: unknown): { items: IGearPackItem[]; error?: stri
         : `item-${i + 1}-${crypto.randomBytes(3).toString('hex')}`;
     const cleanCategory = sanitizeInput(String(entry.category || 'Khác')).slice(0, 60) || 'Khác';
 
-    const rawWeight = Number(entry.weightGrams);
-    const weightGrams = Number.isFinite(rawWeight) ? Math.max(0, Math.min(50000, Math.round(rawWeight))) : 0;
+    const rawWeight = parseStrictFiniteNumber(entry.weightGrams);
+    const weightGrams = rawWeight !== null ? Math.max(0, Math.min(50000, Math.round(rawWeight))) : 0;
 
-    const rawQty = Number(entry.quantity);
-    const quantity = Number.isFinite(rawQty) ? Math.max(1, Math.min(99, Math.round(rawQty))) : 1;
+    const rawQty = parseStrictFiniteNumber(entry.quantity);
+    const quantity = rawQty !== null ? Math.max(1, Math.min(99, Math.round(rawQty))) : 1;
 
     items.push({
       id: cleanId,
@@ -55,9 +75,9 @@ function sanitizePackItems(raw: unknown): { items: IGearPackItem[]; error?: stri
       category: cleanCategory,
       weightGrams,
       quantity,
-      worn: Boolean(entry.worn),
-      consumable: Boolean(entry.consumable),
-      packed: entry.packed !== false,
+      worn: parseSafeBoolean(entry.worn, false),
+      consumable: parseSafeBoolean(entry.consumable, false),
+      packed: parseSafeBoolean(entry.packed, true),
     });
   }
 
@@ -196,8 +216,8 @@ export const createGearPack = async (req: AuthRequest, res: Response) => {
 
     let safeBodyWeight = 65;
     if (bodyWeightKg !== undefined && bodyWeightKg !== null && bodyWeightKg !== '') {
-      const parsedBodyWeight = Number(bodyWeightKg);
-      if (!Number.isFinite(parsedBodyWeight) || parsedBodyWeight < 25 || parsedBodyWeight > 200) {
+      const parsedBodyWeight = parseStrictFiniteNumber(bodyWeightKg);
+      if (parsedBodyWeight === null || parsedBodyWeight < 25 || parsedBodyWeight > 200) {
         return res.status(400).json({ success: false, message: 'Cân nặng cơ thể phải nằm trong khoảng 25–200 kg.' });
       }
       safeBodyWeight = Math.round(parsedBodyWeight * 10) / 10;
@@ -214,7 +234,7 @@ export const createGearPack = async (req: AuthRequest, res: Response) => {
       trailSlug: cleanTrailSlug,
       bodyWeightKg: safeBodyWeight,
       items,
-      isPublic: Boolean(isPublic),
+      isPublic: parseSafeBoolean(isPublic, false),
     });
 
     return res.status(201).json({
@@ -273,8 +293,8 @@ export const updateGearPack = async (req: AuthRequest, res: Response) => {
     }
 
     if (bodyWeightKg !== undefined) {
-      const parsedBodyWeight = Number(bodyWeightKg);
-      if (!Number.isFinite(parsedBodyWeight) || parsedBodyWeight < 25 || parsedBodyWeight > 200) {
+      const parsedBodyWeight = parseStrictFiniteNumber(bodyWeightKg);
+      if (parsedBodyWeight === null || parsedBodyWeight < 25 || parsedBodyWeight > 200) {
         return res.status(400).json({ success: false, message: 'Cân nặng cơ thể phải nằm trong khoảng 25–200 kg.' });
       }
       pack.bodyWeightKg = Math.round(parsedBodyWeight * 10) / 10;
@@ -289,7 +309,7 @@ export const updateGearPack = async (req: AuthRequest, res: Response) => {
     }
 
     if (isPublic !== undefined) {
-      pack.isPublic = Boolean(isPublic);
+      pack.isPublic = parseSafeBoolean(isPublic, Boolean(pack.isPublic));
     }
 
     await pack.save();

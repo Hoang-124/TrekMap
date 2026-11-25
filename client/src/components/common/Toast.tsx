@@ -14,6 +14,7 @@ export interface ToastProps {
   isOpen: boolean;
   onClose: () => void;
   duration?: number;
+  toastId?: number | string;
 }
 
 export const Toast: React.FC<ToastProps> = ({
@@ -22,8 +23,9 @@ export const Toast: React.FC<ToastProps> = ({
   isOpen,
   onClose,
   duration = 3800,
+  toastId = 0,
 }) => {
-  const toastKey = isOpen ? `${message}::${type}` : '';
+  const toastKey = isOpen ? `${toastId}::${message}::${type}` : '';
   const [exitingKey, setExitingKey] = useState<string | null>(null);
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
 
@@ -88,7 +90,7 @@ export const Toast: React.FC<ToastProps> = ({
       if (timerRef.current) clearTimeout(timerRef.current);
       if (exitTimerRef.current) clearTimeout(exitTimerRef.current);
     };
-  }, [isOpen, message, duration, triggerClose]);
+  }, [isOpen, message, type, toastId, duration, triggerClose]);
 
   // Pause on hover
   const handleMouseEnter = () => {
@@ -119,6 +121,7 @@ export const Toast: React.FC<ToastProps> = ({
   const typeConfig = {
     success: {
       accentColor: 'var(--color-primary)',
+      textColor: 'var(--color-primary)',
       bgTint: 'color-mix(in srgb, var(--color-primary) 13%, transparent)',
       borderColor: 'color-mix(in srgb, var(--color-primary) 36%, transparent)',
       title: 'Thành Công',
@@ -126,13 +129,15 @@ export const Toast: React.FC<ToastProps> = ({
     },
     error: {
       accentColor: 'var(--color-error)',
+      textColor: 'var(--color-error-text, var(--color-error))',
       bgTint: 'color-mix(in srgb, var(--color-error) 13%, transparent)',
       borderColor: 'color-mix(in srgb, var(--color-error) 36%, transparent)',
       title: 'Thông Báo Lỗi',
-      icon: <IconAlertTriangle size={19} color="var(--color-error)" />,
+      icon: <IconAlertTriangle size={19} color="var(--color-error-text, var(--color-error))" />,
     },
     info: {
       accentColor: 'var(--color-sky)',
+      textColor: 'var(--color-sky)',
       bgTint: 'color-mix(in srgb, var(--color-sky) 13%, transparent)',
       borderColor: 'color-mix(in srgb, var(--color-sky) 36%, transparent)',
       title: 'Thông Tin',
@@ -140,6 +145,7 @@ export const Toast: React.FC<ToastProps> = ({
     },
     warning: {
       accentColor: 'var(--color-earth)',
+      textColor: 'var(--color-earth)',
       bgTint: 'color-mix(in srgb, var(--color-earth) 13%, transparent)',
       borderColor: 'color-mix(in srgb, var(--color-earth) 36%, transparent)',
       title: 'Cảnh Báo',
@@ -147,6 +153,7 @@ export const Toast: React.FC<ToastProps> = ({
     },
   }[type] || {
     accentColor: 'var(--color-primary)',
+    textColor: 'var(--color-primary)',
     bgTint: 'color-mix(in srgb, var(--color-primary) 13%, transparent)',
     borderColor: 'color-mix(in srgb, var(--color-primary) 36%, transparent)',
     title: 'Thông Báo',
@@ -179,7 +186,7 @@ export const Toast: React.FC<ToastProps> = ({
         minWidth: 300,
         overflow: 'hidden',
         cursor: 'default',
-        transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+        transition: 'border-color 0.2s ease',
       }}
     >
       {/* Type SVG Icon Container */}
@@ -208,7 +215,7 @@ export const Toast: React.FC<ToastProps> = ({
             fontWeight: 800,
             letterSpacing: '0.06em',
             textTransform: 'uppercase',
-            color: typeConfig.accentColor,
+            color: typeConfig.textColor,
             marginBottom: 2,
           }}
         >
@@ -265,7 +272,7 @@ export const Toast: React.FC<ToastProps> = ({
 
       {/* Live Animated Countdown Progress Bar at bottom (100% GPU scaleX) */}
       <div
-        key={`${message}-${type}`}
+        key={`${toastId}-${message}-${type}`}
         style={{
           position: 'absolute',
           bottom: 0,

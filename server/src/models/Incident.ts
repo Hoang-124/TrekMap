@@ -111,5 +111,7 @@ const incidentSchema = new Schema<IIncident>(
 );
 
 incidentSchema.index({ active: 1, createdAt: -1 });
+incidentSchema.index({ resolved: 1, active: 1, createdAt: -1 });
+incidentSchema.index({ trailId: 1, active: 1, resolved: 1 });
 
 export const IncidentModel = model<IIncident>('Incident', incidentSchema);

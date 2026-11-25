@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Trail } from '../../types.js';
 import { mockTrails } from '../../data/seedData.js';
 import { VIETNAM_RANGER_STATIONS, type RangerStationSeed } from '../../data/vietnamDirectory.js';
-import { scopedStorageKey } from '../../utils/storageScope.js';
+import { getActiveStorageUid, scopedStorageKey } from '../../utils/storageScope.js';
 import {
   IconAlertTriangle,
   IconArrowRight,
@@ -34,6 +34,7 @@ interface SilhouettePoint {
   pct: number; // 0..100
   elevationM: number;
   isMilestone?: boolean;
+  isPeak?: boolean;
   label?: string;
 }
 
@@ -60,6 +61,7 @@ interface QuizQuestion {
 
 interface QuizBestRecord {
   bestRound10: number;
+  bestRoundTotal: number;
   bestStreak: number;
   totalCorrect: number;
   totalAnswered: number;
@@ -74,11 +76,11 @@ const CATEGORY_META: Record<
   QuizCategory,
   { label: string; shortLabel: string; color: string }
 > = {
-  all: { label: 'Tất Cả (Trộn 4 Chủ Đề)', shortLabel: 'Tất Cả', color: 'var(--color-primary)' },
-  silhouette: { label: 'Trắc Dọc Địa Hình DEM', shortLabel: 'Trắc Dọc DEM', color: 'var(--color-sky)' },
-  altitude_geo: { label: 'Cao Độ & Địa Lý Đỉnh', shortLabel: 'Cao Độ & Địa Lý', color: 'var(--color-sun)' },
-  ranger_permit: { label: 'VQG, Kiểm Lâm & Giấy Phép', shortLabel: 'Kiểm Lâm & Phép', color: 'var(--color-stream)' },
-  wfa_safety: { label: 'An Toàn Rừng Núi WFA', shortLabel: 'An Toàn WFA', color: 'var(--color-earth)' },
+  all: { label: 'Tất cả (trộn 4 chủ đề)', shortLabel: 'Tất cả', color: 'var(--color-primary)' },
+  silhouette: { label: 'Trắc dọc địa hình DEM', shortLabel: 'Trắc dọc DEM', color: 'var(--color-sky)' },
+  altitude_geo: { label: 'Cao độ & địa lý đỉnh', shortLabel: 'Cao độ & địa lý', color: 'var(--color-sun)' },
+  ranger_permit: { label: 'VQG, kiểm lâm & giấy phép', shortLabel: 'Kiểm lâm & phép', color: 'var(--color-stream)' },
+  wfa_safety: { label: 'An toàn rừng núi WFA', shortLabel: 'An toàn WFA', color: 'var(--color-earth)' },
 };
 
 interface StaticWfaQuestion {
@@ -269,9 +271,10 @@ function toSafeNonNegInt(value: unknown, maxCap = 1_000_000): number {
   return Math.min(maxCap, Math.max(0, Math.trunc(value)));
 }
 
-function readBestRecord(): QuizBestRecord {
+function readBestRecord(explicitUid?: string | null): QuizBestRecord {
   const fallback: QuizBestRecord = {
     bestRound10: 0,
+    bestRoundTotal: ROUND_LENGTH,
     bestStreak: 0,
     totalCorrect: 0,
     totalAnswered: 0,
@@ -279,8 +282,8 @@ function readBestRecord(): QuizBestRecord {
   };
   if (typeof window === 'undefined') return fallback;
   try {
-    const scopedKey = scopedStorageKey(QUIZ_STORAGE_KEY);
-    const raw = localStorage.getItem(scopedKey) ?? localStorage.getItem(QUIZ_STORAGE_KEY);
+    const scopedKey = scopedStorageKey(QUIZ_STORAGE_KEY, explicitUid);
+    const raw = localStorage.getItem(scopedKey);
     if (!raw) return fallback;
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -290,10 +293,12 @@ function readBestRecord(): QuizBestRecord {
     const totalAnswered = toSafeNonNegInt(rec.totalAnswered);
     const totalCorrect = Math.min(totalAnswered, toSafeNonNegInt(rec.totalCorrect));
     const bestStreak = Math.min(totalCorrect, toSafeNonNegInt(rec.bestStreak));
-    const bestRound10 = toSafeNonNegInt(rec.bestRound10, ROUND_LENGTH);
+    const bestRoundTotal = Math.max(1, toSafeNonNegInt(rec.bestRoundTotal ?? ROUND_LENGTH, ROUND_LENGTH));
+    const bestRound10 = Math.min(bestRoundTotal, toSafeNonNegInt(rec.bestRound10, ROUND_LENGTH));
     const roundsCompleted = toSafeNonNegInt(rec.roundsCompleted, 100_000);
     return {
       bestRound10,
+      bestRoundTotal,
       bestStreak,
       totalCorrect,
       totalAnswered,
@@ -304,10 +309,10 @@ function readBestRecord(): QuizBestRecord {
   }
 }
 
-function saveBestRecord(record: QuizBestRecord): void {
+function saveBestRecord(record: QuizBestRecord, explicitUid?: string | null): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(scopedStorageKey(QUIZ_STORAGE_KEY), JSON.stringify(record));
+    localStorage.setItem(scopedStorageKey(QUIZ_STORAGE_KEY, explicitUid), JSON.stringify(record));
   } catch {
     // Ignore storage quota errors
   }
@@ -315,19 +320,45 @@ function saveBestRecord(record: QuizBestRecord): void {
 
 function getExplorerRank(totalCorrect: number): { title: string; nextAt: number | null; color: string; tierIndex: number } {
   if (totalCorrect >= 60) {
-    return { title: 'Chuyên Gia Địa Hình Hoàng Liên', nextAt: null, color: 'var(--color-sun)', tierIndex: 4 };
+    return { title: 'Chuyên gia địa hình Hoàng Liên', nextAt: null, color: 'var(--color-sun)', tierIndex: 4 };
   }
   if (totalCorrect >= 30) {
-    return { title: 'Hoa Tiêu Dãy Trường Sơn', nextAt: 60, color: 'var(--color-primary)', tierIndex: 3 };
+    return { title: 'Hoa tiêu dãy Trường Sơn', nextAt: 60, color: 'var(--color-primary)', tierIndex: 3 };
   }
   if (totalCorrect >= 12) {
-    return { title: 'Trinh Sát Bản Đồ', nextAt: 30, color: 'var(--color-sky)', tierIndex: 2 };
+    return { title: 'Trinh sát bản đồ', nextAt: 30, color: 'var(--color-sky)', tierIndex: 2 };
   }
-  return { title: 'Tân Binh Thực Địa', nextAt: 12, color: 'var(--color-text-muted)', tierIndex: 1 };
+  return { title: 'Tân binh thực địa', nextAt: 12, color: 'var(--color-text-muted)', tierIndex: 1 };
 }
 
+const ACTION_PREFIX_REGEX =
+  /^(Hành Trình|Chinh Phục|Trekking|Khám Phá|Săn Biển Mây|Đại Ngàn Hoa Đỗ Quyên|Thảm Hoa Chi Pâu)\s+/i;
+
 function shortTrailLabel(trail: Trail): string {
-  return `${trail.name.replace(/^(Chinh Phục|Trekking|Hành Trình|Khám Phá|Săn Biển Mây|Đại Ngàn Hoa Đỗ Quyên|Thảm Hoa Chi Pâu)\s+/i, '').trim()}`;
+  let label = String(trail.name || '').trim();
+  // Repeatedly strip stacked marketing/action prefixes (e.g. "Hành Trình Chinh Phục ...")
+  let guard = 0;
+  while (guard < 5 && ACTION_PREFIX_REGEX.test(label)) {
+    label = label.replace(ACTION_PREFIX_REGEX, '').trim();
+    guard += 1;
+  }
+  // Strip altitude annotations like "(1.296m)", "3143m", "3.049 m" so altitude_geo & silhouette options never spoil answers
+  label = label
+    .replace(/\s*\(\s*\d[\d.,]*\s*m\s*\)/gi, '')
+    .replace(/\s*\(?\d[\d.,]*\s*m\)?/gi, (match) => {
+      const startsParen = match.trimStart().startsWith('(');
+      const endsParen = match.trimEnd().endsWith(')');
+      if (startsParen && !endsParen) return ' (';
+      if (!startsParen && endsParen) return ')';
+      return '';
+    })
+    .replace(/\(\s*\)/g, '')
+    .replace(/\s+([),])/g, '$1')
+    .replace(/\(\s+/g, '(')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s*[-–—]\s*$/g, '')
+    .trim();
+  return label || trail.name;
 }
 
 function buildSilhouetteFromTrail(trail: Trail): NonNullable<QuizQuestion['silhouette']> {
@@ -348,60 +379,52 @@ function buildSilhouetteFromTrail(trail: Trail): NonNullable<QuizQuestion['silho
     (w): w is NonNullable<Trail['waypoints']>[number] & { elevationM: number } =>
       typeof w.elevationM === 'number' && Number.isFinite(w.elevationM)
   );
-  const baseNodes: Array<{ pct: number; elevationM: number; isMilestone: boolean; label: string }> = [];
+  const points: SilhouettePoint[] = [];
 
-  if (rawWps.length >= 3) {
+  if (rawWps.length >= 2) {
+    // Identify true highest waypoint so ridge / loop trails never falsely label a lower end waypoint as the summit
+    let peakIdx = 0;
+    let peakElev = -Infinity;
+    rawWps.forEach((wp, idx) => {
+      const clampedElev = Math.min(safeMaxAlt, Math.max(0, Math.round(wp.elevationM)));
+      if (clampedElev > peakElev) {
+        peakElev = clampedElev;
+        peakIdx = idx;
+      }
+    });
+
     rawWps.forEach((wp, idx) => {
       const pct = Math.round((idx / (rawWps.length - 1)) * 100);
-      const label =
-        idx === 0
-          ? 'Xuất phát'
-          : idx === rawWps.length - 1
-            ? 'Đích / Đỉnh'
-            : `Mốc ${idx + 1}`;
+      const isLast = idx === rawWps.length - 1;
+      const isPeak = idx === peakIdx && peakIdx > 0;
+      let label: string;
+      if (idx === 0) {
+        label = 'Xuất phát';
+      } else if (isPeak && isLast) {
+        label = 'Đích / Đỉnh';
+      } else if (isPeak) {
+        label = 'Đỉnh cao nhất';
+      } else if (isLast) {
+        label = 'Kết thúc';
+      } else {
+        label = `Mốc ${idx + 1}`;
+      }
       const clampedElev = Math.min(safeMaxAlt, Math.max(0, Math.round(wp.elevationM)));
-      baseNodes.push({ pct, elevationM: clampedElev, isMilestone: true, label });
+      points.push({ pct, elevationM: clampedElev, isMilestone: true, isPeak, label });
     });
   } else {
     const startElev = Math.min(safeMaxAlt, Math.max(20, safeMaxAlt - safeGain));
-    const midElev = Math.min(safeMaxAlt, Math.max(startElev, Math.round(startElev + safeGain * 0.58)));
-    baseNodes.push(
-      { pct: 0, elevationM: startElev, isMilestone: true, label: 'Xuất phát' },
-      { pct: 52, elevationM: midElev, isMilestone: true, label: 'Mốc giữa' },
-      { pct: 100, elevationM: safeMaxAlt, isMilestone: true, label: 'Đích / Đỉnh' }
+    points.push(
+      { pct: 0, elevationM: startElev, isMilestone: true, isPeak: false, label: 'Xuất phát' },
+      { pct: 100, elevationM: safeMaxAlt, isMilestone: true, isPeak: true, label: 'Đích / Đỉnh' }
     );
   }
 
-  // Subdivide segments smoothly so the anonymized DEM silhouette shows realistic ridge undulation
-  // Strictly clamp every synthesized intermediate point <= real trail.maxAltitudeM (Rule 11)
-  const dense: SilhouettePoint[] = [];
-  for (let i = 0; i < baseNodes.length; i++) {
-    const curr = baseNodes[i];
-    dense.push(curr);
-    if (i < baseNodes.length - 1) {
-      const next = baseNodes[i + 1];
-      const delta = next.elevationM - curr.elevationM;
-      const midPct1 = curr.pct + (next.pct - curr.pct) * 0.35;
-      const midPct2 = curr.pct + (next.pct - curr.pct) * 0.68;
-      // Subtle deterministic ridge inflection based on trail metrics, bounded by real summit altitude
-      const ridgeWave = ((safeMaxAlt + i * 73) % 55) - 20;
-      const segCeiling = Math.min(safeMaxAlt, Math.max(curr.elevationM, next.elevationM));
-      dense.push({
-        pct: Math.round(midPct1),
-        elevationM: Math.min(segCeiling, Math.max(0, Math.round(curr.elevationM + delta * 0.32 + ridgeWave))),
-      });
-      dense.push({
-        pct: Math.round(midPct2),
-        elevationM: Math.min(segCeiling, Math.max(0, Math.round(curr.elevationM + delta * 0.72 - ridgeWave * 0.6))),
-      });
-    }
-  }
-
-  const elevs = dense.map((p) => p.elevationM).filter((v) => Number.isFinite(v));
+  const elevs = points.map((p) => p.elevationM).filter((v) => Number.isFinite(v));
   const minElevM = elevs.length > 0 ? Math.min(...elevs) : 0;
 
   return {
-    points: dense,
+    points,
     minElevM,
     maxElevM: safeMaxAlt,
     gainM: safeGain,
@@ -409,6 +432,14 @@ function buildSilhouetteFromTrail(trail: Trail): NonNullable<QuizQuestion['silho
     difficultyLevel: safeDifficulty,
     regionHint: trail.region || 'Việt Nam',
   };
+}
+
+function getEffectiveStationTrailSlugs(station: RangerStationSeed): string[] {
+  // Exclude mislinked Yên Tử from Hạt KL Bình Liêu (Mốc 1305 is ~150km away; Yên Tử has its own BQL station)
+  if (station.slug === 'chi-cuc-kiem-lam-quang-ninh') {
+    return station.coveredTrailSlugs.filter((slug) => slug !== 'trail-yentu');
+  }
+  return station.coveredTrailSlugs;
 }
 
 function buildQuestionBank(catalog: Trail[], seed: number): QuizQuestion[] {
@@ -419,13 +450,17 @@ function buildQuestionBank(catalog: Trail[], seed: number): QuizQuestion[] {
 
   // 1. SILHOUETTE QUESTIONS (Pure-SVG Anonymized DEM Elevation Profile Recognition)
   const silhouettePool = shuffleWithRng(
-    trails.filter(
-      (t) =>
-        (t.waypoints?.length ?? 0) >= 3 &&
+    trails.filter((t) => {
+      const validWps = (t.waypoints || []).filter(
+        (w) => typeof w.elevationM === 'number' && Number.isFinite(w.elevationM)
+      );
+      return (
+        validWps.length >= 3 &&
         Number.isFinite(t.maxAltitudeM) &&
         t.maxAltitudeM >= 450 &&
         Number.isFinite(t.elevationGainM)
-    ),
+      );
+    }),
     rng
   );
   for (const target of silhouettePool.slice(0, 12)) {
@@ -530,18 +565,21 @@ function buildQuestionBank(catalog: Trail[], seed: number): QuizQuestion[] {
     });
   }
 
-  // 3. RANGER STATIONS & PERMITS (Powered strictly by 28 real VIETNAM_RANGER_STATIONS)
+  // 3. RANGER STATIONS & PERMITS (Powered strictly by real VIETNAM_RANGER_STATIONS)
   const linkedStations = VIETNAM_RANGER_STATIONS.filter(
-    (s) => s.region !== 'Toàn Quốc' && s.coveredTrailSlugs.length > 0
+    (s) => s.region !== 'Toàn Quốc' && getEffectiveStationTrailSlugs(s).length > 0
   );
   const stationPool = shuffleWithRng(linkedStations, rng);
   for (const station of stationPool.slice(0, 8)) {
-    const sampleSlug = station.coveredTrailSlugs[Math.floor(rng() * station.coveredTrailSlugs.length)];
+    const stationSlugs = getEffectiveStationTrailSlugs(station);
+    const sampleSlug = stationSlugs[Math.floor(rng() * stationSlugs.length)];
     const linkedTrail = trailById.get(sampleSlug);
     if (!linkedTrail) continue;
 
     const otherStations = shuffleWithRng(
-      linkedStations.filter((s) => s.slug !== station.slug && !s.coveredTrailSlugs.includes(sampleSlug)),
+      linkedStations.filter(
+        (s) => s.slug !== station.slug && !getEffectiveStationTrailSlugs(s).includes(sampleSlug)
+      ),
       rng
     ).slice(0, 3);
     if (otherStations.length < 3) continue;
@@ -691,7 +729,8 @@ export const VietnamPeakQuizPanel: React.FC<VietnamPeakQuizPanelProps> = ({
   const [category, setCategory] = useState<QuizCategory>('all');
   const [mode, setMode] = useState<QuizMode>('round10');
   const [deckSeed, setDeckSeed] = useState<number>(() => (Date.now() % 100000) + 17);
-  const [bestRecord, setBestRecord] = useState<QuizBestRecord>(() => readBestRecord());
+  const [activeStorageUid, setActiveStorageUid] = useState<string>(() => getActiveStorageUid());
+  const [bestRecord, setBestRecord] = useState<QuizBestRecord>(() => readBestRecord(getActiveStorageUid()));
 
   const [questionIndex, setQuestionIndex] = useState<number>(0);
   const [selectedOption, setSelectedOption] = useState<'A' | 'B' | 'C' | 'D' | null>(null);
@@ -706,6 +745,32 @@ export const VietnamPeakQuizPanel: React.FC<VietnamPeakQuizPanelProps> = ({
     ranger_permit: { correct: 0, total: 0 },
     wfa_safety: { correct: 0, total: 0 },
   });
+
+  // Reload per-user quiz record cleanly whenever account switches (prevents cross-user leak)
+  useEffect(() => {
+    const syncAccountScope = () => {
+      const nextUid = getActiveStorageUid();
+      setActiveStorageUid((prevUid) => {
+        if (prevUid !== nextUid) {
+          setBestRecord(readBestRecord(nextUid));
+          setCurrentStreak(0);
+        }
+        return nextUid;
+      });
+    };
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key !== null && ev.key !== 'lost_token' && !ev.key.startsWith(QUIZ_STORAGE_KEY)) return;
+      const nextUid = getActiveStorageUid();
+      setActiveStorageUid(nextUid);
+      setBestRecord(readBestRecord(nextUid));
+    };
+    window.addEventListener('lost:auth-changed', syncAccountScope);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('lost:auth-changed', syncAccountScope);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
 
   const fullBank = useMemo(() => buildQuestionBank(effectiveTrails, deckSeed), [effectiveTrails, deckSeed]);
   const deck = useMemo(
@@ -756,24 +821,36 @@ export const VietnamPeakQuizPanel: React.FC<VietnamPeakQuizPanelProps> = ({
         },
       }));
 
-      const isFullRound10 = isLastInRound && deck.length === ROUND_LENGTH;
+      const completedRoundDenom = Math.max(1, Math.min(ROUND_LENGTH, deck.length));
 
       setBestRecord((prev) => {
+        let nextBestScore = prev.bestRound10;
+        let nextBestTotal = prev.bestRoundTotal;
+        if (isLastInRound && deck.length > 0) {
+          const prevPct = prev.bestRoundTotal > 0 ? prev.bestRound10 / prev.bestRoundTotal : 0;
+          const nextPct = nextScore / completedRoundDenom;
+          if (
+            prev.roundsCompleted === 0 ||
+            nextPct > prevPct ||
+            (nextPct === prevPct && nextScore > prev.bestRound10)
+          ) {
+            nextBestScore = Math.min(completedRoundDenom, nextScore);
+            nextBestTotal = completedRoundDenom;
+          }
+        }
         const updated: QuizBestRecord = {
-          bestRound10:
-            isFullRound10 && nextScore > prev.bestRound10
-              ? Math.min(ROUND_LENGTH, nextScore)
-              : prev.bestRound10,
+          bestRound10: nextBestScore,
+          bestRoundTotal: nextBestTotal,
           bestStreak: Math.max(prev.bestStreak, nextStreak),
           totalCorrect: prev.totalCorrect + (isRight ? 1 : 0),
           totalAnswered: prev.totalAnswered + 1,
           roundsCompleted: prev.roundsCompleted + (isLastInRound ? 1 : 0),
         };
-        saveBestRecord(updated);
+        saveBestRecord(updated, activeStorageUid);
         return updated;
       });
     },
-    [currentQuestion, selectedOption, roundScore, currentStreak, mode, questionIndex, deck.length]
+    [currentQuestion, selectedOption, roundScore, currentStreak, mode, questionIndex, deck.length, activeStorageUid]
   );
 
   const handleNextQuestion = useCallback(() => {
@@ -950,7 +1027,7 @@ export const VietnamPeakQuizPanel: React.FC<VietnamPeakQuizPanelProps> = ({
               className="font-editorial"
               style={{ margin: 0, fontSize: 'clamp(1.15rem, 2.2vw, 1.45rem)', fontWeight: 700, color: 'var(--color-text-main)' }}
             >
-              Nhận Diện Trắc Dọc DEM {effectiveTrails.length} Đỉnh Núi &amp; Kiểm Lâm Thực Địa
+              Nhận diện trắc dọc DEM {effectiveTrails.length} đỉnh núi &amp; kiểm lâm thực địa
             </h2>
             <p style={{ margin: '5px 0 0', fontSize: '0.82rem', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
               Rèn phản xạ đọc biểu đồ cao độ DEM ẩn danh, ghi nhớ vị trí {effectiveTrails.length} đỉnh núi, {VIETNAM_RANGER_STATIONS.length} trạm kiểm lâm – VQG và phác đồ xử trí tình huống rừng núi WFA.
@@ -976,7 +1053,7 @@ export const VietnamPeakQuizPanel: React.FC<VietnamPeakQuizPanelProps> = ({
               }}
             >
               <div style={{ fontSize: '0.67rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>
-                Cấp Bậc
+                Cấp bậc
               </div>
               <div style={{ fontSize: '0.78rem', fontWeight: 800, color: explorerRank.color, marginTop: 2, lineHeight: 1.25 }}>
                 {explorerRank.title}
@@ -998,13 +1075,13 @@ export const VietnamPeakQuizPanel: React.FC<VietnamPeakQuizPanelProps> = ({
               }}
             >
               <div style={{ fontSize: '0.67rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>
-                Kỷ Lục 10 Câu
+                Kỷ lục vòng chơi
               </div>
               <div style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: 2 }}>
-                {bestRecord.bestRound10}/{ROUND_LENGTH}
+                {bestRecord.bestRound10}/{bestRecord.bestRoundTotal}
               </div>
               <div style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)' }}>
-                {bestRecord.roundsCompleted} vòng đã chơi
+                {bestRecord.roundsCompleted} vòng đã chơi ({Math.round((bestRecord.bestRound10 / Math.max(1, bestRecord.bestRoundTotal)) * 100)}%)
               </div>
             </div>
 
@@ -1018,7 +1095,7 @@ export const VietnamPeakQuizPanel: React.FC<VietnamPeakQuizPanelProps> = ({
               }}
             >
               <div style={{ fontSize: '0.67rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>
-                Chuỗi Đúng Max
+                Chuỗi đúng dài nhất
               </div>
               <div style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--color-sun)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
                 <IconFlame size={15} color="var(--color-sun)" />
@@ -1083,8 +1160,8 @@ export const VietnamPeakQuizPanel: React.FC<VietnamPeakQuizPanelProps> = ({
 
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} role="group" aria-label="Chế độ chơi">
             {[
-              { id: 'round10' as const, label: 'Vòng 10 Câu' },
-              { id: 'endless' as const, label: 'Chuỗi Vô Tận' },
+              { id: 'round10' as const, label: 'Vòng 10 câu' },
+              { id: 'endless' as const, label: 'Chuỗi vô tận' },
             ].map((m) => {
               const active = mode === m.id;
               return (
@@ -1156,7 +1233,7 @@ export const VietnamPeakQuizPanel: React.FC<VietnamPeakQuizPanelProps> = ({
               style={{ borderRadius: 4, fontSize: '0.82rem' }}
             >
               <IconRotateCw size={15} color="var(--color-on-primary)" />
-              <span>Chơi Vòng Mới (Đề Ngẫu Nhiên)</span>
+              <span>Chơi vòng mới (đề ngẫu nhiên)</span>
             </button>
           </div>
 
@@ -1310,7 +1387,7 @@ export const VietnamPeakQuizPanel: React.FC<VietnamPeakQuizPanelProps> = ({
               >
                 <span style={{ fontWeight: 700, color: 'var(--color-sky)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                   <IconMountain size={14} color="var(--color-sky)" />
-                  Trắc Dọc DEM Ẩn Danh
+                  Trắc dọc DEM ẩn danh
                 </span>
                 <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                   <span>Đỉnh cao: <strong style={{ color: 'var(--color-text-main)' }}>{currentQuestion.silhouette.maxElevM.toLocaleString('vi-VN')}m</strong></span>
@@ -1367,6 +1444,7 @@ export const VietnamPeakQuizPanel: React.FC<VietnamPeakQuizPanelProps> = ({
                 {/* Anonymized milestone nodes (staggered & de-collided for mobile readability) */}
                 {silhouetteSvg.milestones.map((m, idx) => {
                   const isLast = idx === silhouetteSvg.milestones.length - 1;
+                  const isPeak = Boolean(m.isPeak);
                   const clampedX = Math.min(silhouetteSvg.W - silhouetteSvg.padR - 4, Math.max(silhouetteSvg.padL + 4, m.x));
                   const elevY = Math.max(13, m.y - (m.staggerRow === 1 ? 12 : 8));
                   const labelY = silhouetteSvg.H - (m.staggerRow === 1 ? 18 : 6);
@@ -1375,8 +1453,8 @@ export const VietnamPeakQuizPanel: React.FC<VietnamPeakQuizPanelProps> = ({
                       <circle
                         cx={m.x}
                         cy={m.y}
-                        r={isLast ? 4.5 : 3.5}
-                        fill={isLast ? 'var(--color-sun)' : 'var(--color-sky)'}
+                        r={isPeak ? 4.5 : 3.5}
+                        fill={isPeak ? 'var(--color-sun)' : 'var(--color-sky)'}
                         stroke="var(--color-bg-card)"
                         strokeWidth="1.5"
                       />
@@ -1388,7 +1466,7 @@ export const VietnamPeakQuizPanel: React.FC<VietnamPeakQuizPanelProps> = ({
                             textAnchor={idx === 0 ? 'start' : isLast ? 'end' : 'middle'}
                             fontSize="10"
                             fontWeight="700"
-                            fill={isLast ? 'var(--color-sun)' : 'var(--color-text-main)'}
+                            fill={isPeak ? 'var(--color-sun)' : 'var(--color-text-main)'}
                           >
                             {m.elevationM.toLocaleString('vi-VN')}m
                           </text>
@@ -1548,7 +1626,7 @@ export const VietnamPeakQuizPanel: React.FC<VietnamPeakQuizPanelProps> = ({
                       style={{ borderRadius: 4, fontSize: '0.78rem', padding: '7px 12px' }}
                     >
                       <IconMapPin size={14} color="var(--color-primary)" />
-                      <span>Mở Cung Này ({shortTrailLabel(relatedTrail)})</span>
+                      <span>Mở cung này ({shortTrailLabel(relatedTrail)})</span>
                     </button>
                   )}
                   <span style={{ fontSize: '0.73rem', color: 'var(--color-text-dim)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
@@ -1565,8 +1643,8 @@ export const VietnamPeakQuizPanel: React.FC<VietnamPeakQuizPanelProps> = ({
                 >
                   <span>
                     {mode === 'round10' && questionIndex + 1 >= deck.length
-                      ? 'Xem Tổng Kết Vòng'
-                      : 'Câu Tiếp Theo'}
+                      ? 'Xem tổng kết vòng'
+                      : 'Câu tiếp theo'}
                   </span>
                   <IconArrowRight size={15} color="var(--color-on-primary)" />
                 </button>

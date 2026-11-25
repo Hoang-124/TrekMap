@@ -13,7 +13,7 @@ import { TripPlanModel } from '../models/TripPlan.js';
 import { GuideModel } from '../models/Guide.js';
 import { SafetyTimerModel } from '../models/SafetyTimer.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
-import { emitToUser } from '../config/socket.js';
+import { emitToUser, disconnectUserSockets } from '../config/socket.js';
 import { isValidObjectId } from '../utils/resolveTrail.js';
 import { recordAuditLog } from '../utils/audit.js';
 import { sanitizeInput } from '../utils/validation.js';
@@ -27,7 +27,7 @@ export const getUsersAdmin = async (req: AuthRequest, res: Response) => {
     if (mongoose.connection.readyState !== 1) {
       return res.json({ success: true, count: 0, total: 0, data: [] });
     }
-    const page = Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1);
+    const page = Math.min(Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1), 1000);
     const limit = Math.min(Math.max(parseInt(String(req.query.limit || '100'), 10) || 100, 1), 200);
     const skip = (page - 1) * limit;
 
@@ -62,6 +62,9 @@ export const banUserAdmin = async (req: AuthRequest, res: Response) => {
     if (String(id) === String(req.user.userId)) {
       return res.status(400).json({ success: false, message: 'Không thể tự khóa tài khoản quản trị của chính bạn.' });
     }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
 
     const user = await UserModel.findById(id);
     if (!user) {
@@ -78,6 +81,8 @@ export const banUserAdmin = async (req: AuthRequest, res: Response) => {
       userId: user._id.toString(),
       reason,
     });
+    // Revoke socket session immediately and forcefully disconnect all active sockets after flushing event
+    disconnectUserSockets(user._id.toString(), 50);
     await recordAuditLog(req, 'BAN_USER', 'users', `Khóa tài khoản ${user.email} (${user._id}) — Lý do: ${reason}`);
 
     return res.json({ success: true, message: `Đã khóa tài khoản ${user.email} thành công!` });
@@ -96,6 +101,9 @@ export const unbanUserAdmin = async (req: AuthRequest, res: Response) => {
     const { id } = req.params;
     if (!isValidObjectId(id)) {
       return res.status(400).json({ success: false, message: 'Mã người dùng không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
     }
 
     const user = await UserModel.findById(id);
@@ -216,6 +224,9 @@ export const updateUserRoleAdmin = async (req: AuthRequest, res: Response) => {
     if (String(id) === String(req.user.userId) && role !== 'admin') {
       return res.status(400).json({ success: false, message: 'Không thể tự hạ quyền Admin của chính bạn.' });
     }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
 
     const user = await UserModel.findById(id);
     if (!user) {
@@ -277,7 +288,7 @@ export const getUserPublicProfile = async (req: Request, res: Response) => {
     const projection =
       'username fullName avatarUrl coverUrl role authProvider isEmailVerified reputationScore badges bio preferredStyle gearLocker createdAt';
 
-    // Lookup priority: 1) immutable _id, 2) indexed username, 3) exact fullName fallback (never banned users)
+    // Lookup priority: 1) immutable _id, 2) indexed usernameLower / exact username, 3) exact fullName fallback (never banned users)
     let user: any = null;
     if (isMongoId) {
       user = await UserModel.findOne({ _id: new Types.ObjectId(cleanIdent), isBanned: { $ne: true } })
@@ -286,7 +297,7 @@ export const getUserPublicProfile = async (req: Request, res: Response) => {
     }
     if (!user) {
       user = await UserModel.findOne({
-        username: { $regex: new RegExp(`^${escaped}$`, 'i') },
+        $or: [{ usernameLower: cleanIdent.toLowerCase() }, { username: cleanIdent }],
         isBanned: { $ne: true },
       })
         .select(projection)
@@ -410,7 +421,7 @@ const GOAL_KM_MAX = 5000;
 const GOAL_ELEVATION_MIN = 500;
 const GOAL_ELEVATION_MAX = 200000;
 const GOAL_PEAKS_MIN = 1;
-const GOAL_PEAKS_MAX = 36;
+const GOAL_PEAKS_MAX = 200;
 
 const DEFAULT_TARGET_KM = 120;
 const DEFAULT_TARGET_ELEVATION_M = 8000;

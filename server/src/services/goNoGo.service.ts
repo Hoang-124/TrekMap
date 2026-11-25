@@ -103,7 +103,7 @@ export function evaluateGoNoGo(params: {
   const gearAdditions: string[] = [];
 
   const durationDays = Math.max(1, Math.min(5, Number(params.durationDays) || 1));
-  const depMonth = Number(params.departureDate.slice(5, 7)) || new Date().getMonth() + 1;
+  const depMonth = Number(params.departureDate.slice(5, 7)) || Number(getVietnamTodayIso().slice(5, 7));
   const gridElevationM =
     typeof params.gridElevationM === 'number' && Number.isFinite(params.gridElevationM)
       ? Math.round(params.gridElevationM)
@@ -511,7 +511,9 @@ export async function computeTrailGoNoGo(
     recentConditions = (conds as any[]).map((c) => ({
       status: String(c.condition || c.status || 'safe'),
       note: String(c.description || c.note || c.weatherNote || ''),
-      reportedAt: c.createdAt ? new Date(c.createdAt).toLocaleDateString('vi-VN') : 'Gần đây',
+      reportedAt: c.createdAt
+        ? new Date(c.createdAt).toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })
+        : 'Gần đây',
     }));
   } else {
     // Offline fallback: check seeded mock incidents for this trail

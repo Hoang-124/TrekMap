@@ -5,26 +5,38 @@ LOST VIETNAM — THIRD-PARTY OPEN-SOURCE LICENSES & OPEN DATA ATTRIBUTIONS
 Legal, Privacy (Decree 13/2023/ND-CP) & Takedown Contact: contact@lost.vn
 
 --------------------------------------------------------------------------------
-1. OPEN DATA, MAP TILES, DEM, WEATHER & SATELLITE ATTRIBUTIONS
+1. OPEN DATA, MAP TILES, DEM, WEATHER, SATELLITE & SOLAR ATTRIBUTIONS
 --------------------------------------------------------------------------------
 - OpenFreeMap & OpenMapTiles: https://openfreemap.org | https://openmaptiles.org
-- OpenStreetMap contributors (ODbL 1.0): https://www.openstreetmap.org/copyright
+- OpenStreetMap contributors & Nominatim (ODbL 1.0):
+  https://www.openstreetmap.org/copyright
 - AWS Open Data — Mapzen/Tilezen Terrarium Terrain Tiles (SRTM/NASA, USGS, NOAA):
   https://registry.opendata.aws/terrain-tiles/
 - MET Norway Locationforecast 2.0 (CC BY 4.0): https://api.met.no/
-- NASA POWER Climate Archive (US Govt Public Domain): https://power.larc.nasa.gov/
-- NASA GIBS Satellite Imagery (US Govt Public Domain): https://earthdata.nasa.gov/
+- NASA POWER (MERRA-2) Climate Archive (US Govt Public Domain):
+  https://power.larc.nasa.gov/
+- NASA GIBS Satellite Imagery (US Govt Public Domain):
+  https://earthdata.nasa.gov/eosdis/science-system-description/eosdis-components/gibs
 - NASA EONET Natural Events (US Govt Public Domain): https://eonet.gsfc.nasa.gov/
-- OpenRouteService by HeiGIT (optional routing): https://openrouteservice.org/
+- NOAA Solar Calculation Algorithms / Jean Meeus (US Govt Public Domain, offline):
+  https://gml.noaa.gov/grad/solcalc/
+- OpenRouteService by HeiGIT (optional ORS_API_KEY) / Self-Hosted OSRM:
+  https://openrouteservice.org/
+- Optional Operator-Configured Services: Google Identity Services / OAuth JWKS
+  (optional login), Google Gemini API (optional AI enrichment), Cloudinary CDN
+  (optional user photo uploads only, EXIF stripped).
 
 --------------------------------------------------------------------------------
-2. SELF-HOSTED TYPOGRAPHY & INLINE VECTOR ICONS
+2. SELF-HOSTED TYPOGRAPHY, INLINE VECTOR ICONS & ORIGINAL ARTWORK
 --------------------------------------------------------------------------------
 - Plus Jakarta Sans (@fontsource-variable/plus-jakarta-sans@5.3.0) — SIL OFL 1.1
+  (self-hosted local .woff2, zero external font CDNs)
 - Feather Icons (MIT) & Lucide Icons (ISC) — inline SVG geometries
+- Original LOST Topographic Covers & Avatars (/covers/*.svg, 132 local files) —
+  © 2026 LOST Việt Nam (zero external stock photos)
 
 --------------------------------------------------------------------------------
-3. CLIENT PRODUCTION NPM PACKAGES (42: MIT: 26, ISC: 8, BSD-2-Clause: 3, BSD-3-Clause: 3, OFL-1.1: 1, (MIT OR Apache-2.0): 1)
+3. CLIENT PRODUCTION NPM PACKAGES (38: MIT: 23, ISC: 8, BSD-3-Clause: 3, BSD-2-Clause: 2, OFL-1.1: 1, (MIT OR Apache-2.0): 1)
 --------------------------------------------------------------------------------
 - @fontsource-variable/plus-jakarta-sans@5.3.0 [OFL-1.1] (direct)
 - @mapbox/jsonlint-lines-primitives@2.0.3 [MIT]
@@ -38,9 +50,7 @@ Legal, Privacy (Decree 13/2023/ND-CP) & Takedown Contact: contact@lost.vn
 - @maplibre/vt-pbf@4.3.3 [MIT]
 - @socket.io/component-emitter@3.1.2 [MIT]
 - @types/geojson@7946.0.16 [MIT]
-- @types/react@19.2.17 [MIT]
 - bidi-js@1.1.0 [MIT]
-- csstype@3.2.3 [MIT]
 - debug@4.4.3 [MIT]
 - earcut@3.2.4 [ISC]
 - engine.io-client@6.6.6 [MIT]
@@ -48,8 +58,6 @@ Legal, Privacy (Decree 13/2023/ND-CP) & Takedown Contact: contact@lost.vn
 - gl-matrix@3.4.4 [MIT]
 - json-stringify-pretty-compact@4.0.0 [MIT]
 - kdbush@4.1.0 [ISC]
-- leaflet@1.9.4 [BSD-2-Clause] (direct)
-- leaflet.markercluster@1.5.3 [MIT] (direct)
 - maplibre-gl@6.19.0 [BSD-3-Clause] (direct)
 - minimist@1.2.8 [MIT]
 - ms@2.1.3 [MIT]
@@ -70,9 +78,9 @@ Legal, Privacy (Decree 13/2023/ND-CP) & Takedown Contact: contact@lost.vn
 - zustand@5.1.0 [MIT]
 
 --------------------------------------------------------------------------------
-4. SERVER PRODUCTION NPM PACKAGES (106: MIT: 94, Apache-2.0: 4, ISC: 4, BSD-2-Clause: 2, MIT-0: 1, BSD-3-Clause: 1)
+4. SERVER PRODUCTION NPM PACKAGES (108 unique / 112 lockfile entries: MIT: 96 [100 entries], Apache-2.0: 4, ISC: 4, BSD-2-Clause: 2, MIT-0: 1, BSD-3-Clause: 1)
 --------------------------------------------------------------------------------
-- @mongodb-js/saslprep@1.4.13 [MIT]
+- @mongodb-js/saslprep@1.6.3 [MIT]
 - @socket.io/component-emitter@3.1.2 [MIT]
 - @standard-schema/spec@1.1.0 [MIT]
 - @types/cors@2.8.19 [MIT]
@@ -83,8 +91,8 @@ Legal, Privacy (Decree 13/2023/ND-CP) & Takedown Contact: contact@lost.vn
 - accepts@1.3.8 [MIT]
 - accepts@2.0.0 [MIT]
 - base64id@2.0.0 [MIT]
-- body-parser@2.3.0 [MIT]
-- bson@7.3.1 [Apache-2.0]
+- body-parser@2.4.0 [MIT]
+- bson@7.3.4 [Apache-2.0]
 - bytes@3.1.2 [MIT]
 - call-bind-apply-helpers@1.0.2 [MIT]
 - call-bound@1.0.4 [MIT]
@@ -92,6 +100,7 @@ Legal, Privacy (Decree 13/2023/ND-CP) & Takedown Contact: contact@lost.vn
 - content-disposition@1.1.0 [MIT]
 - content-type@1.0.5 [MIT]
 - content-type@2.0.0 [MIT]
+- content-type@2.1.0 [MIT]
 - cookie@0.7.2 [MIT]
 - cookie-signature@1.2.2 [MIT]
 - cors@2.8.6 [MIT] (direct)
@@ -101,7 +110,7 @@ Legal, Privacy (Decree 13/2023/ND-CP) & Takedown Contact: contact@lost.vn
 - dunder-proto@1.0.1 [MIT]
 - ee-first@1.1.1 [MIT]
 - encodeurl@2.0.0 [MIT]
-- engine.io@6.6.9 [MIT]
+- engine.io@6.6.13 [MIT]
 - engine.io-parser@5.2.3 [MIT]
 - es-define-property@1.0.1 [MIT]
 - es-errors@1.3.0 [MIT]
@@ -123,7 +132,7 @@ Legal, Privacy (Decree 13/2023/ND-CP) & Takedown Contact: contact@lost.vn
 - inherits@2.0.4 [ISC]
 - ipaddr.js@1.9.1 [MIT]
 - is-promise@4.0.0 [MIT]
-- kareem@3.3.0 [Apache-2.0]
+- kareem@3.4.1 [Apache-2.0]
 - lodash@4.18.1 [MIT]
 - math-intrinsics@1.1.0 [MIT]
 - media-typer@1.1.1 [MIT]
@@ -133,24 +142,24 @@ Legal, Privacy (Decree 13/2023/ND-CP) & Takedown Contact: contact@lost.vn
 - mime-db@1.54.0 [MIT]
 - mime-types@2.1.35 [MIT]
 - mime-types@3.0.2 [MIT]
-- mongodb@7.5.0 [Apache-2.0]
-- mongodb-connection-string-url@7.0.2 [Apache-2.0]
-- mongoose@9.8.0 [MIT] (direct)
+- mongodb@7.9.1 [Apache-2.0]
+- mongodb-connection-string-url@7.0.3 [Apache-2.0]
+- mongoose@9.13.1 [MIT] (direct)
 - mpath@0.9.0 [MIT]
-- mquery@6.0.0 [MIT]
+- mquery@6.0.1 [MIT]
 - ms@2.1.3 [MIT]
 - negotiator@0.6.3 [MIT]
 - negotiator@1.0.0 [MIT]
-- nodemailer@9.0.3 [MIT-0] (direct)
+- nodemailer@10.6.1 [MIT-0] (direct)
 - object-assign@4.1.1 [MIT]
 - object-inspect@1.13.4 [MIT]
 - on-finished@2.4.1 [MIT]
 - once@1.4.0 [ISC]
 - parseurl@1.3.3 [MIT]
 - path-to-regexp@8.4.2 [MIT]
-- proxy-addr@2.0.7 [MIT]
+- proxy-addr@2.0.8 [MIT]
 - punycode@2.3.1 [MIT]
-- qs@6.15.3 [BSD-3-Clause]
+- qs@6.17.1 [BSD-3-Clause]
 - range-parser@1.3.0 [MIT]
 - raw-body@3.0.2 [MIT]
 - router@2.2.0 [MIT]
@@ -162,76 +171,30 @@ Legal, Privacy (Decree 13/2023/ND-CP) & Takedown Contact: contact@lost.vn
 - side-channel-list@1.0.1 [MIT]
 - side-channel-map@1.0.1 [MIT]
 - side-channel-weakmap@1.0.2 [MIT]
-- sift@17.1.3 [MIT]
+- sift@17.1.4 [MIT]
 - socket.io@4.8.3 [MIT] (direct)
 - socket.io-adapter@2.5.8 [MIT]
 - socket.io-parser@4.2.7 [MIT]
 - sparse-bitfield@3.0.3 [MIT]
 - statuses@2.0.2 [MIT]
 - toidentifier@1.0.1 [MIT]
-- tr46@5.1.1 [MIT]
+- tr46@6.0.0 [MIT]
 - type-is@2.1.0 [MIT]
 - undici-types@8.3.0 [MIT]
 - unpipe@1.0.0 [MIT]
 - vary@1.1.2 [MIT]
-- webidl-conversions@7.0.0 [BSD-2-Clause]
-- whatwg-url@14.2.0 [MIT]
+- webidl-conversions@8.0.1 [BSD-2-Clause]
+- whatwg-url@15.1.0 [MIT]
 - wrappy@1.0.2 [ISC]
 - ws@8.21.1 [MIT]
+- ws@8.23.0 [MIT]
+
+Note: Non-shipped build/dev tooling (client: 206, server: 60, root: 25 packages)
+is 100% commercial-safe with zero GPL/AGPL/LGPL/SSPL/BUSL/NC dependencies.
 
 ================================================================================
 5. FULL VERBATIM LICENSE TEXTS
 ================================================================================
-
---- LEAFLET (BSD-2-Clause) ---
-BSD 2-Clause License
-
-Copyright (c) 2010-2023, Volodymyr Agafonkin
-Copyright (c) 2010-2011, CloudMade
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
---- LEAFLET.MARKERCLUSTER (MIT) ---
-Copyright 2012 David Leaver
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-"Software"), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 --- MAPLIBRE GL JS (BSD-3-Clause & Embedded Notices) ---
 Copyright (c) 2023, MapLibre contributors
@@ -566,8 +529,16 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
---- APACHE LICENSE 2.0 (MongoDB Driver, BSON, kareem, @maplibre/mlt) ---
+--- APACHE LICENSE 2.0 (MongoDB Driver, BSON, kareem, mongodb-connection-string-url, @maplibre/mlt) ---
 Licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0).
+
+--- CORE MIT RUNTIME LIBRARIES (Express, Mongoose, Cloudinary SDK, CORS, Zustand) ---
+Licensed under the MIT License (terms identical to React / Socket.IO above):
+- express@5.2.1 (Express contributors)
+- mongoose@9.13.1 (LearnBoost / Automattic / Mongoose contributors)
+- cloudinary@2.10.0 (Cloudinary)
+- cors@2.8.6 (Troy Goode)
+- zustand@5.1.0 (Paul Henschel / Poimandres contributors)
 
 ================================================================================
 TRADEMARK DISCLAIMER: All third-party trademarks belong to their respective owners.

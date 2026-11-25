@@ -5,10 +5,13 @@ import { LiveBeaconModel, LiveBeaconStatus } from '../models/LiveBeacon.js';
 import { UserModel } from '../models/User.js';
 import { mockTrails } from '../data/seedData.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
-import { resolveTrailByIdOrSlug } from '../utils/resolveTrail.js';
+import { resolveTrailByIdOrSlug, isValidObjectId } from '../utils/resolveTrail.js';
 import { sanitizeInput } from '../utils/validation.js';
 import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
-import { notifyAdmins } from '../utils/notification.js';
+import { notifyAdmins, sendNotification } from '../utils/notification.js';
+import { recordAuditLog } from '../utils/audit.js';
+import { getIO, emitToUser } from '../config/socket.js';
+import { getClientBaseUrl } from '../utils/clientUrl.js';
 
 const BEACON_TOKEN_REGEX = /^[a-f0-9]{24}$/;
 const VALID_BEACON_STATUSES = new Set<LiveBeaconStatus>(['active', 'paused', 'safe', 'sos']);
@@ -18,7 +21,16 @@ const DEFAULT_TTL_HOURS = 48;
 const SOS_ALERT_COOLDOWN_MS = 5 * 60 * 1000; // 5-minute atomic cooldown per beacon prevents admin alert spam
 
 function parseCoordinates(rawLat: unknown, rawLng: unknown): { lat: number; lng: number } | null {
-  if (rawLat === undefined || rawLat === null || rawLat === '' || rawLng === undefined || rawLng === null || rawLng === '') {
+  if (
+    rawLat === undefined ||
+    rawLat === null ||
+    rawLat === '' ||
+    typeof rawLat === 'boolean' ||
+    rawLng === undefined ||
+    rawLng === null ||
+    rawLng === '' ||
+    typeof rawLng === 'boolean'
+  ) {
     return null;
   }
   const lat = Number(rawLat);
@@ -30,7 +42,7 @@ function parseCoordinates(rawLat: unknown, rawLng: unknown): { lat: number; lng:
 }
 
 function parseOptionalBoundedNumber(raw: unknown, min: number, max: number, decimals = 1): number | null {
-  if (raw === undefined || raw === null || raw === '') return null;
+  if (raw === undefined || raw === null || raw === '' || typeof raw === 'boolean') return null;
   const n = Number(raw);
   if (!Number.isFinite(n)) return null;
   const clamped = Math.max(min, Math.min(max, n));
@@ -103,7 +115,7 @@ export const createLiveBeacon = async (req: AuthRequest, res: Response) => {
     const safeBattery = parseOptionalBoundedNumber(batteryPercent, 0, 100, 0);
     const safeAlt = parseOptionalBoundedNumber(altitudeM, -200, 9000, 0);
     const safeAcc = parseOptionalBoundedNumber(accuracyM, 0, 50000, 0);
-    const ttlHours = Math.min(72, Math.max(1, Math.round(Number(expiresInHours) || DEFAULT_TTL_HOURS)));
+    const ttlHours = parseOptionalBoundedNumber(expiresInHours, 1, 72, 0) ?? DEFAULT_TTL_HOURS;
     const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
 
     const now = new Date();
@@ -148,7 +160,7 @@ export const createLiveBeacon = async (req: AuthRequest, res: Response) => {
     );
 
     const sharePath = `/beacon/${token}`;
-    const clientUrl = (process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const clientUrl = getClientBaseUrl();
 
     return res.status(201).json({
       success: true,
@@ -204,7 +216,7 @@ export const pingLiveBeacon = async (req: AuthRequest, res: Response) => {
     }
 
     if (batteryPercent !== undefined && batteryPercent !== null && batteryPercent !== '') {
-      const b = Number(batteryPercent);
+      const b = typeof batteryPercent === 'boolean' ? NaN : Number(batteryPercent);
       if (!Number.isFinite(b) || b < 0 || b > 100) {
         return res.status(400).json({ success: false, message: 'Phần trăm pin phải nằm trong khoảng 0 đến 100.' });
       }
@@ -382,6 +394,110 @@ export const stopLiveBeacon = async (req: AuthRequest, res: Response) => {
   } catch (err) {
     console.error('[Stop Live Beacon Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi khi kết thúc phiên Live Beacon.' });
+  }
+};
+
+// PATCH /api/live-beacons/admin/:id/resolve - Admin/Moderator SAR resolution ending a live/SOS beacon
+export const adminResolveLiveBeacon = async (req: AuthRequest, res: Response) => {
+  try {
+    const actorId = req.user?.userId;
+    const { id } = req.params;
+
+    if (!actorId || !Types.ObjectId.isValid(actorId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: 'Mã phiên Live Beacon không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const existing = await LiveBeaconModel.findById(id).lean();
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy phiên Live Beacon.' });
+    }
+    if (existing.status === 'safe') {
+      return res.status(400).json({
+        success: false,
+        message: 'Phiên Live Beacon này đã kết thúc trước đó.',
+      });
+    }
+
+    const rawReason = sanitizeInput(String(req.body?.reason || req.body?.note || '')).trim().slice(0, 180);
+    const endedAt = new Date();
+    const setFields: Record<string, unknown> = {
+      status: 'safe',
+    };
+    if (rawReason) {
+      const stamp = `[SAR kết thúc tín hiệu: ${rawReason}]`;
+      const base = (existing.emergencyNote || '').trim();
+      const combined = base ? `${base} ${stamp}` : stamp;
+      setFields.emergencyNote =
+        combined.length <= 400
+          ? combined
+          : `${base.slice(0, Math.max(0, 400 - stamp.length - 4)).trim()}... ${stamp}`.slice(0, 400);
+    }
+
+    const updated = await LiveBeaconModel.findOneAndUpdate(
+      { _id: id, status: { $ne: 'safe' } },
+      { $set: setFields },
+      { new: true }
+    )
+      .select('token userId displayName trailId trailName status batteryPercent distanceKm elevationGainM lastPosition emergencyNote updatedAt expiresAt')
+      .lean();
+
+    if (!updated) {
+      return res.status(409).json({
+        success: false,
+        message: 'Trạng thái phiên Live Beacon đã thay đổi.',
+      });
+    }
+
+    const beaconEventPayload = {
+      beaconId: String(updated._id),
+      token: updated.token,
+      status: updated.status,
+      endedAt: endedAt.toISOString(),
+      trailName: updated.trailName,
+      displayName: updated.displayName,
+    };
+
+    const io = getIO();
+    if (io) {
+      io.to(`beacon:${updated.token}`).emit('liveBeaconUpdated', beaconEventPayload);
+      io.to(`beacon:${String(updated._id)}`).emit('liveBeaconUpdated', beaconEventPayload);
+    }
+    emitToUser(String(updated.userId), 'liveBeaconUpdated', beaconEventPayload);
+
+    await recordAuditLog(
+      req,
+      'ADMIN_RESOLVE_BEACON',
+      'LiveBeacon',
+      `Kết thúc phiên Live Beacon #${updated._id} (${updated.displayName} - ${updated.trailName}, trạng thái cũ: ${existing.status})${rawReason ? ` — Ghi chú: ${rawReason}` : ''}`
+    );
+
+    await sendNotification({
+      recipientId: String(updated.userId),
+      type: 'safety_alert',
+      category: 'safety',
+      title: `Đã kết thúc tín hiệu định vị: ${updated.trailName}`,
+      message: `Đội điều phối an toàn LOST đã đóng phiên phát tín hiệu trực tiếp của bạn trên cung ${updated.trailName}.${rawReason ? ` Ghi chú: ${rawReason}` : ''}`,
+      link: `/beacon/${updated.token}`,
+      relatedId: String(updated._id),
+    }).catch((err) => console.warn('[Admin Resolve Beacon Notification Error]:', (err as Error).message));
+
+    return res.json({
+      success: true,
+      message: 'Đã kết thúc phiên phát tín hiệu trực tiếp thành công.',
+      data: {
+        ...updated,
+        endedAt: endedAt.toISOString(),
+      },
+    });
+  } catch (err) {
+    console.error('[Admin Resolve Live Beacon Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi kết thúc phiên Live Beacon.' });
   }
 };
 

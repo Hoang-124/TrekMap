@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   IconBackpack,
   IconShieldAlert,
@@ -11,7 +11,7 @@ import {
 import { mockTrails } from '../../data/seedData.js';
 import { auditPackApi, applyGearItemsToTrailChecklist } from '../../services/aiAssistant.service.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
-import { scopedStorageKey } from '../../utils/storageScope.js';
+import { safeLocalStorageGet, scopedStorageKey } from '../../utils/storageScope.js';
 import type { Trail } from '../../types.js';
 import type { PackAuditItemInput, PackAuditResult } from './ai.types.js';
 
@@ -19,6 +19,14 @@ interface AiPackAuditorProps {
   trails?: Trail[];
   currentTrail?: Trail | null;
   onToast: (msg: string) => void;
+}
+
+function computeCheckedPackKg(list: PackAuditItemInput[]): number {
+  const totalGrams = list
+    .filter((it) => it.checked !== false && it.name.trim())
+    .reduce((sum, it) => sum + Math.max(0, Number(it.weightGrams) || 0), 0);
+  if (totalGrams <= 0) return 1;
+  return Math.max(1, Math.min(35, Math.round((totalGrams / 1000) * 10) / 10));
 }
 
 function hydrateChecklistForTrail(trailId: string): PackAuditItemInput[] {
@@ -56,17 +64,36 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
 
   const [selectedTrailId, setSelectedTrailId] = useState<string>(initialTrailId);
   const [bodyWeightKg, setBodyWeightKg] = useState<number>(62);
-  const [packWeightKg, setPackWeightKg] = useState<number>(9);
+  const [bodyWeightInput, setBodyWeightInput] = useState<string>('62');
   const [items, setItems] = useState<PackAuditItemInput[]>(() => hydrateChecklistForTrail(initialTrailId));
+  const [packWeightManual, setPackWeightManual] = useState<boolean>(false);
+  const [packWeightKg, setPackWeightKg] = useState<number>(() =>
+    computeCheckedPackKg(hydrateChecklistForTrail(initialTrailId))
+  );
+  const [packWeightInput, setPackWeightInput] = useState<string>(() =>
+    String(computeCheckedPackKg(hydrateChecklistForTrail(initialTrailId)))
+  );
   const [cloudChecklistSynced, setCloudChecklistSynced] = useState(false);
   const [customItemName, setCustomItemName] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<PackAuditResult | null>(null);
   const [appliedAll, setAppliedAll] = useState(false);
 
+  const auditAbortRef = useRef<AbortController | null>(null);
+  const auditReqIdRef = useRef<number>(0);
+  const isMountedRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      auditAbortRef.current?.abort();
+    };
+  }, []);
+
   // Hydrate authoritative cloud checklist when logged in so cloud gear is audited accurately
   useEffect(() => {
-    if (typeof window === 'undefined' || !localStorage.getItem('lost_token')) {
+    if (typeof window === 'undefined' || !safeLocalStorageGet('lost_token')) {
       return;
     }
     const controller = new AbortController();
@@ -89,8 +116,14 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
             })
           );
           setItems(mapped);
+          const autoKg = computeCheckedPackKg(mapped);
+          setPackWeightKg(autoKg);
+          setPackWeightInput(String(autoKg));
+          setPackWeightManual(false);
           if (typeof cloudData.bodyWeightKg === 'number' && cloudData.bodyWeightKg >= 30 && cloudData.bodyWeightKg <= 180) {
-            setBodyWeightKg(Math.round(cloudData.bodyWeightKg));
+            const bw = Math.round(cloudData.bodyWeightKg);
+            setBodyWeightKg(bw);
+            setBodyWeightInput(String(bw));
           }
           setCloudChecklistSynced(true);
           try {
@@ -109,42 +142,102 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
     return () => controller.abort();
   }, [selectedTrailId]);
 
+  const syncPackWeightIfAuto = (nextItems: PackAuditItemInput[]) => {
+    if (!packWeightManual) {
+      const nextKg = computeCheckedPackKg(nextItems);
+      setPackWeightKg(nextKg);
+      setPackWeightInput(String(nextKg));
+    }
+  };
+
+  const commitBodyWeight = (raw: string): number => {
+    const parsed = Number(raw.replace(',', '.'));
+    const clamped =
+      raw.trim() !== '' && Number.isFinite(parsed)
+        ? Math.max(35, Math.min(150, Math.round(parsed)))
+        : bodyWeightKg;
+    setBodyWeightKg(clamped);
+    setBodyWeightInput(String(clamped));
+    return clamped;
+  };
+
+  const commitPackWeight = (raw: string): number => {
+    const parsed = Number(raw.replace(',', '.'));
+    const clamped =
+      raw.trim() !== '' && Number.isFinite(parsed)
+        ? Math.max(1, Math.min(35, Math.round(parsed * 10) / 10))
+        : packWeightKg;
+    setPackWeightKg(clamped);
+    setPackWeightInput(String(clamped));
+    return clamped;
+  };
+
   const handleChangeTrail = (nextId: string) => {
+    auditAbortRef.current?.abort();
+    auditReqIdRef.current += 1;
     setSelectedTrailId(nextId);
-    setItems(hydrateChecklistForTrail(nextId));
+    const hydrated = hydrateChecklistForTrail(nextId);
+    setItems(hydrated);
+    const nextKg = computeCheckedPackKg(hydrated);
+    setPackWeightKg(nextKg);
+    setPackWeightInput(String(nextKg));
+    setPackWeightManual(false);
     setCloudChecklistSynced(false);
+    setLoading(false);
     setResult(null);
     setAppliedAll(false);
   };
 
   const handleToggleItem = (idx: number) => {
-    setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, checked: !it.checked } : it)));
+    setItems((prev) => {
+      const next = prev.map((it, i) => (i === idx ? { ...it, checked: !it.checked } : it));
+      syncPackWeightIfAuto(next);
+      return next;
+    });
   };
 
   const handleAddCustomItem = () => {
     const clean = customItemName.trim();
     if (!clean) return;
-    setItems((prev) => [...prev, { name: clean, weightGrams: 250, checked: true }]);
+    setItems((prev) => {
+      const next = [...prev, { name: clean, weightGrams: 250, checked: true }];
+      syncPackWeightIfAuto(next);
+      return next;
+    });
     setCustomItemName('');
   };
 
   const handleRunAudit = async (e?: React.FormEvent) => {
     e?.preventDefault();
+    const resolvedBodyKg = commitBodyWeight(bodyWeightInput);
+    const resolvedPackKg = commitPackWeight(packWeightInput);
+    auditAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    auditAbortRef.current = ctrl;
+    const reqId = ++auditReqIdRef.current;
+
     setLoading(true);
     setAppliedAll(false);
     try {
       const data = await auditPackApi(
         {
           trailId: selectedTrailId,
-          bodyWeightKg,
-          packWeightKg,
+          bodyWeightKg: resolvedBodyKg,
+          packWeightKg: resolvedPackKg,
           packedItems: items,
         },
-        trailCatalog
+        trailCatalog,
+        ctrl.signal
       );
-      setResult(data);
+      if (isMountedRef.current && reqId === auditReqIdRef.current) {
+        setResult(data);
+      }
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') return;
     } finally {
-      setLoading(false);
+      if (isMountedRef.current && reqId === auditReqIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -153,40 +246,74 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
     const allMissing = [...result.criticalMissing, ...result.recommendedAdditions];
     if (allMissing.length === 0) return;
 
+    // Preserve any custom items added in this panel alongside missing recommended gear
+    const existingNames = new Set(allMissing.map((m) => m.name.trim().toLowerCase()));
+    const customItemsPayload = items
+      .filter((it) => it.checked !== false && it.name.trim() && !existingNames.has(it.name.trim().toLowerCase()))
+      .map((it) => ({
+        name: it.name.trim(),
+        category: 'Khác' as const,
+        weightGrams: it.weightGrams ?? 250,
+        isEssential: false,
+        reason: 'Đồ bạn tự thêm vào balo',
+      }));
+
     const res = await applyGearItemsToTrailChecklist(
       result.trailId,
       result.trailName,
-      allMissing.map((m) => ({
-        name: m.name,
-        category: m.category,
-        weightGrams: m.weightGrams,
-        isEssential: m.severity === 'critical',
-        reason: m.reason,
-      })),
+      [
+        ...customItemsPayload,
+        ...allMissing.map((m) => ({
+          name: m.name,
+          category: m.category,
+          weightGrams: m.weightGrams,
+          isEssential: m.severity === 'critical',
+          reason: m.reason,
+        })),
+      ],
       {
         bodyWeightKg,
         durationDays: result.durationDays,
       }
     );
 
-    // Also update local view list immediately
-    setItems(hydrateChecklistForTrail(result.trailId));
+    if (!isMountedRef.current) return;
+
+    // Merge newly added missing items directly into view state without dropping user's custom entries
+    setItems((prev) => {
+      const seen = new Set(prev.map((it) => it.name.trim().toLowerCase()));
+      const additions: PackAuditItemInput[] = allMissing
+        .filter((m) => !seen.has(m.name.trim().toLowerCase()))
+        .map((m) => ({ name: m.name, weightGrams: m.weightGrams, checked: true }));
+      const merged = [...prev, ...additions];
+      syncPackWeightIfAuto(merged);
+      return merged;
+    });
     setAppliedAll(true);
     onToast(
       res.addedCount > 0
-        ? `Đã bổ sung ${res.addedCount} món thiếu vào Checklist ${result.trailName}${res.cloudSynced ? ' (đồng bộ đám mây)' : ''}!`
-        : 'Các món này đã có sẵn trong Checklist của cung đường.'
+        ? `Đã thêm ${res.addedCount} món vào checklist ${result.trailName}${res.cloudSynced ? ' (đồng bộ đám mây)' : ''}.`
+        : 'Các món này đã có sẵn trong checklist của cung đường.'
     );
   };
 
-  const readinessColor =
+  const readinessStrokeColor =
     !result
       ? 'var(--color-primary)'
-      : result.readinessScore >= 80 && result.criticalMissing.length === 0
+      : result.readinessGrade === 'SẴN SÀNG'
       ? 'var(--color-primary)'
-      : result.readinessScore >= 55
+      : result.readinessGrade === 'CẦN BỔ SUNG'
       ? 'var(--color-earth)'
       : 'var(--color-error)';
+
+  const readinessTextColor =
+    !result
+      ? 'var(--color-primary)'
+      : result.readinessGrade === 'SẴN SÀNG'
+      ? 'var(--color-primary)'
+      : result.readinessGrade === 'CẦN BỔ SUNG'
+      ? 'var(--color-earth)'
+      : 'var(--color-error-text, var(--color-error))';
 
   const ringRadius = 34;
   const ringCircumference = 2 * Math.PI * ringRadius;
@@ -219,7 +346,7 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--color-earth)', fontWeight: 800, fontSize: '0.82rem' }}>
             <IconBackpack size={15} color="var(--color-earth)" />
-            <span>KIỂM TOÁN BALO &amp; MỨC ĐỘ SẴN SÀNG SINH TỒN</span>
+            <span>Rà soát balo &amp; đồ an toàn cần mang</span>
           </div>
           <span
             style={{
@@ -229,14 +356,14 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
             }}
           >
             {cloudChecklistSynced
-              ? 'Đã đồng bộ Checklist Cloud · Đối chiếu thực địa'
-              : 'Đối chiếu nhiệt độ đỉnh · nguồn nước · giấy phép'}
+              ? 'Đã lấy từ checklist đã lưu của bạn'
+              : 'So theo nhiệt độ đỉnh · nguồn nước · giấy phép'}
           </span>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8 }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', gridColumn: 'span 2' }}>
-            <span>Cung đường mục tiêu ({trailCatalog.length} tuyến thực địa)</span>
+            <span>Cung đường bạn chuẩn bị đi ({trailCatalog.length} cung)</span>
             <select
               value={selectedTrailId}
               onChange={(e) => handleChangeTrail(e.target.value)}
@@ -252,7 +379,7 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
             >
               {trailCatalog.map((t) => (
                 <option key={t.id} value={t.id}>
-                  {t.name} ({t.maxAltitudeM}m · {t.province})
+                  {t.name} ({t.maxAltitudeM.toLocaleString('vi-VN')}m · {t.province})
                 </option>
               ))}
             </select>
@@ -264,8 +391,16 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
               type="number"
               min={35}
               max={150}
-              value={bodyWeightKg}
-              onChange={(e) => setBodyWeightKg(Math.max(35, Number(e.target.value) || 60))}
+              value={bodyWeightInput}
+              onChange={(e) => {
+                const raw = e.target.value;
+                setBodyWeightInput(raw);
+                const n = Number(raw);
+                if (raw.trim() !== '' && Number.isFinite(n) && n >= 35 && n <= 150) {
+                  setBodyWeightKg(Math.round(n));
+                }
+              }}
+              onBlur={() => commitBodyWeight(bodyWeightInput)}
               style={{
                 padding: '6px 8px',
                 borderRadius: 4,
@@ -279,14 +414,45 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
           </label>
 
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)' }}>
-            <span>Tổng nặng balo (kg)</span>
+            <span style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 4 }}>
+              <span>Tổng nặng balo (kg)</span>
+              {packWeightManual && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const autoKg = computeCheckedPackKg(items);
+                    setPackWeightManual(false);
+                    setPackWeightKg(autoKg);
+                    setPackWeightInput(String(autoKg));
+                  }}
+                  style={{
+                    fontSize: '0.65rem',
+                    fontWeight: 700,
+                    color: 'var(--color-primary)',
+                    cursor: 'pointer',
+                    textDecoration: 'underline',
+                  }}
+                >
+                  Tự tính
+                </button>
+              )}
+            </span>
             <input
               type="number"
               min={1}
               max={35}
               step={0.5}
-              value={packWeightKg}
-              onChange={(e) => setPackWeightKg(Math.max(1, Number(e.target.value) || 8))}
+              value={packWeightInput}
+              onChange={(e) => {
+                const raw = e.target.value;
+                setPackWeightManual(true);
+                setPackWeightInput(raw);
+                const n = Number(raw);
+                if (raw.trim() !== '' && Number.isFinite(n) && n >= 1 && n <= 35) {
+                  setPackWeightKg(Math.round(n * 10) / 10);
+                }
+              }}
+              onBlur={() => commitPackWeight(packWeightInput)}
               style={{
                 padding: '6px 8px',
                 borderRadius: 4,
@@ -307,7 +473,7 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
               Đồ đã xếp trong balo ({items.filter((i) => i.checked !== false).length}/{items.length} món)
             </span>
             <span style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)' }}>
-              Tự nạp từ Checklist cung đường
+              Tự lấy từ checklist cung đường
             </span>
           </div>
 
@@ -406,7 +572,7 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
           }}
         >
           <IconSparkles size={14} color="var(--color-on-primary)" />
-          <span>{loading ? 'Đang kiểm toán balo với dữ liệu đỉnh...' : 'Chạy Kiểm Toán An Toàn Balo'}</span>
+          <span>{loading ? 'Đang kiểm tra balo theo điều kiện cung...' : 'Kiểm tra danh sách đồ trong balo'}</span>
         </button>
       </form>
 
@@ -418,7 +584,7 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
             style={{
               background: 'var(--color-bg-main)',
               border: '1px solid var(--color-border-strong)',
-              borderLeft: `3px solid ${readinessColor}`,
+              borderLeft: `3px solid ${readinessStrokeColor}`,
               borderRadius: 6,
               padding: 12,
               display: 'flex',
@@ -435,7 +601,7 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
                 cy={42}
                 r={ringRadius}
                 fill="none"
-                stroke={readinessColor}
+                stroke={readinessStrokeColor}
                 strokeWidth={7}
                 strokeDasharray={ringCircumference}
                 strokeDashoffset={ringOffset}
@@ -449,7 +615,7 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
                 fill="var(--color-text-main)"
                 fontSize="16"
                 fontWeight="800"
-                fontFamily="Plus Jakarta Sans, sans-serif"
+                fontFamily="var(--font-family)"
               >
                 {result.readinessScore}
               </text>
@@ -463,28 +629,28 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
                     fontWeight: 800,
                     padding: '2px 7px',
                     borderRadius: 4,
-                    background: `color-mix(in srgb, ${readinessColor} 15%, transparent)`,
-                    color: readinessColor,
+                    background: `color-mix(in srgb, ${readinessStrokeColor} 15%, transparent)`,
+                    color: readinessTextColor,
                   }}
                 >
                   {result.readinessGrade}
                 </span>
                 <span style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                  Tỷ lệ balo: {result.packRatioPercent}% thể trọng
+                  Tỷ lệ balo: {result.packRatioPercent}% cân nặng cơ thể
                 </span>
               </div>
               <div style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', lineHeight: 1.45 }}>
                 {result.weatherNote}
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, fontSize: '0.7rem', color: 'var(--color-text-dim)' }}>
-                <span>Đỉnh {result.maxAltitudeM.toLocaleString()}m</span>
+                <span>Đỉnh {result.maxAltitudeM.toLocaleString('vi-VN')}m</span>
                 <span>·</span>
                 <span style={{ color: result.hasWaterSource ? 'var(--color-sky)' : 'var(--color-error-text, var(--color-error))', fontWeight: 700 }}>
                   <IconDroplet size={10} style={{ verticalAlign: 'middle', marginRight: 2 }} />
                   {result.hasWaterSource ? 'Có nguồn nước suối' : 'Tuyến khô (ít nước)'}
                 </span>
                 <span>·</span>
-                <span>{result.permitRequired ? 'Cần CCCD / Giấy phép' : 'Tự do (mang CCCD)'}</span>
+                <span>{result.permitRequired ? 'Cần CCCD & giấy phép' : 'Tự do (mang CCCD)'}</span>
               </div>
             </div>
           </div>
@@ -505,7 +671,7 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--color-error-text, var(--color-error))', fontSize: '0.78rem', fontWeight: 800 }}>
                 <IconShieldAlert size={14} color="var(--color-error-text, var(--color-error))" />
-                <span>THIẾU ĐỒ AN TOÀN BẮT BUỘC ({result.criticalMissing.length} món)</span>
+                <span>Còn thiếu đồ an toàn quan trọng ({result.criticalMissing.length} món)</span>
               </div>
               {result.criticalMissing.map((m, idx) => (
                 <div key={idx} style={{ background: 'var(--color-bg-card)', padding: '7px 9px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
@@ -534,7 +700,7 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--color-sky)', fontSize: '0.77rem', fontWeight: 800 }}>
                 <IconAlertTriangle size={13} color="var(--color-sky)" />
-                <span>NÊN BỔ SUNG THÊM ({result.recommendedAdditions.length} món)</span>
+                <span>Nên mang thêm ({result.recommendedAdditions.length} món)</span>
               </div>
               {result.recommendedAdditions.map((m, idx) => (
                 <div key={idx} style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', lineHeight: 1.45 }}>
@@ -558,7 +724,7 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
               }}
             >
               <strong style={{ color: 'var(--color-primary)', display: 'block', marginBottom: 4 }}>
-                Mẹo tối ưu trọng lượng balo:
+                Gợi ý giảm tải balo:
               </strong>
               <ul style={{ margin: 0, paddingLeft: 16 }}>
                 {result.weightSavingTips.map((tip, idx) => (
@@ -592,8 +758,8 @@ export const AiPackAuditor: React.FC<AiPackAuditorProps> = ({ trails, currentTra
               <IconCheckCircle size={14} />
               <span>
                 {appliedAll
-                  ? `Đã đồng bộ toàn bộ đồ thiếu vào Checklist ${result.trailName}`
-                  : `Bổ Sung ${result.criticalMissing.length + result.recommendedAdditions.length} Món Thiếu Vào Checklist`}
+                  ? `Đã lưu đồ còn thiếu vào checklist ${result.trailName}`
+                  : `Thêm ${result.criticalMissing.length + result.recommendedAdditions.length} món còn thiếu vào checklist`}
               </span>
             </button>
           )}

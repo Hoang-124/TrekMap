@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   IconMessageSquare,
   IconSend,
@@ -15,6 +15,7 @@ import {
 import { useSocket } from '../../hooks/useSocket.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import type { UserProfile } from '../../types.js';
+import { safeLocalStorageGet } from '../../utils/storageScope.js';
 
 export type RadioChannelId = 'general' | 'north' | 'central' | 'south' | 'sos';
 
@@ -26,12 +27,69 @@ interface RadioChannelConfig {
 }
 
 const RADIO_CHANNELS: RadioChannelConfig[] = [
-  { id: 'general', shortLabel: 'Toàn Quốc', fullLabel: 'Kênh Chung Toàn Quốc' },
-  { id: 'north', shortLabel: 'Miền Bắc', fullLabel: 'Miền Bắc / Hoàng Liên Sơn' },
-  { id: 'central', shortLabel: 'Miền Trung', fullLabel: 'Miền Trung / Tây Nguyên' },
+  { id: 'general', shortLabel: 'Toàn quốc', fullLabel: 'Kênh chung toàn quốc' },
+  { id: 'north', shortLabel: 'Miền Bắc', fullLabel: 'Miền Bắc · Hoàng Liên Sơn' },
+  { id: 'central', shortLabel: 'Miền Trung', fullLabel: 'Miền Trung · Tây Nguyên' },
   { id: 'south', shortLabel: 'Miền Nam', fullLabel: 'Miền Nam' },
-  { id: 'sos', shortLabel: 'SOS Khẩn Cấp', fullLabel: 'Kênh Khẩn Cấp SOS', isEmergency: true },
+  { id: 'sos', shortLabel: 'Khẩn cấp SOS', fullLabel: 'Kênh khẩn cấp SOS', isEmergency: true },
 ];
+
+const ALLOWED_NAME_COLOR_TOKENS = new Set<string>([
+  'var(--color-primary)',
+  'var(--color-sky)',
+  'var(--color-earth)',
+  'var(--color-sun)',
+  'var(--color-stream)',
+  'var(--color-text-main)',
+  'var(--color-text-muted)',
+]);
+
+const MAX_TRACKED_SENT_IDS = 200;
+const MAX_CHAT_MESSAGE_LENGTH = 1000;
+const OBJECT_ID_REGEX = /^[a-fA-F0-9]{24}$/;
+
+function resolveSafeNameColor(rawColor?: string): string {
+  if (!rawColor) return 'var(--color-text-main)';
+  const trimmed = rawColor.trim();
+  return ALLOWED_NAME_COLOR_TOKENS.has(trimmed) ? trimmed : 'var(--color-text-main)';
+}
+
+function isSafeAvatarSrc(url?: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  return (
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('http://') ||
+    (trimmed.startsWith('/') && !trimmed.startsWith('//'))
+  );
+}
+
+function isValidGpsCoords(lat?: number, lng?: number): boolean {
+  return (
+    typeof lat === 'number' &&
+    typeof lng === 'number' &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    lat >= -90 &&
+    lat <= 90 &&
+    lng >= -180 &&
+    lng <= 180
+  );
+}
+
+function isValidAltitude(alt?: number): alt is number {
+  return typeof alt === 'number' && Number.isFinite(alt) && alt >= -500 && alt <= 9000;
+}
+
+function formatGpsCoords(lat: number, lng: number): string {
+  const latDir = lat >= 0 ? 'N' : 'S';
+  const lngDir = lng >= 0 ? 'E' : 'W';
+  return `${Math.abs(lat).toFixed(4)}°${latDir}, ${Math.abs(lng).toFixed(4)}°${lngDir}`;
+}
+
+function isRateLimitErrorMessage(msg: string): boolean {
+  return /quá nhanh|rate|đợi|cooldown|chậm lại|giới hạn/i.test(msg);
+}
 
 export interface CommunityChatMessage {
   id: string;
@@ -57,12 +115,25 @@ interface GpsTelemetryTag {
   altitudeM?: number;
 }
 
+interface PendingDraftSnapshot {
+  tempId: string;
+  channel: RadioChannelId;
+  text: string;
+  quote: { author: string; text: string } | null;
+  gps: GpsTelemetryTag | null;
+}
+
 interface LiveTrekkerChatroomProps {
   currentUser?: (UserProfile & { _id?: string; avatar?: string }) | null;
   onRequireLogin?: (actionName: string) => void;
+  onOpenAuthorProfile?: (author: { userId?: string; name: string; avatar: string }) => void;
 }
 
-export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ currentUser, onRequireLogin }) => {
+export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({
+  currentUser,
+  onRequireLogin,
+  onOpenAuthorProfile,
+}) => {
   const [activeChannel, setActiveChannel] = useState<RadioChannelId>('general');
   const [messages, setMessages] = useState<CommunityChatMessage[]>([]);
   const [hasMoreOlder, setHasMoreOlder] = useState<boolean>(false);
@@ -76,7 +147,9 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
   const [chatErrorMsg, setChatErrorMsg] = useState<string>('');
   const [gpsTag, setGpsTag] = useState<GpsTelemetryTag | null>(null);
   const [locatingGps, setLocatingGps] = useState<boolean>(false);
+  const [confirmDeleteMsgId, setConfirmDeleteMsgId] = useState<string | null>(null);
   const [deletingMsgId, setDeletingMsgId] = useState<string | null>(null);
+  const [failedAvatarKeys, setFailedAvatarKeys] = useState<Record<string, boolean>>({});
   const { socket } = useSocket();
   const [socketConnState, setSocketConnState] = useState<{ sock: typeof socket; connected: boolean } | null>(null);
 
@@ -84,11 +157,49 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const tabButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const audioCtxRef = useRef<AudioContext | null>(null);
   const sentMessageIds = useRef<Set<string>>(new Set());
   const currentUserRef = useRef(currentUser);
   const activeChannelRef = useRef<RadioChannelId>(activeChannel);
-  const skipNextAutoScrollRef = useRef<boolean>(false);
+  const pendingDraftRef = useRef<PendingDraftSnapshot | null>(null);
+  const loadOlderAbortRef = useRef<AbortController | null>(null);
+  const reconnectAbortRef = useRef<AbortController | null>(null);
+  const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const mountedRef = useRef<boolean>(true);
+
+  const scheduleTimer = useCallback((fn: () => void, delayMs: number) => {
+    const id = setTimeout(() => {
+      timersRef.current.delete(id);
+      if (mountedRef.current) {
+        fn();
+      }
+    }, delayMs);
+    timersRef.current.add(id);
+    return id;
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const timers = timersRef.current;
+    return () => {
+      mountedRef.current = false;
+      timers.forEach((id) => clearTimeout(id));
+      timers.clear();
+      if (loadOlderAbortRef.current) {
+        loadOlderAbortRef.current.abort();
+        loadOlderAbortRef.current = null;
+      }
+      if (reconnectAbortRef.current) {
+        reconnectAbortRef.current.abort();
+        reconnectAbortRef.current = null;
+      }
+      if (audioCtxRef.current) {
+        audioCtxRef.current.close().catch(() => {});
+        audioCtxRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     currentUserRef.current = currentUser;
@@ -101,16 +212,6 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
   const currentUserId = String(currentUser?._id || currentUser?.id || '');
   const isStaff = currentUser?.role === 'admin' || currentUser?.role === 'moderator';
 
-  // Clean up synthesized Web Audio context on unmount
-  useEffect(() => {
-    return () => {
-      if (audioCtxRef.current) {
-        audioCtxRef.current.close().catch(() => {});
-        audioCtxRef.current = null;
-      }
-    };
-  }, []);
-
   // 10-Second Rate Limit Cooldown Interval
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -120,20 +221,42 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
     return () => clearInterval(timer);
   }, [cooldown]);
 
-  // Original Web Audio API 2-tone alpine radio chime (zero external audio files)
-  const playIncomingNotificationSound = () => {
+  const isNearBottom = useCallback(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+  }, []);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const el = messagesContainerRef.current;
+    if (el) {
+      el.scrollTo({
+        top: el.scrollHeight,
+        behavior,
+      });
+    }
+  }, []);
+
+  // Original Web Audio API 2-tone alpine radio chime (recreates if closed, schedules only when running, disconnects nodes)
+  const playIncomingNotificationSound = useCallback(() => {
     try {
       const AudioCtor =
         window.AudioContext ||
         (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!AudioCtor) return;
+      if (audioCtxRef.current && audioCtxRef.current.state === 'closed') {
+        audioCtxRef.current = null;
+      }
       if (!audioCtxRef.current) {
         audioCtxRef.current = new AudioCtor();
       }
       const ctx = audioCtxRef.current;
       if (ctx.state === 'suspended') {
         void ctx.resume().catch(() => {});
+        return;
       }
+      if (ctx.state !== 'running') return;
+
       const now = ctx.currentTime;
       const notes = [
         { freq: 783.99, start: 0, dur: 0.11 }, // G5
@@ -149,46 +272,58 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
         gain.gain.exponentialRampToValueAtTime(0.0001, now + n.start + n.dur);
         osc.connect(gain);
         gain.connect(ctx.destination);
+        osc.onended = () => {
+          try {
+            osc.disconnect();
+            gain.disconnect();
+          } catch {
+            // ignore disconnect errors
+          }
+        };
         osc.start(now + n.start);
         osc.stop(now + n.start + n.dur + 0.02);
       }
     } catch {
       // ignore autoplay / audio device restrictions
     }
-  };
-
-  const scrollToBottom = () => {
-    if (messagesContainerRef.current) {
-      messagesContainerRef.current.scrollTo({
-        top: messagesContainerRef.current.scrollHeight,
-        behavior: 'smooth',
-      });
-    }
-  };
+  }, []);
 
   const handleSelectChannel = (nextChannel: RadioChannelId) => {
     if (nextChannel === activeChannel) return;
+    if (loadOlderAbortRef.current) {
+      loadOlderAbortRef.current.abort();
+      loadOlderAbortRef.current = null;
+    }
+    if (reconnectAbortRef.current) {
+      reconnectAbortRef.current.abort();
+      reconnectAbortRef.current = null;
+    }
     setActiveChannel(nextChannel);
     setMessages([]);
     setHasMoreOlder(false);
+    setLoadingOlder(false);
     setChatErrorMsg('');
+    setGpsTag(null);
+    setQuoteMessage(null);
+    setConfirmDeleteMsgId(null);
   };
 
   // Fetch persistent chat history for active channel from MongoDB
   useEffect(() => {
     const controller = new AbortController();
+    const requestedChannel = activeChannel;
 
     const fetchChatHistory = async () => {
       try {
         const res = await fetch(
-          `/api/forum/chat-messages?channel=${encodeURIComponent(activeChannel)}&limit=40`,
+          `/api/forum/chat-messages?channel=${encodeURIComponent(requestedChannel)}&limit=40`,
           { signal: controller.signal }
         );
         const data = await res.json();
-        if (!controller.signal.aborted && data.success && Array.isArray(data.data)) {
+        if (!controller.signal.aborted && activeChannelRef.current === requestedChannel && data.success && Array.isArray(data.data)) {
           setMessages(data.data);
           setHasMoreOlder(Boolean(data.hasMore));
-          setTimeout(scrollToBottom, 100);
+          scheduleTimer(() => scrollToBottom('auto'), 60);
         }
       } catch (err: unknown) {
         const isAbort = err instanceof DOMException && err.name === 'AbortError';
@@ -196,20 +331,27 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
           console.error('Failed to load community chat history', err);
         }
       } finally {
-        if (!controller.signal.aborted) {
-          setLoadedChannel(activeChannel);
+        if (!controller.signal.aborted && activeChannelRef.current === requestedChannel) {
+          setLoadedChannel(requestedChannel);
         }
       }
     };
     void fetchChatHistory();
     return () => controller.abort();
-  }, [activeChannel]);
+  }, [activeChannel, scheduleTimer, scrollToBottom]);
 
   const handleLoadOlderMessages = async () => {
     if (loadingOlder || !hasMoreOlder || messages.length === 0) return;
     const oldest = messages[0];
-    const beforeCursor = oldest?.createdAt || oldest?.id;
+    const beforeCursor = oldest?.id && OBJECT_ID_REGEX.test(oldest.id) ? oldest.id : oldest?.createdAt || oldest?.id;
     if (!beforeCursor) return;
+
+    const requestedChannel = activeChannel;
+    if (loadOlderAbortRef.current) {
+      loadOlderAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    loadOlderAbortRef.current = controller;
 
     const container = messagesContainerRef.current;
     const prevScrollHeight = container ? container.scrollHeight : 0;
@@ -217,46 +359,102 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
     setLoadingOlder(true);
     try {
       const res = await fetch(
-        `/api/forum/chat-messages?channel=${encodeURIComponent(activeChannel)}&before=${encodeURIComponent(beforeCursor)}&limit=40`
+        `/api/forum/chat-messages?channel=${encodeURIComponent(requestedChannel)}&before=${encodeURIComponent(beforeCursor)}&limit=40`,
+        { signal: controller.signal }
       );
       const data = await res.json();
-      if (data.success && Array.isArray(data.data)) {
+      if (controller.signal.aborted || activeChannelRef.current !== requestedChannel) return;
+
+      if (res.ok && data.success && Array.isArray(data.data)) {
         const older: CommunityChatMessage[] = data.data;
         setHasMoreOlder(Boolean(data.hasMore));
         if (older.length > 0) {
-          skipNextAutoScrollRef.current = true;
           setMessages((prev) => {
             const seen = new Set(prev.map((m) => m.id));
             const uniqueOlder = older.filter((m) => !seen.has(m.id));
             return [...uniqueOlder, ...prev];
           });
           window.requestAnimationFrame(() => {
-            if (container) {
+            if (mountedRef.current && container && activeChannelRef.current === requestedChannel) {
               const delta = container.scrollHeight - prevScrollHeight;
               if (delta > 0) container.scrollTop += delta;
             }
           });
         }
       }
-    } catch {
-      window.dispatchEvent(
-        new CustomEvent('lost:show-toast', {
-          detail: { message: 'Không thể tải thêm tin nhắn cũ hơn lúc này.', type: 'error' },
-        })
-      );
+    } catch (err: unknown) {
+      const isAbort = err instanceof DOMException && err.name === 'AbortError';
+      if (!isAbort && !controller.signal.aborted) {
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: 'Chưa tải thêm được tin nhắn cũ, bạn thử lại nhé.', type: 'error' },
+          })
+        );
+      }
     } finally {
-      setLoadingOlder(false);
+      if (loadOlderAbortRef.current === controller) {
+        loadOlderAbortRef.current = null;
+      }
+      if (!controller.signal.aborted && activeChannelRef.current === requestedChannel) {
+        setLoadingOlder(false);
+      }
     }
   };
 
-  // Stabilized Socket.io room join effect (depends ONLY on socket & primitive currentUserId)
+  // Stabilized Socket.io room join & reconnect backfill effect
   useEffect(() => {
     if (!socket) return;
+
+    const mergeBackfillAfterReconnect = async () => {
+      const reqChannel = activeChannelRef.current;
+      if (reconnectAbortRef.current) {
+        reconnectAbortRef.current.abort();
+      }
+      const controller = new AbortController();
+      reconnectAbortRef.current = controller;
+      const shouldAutoScroll = isNearBottom();
+
+      try {
+        const res = await fetch(
+          `/api/forum/chat-messages?channel=${encodeURIComponent(reqChannel)}&limit=40`,
+          { signal: controller.signal }
+        );
+        const data = await res.json();
+        if (controller.signal.aborted || activeChannelRef.current !== reqChannel) return;
+        if (res.ok && data.success && Array.isArray(data.data)) {
+          const incoming: CommunityChatMessage[] = data.data;
+          let appendedCount = 0;
+          setMessages((prev) => {
+            const seen = new Set(prev.map((m) => m.id));
+            const missed = incoming.filter((m) => !seen.has(m.id));
+            if (missed.length === 0) return prev;
+            appendedCount = missed.length;
+            const merged = [...prev, ...missed];
+            merged.sort((a, b) => {
+              const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+              const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+              return ta - tb;
+            });
+            return merged;
+          });
+          if (appendedCount > 0 && shouldAutoScroll) {
+            scheduleTimer(() => scrollToBottom('smooth'), 40);
+          }
+        }
+      } catch {
+        // ignore abort or transient backfill failure
+      } finally {
+        if (reconnectAbortRef.current === controller) {
+          reconnectAbortRef.current = null;
+        }
+      }
+    };
 
     const handleConnect = () => {
       setSocketConnState({ sock: socket, connected: true });
       setChatErrorMsg('');
       socket.emit('joinCommunityChat');
+      void mergeBackfillAfterReconnect();
     };
 
     const handleDisconnect = () => {
@@ -269,19 +467,24 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
 
     const handleNewMessage = (msg: CommunityChatMessage) => {
       const msgChannel = (msg.channel || 'general') as RadioChannelId;
+      if (msg.clientTempId && pendingDraftRef.current?.tempId === msg.clientTempId) {
+        pendingDraftRef.current = null;
+      }
       if (msgChannel !== activeChannelRef.current) return;
 
       const activeUser = currentUserRef.current;
       const activeUid = String(activeUser?._id || activeUser?.id || '');
       const isFromMe = Boolean(
         (msg.clientTempId && sentMessageIds.current.has(msg.clientTempId)) ||
-        sentMessageIds.current.has(msg.id) ||
-        (activeUid && msg.senderId && String(msg.senderId) === activeUid)
+          sentMessageIds.current.has(msg.id) ||
+          (activeUid && msg.senderId && String(msg.senderId) === activeUid)
       );
 
       if (!isFromMe) {
         playIncomingNotificationSound();
       }
+
+      const shouldAutoScroll = isFromMe || isNearBottom();
 
       setMessages((prev) => {
         if (
@@ -295,12 +498,16 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
         }
         return [...prev, msg];
       });
-      setTimeout(scrollToBottom, 50);
+
+      if (shouldAutoScroll) {
+        scheduleTimer(() => scrollToBottom('smooth'), 40);
+      }
     };
 
     const handleMessageDeleted = (payload: { id?: string }) => {
       if (!payload?.id) return;
       setMessages((prev) => prev.filter((m) => String(m.id) !== String(payload.id)));
+      setConfirmDeleteMsgId((prev) => (prev === payload.id ? null : prev));
     };
 
     const handleOnlineCount = (count: number) => {
@@ -313,10 +520,28 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
         typeof payload === 'string'
           ? payload
           : (typeof errObj?.message === 'string' && errObj.message) ||
-          (typeof errObj?.error === 'string' && errObj.error) ||
-          'Tin nhắn không được chấp nhận bởi máy chủ.';
+            (typeof errObj?.error === 'string' && errObj.error) ||
+            'Tin nhắn chưa gửi được, bạn kiểm tra lại nội dung nhé.';
       setChatErrorMsg(msg);
-      setCooldown(0);
+
+      // Restore unsent draft if user hasn't started typing a new message
+      const pending = pendingDraftRef.current;
+      if (pending && pending.channel === activeChannelRef.current) {
+        setInputText((cur) => (cur ? cur : pending.text));
+        if (pending.quote) {
+          setQuoteMessage((cur) => cur || pending.quote);
+        }
+        if (pending.gps) {
+          setGpsTag((cur) => cur || pending.gps);
+        }
+      }
+      pendingDraftRef.current = null;
+
+      // Preserve rate-limit cooldown when server reports rate limiting
+      if (!isRateLimitErrorMessage(msg)) {
+        setCooldown(0);
+      }
+
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
           detail: { message: msg, type: 'error' },
@@ -340,15 +565,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
       socket.off('communityMessageDeleted', handleMessageDeleted);
       socket.off('chatError', handleChatError);
     };
-  }, [socket, currentUserId]);
-
-  useEffect(() => {
-    if (skipNextAutoScrollRef.current) {
-      skipNextAutoScrollRef.current = false;
-      return;
-    }
-    scrollToBottom();
-  }, [messages.length]);
+  }, [socket, currentUserId, isNearBottom, playIncomingNotificationSound, scheduleTimer, scrollToBottom]);
 
   const isOnlineReady = Boolean(
     socket && (socketConnState?.sock === socket ? socketConnState.connected : socket.connected)
@@ -363,7 +580,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: 'Trình duyệt của bạn không hỗ trợ định vị GPS.', type: 'error' },
+          detail: { message: 'Trình duyệt này chưa hỗ trợ lấy tọa độ GPS.', type: 'error' },
         })
       );
       return;
@@ -371,25 +588,36 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
     setLocatingGps(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        const lat = Number(pos.coords.latitude.toFixed(5));
-        const lng = Number(pos.coords.longitude.toFixed(5));
-        const alt =
-          typeof pos.coords.altitude === 'number' && Number.isFinite(pos.coords.altitude)
-            ? Math.round(pos.coords.altitude)
-            : undefined;
+        if (!mountedRef.current) return;
+        const rawLat = pos.coords.latitude;
+        const rawLng = pos.coords.longitude;
+        if (!isValidGpsCoords(rawLat, rawLng)) {
+          setLocatingGps(false);
+          window.dispatchEvent(
+            new CustomEvent('lost:show-toast', {
+              detail: { message: 'Tọa độ GPS trả về không hợp lệ, bạn thử lại nhé.', type: 'error' },
+            })
+          );
+          return;
+        }
+        const lat = Number(rawLat.toFixed(5));
+        const lng = Number(rawLng.toFixed(5));
+        const rawAlt = pos.coords.altitude;
+        const alt = typeof rawAlt === 'number' && isValidAltitude(rawAlt) ? Math.round(rawAlt) : undefined;
         setGpsTag({ gpsLat: lat, gpsLng: lng, altitudeM: alt });
         setLocatingGps(false);
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
-            detail: { message: 'Đã gắn tọa độ GPS thực địa vào tin nhắn tiếp theo.', type: 'success' },
+            detail: { message: 'Đã đính kèm tọa độ hiện tại vào tin nhắn sắp gửi.', type: 'success' },
           })
         );
       },
       () => {
+        if (!mountedRef.current) return;
         setLocatingGps(false);
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
-            detail: { message: 'Không thể lấy vị trí GPS. Vui lòng cấp quyền vị trí trên thiết bị.', type: 'error' },
+            detail: { message: 'Chưa lấy được vị trí GPS — bạn kiểm tra quyền định vị trên máy nhé.', type: 'error' },
           })
         );
       },
@@ -408,6 +636,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
       const json = await res.json().catch(() => ({}));
       if (res.ok && json.success) {
         setMessages((prev) => prev.filter((m) => m.id !== msgId));
+        setConfirmDeleteMsgId(null);
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
             detail: { message: json.message || 'Đã xóa tin nhắn.', type: 'info' },
@@ -416,34 +645,37 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
       } else {
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
-            detail: { message: json.message || 'Không thể xóa tin nhắn này.', type: 'error' },
+            detail: { message: json.message || 'Chưa xóa được tin nhắn này, bạn thử lại nhé.', type: 'error' },
           })
         );
       }
     } catch {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: 'Lỗi kết nối máy chủ khi xóa tin nhắn.', type: 'error' },
+          detail: { message: 'Mất kết nối nên chưa xóa được tin nhắn.', type: 'error' },
         })
       );
     } finally {
-      setDeletingMsgId(null);
+      if (mountedRef.current) {
+        setDeletingMsgId(null);
+      }
     }
   };
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputText.trim() || cooldown > 0) return;
+    const trimmedText = inputText.trim().slice(0, MAX_CHAT_MESSAGE_LENGTH);
+    if (!trimmedText || cooldown > 0) return;
 
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!currentUser && !token) {
-      if (onRequireLogin) onRequireLogin('gửi tin nhắn trò chuyện cộng đồng');
+      if (onRequireLogin) onRequireLogin('nhắn tin cùng anh em');
       else window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
       return;
     }
 
     if (!socket || !socket.connected) {
-      const offlineMsg = 'Phòng chat trực tuyến đang ngoại tuyến. Vui lòng chờ kết nối lại trước khi gửi tin.';
+      const offlineMsg = 'Kênh đang mất sóng — chờ nối lại mạng một chút rồi nhắn tiếp nhé.';
       setChatErrorMsg(offlineMsg);
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
@@ -455,12 +687,15 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
 
     setChatErrorMsg('');
     setIsSending(true);
-    setTimeout(() => setIsSending(false), 300);
+    scheduleTimer(() => setIsSending(false), 300);
     setCooldown(10);
 
     const senderName = currentUser?.fullName || 'Trekker';
     const senderAvatar = currentUser?.avatarUrl || currentUser?.avatar || '';
     const tempId = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+
+    const validGps = gpsTag && isValidGpsCoords(gpsTag.gpsLat, gpsTag.gpsLng) ? gpsTag : null;
+    const validAlt = validGps && isValidAltitude(validGps.altitudeM) ? validGps.altitudeM : undefined;
 
     const msgData: CommunityChatMessage = {
       id: tempId,
@@ -469,22 +704,69 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
       senderId: currentUserId || undefined,
       senderName,
       senderAvatar,
-      senderBadge: currentUser?.role === 'admin' ? 'BQT LOST' : 'Trekker',
-      nameColor: currentUser?.role === 'admin' ? 'var(--color-sky)' : 'var(--color-primary)',
-      gpsLat: gpsTag?.gpsLat,
-      gpsLng: gpsTag?.gpsLng,
-      altitudeM: gpsTag?.altitudeM,
+      senderBadge: currentUser?.role === 'admin' ? 'BQT LOST' : currentUser?.role === 'moderator' ? 'Điều phối LOST' : 'Trekker',
+      nameColor: currentUser?.role === 'admin' || currentUser?.role === 'moderator' ? 'var(--color-sky)' : 'var(--color-primary)',
+      gpsLat: validGps?.gpsLat,
+      gpsLng: validGps?.gpsLng,
+      altitudeM: validAlt,
       quote: quoteMessage || undefined,
-      text: inputText.trim(),
+      text: trimmedText,
       createdAt: new Date().toISOString(),
       time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
     };
 
+    // Bound tracked temp IDs to prevent unbounded memory growth
     sentMessageIds.current.add(tempId);
+    while (sentMessageIds.current.size > MAX_TRACKED_SENT_IDS) {
+      const oldestKey = sentMessageIds.current.values().next().value;
+      if (oldestKey === undefined) break;
+      sentMessageIds.current.delete(oldestKey);
+    }
+
+    pendingDraftRef.current = {
+      tempId,
+      channel: activeChannel,
+      text: trimmedText,
+      quote: quoteMessage,
+      gps: validGps,
+    };
+
     socket.emit('sendCommunityChatMessage', msgData);
 
     setInputText('');
     setQuoteMessage(null);
+    setGpsTag(null);
+  };
+
+  const handleOpenSenderProfile = (msg: CommunityChatMessage) => {
+    if (onOpenAuthorProfile) {
+      onOpenAuthorProfile({
+        userId: msg.senderId,
+        name: msg.senderName,
+        avatar: msg.senderAvatar || '',
+      });
+      return;
+    }
+    const target = msg.senderId || msg.senderName;
+    if (!target) return;
+    const base = `${window.location.pathname}${window.location.search}`;
+    window.history.pushState(null, '', `${base}#profile-${encodeURIComponent(target)}`);
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+  };
+
+  const handleChannelTabKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, currentIdx: number) => {
+    let nextIdx: number | null = null;
+    if (e.key === 'ArrowRight') nextIdx = (currentIdx + 1) % RADIO_CHANNELS.length;
+    else if (e.key === 'ArrowLeft') nextIdx = (currentIdx - 1 + RADIO_CHANNELS.length) % RADIO_CHANNELS.length;
+    else if (e.key === 'Home') nextIdx = 0;
+    else if (e.key === 'End') nextIdx = RADIO_CHANNELS.length - 1;
+
+    if (nextIdx !== null) {
+      e.preventDefault();
+      const targetChannel = RADIO_CHANNELS[nextIdx];
+      handleSelectChannel(targetChannel.id);
+      tabButtonRefs.current[targetChannel.id]?.focus();
+    }
   };
 
   const formatMessageTime = (dateStr?: string) => {
@@ -547,17 +829,24 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
             }}
           >
             {activeChannelMeta.isEmergency ? (
-              <IconRadio size={15} color="var(--color-error)" />
+              <IconRadio size={15} color="var(--color-error-text, var(--color-error))" />
             ) : (
               <IconMessageSquare size={15} color="var(--color-primary)" />
             )}
           </div>
           <div>
             <div className="font-editorial" style={{ fontSize: '1.08rem', fontWeight: 500, color: 'var(--color-text-main)', lineHeight: 1.15 }}>
-              Vô Tuyến &amp; Chat Thực Địa 24/7
+              Kênh liên lạc anh em
             </div>
-            <div style={{ fontSize: '0.7rem', color: activeChannelMeta.isEmergency ? 'var(--color-error-text, var(--color-error))' : 'var(--color-text-dim)', marginTop: 2, fontWeight: activeChannelMeta.isEmergency ? 700 : 500 }}>
-              Tần số hiện tại: {activeChannelMeta.fullLabel}
+            <div
+              style={{
+                fontSize: '0.7rem',
+                color: activeChannelMeta.isEmergency ? 'var(--color-error-text, var(--color-error))' : 'var(--color-text-dim)',
+                marginTop: 2,
+                fontWeight: activeChannelMeta.isEmergency ? 700 : 500,
+              }}
+            >
+              Đang ở kênh: {activeChannelMeta.fullLabel}
             </div>
           </div>
         </div>
@@ -575,14 +864,14 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
               background: isOnlineReady ? 'var(--color-primary)' : 'var(--color-error)',
             }}
           />
-          <span>{isOnlineReady ? `${onlineCount} Trực tuyến` : 'Ngoại tuyến'}</span>
+          <span>{isOnlineReady ? `${onlineCount} trực tuyến` : 'Mất kết nối'}</span>
         </div>
       </div>
 
       {/* 5-Channel Radio Frequency Switcher */}
       <div
         role="tablist"
-        aria-label="Kênh vô tuyến thực địa"
+        aria-label="Chọn kênh liên lạc theo vùng"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -594,16 +883,21 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
           flexShrink: 0,
         }}
       >
-        {RADIO_CHANNELS.map((ch) => {
+        {RADIO_CHANNELS.map((ch, idx) => {
           const isSelected = activeChannel === ch.id;
           return (
             <button
               key={ch.id}
+              ref={(el) => {
+                tabButtonRefs.current[ch.id] = el;
+              }}
               type="button"
               role="tab"
               aria-selected={isSelected}
+              tabIndex={isSelected ? 0 : -1}
               title={ch.fullLabel}
               onClick={() => handleSelectChannel(ch.id)}
+              onKeyDown={(e) => handleChannelTabKeyDown(e, idx)}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -620,7 +914,9 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                     : 'var(--color-primary)'
                   : 'var(--color-bg-card)',
                 color: isSelected
-                  ? 'var(--color-on-primary)'
+                  ? ch.isEmergency
+                    ? 'var(--color-on-danger)'
+                    : 'var(--color-on-primary)'
                   : ch.isEmergency
                     ? 'var(--color-error-text, var(--color-error))'
                     : 'var(--color-text-muted)',
@@ -654,7 +950,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
           }}
         >
           <IconAlertTriangle size={14} color="var(--color-earth)" style={{ flexShrink: 0 }} />
-          <span>Phòng chat thời gian thực đang mất kết nối máy chủ. Bạn vẫn xem được lịch sử gần nhất; hệ thống sẽ tự nối lại khi có mạng.</span>
+          <span>Kênh chat đang mất kết nối. Bạn vẫn xem lại được tin nhắn gần đây — máy sẽ tự nối lại ngay khi có sóng.</span>
         </div>
       )}
 
@@ -689,6 +985,8 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
       {/* Message List Area */}
       <div
         ref={messagesContainerRef}
+        role="tabpanel"
+        aria-label={activeChannelMeta.fullLabel}
         style={{
           flex: 1,
           padding: '14px 16px',
@@ -709,31 +1007,35 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
               onClick={handleLoadOlderMessages}
               style={{ padding: '4px 12px', fontSize: '0.74rem', fontWeight: 700, borderRadius: 4 }}
             >
-              {loadingOlder ? 'Đang tải tin nhắn cũ...' : 'Tải tin nhắn cũ hơn'}
+              {loadingOlder ? 'Đang mở tin cũ...' : 'Xem tin nhắn cũ hơn'}
             </button>
           </div>
         )}
 
         {loadingHistory ? (
           <div style={{ margin: 'auto', textAlign: 'center', color: 'var(--color-text-dim)', padding: 20, fontSize: '0.82rem' }}>
-            Đang đồng bộ tần số {activeChannelMeta.fullLabel}...
+            Đang tải tin nhắn kênh {activeChannelMeta.fullLabel}...
           </div>
         ) : messages.length === 0 ? (
           <div style={{ margin: 'auto', textAlign: 'center', color: 'var(--color-text-dim)', padding: 20 }}>
             <IconSparkles size={28} color="var(--color-primary)" style={{ margin: '0 auto 8px', display: 'block', opacity: 0.6 }} />
             <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-              Chưa có tín hiệu trên {activeChannelMeta.fullLabel}
+              Kênh {activeChannelMeta.fullLabel} đang yên ắng
             </div>
             <div style={{ fontSize: '0.74rem', marginTop: 4 }}>
-              Hãy gửi thông báo tình trạng tuyến đường hoặc lời chào tới anh em Trekker!
+              Hỏi đường, cập nhật thời tiết trên núi hay nhắn lời chào tới anh em nhé.
             </div>
           </div>
         ) : (
           messages.map((msg) => {
             const isMe = Boolean(currentUserId && msg.senderId && String(msg.senderId) === currentUserId);
-            const canDelete = Boolean((isMe || isStaff) && /^[a-fA-F0-9]{24}$/.test(msg.id));
+            const canDelete = Boolean((isMe || isStaff) && OBJECT_ID_REGEX.test(msg.id));
+            const isConfirmingDelete = confirmDeleteMsgId === msg.id;
             const hasValidQuote = Boolean(msg.quote && msg.quote.author && msg.quote.text && msg.quote.text.trim());
-            const hasGps = typeof msg.gpsLat === 'number' && typeof msg.gpsLng === 'number';
+            const hasGps = isValidGpsCoords(msg.gpsLat, msg.gpsLng);
+            const hasAlt = hasGps && isValidAltitude(msg.altitudeM);
+            const avatarKey = `${msg.id}:${msg.senderAvatar || ''}`;
+            const showAvatarImg = isSafeAvatarSrc(msg.senderAvatar) && !failedAvatarKeys[avatarKey];
 
             return (
               <div
@@ -750,11 +1052,14 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                 }}
                 className="chat-message-row chat-message-pop"
               >
-                {msg.senderAvatar && msg.senderAvatar.startsWith('http') ? (
+                {showAvatarImg ? (
                   <img
+                    loading="lazy"
+                    decoding="async"
                     src={msg.senderAvatar}
                     alt={msg.senderName}
                     referrerPolicy="no-referrer"
+                    onError={() => setFailedAvatarKeys((prev) => ({ ...prev, [avatarKey]: true }))}
                     style={{
                       width: 32,
                       height: 32,
@@ -787,7 +1092,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                   </div>
                 )}
 
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start', maxWidth: '100%' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start', maxWidth: '100%', minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, flexDirection: isMe ? 'row-reverse' : 'row', flexWrap: 'wrap' }}>
                     {isMe ? (
                       <span style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-primary)' }}>
@@ -796,12 +1101,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                     ) : (
                       <button
                         type="button"
-                        onClick={() => {
-                          const target = msg.senderId || msg.senderName;
-                          if (!target) return;
-                          window.history.pushState(null, '', `#profile-${encodeURIComponent(target)}`);
-                          window.dispatchEvent(new HashChangeEvent('hashchange'));
-                        }}
+                        onClick={() => handleOpenSenderProfile(msg)}
                         title={`Xem hồ sơ ${msg.senderName}`}
                         style={{
                           background: 'transparent',
@@ -810,7 +1110,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                           cursor: 'pointer',
                           fontSize: '0.78rem',
                           fontWeight: 800,
-                          color: msg.nameColor || 'var(--color-text-main)',
+                          color: resolveSafeNameColor(msg.nameColor),
                         }}
                       >
                         {msg.senderName}
@@ -840,7 +1140,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                       title="Trả lời tin nhắn này"
                       onClick={() => {
                         setQuoteMessage({ author: msg.senderName, text: msg.text });
-                        setTimeout(() => inputRef.current?.focus(), 50);
+                        scheduleTimer(() => inputRef.current?.focus(), 50);
                       }}
                       style={{
                         background: 'var(--color-bg-card)',
@@ -860,31 +1160,64 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                       <span>Trả lời</span>
                     </button>
 
-                    {canDelete && (
-                      <button
-                        type="button"
-                        disabled={deletingMsgId === msg.id}
-                        title="Xóa tin nhắn"
-                        aria-label="Xóa tin nhắn"
-                        onClick={() => handleDeleteMessage(msg.id)}
-                        style={{
-                          background: 'var(--color-bg-card)',
-                          border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)',
-                          borderRadius: 4,
-                          color: 'var(--color-error-text, var(--color-error))',
-                          cursor: deletingMsgId === msg.id ? 'wait' : 'pointer',
-                          padding: '2px 5px',
-                          fontSize: '0.64rem',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 3,
-                          fontWeight: 700,
-                        }}
-                      >
-                        <IconTrash size={10} />
-                        <span>{deletingMsgId === msg.id ? '...' : 'Xóa'}</span>
-                      </button>
-                    )}
+                    {canDelete &&
+                      (isConfirmingDelete ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <button
+                            type="button"
+                            className="btn btn-danger"
+                            disabled={deletingMsgId === msg.id}
+                            onClick={() => handleDeleteMessage(msg.id)}
+                            style={{
+                              padding: '2px 6px',
+                              fontSize: '0.64rem',
+                              fontWeight: 800,
+                              borderRadius: 4,
+                              cursor: deletingMsgId === msg.id ? 'wait' : 'pointer',
+                            }}
+                          >
+                            {deletingMsgId === msg.id ? 'Đang xóa...' : 'Xác nhận'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-outline"
+                            disabled={deletingMsgId === msg.id}
+                            onClick={() => setConfirmDeleteMsgId(null)}
+                            style={{
+                              padding: '2px 6px',
+                              fontSize: '0.64rem',
+                              borderRadius: 4,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Hủy
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={deletingMsgId === msg.id}
+                          title="Xóa tin nhắn"
+                          aria-label="Xóa tin nhắn"
+                          onClick={() => setConfirmDeleteMsgId(msg.id)}
+                          style={{
+                            background: 'var(--color-bg-card)',
+                            border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)',
+                            borderRadius: 4,
+                            color: 'var(--color-error-text, var(--color-error))',
+                            cursor: 'pointer',
+                            padding: '2px 5px',
+                            fontSize: '0.64rem',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 3,
+                            fontWeight: 700,
+                          }}
+                        >
+                          <IconTrash size={10} />
+                          <span>Xóa</span>
+                        </button>
+                      ))}
                   </div>
 
                   {/* Message Bubble */}
@@ -942,12 +1275,10 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
                         }}
                       >
                         <IconMapPin size={11} color="var(--color-sky)" />
-                        <span>
-                          {msg.gpsLat!.toFixed(4)}°N, {msg.gpsLng!.toFixed(4)}°E
-                        </span>
-                        {typeof msg.altitudeM === 'number' && (
+                        <span>{formatGpsCoords(msg.gpsLat!, msg.gpsLng!)}</span>
+                        {hasAlt && (
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--color-primary)' }}>
-                            • <IconMountain size={11} color="var(--color-primary)" /> {msg.altitudeM.toLocaleString('vi-VN')}m
+                            • <IconMountain size={11} color="var(--color-primary)" /> {msg.altitudeM!.toLocaleString('vi-VN')}m
                           </span>
                         )}
                       </div>
@@ -961,7 +1292,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
       </div>
 
       {/* Active GPS Telemetry Tag Preview Bar */}
-      {gpsTag && (
+      {gpsTag && isValidGpsCoords(gpsTag.gpsLat, gpsTag.gpsLng) && (
         <div
           style={{
             background: 'color-mix(in srgb, var(--color-sky) 10%, var(--color-bg-card))',
@@ -978,14 +1309,14 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontVariantNumeric: 'tabular-nums' }}>
             <IconMapPin size={12} color="var(--color-sky)" />
             <span>
-              Đang gắn thẻ GPS: {gpsTag.gpsLat.toFixed(4)}°N, {gpsTag.gpsLng.toFixed(4)}°E
-              {gpsTag.altitudeM !== undefined ? ` • Cao độ ${gpsTag.altitudeM.toLocaleString('vi-VN')}m` : ''}
+              Đính kèm vị trí: {formatGpsCoords(gpsTag.gpsLat, gpsTag.gpsLng)}
+              {isValidAltitude(gpsTag.altitudeM) ? ` • Độ cao ${gpsTag.altitudeM.toLocaleString('vi-VN')}m` : ''}
             </span>
           </span>
           <button
             type="button"
             onClick={() => setGpsTag(null)}
-            aria-label="Gỡ thẻ GPS"
+            aria-label="Bỏ đính kèm vị trí GPS"
             style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', padding: '0 4px' }}
           >
             <IconX size={12} />
@@ -1015,7 +1346,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
           <button
             type="button"
             onClick={() => setQuoteMessage(null)}
-            aria-label="Hủy trích dẫn"
+            aria-label="Hủy trả lời"
             style={{
               background: 'none',
               border: 'none',
@@ -1045,8 +1376,8 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
           type="button"
           onClick={handleToggleGpsTag}
           disabled={!isOnlineReady || locatingGps}
-          title={gpsTag ? 'Bấm để tắt thẻ GPS & Độ cao' : 'Gắn thẻ GPS & Độ cao thực địa'}
-          aria-label="Gắn thẻ GPS và độ cao"
+          title={gpsTag ? 'Bấm để bỏ đính kèm vị trí GPS' : 'Đính kèm tọa độ GPS và độ cao hiện tại'}
+          aria-label="Đính kèm vị trí GPS và độ cao"
           className="btn btn-outline"
           style={{
             padding: '8px 10px',
@@ -1063,7 +1394,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
           }}
         >
           <IconMapPin size={14} color={gpsTag ? 'var(--color-sky)' : 'currentColor'} />
-          <span>{locatingGps ? 'Định vị...' : 'GPS'}</span>
+          <span>{locatingGps ? 'Đang lấy...' : 'GPS'}</span>
         </button>
 
         <input
@@ -1071,17 +1402,19 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
           type="text"
           className="form-input"
           disabled={!isOnlineReady}
+          maxLength={MAX_CHAT_MESSAGE_LENGTH}
           placeholder={
             !isOnlineReady
-              ? 'Đang chờ kết nối lại phòng chat...'
+              ? 'Đang chờ có sóng để nối lại...'
               : quoteMessage
-                ? `Nhập câu trả lời cho @${quoteMessage.author}...`
-                : `Phát tín hiệu lên ${activeChannelMeta.shortLabel}...`
+                ? `Trả lời @${quoteMessage.author}...`
+                : `Nhắn lên kênh ${activeChannelMeta.shortLabel} — hỏi đường & gọi bạn...`
           }
           value={inputText}
           onChange={(e) => setInputText(e.target.value)}
           style={{
             flex: 1,
+            minWidth: 0,
             padding: '9px 12px',
             fontSize: '0.84rem',
             borderRadius: 4,
@@ -1092,7 +1425,7 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
 
         {cooldown > 0 && (
           <div
-            title={`Vui lòng chờ ${cooldown}s để gửi tin nhắn tiếp theo`}
+            title={`Chờ ${cooldown} giây nữa rồi nhắn tiếp nhé`}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -1115,7 +1448,8 @@ export const LiveTrekkerChatroom: React.FC<LiveTrekkerChatroomProps> = ({ curren
         <button
           type="submit"
           disabled={!isOnlineReady || !inputText.trim() || cooldown > 0}
-          title={!isOnlineReady ? 'Đang ngoại tuyến' : cooldown > 0 ? `Vui lòng chờ ${cooldown}s để gửi tiếp` : 'Gửi tin nhắn'}
+          title={!isOnlineReady ? 'Đang mất kết nối' : cooldown > 0 ? `Chờ ${cooldown} giây để gửi tiếp` : 'Gửi tin nhắn'}
+          aria-label="Gửi tin nhắn"
           className="btn btn-primary interactive-click"
           style={{
             padding: '8px 14px',

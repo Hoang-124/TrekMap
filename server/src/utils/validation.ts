@@ -1,42 +1,148 @@
+import net from 'node:net';
+import dns from 'node:dns/promises';
+
 /**
  * High Security Validation & Sanitization Utility
  * LOST Security Protocol
  */
 
+const DANGEROUS_BLOCK_TAGS = ['script', 'style', 'iframe', 'object', 'embed', 'svg'] as const;
+const DANGEROUS_TAG_STRIPPERS = DANGEROUS_BLOCK_TAGS.map((tag) => ({
+  closeRx: new RegExp(`<\\s*/\\s*${tag}\\s*>`, 'gi'),
+  blockRx: new RegExp(`<\\s*${tag}\\b[^>]*>[\\s\\S]*?<\\s*/\\s*${tag}\\s*>`, 'gi'),
+}));
+
 /**
- * Strips dangerous HTML/script tags and control characters WITHOUT corrupting legitimate
- * Vietnamese punctuation (slashes "/", apostrophes "'", quotes) with HTML entities.
+ * Strips control characters first, then dangerous HTML/script tags and unsafe URI schemes
+ * WITHOUT corrupting legitimate Vietnamese punctuation (slashes "/", apostrophes "'", quotes).
+ * Bounded to O(n) even on adversarial unclosed repeated tags (zero quadratic ReDoS).
  */
 export const sanitizeInput = (str: string): string => {
   if (!str || typeof str !== 'string') return '';
-  return str
-    .replace(/<\s*(script|style|iframe|object|embed|svg)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
+  let out = str.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+
+  for (const { closeRx, blockRx } of DANGEROUS_TAG_STRIPPERS) {
+    closeRx.lastIndex = 0;
+    let lastCloseEnd = -1;
+    let match: RegExpExecArray | null;
+    while ((match = closeRx.exec(out)) !== null) {
+      lastCloseEnd = match.index + match[0].length;
+    }
+    if (lastCloseEnd !== -1) {
+      blockRx.lastIndex = 0;
+      out = out.slice(0, lastCloseEnd).replace(blockRx, '') + out.slice(lastCloseEnd);
+    }
+  }
+
+  return out
     .replace(/<[^>]*>/g, '')
-    .replace(/javascript\s*:/gi, '')
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .replace(/(?:javascript|vbscript)\s*:/gi, '')
     .trim();
 };
 
-const PRIVATE_IPV4_REGEX =
-  /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.|100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\.)/;
+function isPrivateOrReservedIpv4(ipv4: string): boolean {
+  const parts = ipv4.split('.');
+  if (parts.length !== 4) return true;
+  const nums = parts.map((p) => Number(p));
+  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+  const [a, b, c] = nums;
+  if (a === 0) return true; // 0.0.0.0/8 unspecified
+  if (a === 10) return true; // 10.0.0.0/8 private
+  if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT
+  if (a === 127) return true; // 127.0.0.0/8 loopback
+  if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local / cloud metadata
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12 private
+  if (a === 192 && b === 0 && (c === 0 || c === 2)) return true; // IETF protocol / TEST-NET-1
+  if (a === 192 && b === 168) return true; // 192.168.0.0/16 private
+  if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 benchmarking
+  if (a === 198 && b === 51 && c === 100) return true; // TEST-NET-2
+  if (a === 203 && b === 0 && c === 113) return true; // TEST-NET-3
+  if (a >= 224) return true; // Multicast & reserved/broadcast
+  return false;
+}
 
-function isPrivateOrLocalHostname(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+function extractMappedIpv4FromIpv6(host: string): string | null {
+  // Dotted IPv4-mapped IPv6, e.g. ::ffff:127.0.0.1 or 0:0:0:0:0:ffff:169.254.169.254
+  const dottedMatch = /^(?:::(?:ffff:)?|0(?::0){4}:ffff:)(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(host);
+  if (dottedMatch && net.isIP(dottedMatch[1]) === 4) {
+    return dottedMatch[1];
+  }
+  // Hex-pair IPv4-mapped IPv6 (Node URL parser normalizes [::ffff:127.0.0.1] -> ::ffff:7f00:1)
+  const hexMatch = /^(?:::ffff:|0(?::0){4}:ffff:)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
+  if (hexMatch) {
+    const hi = parseInt(hexMatch[1], 16);
+    const lo = parseInt(hexMatch[2], 16);
+    if (Number.isFinite(hi) && Number.isFinite(lo)) {
+      return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    }
+  }
+  return null;
+}
+
+function isPrivateOrReservedIpv6(host: string): boolean {
+  const clean = host.split('%')[0].toLowerCase(); // Strip zone index if present
+  if (clean === '::' || clean === '::1') return true;
+  if (/^0(:0)*$/.test(clean) || /^0(:0)*:1$/.test(clean)) return true;
+
+  const mappedV4 = extractMappedIpv4FromIpv6(clean);
+  if (mappedV4) {
+    return isPrivateOrReservedIpv4(mappedV4);
+  }
+
+  // Block NAT64 well-known prefix (64:ff9b::/96) which can reach internal IPv4
+  if (/^64:ff9b:/i.test(clean)) return true;
+  // Block ULA fc00::/7 (fc00..fdff), link-local fe80::/10 (fe80..febf), site-local fec0::/10, multicast ff00::/8
+  if (/^f[cd][0-9a-f]{2}:/i.test(clean)) return true;
+  if (/^fe[89abcdef][0-9a-f]:/i.test(clean)) return true;
+  if (/^ff[0-9a-f]{2}:/i.test(clean)) return true;
+  if (/^2001:0?db8:/i.test(clean)) return true; // Documentation range
+  return false;
+}
+
+export function isPrivateOrLocalHostname(hostname: string): boolean {
+  const host = String(hostname || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.+$/, ''); // Strip trailing FQDN dots (blocks "localhost.")
+
   if (!host) return true;
   if (
     host === 'localhost' ||
-    host === '::1' ||
-    host === '0:0:0:0:0:0:0:1' ||
+    host === '0.0.0.0' ||
     host.endsWith('.local') ||
     host.endsWith('.internal') ||
-    host.endsWith('.localhost')
+    host.endsWith('.localhost') ||
+    host.endsWith('.home.arpa') ||
+    host.endsWith('.arpa')
   ) {
     return true;
   }
-  if (PRIVATE_IPV4_REGEX.test(host)) return true;
-  if (host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) return true;
-  // Reject integer/octal IP bypass formats (e.g., 2130706433 or 0x7f000001)
+
+  // Reject integer / hex / octal IPv4 obfuscations (e.g., 2130706433, 0x7f000001, 0177.0.0.1)
   if (/^(0x[0-9a-f]+|\d+)$/i.test(host)) return true;
+  const dotParts = host.split('.');
+  if (
+    dotParts.length >= 2 &&
+    dotParts.length <= 4 &&
+    dotParts.every((p) => /^(0x[0-9a-f]+|0[0-7]+|\d+)$/i.test(p))
+  ) {
+    if (net.isIP(host) === 4) {
+      return isPrivateOrReservedIpv4(host);
+    }
+    // Non-canonical octal/hex/shortened IPv4 literal -> block
+    return true;
+  }
+
+  const ipVersion = net.isIP(host.split('%')[0]);
+  if (ipVersion === 4) {
+    return isPrivateOrReservedIpv4(host);
+  }
+  if (ipVersion === 6 || host.includes(':')) {
+    return isPrivateOrReservedIpv6(host);
+  }
+
+  // Public DNS domain names (including fc*/fd* domains like fcdn.vn, fd.nl) are allowed
   return false;
 }
 
@@ -52,6 +158,35 @@ export const isSafeHttpUrl = (value: unknown): value is string => {
     return true;
   } catch {
     return false;
+  }
+};
+
+/**
+ * DNS-aware SSRF guard for server-side outbound HTTP fetches:
+ * validates syntax + hostname AND ensures every resolved A/AAAA address is strictly public,
+ * with a bounded 3.5s lookup timeout so stalled OS resolvers can never hang Express workers.
+ */
+export const isSafePublicUrlWithDns = async (value: unknown, timeoutMs = 3500): Promise<boolean> => {
+  if (!isSafeHttpUrl(value)) return false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const parsed = new URL(value.trim());
+    const cleanHost = parsed.hostname.replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+    if (net.isIP(cleanHost) !== 0) {
+      return !isPrivateOrLocalHostname(cleanHost);
+    }
+    const lookupPromise = dns.lookup(cleanHost, { all: true, verbatim: true }).catch(() => null);
+    const timeoutPromise = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), Math.max(250, timeoutMs));
+      timer.unref?.();
+    });
+    const records = await Promise.race([lookupPromise, timeoutPromise]);
+    if (!Array.isArray(records) || records.length === 0) return false;
+    return records.every((rec) => Boolean(rec?.address) && !isPrivateOrLocalHostname(rec.address));
+  } catch {
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 };
 
@@ -270,12 +405,17 @@ export const validatePhoneNumber = (phone: string): { isValid: boolean; cleanPho
   return { isValid: true, cleanPhone };
 };
 
-export const hasDangerousMongoKeys = (obj: unknown): boolean => {
+const PROTO_POLLUTION_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const MAX_MONGO_KEY_SCAN_DEPTH = 20;
+
+export const hasDangerousMongoKeys = (obj: unknown, depth = 0): boolean => {
+  if (depth > MAX_MONGO_KEY_SCAN_DEPTH) return true;
   if (!obj || typeof obj !== 'object') return false;
-  if (Array.isArray(obj)) return obj.some(hasDangerousMongoKeys);
-  for (const [key, val] of Object.entries(obj)) {
-    if (key.startsWith('$') || key.includes('.')) return true;
-    if (val && typeof val === 'object' && hasDangerousMongoKeys(val)) return true;
+  if (Array.isArray(obj)) return obj.some((item) => hasDangerousMongoKeys(item, depth + 1));
+  for (const key of Object.keys(obj as Record<string, unknown>)) {
+    if (key.startsWith('$') || key.includes('.') || PROTO_POLLUTION_KEYS.has(key)) return true;
+    const val = (obj as Record<string, unknown>)[key];
+    if (val && typeof val === 'object' && hasDangerousMongoKeys(val, depth + 1)) return true;
   }
   return false;
 };

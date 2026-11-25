@@ -24,6 +24,17 @@ const VALID_REACTIONS = new Set(['like', 'love', 'haha', 'wow', 'buon', 'huhu', 
 const VALID_CATEGORIES = new Set(['Hỏi Đáp', 'Kinh Nghiệm', 'Tìm Đồng Đội', 'Cảnh Báo']);
 const VALID_CHAT_CHANNELS = new Set(['general', 'north', 'central', 'south', 'sos']);
 const DEFAULT_AVATAR = '/covers/avatar-default.svg';
+const THREAD_SLUG_REGEX = /^thread-[a-zA-Z0-9_-]{1,80}$/;
+
+function isValidThreadIdentifier(value: string): boolean {
+  return isValidObjectId(value) || THREAD_SLUG_REGEX.test(value);
+}
+
+function parseStrictFiniteNumber(val: unknown): number | null {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
 
 function escapeXml(unsafe: string): string {
   return String(unsafe || '').replace(/[<>&'"]/g, (c) => {
@@ -95,7 +106,7 @@ function formatThreadResponse(t: any, userKeys: string[]) {
 export const getThreads = async (req: Request, res: Response) => {
   try {
     const userKeys = getUserKeys(req);
-    const page = Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1);
+    const page = Math.min(Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1), 1000);
     const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10) || 50, 1), 100);
     const skip = (page - 1) * limit;
 
@@ -151,8 +162,8 @@ export const getThreads = async (req: Request, res: Response) => {
 export const getThreadById = async (req: Request, res: Response) => {
   try {
     const threadId = String(req.params.threadId || '').trim();
-    if (!threadId) {
-      return res.status(400).json({ success: false, message: 'Thiếu mã bài viết.' });
+    if (!threadId || !isValidThreadIdentifier(threadId)) {
+      return res.status(400).json({ success: false, message: 'Mã bài viết không hợp lệ.' });
     }
     if (mongoose.connection.readyState !== 1) {
       return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
@@ -306,8 +317,8 @@ export const updateThread = async (req: AuthRequest, res: Response) => {
     }
 
     const threadId = String(req.params.threadId || '').trim();
-    if (!threadId) {
-      return res.status(400).json({ success: false, message: 'Thiếu mã bài viết.' });
+    if (!threadId || !isValidThreadIdentifier(threadId)) {
+      return res.status(400).json({ success: false, message: 'Mã bài viết không hợp lệ.' });
     }
 
     const query = isValidObjectId(threadId) ? { $or: [{ id: threadId }, { _id: new Types.ObjectId(threadId) }] } : { id: threadId };
@@ -397,7 +408,10 @@ export const deleteOwnThread = async (req: AuthRequest, res: Response) => {
       return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
     }
 
-    const threadId = String(req.params.threadId || '');
+    const threadId = String(req.params.threadId || '').trim();
+    if (!threadId || !isValidThreadIdentifier(threadId)) {
+      return res.status(400).json({ success: false, message: 'Mã bài viết không hợp lệ.' });
+    }
     const query = isValidObjectId(threadId) ? { $or: [{ id: threadId }, { _id: new Types.ObjectId(threadId) }] } : { id: threadId };
     const thread = await ThreadModel.findOne(query);
     if (!thread) {
@@ -421,12 +435,16 @@ export const deleteOwnThread = async (req: AuthRequest, res: Response) => {
 };
 
 export const reactToThread = async (req: AuthRequest, res: Response) => {
-  const { threadId } = req.params;
+  const threadId = String(req.params.threadId || '').trim();
   const { reactionType } = req.body || {};
   const currentUserId = req.user?.userId;
 
-  if (!currentUserId) {
+  if (!currentUserId || !isValidObjectId(currentUserId)) {
     return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để thả cảm xúc.' });
+  }
+
+  if (!threadId || !isValidThreadIdentifier(threadId)) {
+    return res.status(400).json({ success: false, message: 'Mã bài viết không hợp lệ.' });
   }
 
   if (
@@ -443,7 +461,10 @@ export const reactToThread = async (req: AuthRequest, res: Response) => {
 
   try {
     const primaryKey = String(currentUserId);
-    const existingDoc = await ThreadModel.findOne({ id: String(threadId) })
+    const threadQuery = isValidObjectId(threadId)
+      ? { $or: [{ id: threadId }, { _id: new Types.ObjectId(threadId) }] }
+      : { id: threadId };
+    const existingDoc = await ThreadModel.findOne(threadQuery)
       .select('_id id title userId userReactionsMap')
       .lean();
     if (!existingDoc) {
@@ -559,6 +580,9 @@ export const getTopTrekkers = async (_req: Request, res: Response) => {
 export const downloadTrailGpx = async (req: Request, res: Response) => {
   try {
     const trailParam = String(req.params.trailId || '').trim();
+    if (!trailParam || trailParam.length > 100) {
+      return res.status(400).json({ success: false, message: 'Mã cung đường không hợp lệ.' });
+    }
     let trail: any = await resolveTrailByIdOrSlug(trailParam);
     if (!trail) {
       trail = mockTrails.find((t) => t.id === trailParam) || null;
@@ -574,8 +598,8 @@ export const downloadTrailGpx = async (req: Request, res: Response) => {
       (pt: unknown): pt is [number, number] =>
         Array.isArray(pt) &&
         pt.length >= 2 &&
-        Number.isFinite(Number(pt[0])) &&
-        Number.isFinite(Number(pt[1]))
+        parseStrictFiniteNumber(pt[0]) !== null &&
+        parseStrictFiniteNumber(pt[1]) !== null
     );
     const gpxPoints = validPoints
       .map((pt: [number, number]) => `      <trkpt lat="${Number(pt[0])}" lon="${Number(pt[1])}"></trkpt>`)
@@ -583,9 +607,12 @@ export const downloadTrailGpx = async (req: Request, res: Response) => {
 
     const wptXml = Array.isArray(trail.waypoints)
       ? trail.waypoints
-          .filter((w: any) => w && Number.isFinite(Number(w.lat)) && Number.isFinite(Number(w.lng)))
+          .filter(
+            (w: any) => w && parseStrictFiniteNumber(w.lat) !== null && parseStrictFiniteNumber(w.lng) !== null
+          )
           .map((w: any) => {
-            const eleTag = Number.isFinite(Number(w.elevationM)) ? `<ele>${Math.round(Number(w.elevationM))}</ele>` : '';
+            const parsedEle = parseStrictFiniteNumber(w.elevationM);
+            const eleTag = parsedEle !== null ? `<ele>${Math.round(parsedEle)}</ele>` : '';
             return `  <wpt lat="${Number(w.lat)}" lon="${Number(w.lng)}">${eleTag}<name>${escapeXml(w.name || 'Waypoint')}</name><desc>${escapeXml(w.description || '')}</desc><type>${escapeXml(w.type || 'viewpoint')}</type></wpt>`;
           })
           .join('\n')
@@ -727,7 +754,13 @@ export const pinThreadAdmin = async (req: AuthRequest, res: Response) => {
     if (userRole !== 'admin' && userRole !== 'moderator') {
       return res.status(403).json({ success: false, message: 'Yêu cầu quyền Admin hoặc Moderator.' });
     }
-    const id = String(req.params.id || '');
+    const id = String(req.params.id || '').trim();
+    if (!id || !isValidThreadIdentifier(id)) {
+      return res.status(400).json({ success: false, message: 'Mã bài viết không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
     const query = isValidObjectId(id) ? { $or: [{ id }, { _id: new Types.ObjectId(id) }] } : { id };
 
     const thread = await ThreadModel.findOne(query);
@@ -763,7 +796,13 @@ export const lockThreadAdmin = async (req: AuthRequest, res: Response) => {
     if (userRole !== 'admin' && userRole !== 'moderator') {
       return res.status(403).json({ success: false, message: 'Yêu cầu quyền Admin hoặc Moderator.' });
     }
-    const id = String(req.params.id || '');
+    const id = String(req.params.id || '').trim();
+    if (!id || !isValidThreadIdentifier(id)) {
+      return res.status(400).json({ success: false, message: 'Mã bài viết không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
     const query = isValidObjectId(id) ? { $or: [{ id }, { _id: new Types.ObjectId(id) }] } : { id };
 
     const thread = await ThreadModel.findOne(query);
@@ -799,7 +838,13 @@ export const deleteThreadAdmin = async (req: AuthRequest, res: Response) => {
     if (userRole !== 'admin' && userRole !== 'moderator') {
       return res.status(403).json({ success: false, message: 'Yêu cầu quyền Admin hoặc Moderator.' });
     }
-    const id = String(req.params.id || '');
+    const id = String(req.params.id || '').trim();
+    if (!id || !isValidThreadIdentifier(id)) {
+      return res.status(400).json({ success: false, message: 'Mã bài viết không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
     const query = isValidObjectId(id) ? { $or: [{ id }, { _id: new Types.ObjectId(id) }] } : { id };
 
     const thread = await ThreadModel.findOneAndDelete(query);

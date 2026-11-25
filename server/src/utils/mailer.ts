@@ -1,10 +1,56 @@
-import nodemailer from 'nodemailer';
+import nodemailer, { type Transporter } from 'nodemailer';
 import dotenv from 'dotenv';
+import { getClientBaseUrl } from './clientUrl.js';
 
 dotenv.config();
 
-let cachedTransporter: nodemailer.Transporter | null = null;
-let transporterInitPromise: Promise<nodemailer.Transporter> | null = null;
+let cachedTransporter: Transporter | null = null;
+let transporterInitPromise: Promise<Transporter> | null = null;
+
+const SMTP_TIMEOUT_OPTIONS = {
+  connectionTimeout: 10_000,
+  greetingTimeout: 10_000,
+  socketTimeout: 15_000,
+};
+
+function resetTransporter(): void {
+  const prev = cachedTransporter;
+  cachedTransporter = null;
+  if (prev && typeof prev.close === 'function') {
+    try {
+      prev.close();
+    } catch {
+      // Ignore close errors on broken SMTP pool
+    }
+  }
+}
+
+export function closeMailer(): void {
+  resetTransporter();
+}
+
+export function getMailerReadiness(): {
+  configured: boolean;
+  mode: 'custom-smtp' | 'gmail-smtp' | 'ethereal-dev' | 'unconfigured';
+  poolActive: boolean;
+} {
+  const host = (process.env.SMTP_HOST || '').trim();
+  const user = (process.env.SMTP_USER || '').trim();
+  const pass = (process.env.SMTP_PASS || '').trim();
+  const hasRealCredentials =
+    Boolean(user && pass) && !user.includes('dien_email') && !pass.includes('dien_mat_khau');
+
+  if (host && host !== 'smtp.gmail.com' && hasRealCredentials) {
+    return { configured: true, mode: 'custom-smtp', poolActive: Boolean(cachedTransporter) };
+  }
+  if (hasRealCredentials) {
+    return { configured: true, mode: 'gmail-smtp', poolActive: Boolean(cachedTransporter) };
+  }
+  if (process.env.NODE_ENV === 'production') {
+    return { configured: false, mode: 'unconfigured', poolActive: false };
+  }
+  return { configured: true, mode: 'ethereal-dev', poolActive: Boolean(cachedTransporter) };
+}
 
 function escapeHtml(str: string): string {
   return String(str || '')
@@ -22,7 +68,7 @@ function sanitizeHeaderValue(str: string, maxLen = 180): string {
     .slice(0, maxLen);
 }
 
-const getTransporter = async (): Promise<nodemailer.Transporter> => {
+const getTransporter = async (): Promise<Transporter> => {
   if (cachedTransporter) return cachedTransporter;
   if (transporterInitPromise) return transporterInitPromise;
 
@@ -41,6 +87,7 @@ const getTransporter = async (): Promise<nodemailer.Transporter> => {
         port,
         secure: port === 465,
         pool: true,
+        ...SMTP_TIMEOUT_OPTIONS,
         auth: { user, pass },
       });
       return cachedTransporter;
@@ -58,6 +105,7 @@ const getTransporter = async (): Promise<nodemailer.Transporter> => {
         maxMessages: 100,
         rateDelta: 1000,
         rateLimit: 5,
+        ...SMTP_TIMEOUT_OPTIONS,
         auth: { user, pass },
       });
       return cachedTransporter;
@@ -74,6 +122,7 @@ const getTransporter = async (): Promise<nodemailer.Transporter> => {
       host: 'smtp.ethereal.email',
       port: 587,
       secure: false,
+      ...SMTP_TIMEOUT_OPTIONS,
       auth: {
         user: testAccount.user,
         pass: testAccount.pass,
@@ -105,7 +154,7 @@ export const sendAccountActivationEmail = async (
     const safeEmail = escapeHtml(toEmail);
     const safeCode = escapeHtml(activationCode);
 
-    const clientUrl = (process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const clientUrl = getClientBaseUrl();
     const cleanToken = typeof activationToken === 'string' ? activationToken.trim() : '';
     const activationUrl = cleanToken ? `${clientUrl}/?activateToken=${encodeURIComponent(cleanToken)}` : '';
     const safeActivationUrl = activationUrl ? escapeHtml(activationUrl) : '';
@@ -162,7 +211,7 @@ export const sendAccountActivationEmail = async (
     return { success: true, messageId: info.messageId };
   } catch (error) {
     console.error('[Activation SMTP Mailer Error]:', error);
-    cachedTransporter = null;
+    resetTransporter();
     return { success: false, error };
   }
 };
@@ -218,7 +267,7 @@ export const sendResetPasswordEmail = async (toEmail: string, resetLink: string)
     return { success: true, messageId: info.messageId };
   } catch (error) {
     console.error('[Reset SMTP Mailer Error]:', error);
-    cachedTransporter = null;
+    resetTransporter();
     return { success: false, error };
   }
 };
@@ -291,7 +340,7 @@ export const sendSafetyOverdueAlertEmail = async (params: {
     return { success: true, messageId: info.messageId };
   } catch (error) {
     console.error('[Safety Overdue Mailer Error]:', error);
-    cachedTransporter = null;
+    resetTransporter();
     return { success: false, error };
   }
 };
@@ -338,7 +387,7 @@ export const sendSafetyAllClearEmail = async (params: {
     return { success: true, messageId: info.messageId };
   } catch (error) {
     console.error('[Safety All-Clear Mailer Error]:', error);
-    cachedTransporter = null;
+    resetTransporter();
     return { success: false, error };
   }
 };

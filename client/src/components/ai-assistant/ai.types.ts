@@ -129,7 +129,7 @@ export interface GpxElevationSample {
 export interface GpxAnalysisResult {
   fileName: string;
   pointCount: number;
-  elevationSource: 'gpx-elevation' | 'open-meteo-dem' | 'interpolated-fallback';
+  elevationSource: 'gpx-elevation' | 'aws-terrarium-dem' | 'interpolated-fallback';
   distanceKm: number;
   elevationGainM: number;
   elevationLossM: number;
@@ -254,9 +254,19 @@ export interface LocalAiThreadRecord extends AiChatThreadSummary {
 export function extractPrimaryDialNumber(rawPhone?: string): string {
   const raw = String(rawPhone || '').trim();
   if (!raw) return '112';
-  const firstSegment = raw.split(/[/|,;()]/)[0] || raw;
+  const firstSegment = raw.split(/[/|,;]/)[0] || raw;
   const digits = firstSegment.replace(/[^\d+]/g, '');
   return digits.length >= 3 ? digits : '112';
+}
+
+export function isSafeImageUrl(url?: string | null): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith('https://')) return true;
+  if (trimmed.startsWith('blob:')) return true;
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) return true;
+  return false;
 }
 
 // =========================================================================

@@ -1,5 +1,3 @@
-@import 'leaflet/dist/leaflet.css';
-
 :root {
   /* ==========================================
    * 1. TYPOGRAPHY SCALE TOKENS (100% Unified Single Font)
@@ -611,6 +609,7 @@ button {
 html {
   scroll-behavior: smooth;
   scroll-padding-top: 80px;
+  overflow-x: clip;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -1413,7 +1412,6 @@ button:focus-visible,
 .btn:focus-visible,
 .editorial-tab-btn:focus-visible,
 .admin-nav-item:focus-visible,
-.admin-segmented-btn:focus-visible,
 [role="button"]:focus-visible,
 [role="tab"]:focus-visible,
 [tabindex]:not([tabindex="-1"]):focus-visible,
@@ -1544,8 +1542,8 @@ summary:focus-visible {
   contain: layout style;
 }
 
-/* Leaflet GIS Map Theme Overrides */
-.leaflet-container {
+/* MapLibre Native Vector Map Container Overrides */
+.maplibregl-map {
   width: 100%;
   height: 100%;
   background: var(--color-bg-main) !important;
@@ -1735,15 +1733,6 @@ textarea:focus,
 .marker-hover-anim:hover {
   transform: scale(1.18) translateY(-2px) !important;
   cursor: pointer;
-}
-
-.leaflet-marker-icon.custom-trail-marker,
-.leaflet-marker-icon.user-gps-marker,
-.leaflet-marker-icon.start-finish-marker,
-.leaflet-marker-icon.waypoint-marker,
-.leaflet-marker-icon.custom-marker {
-  background: transparent !important;
-  border: none !important;
 }
 
 /* ==========================================
@@ -2217,7 +2206,7 @@ textarea:focus,
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle, rgba(255, 255, 255, 0.3) 10%, transparent 10.01%);
+  background: radial-gradient(circle, color-mix(in srgb, currentColor 24%, transparent) 10%, transparent 10.01%);
   background-repeat: no-repeat;
   background-position: 50%;
   transform: scale(10, 10);
@@ -3773,14 +3762,6 @@ button.admin-coord-readout:focus-visible {
   color: var(--color-text-dim);
 }
 
-.admin-spec-val {
-  font-size: 0.92rem;
-  font-weight: 600;
-  color: var(--color-text-main);
-  font-variant-numeric: tabular-nums;
-  line-height: 1.2;
-}
-
 /* 3. Spatial Command Deck & Vietnam Tactical Radar */
 @keyframes adminLampPulse {
   0%,
@@ -4374,7 +4355,7 @@ html[data-perf="lite"] .admin-radar-pulse {
 }
 
 /* ==========================================
- * TACTICAL GIS 3D MAP & LEAFLET ENHANCEMENTS
+ * TACTICAL GIS 3D MAP & MAPLIBRE VECTOR ENHANCEMENTS
  * ========================================== */
 .tactical-gis-frame {
   position: relative;
@@ -4406,60 +4387,67 @@ html[data-perf="lite"] .admin-radar-pulse {
   z-index: var(--z-map-hud, 400);
 }
 
-/* Completely eliminate Leaflet default square zoom controls to prevent overlap */
-.leaflet-control-zoom,
-.leaflet-top.leaflet-left .leaflet-control-zoom {
-  display: none !important;
+/* Unclipped, WCAG-AA MapLibre Attribution Control (Dark & Light Harmony) */
+.maplibregl-ctrl-bottom-right {
+  z-index: 5;
+  max-width: 100%;
 }
 
-.leaflet-control-attribution {
+.maplibregl-ctrl-attrib,
+.maplibregl-ctrl-attrib.maplibregl-compact {
   background: var(--color-bg-hud) !important;
   color: var(--color-text-dim) !important;
   font-size: 10px !important;
-  line-height: 1.35 !important;
+  line-height: 1.38 !important;
   border-radius: 4px 0 0 0 !important;
   padding: 3px 8px !important;
+  margin: 0 !important;
   border: 1px solid var(--color-border) !important;
   border-bottom: none !important;
   border-right: none !important;
+  max-width: min(100%, 560px) !important;
   white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
   text-align: right !important;
+  box-shadow: none !important;
   opacity: 0.96;
 }
 
-.leaflet-control-attribution a {
+.maplibregl-ctrl-attrib-inner {
+  display: inline !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  color: var(--color-text-dim) !important;
+}
+
+.maplibregl-ctrl-attrib a {
   color: var(--color-text-muted) !important;
   text-decoration: none !important;
 }
 
-.leaflet-control-attribution a:hover {
+.maplibregl-ctrl-attrib a:hover {
   color: var(--color-primary) !important;
+  text-decoration: underline !important;
 }
 
-.leaflet-popup-content-wrapper {
+.maplibregl-ctrl-attrib-button {
+  background-color: var(--color-bg-card) !important;
+  color: var(--color-text-main) !important;
+}
+
+.maplibregl-popup-content {
   background: var(--color-bg-card) !important;
   border: 1px solid var(--color-border-strong) !important;
   border-radius: 6px !important;
   box-shadow: var(--shadow-3d) !important;
   color: var(--color-text-main) !important;
-  padding: 4px !important;
+  padding: 8px 10px !important;
 }
 
-.leaflet-popup-tip {
-  background: var(--color-bg-card) !important;
-  border: 1px solid var(--color-border-strong) !important;
-}
-
-/* Custom Tactical GIS Tooltip - seamless transparent container with smart auto-positioning */
-.leaflet-tooltip.tactical-leaflet-tooltip {
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-  padding: 0 !important;
-}
-
-.leaflet-tooltip.tactical-leaflet-tooltip::before {
-  display: none !important;
+.maplibregl-popup-tip {
+  border-top-color: var(--color-bg-card) !important;
+  border-bottom-color: var(--color-bg-card) !important;
 }
 
 /* Tactical Warning Radar Pulse */
@@ -4475,14 +4463,14 @@ html[data-perf="lite"] .admin-radar-pulse {
   }
 }
 
-/* Vietnamese Typography & Anti-Font Breaking Protection for Leaflet Maps */
-.leaflet-container,
-.leaflet-container *,
-.leaflet-pane,
-.leaflet-tooltip,
-.leaflet-popup,
-.leaflet-popup-content,
-.leaflet-popup-content * {
+/* Vietnamese Typography & Anti-Font Breaking Protection for MapLibre Maps */
+.maplibregl-map,
+.maplibregl-map *,
+.maplibregl-ctrl-attrib,
+.maplibregl-ctrl-attrib *,
+.maplibregl-popup,
+.maplibregl-popup-content,
+.maplibregl-popup-content * {
   font-family: var(--font-family) !important;
   -webkit-font-smoothing: antialiased !important;
   -moz-osx-font-smoothing: grayscale !important;
@@ -4751,8 +4739,8 @@ html[data-perf="lite"] header,
 html[data-perf="lite"] .cyber-dock-bar,
 html[data-perf="lite"] .cyber-hud-pill,
 html[data-perf="lite"] .trail-pin-hover-tooltip,
-html[data-perf="lite"] .leaflet-popup-content-wrapper,
-html[data-perf="lite"] .leaflet-control-attribution,
+html[data-perf="lite"] .maplibregl-popup-content,
+html[data-perf="lite"] .maplibregl-ctrl-attrib,
 html[data-perf="lite"] .toast-card-responsive {
   background: var(--color-bg-card) !important;
 }
@@ -4842,8 +4830,8 @@ html[data-perf="lite"] .hero-cascade-arrow {
 
   html,
   body {
-    background: #ffffff !important;
-    color: #111613 !important;
+    background: var(--color-bg-main) !important;
+    color: var(--color-text-main) !important;
     font-size: 10.5pt;
     line-height: 1.45;
     -webkit-print-color-adjust: exact;
@@ -4863,12 +4851,11 @@ html[data-perf="lite"] .hero-cascade-arrow {
   .toast-spring-out,
   .toast-card-responsive,
   .modal-overlay,
-  .admin-sidebar,
   .admin-rail,
   .admin-topbar,
   .editorial-tabs-bar,
   .no-print,
-  .leaflet-control-container,
+  .maplibregl-control-container,
   [aria-label*="LOST AI"],
   [style*="position: fixed"]:not(.print-keep) {
     display: none !important;
@@ -4885,7 +4872,7 @@ html[data-perf="lite"] .hero-cascade-arrow {
     width: 100% !important;
     margin: 0 !important;
     padding: 0 !important;
-    background: #ffffff !important;
+    background: var(--color-bg-main) !important;
   }
 
   .card,
@@ -4893,12 +4880,10 @@ html[data-perf="lite"] .hero-cascade-arrow {
   .forum-card,
   .profile-card,
   .bento-command-card,
-  .admin-item-card,
-  .editorial-stat-strip,
-  .admin-kpi-grid {
-    background: #ffffff !important;
-    color: #111613 !important;
-    border: 1px solid #b8c4bc !important;
+  .editorial-stat-strip {
+    background: var(--color-bg-card) !important;
+    color: var(--color-text-main) !important;
+    border: 1px solid var(--color-border-strong) !important;
     border-radius: 4px !important;
     box-shadow: none !important;
     backdrop-filter: none !important;
@@ -4907,18 +4892,17 @@ html[data-perf="lite"] .hero-cascade-arrow {
     page-break-inside: avoid;
   }
 
-  .editorial-stat-cell,
-  .admin-kpi-card {
-    background: #ffffff !important;
-    color: #111613 !important;
-    border-color: #c8d1cb !important;
+  .editorial-stat-cell {
+    background: var(--color-bg-card) !important;
+    color: var(--color-text-main) !important;
+    border-color: var(--color-border) !important;
   }
 
   h1,
   h2,
   h3,
   h4 {
-    color: #111613 !important;
+    color: var(--color-text-main) !important;
     break-after: avoid;
     page-break-after: avoid;
   }
@@ -4938,20 +4922,20 @@ html[data-perf="lite"] .hero-cascade-arrow {
   }
 
   .badge {
-    border: 1px solid #8f9e95 !important;
-    background: #f3f6f4 !important;
-    color: #111613 !important;
+    border: 1px solid var(--color-border-strong) !important;
+    background: var(--color-surface-elevated) !important;
+    color: var(--color-text-main) !important;
   }
 
   .btn {
-    border: 1px solid #8f9e95 !important;
-    background: #ffffff !important;
-    color: #111613 !important;
+    border: 1px solid var(--color-border-strong) !important;
+    background: var(--color-bg-card) !important;
+    color: var(--color-text-main) !important;
     box-shadow: none !important;
   }
 
   a {
-    color: #111613 !important;
+    color: var(--color-text-main) !important;
     text-decoration: none !important;
   }
 }

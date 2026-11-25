@@ -13,25 +13,34 @@ For legal, privacy (Vietnam Decree 13/2023/ND-CP), or copyright takedown inquiri
 | Provider | Usage in LOST | License | Required Attribution / Source |
 | :--- | :--- | :--- | :--- |
 | **OpenFreeMap** & **OpenMapTiles** | Vector 2D/3D map tiles & styles (`tiles.openfreemap.org`) | Permissive / Free Commercial | OpenFreeMap (https://openfreemap.org) · OpenMapTiles (https://openmaptiles.org) |
-| **OpenStreetMap Contributors** | Map data, trail context & Nominatim reverse geocoding | **ODbL 1.0** (Open Database License) | © OpenStreetMap contributors (https://www.openstreetmap.org/copyright) |
-| **AWS Open Data — Mapzen / Tilezen Terrarium DEM** | 3D Terrain heightmaps, 2D browser hillshade & server elevation profiles | **AWS Open Data / Public Domain & Open Sources** | Terrain: Mapzen/Tilezen (AWS Open Data, https://registry.opendata.aws/terrain-tiles/) · SRTM/NASA, USGS, NOAA, GMTED, ETOPO1 |
-| **MET Norway** (Norwegian Meteorological Institute) | Live mountain weather forecasts (`api.met.no/weatherapi/locationforecast/2.0`) | **CC BY 4.0** | Weather data from MET Norway (CC BY 4.0, https://api.met.no/) |
-| **NASA POWER** | 3-year historical summit climate archive (`power.larc.nasa.gov`) | **US Government Public Domain** | Climate archive: NASA POWER (Public Domain, https://power.larc.nasa.gov/) |
-| **NASA GIBS** | Satellite imagery basemap (`gibs.earthdata.nasa.gov`, Blue Marble & VIIRS) | **US Government Public Domain** | Imagery: NASA GIBS (Public Domain, https://earthdata.nasa.gov/eosdis/science-system-description/eosdis-components/gibs) |
-| **NASA EONET** | Natural hazard & wildfire/storm event feeds (`eonet.gsfc.nasa.gov`) | **US Government Public Domain** | Natural events: NASA EONET (Public Domain, https://eonet.gsfc.nasa.gov/) |
-| **OpenRouteService by HeiGIT** *(optional env key)* | Optional road routing (`api.openrouteservice.org`) | Free Commercial Tier | © openrouteservice by HeiGIT (https://openrouteservice.org/) \| © OpenStreetMap contributors |
+| **OpenStreetMap Contributors** | Map data, trail context & **Nominatim** reverse geocoding (`nominatim.openstreetmap.org`, 1.1s global throttle & 24h cache) | **ODbL 1.0** (Open Database License) | © OpenStreetMap contributors (https://www.openstreetmap.org/copyright) |
+| **AWS Open Data — Mapzen / Tilezen Terrarium DEM** | 3D Terrain heightmaps, native GPU hillshade & server/client elevation profiles (`s3.amazonaws.com/elevation-tiles-prod/terrarium`) | **AWS Open Data / Public Domain & Open Sources** | Terrain: Mapzen/Tilezen (AWS Open Data, https://registry.opendata.aws/terrain-tiles/) · SRTM/NASA, USGS, NOAA, GMTED, ETOPO1 |
+| **MET Norway** (Norwegian Meteorological Institute) | Live mountain weather forecasts (`api.met.no/weatherapi/locationforecast/2.0`, `If-Modified-Since` & `Expires` compliant) | **CC BY 4.0** | Weather data from MET Norway (CC BY 4.0, https://api.met.no/) |
+| **NASA POWER** (MERRA-2) | 3-year historical summit climate archive (`power.larc.nasa.gov/api/temporal/daily/point`) | **US Government Public Domain** | Climate archive: NASA POWER (Public Domain, https://power.larc.nasa.gov/) |
+| **NASA GIBS** | Satellite imagery basemap (`gibs.earthdata.nasa.gov`, Blue Marble & VIIRS; optional `VITE_SATELLITE_TILE_URL` for Copernicus Sentinel-2) | **US Government Public Domain** | Imagery: NASA GIBS (Public Domain, https://earthdata.nasa.gov/eosdis/science-system-description/eosdis-components/gibs) |
+| **NASA EONET** | Natural hazard & wildfire/storm event feeds scoped to Vietnam bbox (`eonet.gsfc.nasa.gov`) | **US Government Public Domain** | Natural events: NASA EONET (Public Domain, https://eonet.gsfc.nasa.gov/) |
+| **NOAA Solar Calculation Algorithms** (Jean Meeus) | 100% offline sunrise/sunset, civil twilight, golden hour & summit horizon-dip equations (`solarMath.ts`) | **US Government Public Domain** | NOAA Global Monitoring Laboratory Solar Equations (https://gml.noaa.gov/grad/solcalc/) |
+| **OpenRouteService by HeiGIT** *(optional env key)* | Optional road routing (`api.openrouteservice.org` via `ORS_API_KEY`, or self-hosted `SELF_HOSTED_OSRM_URL`, with offline terrain fallback) | Free Commercial Tier | © openrouteservice by HeiGIT (https://openrouteservice.org/) \| © OpenStreetMap contributors |
+
+### 1.1 Optional Operator-Configured Services & External Reference Links
+
+- **Google Identity Services & OAuth 2.0 JWKS** *(optional `GOOGLE_CLIENT_ID` / `VITE_GOOGLE_CLIENT_ID`)* — `accounts.google.com/gsi/client`, `www.googleapis.com/oauth2/v3/certs`, `oauth2.googleapis.com/tokeninfo`, `www.googleapis.com/oauth2/v3/userinfo`. Verified server-side via native Node.js cryptographic RS256 JWKS validation (subject to Google Terms of Service & Privacy Policy).
+- **Google Gemini API** *(optional `GEMINI_API_KEY`)* — `generativelanguage.googleapis.com/v1beta` for optional LOST Alpine AI multimodal/streaming enrichment; falls back to LOST's 100% local deterministic offline engine when unset.
+- **Cloudinary CDN** *(optional `CLOUDINARY_*`)* — used strictly for user-uploaded photos/avatars (with server-side EXIF GPS metadata stripping); zero external stock imagery is bundled or hotlinked by LOST.
+- **Outbound Navigation & Official Directory Links** — User-initiated external deep links to Google Maps (`www.google.com/maps`, `maps.google.com`, no embedded Google Maps SDK) and official Vietnamese National Park / Forest Ranger / Rescue portals (`.gov.vn` / VQG websites in `vietnamDirectory.ts`).
 
 ---
 
-## 2. Typography & Inline Vector Iconography
+## 2. Typography, Inline Vector Iconography & Original Artwork
 
-- **Plus Jakarta Sans** (`@fontsource-variable/plus-jakarta-sans@5.3.0`) — Copyright 2020 The Plus Jakarta Sans Project Authors (Tokotype, https://github.com/tokotype/PlusJakartaSans). Licensed under **SIL Open Font License 1.1 (OFL-1.1)**. Self-hosted as local `.woff2` files.
+- **Plus Jakarta Sans** (`@fontsource-variable/plus-jakarta-sans@5.3.0`) — Copyright 2020 The Plus Jakarta Sans Project Authors (Tokotype, https://github.com/tokotype/PlusJakartaSans). Licensed under **SIL Open Font License 1.1 (OFL-1.1)**. Self-hosted as local `.woff2` files (zero third-party font CDNs).
 - **Feather Icons** (https://feathericons.com) — Copyright (c) 2013–2023 Cole Bemis. Licensed under the **MIT License**. Inline geometric SVG paths used in `client/src/components/common/SvgIcons.tsx`.
 - **Lucide Icons** (https://lucide.dev) — Copyright (c) for portions of Lucide are held by Cole Bemis 2013–2022 as part of Feather (MIT). All other copyright (c) for Lucide are held by Lucide Contributors 2022–present. Licensed under the **ISC License**.
+- **Original LOST Topographic Covers & Avatars** (`client/public/covers/*.svg`, 132 local SVG files) — © 2026 LOST Việt Nam. Procedurally crafted original artwork with zero external hotlinks or stock photography.
 
 ---
 
-## 3. Client Production Dependencies (42 packages — MIT: 26, ISC: 8, BSD-2-Clause: 3, BSD-3-Clause: 3, OFL-1.1: 1, (MIT OR Apache-2.0): 1)
+## 3. Client Production Dependencies (38 packages — MIT: 23, ISC: 8, BSD-3-Clause: 3, BSD-2-Clause: 2, OFL-1.1: 1, (MIT OR Apache-2.0): 1)
 
 | Package | Version | Scope | License |
 | :--- | :--- | :---: | :--- |
@@ -47,9 +56,7 @@ For legal, privacy (Vietnam Decree 13/2023/ND-CP), or copyright takedown inquiri
 | `@maplibre/vt-pbf` | `4.3.3` | Transitive | MIT |
 | `@socket.io/component-emitter` | `3.1.2` | Transitive | MIT |
 | `@types/geojson` | `7946.0.16` | Transitive | MIT |
-| `@types/react` | `19.2.17` | Transitive | MIT |
 | `bidi-js` | `1.1.0` | Transitive | MIT |
-| `csstype` | `3.2.3` | Transitive | MIT |
 | `debug` | `4.4.3` | Transitive | MIT |
 | `earcut` | `3.2.4` | Transitive | ISC |
 | `engine.io-client` | `6.6.6` | Transitive | MIT |
@@ -57,8 +64,6 @@ For legal, privacy (Vietnam Decree 13/2023/ND-CP), or copyright takedown inquiri
 | `gl-matrix` | `3.4.4` | Transitive | MIT |
 | `json-stringify-pretty-compact` | `4.0.0` | Transitive | MIT |
 | `kdbush` | `4.1.0` | Transitive | ISC |
-| `leaflet` | `1.9.4` | Direct | BSD-2-Clause |
-| `leaflet.markercluster` | `1.5.3` | Direct | MIT |
 | `maplibre-gl` | `6.19.0` | Direct | BSD-3-Clause |
 | `minimist` | `1.2.8` | Transitive | MIT |
 | `ms` | `2.1.3` | Transitive | MIT |
@@ -80,11 +85,13 @@ For legal, privacy (Vietnam Decree 13/2023/ND-CP), or copyright takedown inquiri
 
 ---
 
-## 4. Server Production Dependencies (106 packages — MIT: 94, Apache-2.0: 4, ISC: 4, BSD-2-Clause: 2, MIT-0: 1, BSD-3-Clause: 1)
+## 4. Server Production Dependencies (108 unique `name@version` packages / 112 lockfile entries — MIT: 96 [100 entries], Apache-2.0: 4, ISC: 4, BSD-2-Clause: 2, MIT-0: 1, BSD-3-Clause: 1)
+
+*Note: 4 MIT transitive packages (`accepts@1.3.8`, `mime-db@1.52.0`, `mime-types@2.1.35`, `negotiator@0.6.3`) appear twice as nested lockfile instances (112 total runtime lockfile entries). LOST implements custom SPA routing, native HTTP security headers, and native Node.js RS256 JWKS verification without extra third-party wrapper dependencies.*
 
 | Package | Version | Scope | License |
 | :--- | :--- | :---: | :--- |
-| `@mongodb-js/saslprep` | `1.4.13` | Transitive | MIT |
+| `@mongodb-js/saslprep` | `1.6.3` | Transitive | MIT |
 | `@socket.io/component-emitter` | `3.1.2` | Transitive | MIT |
 | `@standard-schema/spec` | `1.1.0` | Transitive | MIT |
 | `@types/cors` | `2.8.19` | Transitive | MIT |
@@ -95,8 +102,8 @@ For legal, privacy (Vietnam Decree 13/2023/ND-CP), or copyright takedown inquiri
 | `accepts` | `1.3.8` | Transitive | MIT |
 | `accepts` | `2.0.0` | Transitive | MIT |
 | `base64id` | `2.0.0` | Transitive | MIT |
-| `body-parser` | `2.3.0` | Transitive | MIT |
-| `bson` | `7.3.1` | Transitive | Apache-2.0 |
+| `body-parser` | `2.4.0` | Transitive | MIT |
+| `bson` | `7.3.4` | Transitive | Apache-2.0 |
 | `bytes` | `3.1.2` | Transitive | MIT |
 | `call-bind-apply-helpers` | `1.0.2` | Transitive | MIT |
 | `call-bound` | `1.0.4` | Transitive | MIT |
@@ -104,6 +111,7 @@ For legal, privacy (Vietnam Decree 13/2023/ND-CP), or copyright takedown inquiri
 | `content-disposition` | `1.1.0` | Transitive | MIT |
 | `content-type` | `1.0.5` | Transitive | MIT |
 | `content-type` | `2.0.0` | Transitive | MIT |
+| `content-type` | `2.1.0` | Transitive | MIT |
 | `cookie` | `0.7.2` | Transitive | MIT |
 | `cookie-signature` | `1.2.2` | Transitive | MIT |
 | `cors` | `2.8.6` | Direct | MIT |
@@ -113,7 +121,7 @@ For legal, privacy (Vietnam Decree 13/2023/ND-CP), or copyright takedown inquiri
 | `dunder-proto` | `1.0.1` | Transitive | MIT |
 | `ee-first` | `1.1.1` | Transitive | MIT |
 | `encodeurl` | `2.0.0` | Transitive | MIT |
-| `engine.io` | `6.6.9` | Transitive | MIT |
+| `engine.io` | `6.6.13` | Transitive | MIT |
 | `engine.io-parser` | `5.2.3` | Transitive | MIT |
 | `es-define-property` | `1.0.1` | Transitive | MIT |
 | `es-errors` | `1.3.0` | Transitive | MIT |
@@ -135,7 +143,7 @@ For legal, privacy (Vietnam Decree 13/2023/ND-CP), or copyright takedown inquiri
 | `inherits` | `2.0.4` | Transitive | ISC |
 | `ipaddr.js` | `1.9.1` | Transitive | MIT |
 | `is-promise` | `4.0.0` | Transitive | MIT |
-| `kareem` | `3.3.0` | Transitive | Apache-2.0 |
+| `kareem` | `3.4.1` | Transitive | Apache-2.0 |
 | `lodash` | `4.18.1` | Transitive | MIT |
 | `math-intrinsics` | `1.1.0` | Transitive | MIT |
 | `media-typer` | `1.1.1` | Transitive | MIT |
@@ -145,24 +153,24 @@ For legal, privacy (Vietnam Decree 13/2023/ND-CP), or copyright takedown inquiri
 | `mime-db` | `1.54.0` | Transitive | MIT |
 | `mime-types` | `2.1.35` | Transitive | MIT |
 | `mime-types` | `3.0.2` | Transitive | MIT |
-| `mongodb` | `7.5.0` | Transitive | Apache-2.0 |
-| `mongodb-connection-string-url` | `7.0.2` | Transitive | Apache-2.0 |
-| `mongoose` | `9.8.0` | Direct | MIT |
+| `mongodb` | `7.9.1` | Transitive | Apache-2.0 |
+| `mongodb-connection-string-url` | `7.0.3` | Transitive | Apache-2.0 |
+| `mongoose` | `9.13.1` | Direct | MIT |
 | `mpath` | `0.9.0` | Transitive | MIT |
-| `mquery` | `6.0.0` | Transitive | MIT |
+| `mquery` | `6.0.1` | Transitive | MIT |
 | `ms` | `2.1.3` | Transitive | MIT |
 | `negotiator` | `0.6.3` | Transitive | MIT |
 | `negotiator` | `1.0.0` | Transitive | MIT |
-| `nodemailer` | `9.0.3` | Direct | MIT-0 |
+| `nodemailer` | `10.6.1` | Direct | MIT-0 |
 | `object-assign` | `4.1.1` | Transitive | MIT |
 | `object-inspect` | `1.13.4` | Transitive | MIT |
 | `on-finished` | `2.4.1` | Transitive | MIT |
 | `once` | `1.4.0` | Transitive | ISC |
 | `parseurl` | `1.3.3` | Transitive | MIT |
 | `path-to-regexp` | `8.4.2` | Transitive | MIT |
-| `proxy-addr` | `2.0.7` | Transitive | MIT |
+| `proxy-addr` | `2.0.8` | Transitive | MIT |
 | `punycode` | `2.3.1` | Transitive | MIT |
-| `qs` | `6.15.3` | Transitive | BSD-3-Clause |
+| `qs` | `6.17.1` | Transitive | BSD-3-Clause |
 | `range-parser` | `1.3.0` | Transitive | MIT |
 | `raw-body` | `3.0.2` | Transitive | MIT |
 | `router` | `2.2.0` | Transitive | MIT |
@@ -174,82 +182,33 @@ For legal, privacy (Vietnam Decree 13/2023/ND-CP), or copyright takedown inquiri
 | `side-channel-list` | `1.0.1` | Transitive | MIT |
 | `side-channel-map` | `1.0.1` | Transitive | MIT |
 | `side-channel-weakmap` | `1.0.2` | Transitive | MIT |
-| `sift` | `17.1.3` | Transitive | MIT |
+| `sift` | `17.1.4` | Transitive | MIT |
 | `socket.io` | `4.8.3` | Direct | MIT |
 | `socket.io-adapter` | `2.5.8` | Transitive | MIT |
 | `socket.io-parser` | `4.2.7` | Transitive | MIT |
 | `sparse-bitfield` | `3.0.3` | Transitive | MIT |
 | `statuses` | `2.0.2` | Transitive | MIT |
 | `toidentifier` | `1.0.1` | Transitive | MIT |
-| `tr46` | `5.1.1` | Transitive | MIT |
+| `tr46` | `6.0.0` | Transitive | MIT |
 | `type-is` | `2.1.0` | Transitive | MIT |
 | `undici-types` | `8.3.0` | Transitive | MIT |
 | `unpipe` | `1.0.0` | Transitive | MIT |
 | `vary` | `1.1.2` | Transitive | MIT |
-| `webidl-conversions` | `7.0.0` | Transitive | BSD-2-Clause |
-| `whatwg-url` | `14.2.0` | Transitive | MIT |
+| `webidl-conversions` | `8.0.1` | Transitive | BSD-2-Clause |
+| `whatwg-url` | `15.1.0` | Transitive | MIT |
 | `wrappy` | `1.0.2` | Transitive | ISC |
 | `ws` | `8.21.1` | Transitive | MIT |
+| `ws` | `8.23.0` | Transitive | MIT |
+
+### 4.1 Development & Build Tooling Dependencies (Non-Shipped — 100% Commercial-Safe)
+
+All development/build dependencies in `client/package-lock.json` (206 packages: `MIT: 158`, `Apache-2.0: 15`, `MPL-2.0: 12`, `ISC: 10`, `BSD-2-Clause: 6`, `BSD-3-Clause: 2`, `CC-BY-4.0: 1`, `BlueOak-1.0.0: 1`, `0BSD: 1`), `server/package-lock.json` (60 packages: `MIT: 39`, `Apache-2.0: 21`), and root `package-lock.json` (25 packages: `MIT: 19`, `ISC: 4`, `Apache-2.0: 1`, `0BSD: 1`) are audited free for commercial development. The 12 `MPL-2.0` packages (`lightningcss@1.33.0` + platform binaries) and 1 `CC-BY-4.0` package (`caniuse-lite`) are strictly build-time Vite/CSS tooling and are never bundled into production artifacts. **Zero** GPL, AGPL, LGPL, SSPL, BUSL, CC-BY-NC, or unknown/missing licenses exist anywhere in the supply chain.
 
 ---
 
 ## 5. Full Verbatim Third-Party License Texts
 
-### 5.1 Leaflet (`BSD-2-Clause`)
-```text
-BSD 2-Clause License
-
-Copyright (c) 2010-2023, Volodymyr Agafonkin
-Copyright (c) 2010-2011, CloudMade
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-```
-
-### 5.2 Leaflet.markercluster (`MIT`)
-```text
-Copyright 2012 David Leaver
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-"Software"), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-```
-
-### 5.3 MapLibre GL JS (`BSD-3-Clause` + Embedded Mapbox GL JS v1.13, `glfx.js`, `d3-color`)
+### 5.1 MapLibre GL JS (`BSD-3-Clause` + Embedded Mapbox GL JS v1.13, `glfx.js`, `d3-color`)
 ```text
 Copyright (c) 2023, MapLibre contributors
 
@@ -369,7 +328,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 5.4 Plus Jakarta Sans (`SIL Open Font License 1.1`)
+### 5.2 Plus Jakarta Sans (`SIL Open Font License 1.1`)
 ```text
 Copyright 2020 The Plus Jakarta Sans Project Authors (https://github.com/tokotype/PlusJakartaSans) PlusJakartaSans-Italic[wght].ttf: Copyright 2020 The Plus Jakarta Sans Project Authors (https://github.com/tokotype/PlusJakartaSans)
 
@@ -466,7 +425,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
 
-### 5.5 React & React DOM (`MIT`)
+### 5.3 React & React DOM (`MIT`)
 ```text
 MIT License
 
@@ -491,7 +450,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.6 Socket.IO (`MIT`)
+### 5.4 Socket.IO (`MIT`)
 ```text
 The MIT License (MIT)
 
@@ -516,7 +475,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 5.7 xmlhttprequest-ssl (`MIT` — manually verified from package LICENSE)
+### 5.5 xmlhttprequest-ssl (`MIT` — manually verified from package LICENSE)
 ```text
 Copyright (c) 2010 passive.ly LLC
 
@@ -542,7 +501,7 @@ Copyright (c) 2010 passive.ly LLC
  OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 5.8 Feather Icons (`MIT`) & Lucide Icons (`ISC`)
+### 5.6 Feather Icons (`MIT`) & Lucide Icons (`ISC`)
 ```text
 ISC License (Lucide Icons)
 Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as part of Feather (MIT).
@@ -558,7 +517,7 @@ OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER T
 OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 5.9 dotenv (`BSD-2-Clause`)
+### 5.7 dotenv (`BSD-2-Clause`)
 ```text
 Copyright (c) 2015, Scott Motte
 All rights reserved.
@@ -585,7 +544,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 5.10 Nodemailer (`MIT-0`)
+### 5.8 Nodemailer (`MIT-0`)
 ```text
 Copyright (c) 2011-2023 Andris Reinman
 
@@ -605,13 +564,24 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 5.11 Apache License 2.0 Notice (MongoDB Node Driver, BSON, kareem, mongodb-connection-string-url, @maplibre/mlt)
+### 5.9 Apache License 2.0 Notice (MongoDB Node Driver, BSON, kareem, mongodb-connection-string-url, @maplibre/mlt)
 ```text
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use these files except in compliance with the License.
 You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
 Unless required by applicable law or agreed to in writing, software distributed under the License
 is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+```
+
+### 5.10 Core MIT Runtime Libraries (Express, Mongoose, Cloudinary Node SDK, CORS, Zustand)
+```text
+The following direct and core runtime libraries are licensed under the MIT License
+(standard MIT terms identical to Sections 5.3–5.4 above):
+- express@5.2.1 — Copyright (c) 2009-2014 TJ Holowaychuk, Express contributors
+- mongoose@9.13.1 — Copyright (c) 2010 LearnBoost / Automattic / Mongoose contributors
+- cloudinary@2.10.0 — Copyright (c) 2012-present Cloudinary
+- cors@2.8.6 — Copyright (c) 2013 Troy Goode
+- zustand@5.1.0 — Copyright (c) 2019 Paul Henschel / Poimandres contributors
 ```
 
 ---

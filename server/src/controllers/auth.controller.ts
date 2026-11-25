@@ -16,15 +16,35 @@ import { SavedTrailModel } from '../models/SavedTrail.js';
 import { CheckinModel } from '../models/Checkin.js';
 import { SafetyTimerModel } from '../models/SafetyTimer.js';
 import { ActivityModel } from '../models/Activity.js';
+import { LiveBeaconModel } from '../models/LiveBeacon.js';
+import { GearPackModel } from '../models/GearPack.js';
+import { CustomRouteModel } from '../models/CustomRoute.js';
+import { WeatherAlertSubModel } from '../models/WeatherAlertSub.js';
+import { ItineraryModel } from '../models/Itinerary.js';
+import { TrainingPlanModel } from '../models/TrainingPlan.js';
+import { AiChatThreadModel } from '../models/AiChatThread.js';
+import { GearChecklistModel } from '../models/GearChecklist.js';
+import { GuideInquiryModel } from '../models/GuideInquiry.js';
+import { TrailPoiModel } from '../models/TrailPoi.js';
+import { TripReportModel } from '../models/TripReport.js';
+import { UploadAssetModel } from '../models/UploadAsset.js';
+import { ChallengeClaimModel } from '../models/ChallengeClaim.js';
+import { TrailConditionModel } from '../models/TrailCondition.js';
+import { ConversationModel } from '../models/Conversation.js';
+import { MessageModel } from '../models/Message.js';
+import { disconnectUserSockets, evictAllFromRoom } from '../config/socket.js';
+import { sendNotification } from '../utils/notification.js';
 import {
   hashPasswordAsync,
   verifyPasswordAsync,
+  needsPasswordRehash,
   generateToken,
   generateRefreshToken,
   verifyRefreshToken,
   parseCookieValue,
 } from '../utils/auth.js';
 import { sendResetPasswordEmail, sendAccountActivationEmail } from '../utils/mailer.js';
+import { getClientBaseUrl } from '../utils/clientUrl.js';
 import { cloudinary, isCloudinaryConfigured } from '../config/cloudinarySDK.js';
 import {
   validateEmail,
@@ -51,25 +71,36 @@ const DEFAULT_AVATAR_URL =
 
 const REFRESH_COOKIE_NAME = 'lost_refresh';
 
+function resolveCookieSameSite(): 'Lax' | 'None' | 'Strict' {
+  const raw = String(process.env.COOKIE_SAME_SITE || '').trim().toLowerCase();
+  if (raw === 'none') return 'None';
+  if (raw === 'strict') return 'Strict';
+  return 'Lax';
+}
+
 function setRefreshTokenCookie(res: Response, refreshToken: string) {
   const isProd = process.env.NODE_ENV === 'production';
+  const sameSite = resolveCookieSameSite();
+  const requireSecure = isProd || sameSite === 'None';
   const parts = [
     `${REFRESH_COOKIE_NAME}=${encodeURIComponent(refreshToken)}`,
     'HttpOnly',
     'Path=/api/auth',
-    'SameSite=Lax',
+    `SameSite=${sameSite}`,
     `Max-Age=${30 * 24 * 60 * 60}`,
   ];
-  if (isProd) parts.push('Secure');
-  res.setHeader('Set-Cookie', parts.join('; '));
+  if (requireSecure) parts.push('Secure');
+  res.append('Set-Cookie', parts.join('; '));
 }
 
 function clearRefreshTokenCookie(res: Response) {
   const isProd = process.env.NODE_ENV === 'production';
-  const suffix = isProd ? '; Secure' : '';
-  res.setHeader(
+  const sameSite = resolveCookieSameSite();
+  const requireSecure = isProd || sameSite === 'None';
+  const suffix = requireSecure ? '; Secure' : '';
+  res.append(
     'Set-Cookie',
-    `${REFRESH_COOKIE_NAME}=; HttpOnly; Path=/api/auth; SameSite=Lax; Max-Age=0${suffix}`
+    `${REFRESH_COOKIE_NAME}=; HttpOnly; Path=/api/auth; SameSite=${sameSite}; Max-Age=0${suffix}`
   );
 }
 
@@ -149,9 +180,13 @@ interface GoogleJwk {
 }
 
 const GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs';
+const GOOGLE_TOKENINFO_URL = 'https://oauth2.googleapis.com/tokeninfo';
+const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v3/userinfo';
 const GOOGLE_VALID_ISSUERS = new Set(['https://accounts.google.com', 'accounts.google.com']);
+const GOOGLE_JWKS_FORCE_REFRESH_COOLDOWN_MS = 60_000;
 let cachedGoogleJwks: GoogleJwk[] = [];
 let cachedGoogleJwksExpiresAt = 0;
+let lastForcedJwksRefreshAt = 0;
 let googleJwksInFlight: Promise<GoogleJwk[]> | null = null;
 
 async function fetchGoogleJwks(forceRefresh = false): Promise<GoogleJwk[]> {
@@ -159,8 +194,15 @@ async function fetchGoogleJwks(forceRefresh = false): Promise<GoogleJwk[]> {
   if (!forceRefresh && cachedGoogleJwks.length > 0 && now < cachedGoogleJwksExpiresAt) {
     return cachedGoogleJwks;
   }
-  if (!forceRefresh && googleJwksInFlight) {
+  if (forceRefresh && cachedGoogleJwks.length > 0 && now - lastForcedJwksRefreshAt < GOOGLE_JWKS_FORCE_REFRESH_COOLDOWN_MS) {
+    // Cooldown protects against unauthenticated unknown-kid JWKS fetch amplification DoS
+    return cachedGoogleJwks;
+  }
+  if (googleJwksInFlight) {
     return googleJwksInFlight;
+  }
+  if (forceRefresh) {
+    lastForcedJwksRefreshAt = now;
   }
 
   const req = (async (): Promise<GoogleJwk[]> => {
@@ -243,13 +285,11 @@ async function verifyGoogleIdTokenJwt(
   const iat = Number(payload?.iat);
   if (Number.isFinite(iat) && iat > nowSec + 300) return null;
 
-  if (expectedClientId) {
-    const aud = payload?.aud;
-    const audMatches = Array.isArray(aud)
-      ? aud.includes(expectedClientId)
-      : aud === expectedClientId || payload?.azp === expectedClientId;
-    if (!audMatches) return null;
-  }
+  if (!expectedClientId) return null;
+  const aud = payload?.aud;
+  const audMatches = Array.isArray(aud) ? aud.includes(expectedClientId) : aud === expectedClientId;
+  if (!audMatches) return null;
+  if (payload?.azp && payload.azp !== expectedClientId) return null;
 
   const emailVerified = payload?.email_verified === true || payload?.email_verified === 'true';
   if (!payload?.email || !emailVerified) return null;
@@ -262,21 +302,18 @@ async function verifyGoogleIdTokenJwt(
 }
 
 /**
- * Verifies Google OAuth Token in production:
- * 1. Local RS256 cryptographic JWT verification against cached Google JWKS (`www.googleapis.com/oauth2/v3/certs`).
- * 2. Fallback for OAuth2 access tokens via `www.googleapis.com/oauth2/v3/userinfo`.
- * Enforces `email_verified === true`, strict `iss`/`aud`/`exp`, and network timeouts.
+ * Verifies Google OAuth Token strictly (anti-confused-deputy):
+ * 1. ID Token JWT (3 parts): RS256 cryptographic signature via cached Google JWKS + strict `iss`/`exp`/`iat`/`aud === GOOGLE_CLIENT_ID`/`email_verified`.
+ * 2. OAuth2 Access Token (GIS initTokenClient): verifies `aud === GOOGLE_CLIENT_ID` (and `azp`/`exp`) via `oauth2.googleapis.com/tokeninfo` BEFORE reading OIDC `userinfo`, and cross-checks `email`/`sub`.
+ * Always fails closed when `GOOGLE_CLIENT_ID` is unset.
  */
 async function verifyGoogleToken(
   googleToken: string
 ): Promise<{ email: string; name: string; picture: string } | null> {
   const expectedClientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
   if (!expectedClientId) {
-    if (process.env.NODE_ENV === 'production') {
-      console.error('[Google OAuth Security Error]: GOOGLE_CLIENT_ID must be set in production.');
-      return null;
-    }
-    console.warn('[Google OAuth Warning]: GOOGLE_CLIENT_ID is not set; audience pinning disabled in dev mode.');
+    console.error('[Google OAuth Security Error]: GOOGLE_CLIENT_ID is not configured; refusing unpinned OAuth verification.');
+    return null;
   }
 
   try {
@@ -285,8 +322,42 @@ async function verifyGoogleToken(
       return await verifyGoogleIdTokenJwt(googleToken, expectedClientId);
     }
 
-    // 2. Fallback for OAuth2 Access Token flow (GIS initTokenClient) via official OIDC userinfo endpoint
-    const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+    // 2. Verify OAuth2 Access Token audience via Google's official tokeninfo endpoint (POST form body avoids query-string token logging)
+    const tokenInfoRes = await fetch(GOOGLE_TOKENINFO_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ access_token: googleToken }).toString(),
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!tokenInfoRes.ok) return null;
+    const tokenInfo: any = await tokenInfoRes.json();
+
+    // Strict audience pinning prevents confused-deputy replay of third-party OAuth access tokens
+    const tokenAud = String(tokenInfo?.aud || '').trim();
+    const tokenAzp = String(tokenInfo?.azp || '').trim();
+    if (!tokenAud || tokenAud !== expectedClientId) {
+      console.warn('[Google OAuth Security]: Rejected access token with mismatched audience.');
+      return null;
+    }
+    if (tokenAzp && tokenAzp !== expectedClientId) {
+      console.warn('[Google OAuth Security]: Rejected access token with mismatched azp.');
+      return null;
+    }
+
+    const expiresIn = Number(tokenInfo?.expires_in);
+    const expEpoch = Number(tokenInfo?.exp);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const isUnexpired =
+      (Number.isFinite(expiresIn) && expiresIn > 0) ||
+      (Number.isFinite(expEpoch) && expEpoch > nowSec - 30);
+    if (!isUnexpired) return null;
+
+    if (tokenInfo?.email && !(tokenInfo.email_verified === true || tokenInfo.email_verified === 'true')) {
+      return null;
+    }
+
+    // 3. Fetch verified profile claims from OIDC userinfo and cross-check against tokeninfo
+    const userInfoRes = await fetch(GOOGLE_USERINFO_URL, {
       headers: { Authorization: `Bearer ${googleToken}` },
       signal: AbortSignal.timeout(6000),
     });
@@ -295,8 +366,16 @@ async function verifyGoogleToken(
     const emailVerified = userInfo.email_verified === true || userInfo.email_verified === 'true';
     if (!userInfo?.email || !emailVerified) return null;
 
+    const cleanEmail = String(userInfo.email).toLowerCase().trim();
+    if (tokenInfo?.email && String(tokenInfo.email).toLowerCase().trim() !== cleanEmail) {
+      return null;
+    }
+    if (tokenInfo?.sub && userInfo?.sub && String(tokenInfo.sub) !== String(userInfo.sub)) {
+      return null;
+    }
+
     return {
-      email: String(userInfo.email).toLowerCase().trim(),
+      email: cleanEmail,
       name: userInfo.name || userInfo.given_name || 'Google Trekker',
       picture: userInfo.picture || '',
     };
@@ -307,8 +386,11 @@ async function verifyGoogleToken(
 }
 
 async function isUsernameTaken(username: string, excludeUserId?: string): Promise<boolean> {
-  const escaped = username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const query: any = { username: { $regex: new RegExp(`^${escaped}$`, 'i') } };
+  const trimmed = username.trim();
+  const lower = trimmed.toLowerCase();
+  const query: any = {
+    $or: [{ usernameLower: lower }, { username: trimmed }],
+  };
   if (excludeUserId && mongoose.Types.ObjectId.isValid(excludeUserId)) {
     query._id = { $ne: new mongoose.Types.ObjectId(excludeUserId) };
   }
@@ -317,8 +399,16 @@ async function isUsernameTaken(username: string, excludeUserId?: string): Promis
 }
 
 export const googleAuth = async (req: Request, res: Response) => {
-  const { token: googleToken, accessToken, idToken } = req.body || {};
+  const { token: googleToken, accessToken, idToken, password, currentPassword, linkPassword } = req.body || {};
   const tokenToVerify = googleToken || accessToken || idToken;
+  const providedLinkPassword =
+    typeof linkPassword === 'string' && linkPassword
+      ? linkPassword
+      : typeof currentPassword === 'string' && currentPassword
+        ? currentPassword
+        : typeof password === 'string' && password
+          ? password
+          : '';
 
   if (!tokenToVerify || typeof tokenToVerify !== 'string') {
     return res.status(400).json({
@@ -347,7 +437,7 @@ export const googleAuth = async (req: Request, res: Response) => {
   const picture = googleProfile.picture;
 
   try {
-    let user = await UserModel.findOne({ email: cleanEmail });
+    let user = await UserModel.findOne({ email: cleanEmail }).select('+passwordHash');
 
     if (!user) {
       const baseUser = deriveUsernameFromFullName(name, cleanEmail).slice(0, 18);
@@ -376,7 +466,37 @@ export const googleAuth = async (req: Request, res: Response) => {
         });
       }
 
-      user.isEmailVerified = true;
+      const isPrivilegedRole = user.role === 'admin' || user.role === 'moderator';
+      const isLocalAccount = user.authProvider !== 'google';
+
+      // Block silent email-based auto-linking onto existing local or privileged (admin/moderator) accounts
+      if (isLocalAccount || isPrivilegedRole) {
+        if (!providedLinkPassword) {
+          return res.status(isPrivilegedRole ? 403 : 409).json({
+            success: false,
+            requiresPasswordVerification: true,
+            authProvider: user.authProvider || 'local',
+            message: isPrivilegedRole
+              ? 'Tài khoản quản trị/điều phối không cho phép tự động đăng nhập bằng Google khi chưa xác minh mật khẩu. Vui lòng đăng nhập bằng Email và Mật khẩu.'
+              : 'Email này đã được đăng ký bằng mật khẩu trên LOST. Vui lòng đăng nhập bằng Email & Mật khẩu hoặc xác minh mật khẩu hiện tại để liên kết Google.',
+          });
+        }
+
+        const passwordOk = Boolean(
+          user.passwordHash && (await verifyPasswordAsync(providedLinkPassword, user.passwordHash))
+        );
+        if (!passwordOk) {
+          return res.status(401).json({
+            success: false,
+            requiresPasswordVerification: true,
+            message: 'Mật khẩu xác nhận không chính xác. Không thể liên kết tài khoản Google.',
+          });
+        }
+      }
+
+      if (user.authProvider === 'google') {
+        user.isEmailVerified = true;
+      }
       if (!user.username) {
         const baseUser = deriveUsernameFromFullName(name, cleanEmail).slice(0, 18);
         user.username = `${baseUser}_${crypto.randomBytes(3).toString('hex')}`;
@@ -560,7 +680,7 @@ export const register = async (req: Request, res: Response) => {
   } catch (err: any) {
     if (err?.code === 11000) {
       const dupField = Object.keys(err.keyPattern || {})[0];
-      if (dupField === 'username') {
+      if (dupField === 'username' || dupField === 'usernameLower') {
         const suggestions = await generateUsernameSuggestions(cleanUsername, (cand) => isUsernameTaken(cand)).catch(
           () => []
         );
@@ -766,6 +886,16 @@ export const login = async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, message: 'Email hoặc mật khẩu không chính xác.' });
     }
 
+    // Transparently upgrade legacy 1,000-iter PBKDF2 hashes to 100,000 iterations on login
+    if (user.passwordHash && needsPasswordRehash(user.passwordHash)) {
+      try {
+        user.passwordHash = await hashPasswordAsync(password);
+        await user.save();
+      } catch {
+        // Non-fatal rehash failure
+      }
+    }
+
     if (user.isBanned) {
       return res.status(403).json({
         success: false,
@@ -825,7 +955,8 @@ async function resolveProfileImageUpload(
   rawUrl: unknown,
   folder: 'lost/avatars' | 'lost/covers',
   publicIdPrefix: string,
-  width: number
+  width: number,
+  uploaderId: string
 ): Promise<{ ok: boolean; url?: string; error?: string }> {
   if (typeof rawUrl !== 'string') return { ok: false, error: 'Định dạng URL ảnh không hợp lệ.' };
   const trimmed = rawUrl.trim();
@@ -855,8 +986,29 @@ async function resolveProfileImageUpload(
       public_id: `${safePrefix}_${Date.now()}`,
       resource_type: 'image',
       allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
-      transformation: [{ width, quality: 'auto', fetch_format: 'auto' }],
+      exif: false,
+      timeout: 20_000,
+      transformation: [{ width, quality: 'auto', fetch_format: 'auto', flags: 'strip_profile' }],
     });
+
+    if (cloudRes?.public_id && mongoose.connection.readyState === 1 && mongoose.Types.ObjectId.isValid(uploaderId)) {
+      const category = folder === 'lost/avatars' ? 'avatars' : 'covers';
+      await UploadAssetModel.updateOne(
+        { publicId: cloudRes.public_id },
+        {
+          $setOnInsert: {
+            publicId: cloudRes.public_id,
+            uploaderId: new mongoose.Types.ObjectId(uploaderId),
+            category,
+            secureUrl: cloudRes.secure_url || '',
+            bytes: Number(cloudRes.bytes) || 0,
+            format: String(cloudRes.format || ''),
+          },
+        },
+        { upsert: true }
+      ).catch((err) => console.warn('[Profile UploadAsset Tracking Notice]:', (err as Error).message));
+    }
+
     return { ok: true, url: cloudRes.secure_url };
   }
 
@@ -935,7 +1087,8 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
         avatarUrl,
         'lost/avatars',
         `avatar_${user.username || userId}`,
-        800
+        800,
+        userId
       );
       if (!avatarResult.ok) {
         return res.status(400).json({ success: false, message: avatarResult.error });
@@ -948,7 +1101,8 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
         coverUrl,
         'lost/covers',
         `cover_${user.username || userId}`,
-        1400
+        1400,
+        userId
       );
       if (!coverResult.ok) {
         return res.status(400).json({ success: false, message: coverResult.error });
@@ -1133,7 +1287,7 @@ export const forgotPassword = async (req: Request, res: Response) => {
     user.otpLastSentAt = new Date();
     await user.save();
 
-    const clientUrl = (process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const clientUrl = getClientBaseUrl();
     const resetLink = `${clientUrl}/?resetToken=${rawResetToken}&email=${encodeURIComponent(cleanEmail)}`;
 
     // Dispatch asynchronously to eliminate SMTP timing side-channels
@@ -1249,8 +1403,25 @@ export const activateAccount = async (req: Request, res: Response) => {
 
 export const logout = async (req: AuthRequest, res: Response) => {
   try {
-    if (req.user?.userId && mongoose.connection.readyState === 1 && mongoose.Types.ObjectId.isValid(req.user.userId)) {
-      await UserModel.updateOne({ _id: req.user.userId }, { $inc: { tokenVersion: 1 } });
+    let targetUserId = req.user?.userId;
+    if (!targetUserId) {
+      const rawCookie = parseCookieValue(req.headers.cookie, REFRESH_COOKIE_NAME);
+      if (rawCookie) {
+        const decodedRefresh = verifyRefreshToken(rawCookie);
+        if (decodedRefresh?.userId) {
+          targetUserId = decodedRefresh.userId;
+        }
+      }
+    }
+    if (targetUserId && mongoose.Types.ObjectId.isValid(targetUserId)) {
+      if (mongoose.connection.readyState === 1) {
+        await UserModel.updateOne({ _id: targetUserId }, { $inc: { tokenVersion: 1 } });
+      }
+      try {
+        disconnectUserSockets(targetUserId);
+      } catch {
+        // Ignore if Socket.IO server is not initialized
+      }
     }
   } catch {
     // Best-effort revocation
@@ -1463,16 +1634,246 @@ export const deleteMyAccount = async (req: AuthRequest, res: Response) => {
       // Best-effort peer counter adjustment
     }
 
-    // Delete private personal records and anonymize public community contributions cleanly
+    // Handle TripPlan cascade cleanly:
+    // - Delete creator-owned / empty 0-member TripPlans (plus their squad group chats) so no orphan 0-member squads remain
+    // - For retained multi-member TripPlans: transfer leadership to an existing remaining member if creator departed,
+    //   reopen 'full' -> 'recruiting' when capacity opens, reset sharedGear (assignedUserName: 'Chưa nhận', packed: false),
+    //   and scrub expenses.paidByName PII ('Tài khoản đã xóa')
+    try {
+      const affectedTrips = await TripPlanModel.find({
+        $or: [
+          { creatorId: uid },
+          { currentMembers: uid },
+          { 'pendingRequests.userId': uid },
+          { 'sharedGear.assignedUserId': uid },
+          { 'expenses.paidByUserId': uid },
+        ],
+      })
+        .select('_id creatorId currentMembers maxMembers status title groupConversationId')
+        .lean();
+
+      for (const trip of affectedTrips) {
+        const isCreator = String(trip.creatorId) === uidStr;
+        const wasMember = (trip.currentMembers || []).some((m) => String(m) === uidStr);
+        const remainingMemberIds = (trip.currentMembers || []).filter((m) => String(m) !== uidStr);
+
+        let nextCreatorId: mongoose.Types.ObjectId | null = null;
+        if (isCreator && remainingMemberIds.length > 0) {
+          const existingUsers = await UserModel.find({ _id: { $in: remainingMemberIds } })
+            .select('_id')
+            .lean();
+          const liveUserIds = new Set(existingUsers.map((u) => String(u._id)));
+          const chosen = remainingMemberIds.find((m) => liveUserIds.has(String(m)));
+          if (chosen) {
+            nextCreatorId = new mongoose.Types.ObjectId(String(chosen));
+          }
+        }
+
+        // Delete 0-member trips (or creator-owned trips with no live remaining members) + their group chats
+        const shouldDeleteTrip = (isCreator && !nextCreatorId) || (wasMember && remainingMemberIds.length === 0);
+        if (shouldDeleteTrip) {
+          await TripPlanModel.deleteOne({ _id: trip._id });
+          if (trip.groupConversationId) {
+            evictAllFromRoom(`conv:${trip.groupConversationId.toString()}`);
+            await Promise.allSettled([
+              MessageModel.deleteMany({ conversation: trip.groupConversationId }),
+              ConversationModel.deleteOne({ _id: trip.groupConversationId }),
+            ]);
+          }
+          continue;
+        }
+
+        const setFields: Record<string, unknown> = {};
+        if (isCreator && nextCreatorId) {
+          setFields.creatorId = nextCreatorId;
+        }
+        if (wasMember) {
+          setFields.settledTransfers = [];
+          if (trip.status === 'full' && remainingMemberIds.length < (trip.maxMembers || 6)) {
+            setFields.status = 'recruiting';
+          }
+        }
+
+        await TripPlanModel.updateOne(
+          { _id: trip._id },
+          {
+            $pull: { currentMembers: uid, pendingRequests: { userId: uid } },
+            ...(Object.keys(setFields).length > 0 ? { $set: setFields } : {}),
+          }
+        );
+
+        await Promise.allSettled([
+          TripPlanModel.updateOne(
+            { _id: trip._id, 'sharedGear.assignedUserId': uid },
+            {
+              $unset: { 'sharedGear.$[elem].assignedUserId': '' },
+              $set: {
+                'sharedGear.$[elem].assignedUserName': 'Chưa nhận',
+                'sharedGear.$[elem].packed': false,
+              },
+            },
+            { arrayFilters: [{ 'elem.assignedUserId': uid }] }
+          ),
+          TripPlanModel.updateOne(
+            { _id: trip._id, 'expenses.paidByUserId': uid },
+            {
+              $unset: { 'expenses.$[elem].paidByUserId': '' },
+              $set: { 'expenses.$[elem].paidByName': 'Tài khoản đã xóa' },
+            },
+            { arrayFilters: [{ 'elem.paidByUserId': uid }] }
+          ),
+          ...(trip.groupConversationId
+            ? [
+                ConversationModel.updateOne(
+                  { _id: trip.groupConversationId },
+                  { $pull: { participants: uid } }
+                ),
+              ]
+            : []),
+        ]);
+
+        if (isCreator && nextCreatorId) {
+          sendNotification({
+            recipientId: nextCreatorId.toString(),
+            type: 'system',
+            category: 'social',
+            title: 'Chuyển quyền trưởng đoàn',
+            message: `Trưởng đoàn trước đã rời khỏi hệ thống. Quyền trưởng đoàn cho chuyến "${trip.title}" đã được chuyển cho bạn.`,
+            link: '/forum?tab=trips',
+            relatedId: trip._id.toString(),
+          }).catch(() => {});
+        }
+      }
+    } catch (tripCleanupErr) {
+      console.warn('[Delete Account TripPlan Cascade Warning]:', (tripCleanupErr as Error).message);
+    }
+
+    // Handle Conversation & Message PII cascade (Decree 13/2023/NĐ-CP):
+    // scrub departed user's sent DM/group messages, pull from participants/readBy, and delete 0-participant conversations
+    try {
+      const userConversations = await ConversationModel.find({ participants: uid }).select('_id participants').lean();
+      if (userConversations.length > 0) {
+        const emptyConvIds = userConversations
+          .filter((c) => (c.participants || []).filter((p) => String(p) !== uidStr).length === 0)
+          .map((c) => c._id);
+        const sharedConvIds = userConversations
+          .filter((c) => (c.participants || []).filter((p) => String(p) !== uidStr).length > 0)
+          .map((c) => c._id);
+
+        if (emptyConvIds.length > 0) {
+          for (const cid of emptyConvIds) {
+            evictAllFromRoom(`conv:${cid.toString()}`);
+          }
+          await Promise.allSettled([
+            MessageModel.deleteMany({ conversation: { $in: emptyConvIds } }),
+            ConversationModel.deleteMany({ _id: { $in: emptyConvIds } }),
+          ]);
+        }
+        if (sharedConvIds.length > 0) {
+          await ConversationModel.updateMany(
+            { _id: { $in: sharedConvIds } },
+            { $pull: { participants: uid } }
+          );
+        }
+      }
+    } catch (convCleanupErr) {
+      console.warn('[Delete Account Conversation Cleanup Warning]:', (convCleanupErr as Error).message);
+    }
+
+    // Delete ALL private user records (including active GPS LiveBeacons, weather alerts, PII inquiries, assets)
+    // and anonymize/scrub PII on all retained public/shared community records per Decree 13/2023/NĐ-CP
     await Promise.allSettled([
       SavedTrailModel.deleteMany({ userId: uid }),
       CheckinModel.deleteMany({ userId: uid }),
       SafetyTimerModel.deleteMany({ userId: uid }),
       ActivityModel.deleteMany({ userId: uid }),
       NotificationModel.deleteMany({ recipient: { $in: [uid, uidStr] } }),
+      NotificationModel.updateMany(
+        { 'sender.id': uidStr },
+        { $set: { 'sender.name': 'Tài khoản đã xóa', 'sender.avatarUrl': '' } }
+      ),
+      LiveBeaconModel.deleteMany({ userId: uid }),
+      GearPackModel.deleteMany({ userId: uid }),
+      CustomRouteModel.deleteMany({ creatorId: uid }),
+      CustomRouteModel.updateMany({ likedBy: uid }, { $pull: { likedBy: uid } }),
+      WeatherAlertSubModel.deleteMany({ userId: uid }),
+      ItineraryModel.deleteMany({ creatorId: uid }),
+      TrainingPlanModel.deleteMany({ userId: uid }),
+      AiChatThreadModel.deleteMany({ userId: uid }),
+      GearChecklistModel.deleteMany({ userId: uid }),
+      GuideInquiryModel.deleteMany({ userId: uid }),
+      TrailPoiModel.deleteMany({ userId: uid }),
+      TrailPoiModel.updateMany({ upvotes: uid }, { $pull: { upvotes: uid } }),
+      TripReportModel.deleteMany({ authorId: uid }),
+      UploadAssetModel.deleteMany({ uploaderId: uid }),
+      ChallengeClaimModel.deleteMany({ userId: uid }),
+      TrailConditionModel.deleteMany({ userId: uid }),
+      TrailConditionModel.updateMany({ upvotedUsers: uid }, { $pull: { upvotedUsers: uid } }),
+      // Scrub retained DM/group messages & lastMessage previews authored by departed user
+      MessageModel.updateMany(
+        { sender: uid },
+        { $set: { content: 'Tin nhắn từ tài khoản đã xóa', images: [], isDeleted: true } }
+      ),
+      MessageModel.updateMany({ readBy: uid }, { $pull: { readBy: uid } }),
+      ConversationModel.updateMany(
+        { 'lastMessage.sender': uid },
+        { $set: { 'lastMessage.content': 'Tin nhắn từ tài khoản đã xóa' } }
+      ),
+      // Scrub PII emails & anonymize public contributions (including embedded Incident & Guide subdocs)
+      IncidentModel.updateMany(
+        { reportedBy: { $in: [uid, uidStr] } },
+        { $set: { reporterName: 'Tài khoản đã xóa', reporterEmail: '', reporterAvatar: '' } }
+      ),
+      IncidentModel.updateMany(
+        { 'coReporters.userId': { $in: [uid, uidStr] } },
+        {
+          $set: {
+            'coReporters.$[elem].userName': 'Tài khoản đã xóa',
+            'coReporters.$[elem].userEmail': '',
+            'coReporters.$[elem].userAvatar': '',
+          },
+        },
+        { arrayFilters: [{ 'elem.userId': { $in: [uid, uidStr] } }] }
+      ),
+      IncidentModel.updateMany(
+        { 'timelineUpdates.userId': { $in: [uid, uidStr] } },
+        {
+          $set: {
+            'timelineUpdates.$[elem].userName': 'Tài khoản đã xóa',
+            'timelineUpdates.$[elem].userEmail': '',
+            'timelineUpdates.$[elem].userAvatar': '',
+          },
+        },
+        { arrayFilters: [{ 'elem.userId': { $in: [uid, uidStr] } }] }
+      ),
+      IncidentModel.updateMany(
+        { 'disputes.userId': { $in: [uid, uidStr] } },
+        {
+          $set: {
+            'disputes.$[elem].userName': 'Tài khoản đã xóa',
+            'disputes.$[elem].userEmail': '',
+          },
+        },
+        { arrayFilters: [{ 'elem.userId': { $in: [uid, uidStr] } }] }
+      ),
+      GuideModel.updateMany(
+        { 'reviews.userId': uid },
+        { $set: { 'reviews.$[elem].userName': 'Tài khoản đã xóa' } },
+        { arrayFilters: [{ 'elem.userId': uid }] }
+      ),
+      ContributionModel.updateMany(
+        { userId: uidStr },
+        { $set: { authorName: 'Tài khoản đã xóa', authorEmail: '', authorAvatar: '' } }
+      ),
       ThreadModel.updateMany({ userId: uid }, { $set: { authorName: 'Tài khoản đã xóa', authorAvatar: '' } }),
       CommentModel.updateMany({ userId: uid }, { $set: { authorName: 'Tài khoản đã xóa', authorAvatar: '' } }),
       ReviewModel.updateMany({ userId: uid }, { $set: { userName: 'Tài khoản đã xóa', userAvatar: '' } }),
+      ReviewModel.updateMany({ helpfulBy: uid }, { $pull: { helpfulBy: uid } }),
+      TripReportModel.updateMany(
+        { 'comments.authorId': uid },
+        { $set: { 'comments.$[elem].authorName': 'Tài khoản đã xóa', 'comments.$[elem].authorAvatar': '' } },
+        { arrayFilters: [{ 'elem.authorId': uid }] }
+      ),
       CommunityMessageModel.updateMany(
         { senderId: uid },
         { $set: { senderName: 'Tài khoản đã xóa', senderAvatar: '' } }
@@ -1480,6 +1881,7 @@ export const deleteMyAccount = async (req: AuthRequest, res: Response) => {
     ]);
 
     await UserModel.deleteOne({ _id: uid });
+    disconnectUserSockets(uidStr);
     clearRefreshTokenCookie(res);
 
     return res.json({

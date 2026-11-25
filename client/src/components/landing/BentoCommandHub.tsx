@@ -67,7 +67,7 @@ const FALLBACK_OFFICIAL_GUIDES: LocalGuide[] = VERIFIED_GUIDES_EXTENDED.map((g) 
 const AMBIENT_CHANNELS: AudioTrack[] = [
   {
     id: '1',
-    name: 'Trạm Quan Trắc Hoàng Liên',
+    name: 'Mưa rừng Hoàng Liên',
     location: 'Trạm Tôn (2.200m)',
     freq: '144.100 MHz',
     type: 'rain',
@@ -76,8 +76,8 @@ const AMBIENT_CHANNELS: AudioTrack[] = [
   },
   {
     id: '2',
-    name: 'Thung Lũng Sa Pa - Chim Rừng & Suối',
-    location: 'Sa Pa Valley',
+    name: 'Suối và chim rừng Sa Pa',
+    location: 'Thung lũng Sa Pa',
     freq: '144.350 MHz',
     type: 'birds',
     isLiveStream: true,
@@ -85,7 +85,7 @@ const AMBIENT_CHANNELS: AudioTrack[] = [
   },
   {
     id: '3',
-    name: 'Trạm Khí Tượng Đỉnh Núi',
+    name: 'Gió lộng sống lưng Tà Xùa',
     location: 'Đỉnh Tà Xùa (2.865m)',
     freq: '144.800 MHz',
     type: 'wind',
@@ -94,8 +94,8 @@ const AMBIENT_CHANNELS: AudioTrack[] = [
   },
   {
     id: '4',
-    name: 'Lửa Trại Basecamp Lảo Thẩn',
-    location: 'Điểm Hạ Trại (2.500m)',
+    name: 'Lửa trại đêm Lảo Thẩn',
+    location: 'Bãi trại (2.500m)',
     freq: '145.000 MHz',
     type: 'campfire',
     isLiveStream: false,
@@ -103,8 +103,8 @@ const AMBIENT_CHANNELS: AudioTrack[] = [
   },
   {
     id: '5',
-    name: 'Rừng Thông & Đồi Cỏ Tà Năng',
-    location: 'Đồi Cỏ Ma Bó (1.100m)',
+    name: 'Rừng thông đồi cỏ Tà Năng',
+    location: 'Đồi cỏ Ma Bó (1.100m)',
     freq: '145.250 MHz',
     type: 'pine_wind',
     isLiveStream: true,
@@ -112,8 +112,8 @@ const AMBIENT_CHANNELS: AudioTrack[] = [
   },
   {
     id: '6',
-    name: 'Thác Nước Đại Ngàn K50 Kon Chư Răng',
-    location: 'Vùng Lõi KBT (950m)',
+    name: 'Tiếng thác K50 đại ngàn',
+    location: 'Kon Chư Răng (950m)',
     freq: '145.600 MHz',
     type: 'waterfall',
     isLiveStream: true,
@@ -126,7 +126,26 @@ interface SoundEngine {
   setVolume: (vol: number) => void;
 }
 
-function createOrganicPinkNoiseBuffer(ctx: AudioContext, durationSeconds = 24): AudioBuffer {
+let sharedAmbientAudioCtx: AudioContext | null = null;
+let cachedPinkNoiseBuffer: AudioBuffer | null = null;
+
+function getSharedAudioContext(): AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  const AudioContextClass =
+    window.AudioContext ||
+    (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextClass) return null;
+  if (!sharedAmbientAudioCtx || sharedAmbientAudioCtx.state === 'closed') {
+    sharedAmbientAudioCtx = new AudioContextClass();
+    cachedPinkNoiseBuffer = null;
+  }
+  return sharedAmbientAudioCtx;
+}
+
+function createOrganicPinkNoiseBuffer(ctx: AudioContext, durationSeconds = 5): AudioBuffer {
+  if (cachedPinkNoiseBuffer && cachedPinkNoiseBuffer.sampleRate === ctx.sampleRate) {
+    return cachedPinkNoiseBuffer;
+  }
   const bufferSize = Math.floor(ctx.sampleRate * durationSeconds);
   const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
   const data = buffer.getChannelData(0);
@@ -143,6 +162,13 @@ function createOrganicPinkNoiseBuffer(ctx: AudioContext, durationSeconds = 24): 
     data[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11;
     b6 = white * 0.115926;
   }
+  // Seamless crossfade over the last 0.25s into the start to avoid loop click
+  const fadeSamples = Math.min(Math.floor(ctx.sampleRate * 0.25), Math.floor(bufferSize / 4));
+  for (let i = 0; i < fadeSamples; i++) {
+    const t = i / fadeSamples;
+    data[bufferSize - fadeSamples + i] = data[bufferSize - fadeSamples + i] * (1 - t) + data[i] * t;
+  }
+  cachedPinkNoiseBuffer = buffer;
   return buffer;
 }
 
@@ -151,21 +177,19 @@ function playRealisticNatureAmbient(
   volume: number
 ): SoundEngine {
   try {
-    const AudioContextClass =
-      window.AudioContext ||
-      (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextClass) return { stop: () => {}, setVolume: () => {} };
-    const ctx = new AudioContextClass();
+    const ctx = getSharedAudioContext();
+    if (!ctx) return { stop: () => {}, setVolume: () => {} };
     if (ctx.state === 'suspended') {
       void ctx.resume();
     }
 
     const masterGain = ctx.createGain();
+    const initialGain = Math.max(0, Math.min(1, volume)) * 0.28;
     masterGain.gain.setValueAtTime(0, ctx.currentTime);
-    masterGain.gain.linearRampToValueAtTime(Math.max(0.01, volume * 0.28), ctx.currentTime + 0.08);
+    masterGain.gain.linearRampToValueAtTime(initialGain, ctx.currentTime + 0.08);
     masterGain.connect(ctx.destination);
 
-    const pinkNoiseBuffer = createOrganicPinkNoiseBuffer(ctx, 24);
+    const pinkNoiseBuffer = createOrganicPinkNoiseBuffer(ctx, 5);
     const noiseNode = ctx.createBufferSource();
     noiseNode.buffer = pinkNoiseBuffer;
     noiseNode.loop = true;
@@ -458,11 +482,9 @@ function playRealisticNatureAmbient(
                 // ignore already stopped
               }
               try {
-                if (ctx.state !== 'closed') {
-                  void ctx.close();
-                }
+                masterGain.disconnect();
               } catch {
-                // ignore
+                // ignore already disconnected
               }
             }, 120);
           }
@@ -472,7 +494,8 @@ function playRealisticNatureAmbient(
       },
       setVolume: (vol: number) => {
         try {
-          masterGain.gain.setTargetAtTime(Math.max(0.01, vol * 0.28), ctx.currentTime, 0.05);
+          const targetGain = Math.max(0, Math.min(1, vol)) * 0.28;
+          masterGain.gain.setTargetAtTime(targetGain, ctx.currentTime, 0.05);
         } catch {
           // ignore
         }
@@ -627,7 +650,7 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
     >
       {/* Editorial Left-Aligned Section Header */}
       <div style={{ marginBottom: 22 }}>
-        <div className="section-eyebrow">03 / Hỗ trợ thực địa</div>
+        <div className="section-eyebrow">03 / Góc dừng chân &amp; an toàn</div>
 
         <h2
           className="font-editorial"
@@ -640,13 +663,13 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
             lineHeight: 1.12,
           }}
         >
-          Âm thanh thiên nhiên,{' '}
+          Tiếng rừng núi,{' '}
           <span style={{ color: 'var(--color-primary)', fontWeight: 700 }}>
-            cảnh báo &amp; Porter bản địa
+            tin cảnh báo &amp; porter bản địa
           </span>
         </h2>
         <p style={{ color: 'var(--color-text-muted)', fontSize: '0.88rem', maxWidth: 680, margin: 0 }}>
-          Góc thư giãn âm thanh rừng núi, cập nhật cảnh báo thực địa trên {activeTrailCount} cung đường cùng danh bạ {VIETNAM_RANGER_STATIONS.length} trạm VQG/Kiểm lâm và {totalGuidesCount} đơn vị dẫn đường đã xác minh.
+          Nghe chút tiếng mưa rừng cho dịu đầu, xem tin đường sá mới nhất trên {activeTrailCount} cung đường cùng danh bạ {VIETNAM_RANGER_STATIONS.length} trạm VQG/Kiểm lâm và {totalGuidesCount} người dẫn đường bản địa.
         </p>
       </div>
 
@@ -673,7 +696,7 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
                 </span>
                 <div>
                   <h3 style={{ fontSize: '1.02rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
-                    Basecamp Radio
+                    Radio trạm nghỉ
                   </h3>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
                     <span
@@ -695,7 +718,7 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
                           background: isPlaying ? 'var(--color-primary)' : 'var(--color-text-dim)',
                         }}
                       />
-                      {isPlaying ? 'Đang Phát Âm Thanh' : 'Chế Độ Chờ'}
+                      {isPlaying ? 'Đang phát' : 'Đang tắt'}
                     </span>
                     {isPlaying && (
                       <div style={{ display: 'inline-flex', alignItems: 'flex-end', gap: 2, height: 14 }}>
@@ -810,7 +833,7 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
                     >
                       {isCurrent && isPlaying ? (
                         <>
-                          <span>Tạm Dừng</span>
+                          <span>Dừng</span>
                           <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
                             <rect x="6" y="4" width="4" height="16" rx="1" />
                             <rect x="14" y="4" width="4" height="16" rx="1" />
@@ -845,7 +868,7 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
             }}
           >
             <span style={{ fontSize: '0.73rem', color: 'var(--color-text-dim)', fontWeight: 600, whiteSpace: 'nowrap' }}>
-              Âm Lượng:
+              Âm lượng:
             </span>
             <input
               type="range"
@@ -888,10 +911,10 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
                 </span>
                 <div>
                   <h3 style={{ fontSize: '1.02rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
-                    Radar Cảnh Báo An Toàn
+                    Tin cảnh báo trên tuyến
                   </h3>
                   <span style={{ fontSize: '0.73rem', color: 'var(--color-error-text, var(--color-error))', fontWeight: 700 }}>
-                    Trực ban cứu hộ &amp; SOS 24/7
+                    Cập nhật từ anh em đi trước
                   </span>
                 </div>
               </div>
@@ -909,7 +932,7 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
                   fontVariantNumeric: 'tabular-nums',
                 }}
               >
-                {incidents.length} Cảnh Báo
+                {incidents.length} tin mới
               </span>
             </div>
 
@@ -929,19 +952,23 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
                     <IconShieldCheck size={26} color="var(--color-primary)" />
                   </div>
                   <div style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                    Chưa ghi nhận sự cố khẩn cấp đang mở
+                    Đường rừng hiện đang yên ổn
                   </div>
                   <div style={{ fontSize: '0.74rem', marginTop: 4 }}>
-                    Các tuyến đường hiện chưa có cảnh báo nguy hiểm mới từ cộng đồng.
+                    Chưa có cảnh báo sạt lở hay nguy hiểm mới nào từ cộng đồng.
                   </div>
                 </div>
               ) : (
                 incidents.map((inc) => {
                   const incExt = inc as Incident & { _id?: string; title?: string; location?: string; createdAt?: string };
-                  const title = inc.trailName || incExt.title || 'Cảnh Báo Cung Đường';
+                  const title = inc.trailName || incExt.title || 'Cảnh báo trên tuyến';
                   const location = inc.locationNote || incExt.location || inc.trailName || 'Vùng rừng núi';
                   const rawDate = inc.reportedAt || incExt.createdAt;
-                  const dateStr = rawDate ? new Date(rawDate).toLocaleDateString('vi-VN') : 'Gần đây';
+                  const parsedDate = rawDate ? new Date(rawDate) : null;
+                  const dateStr =
+                    parsedDate && Number.isFinite(parsedDate.getTime())
+                      ? parsedDate.toLocaleDateString('vi-VN')
+                      : 'Gần đây';
                   const isHigh = inc.severity === 'high' || inc.severity === 'critical';
 
                   const matchedTrail =
@@ -994,7 +1021,7 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {isHigh ? 'Khẩn Cấp' : 'Chú Ý'}
+                          {isHigh ? 'Khẩn cấp' : 'Lưu ý'}
                         </span>
                       </div>
 
@@ -1036,7 +1063,7 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
             }}
           >
             <IconAlertTriangle size={15} color="var(--color-on-danger)" />
-            Báo Cáo Sự Cố Hoặc Yêu Cầu Cứu Hộ
+            Báo sự cố hoặc gọi hỗ trợ
           </button>
         </div>
 
@@ -1061,10 +1088,10 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
                 </span>
                 <div>
                   <h3 style={{ fontSize: '1.02rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
-                    Porter &amp; Hướng Dẫn Bản Địa
+                    Porter &amp; người dẫn đường
                   </h3>
                   <span style={{ fontSize: '0.73rem', color: 'var(--color-sky)', fontWeight: 700 }}>
-                    Xác minh danh tính 100%
+                    Người bản địa rành từng con dốc
                   </span>
                 </div>
               </div>
@@ -1082,7 +1109,7 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
                   fontVariantNumeric: 'tabular-nums',
                 }}
               >
-                {totalGuidesCount} Đơn Vị
+                {totalGuidesCount} đơn vị
               </span>
             </div>
 
@@ -1124,13 +1151,13 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
                           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
                             <polyline points="20 6 9 17 4 12" />
                           </svg>
-                          Đã Xác Minh
+                          Đã xác minh
                         </span>
                       )}
                     </div>
 
                     <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-                      {porter.priceNote || 'Thông thạo địa hình núi cao'}
+                      {porter.priceNote || 'Rành địa hình núi cao'}
                     </div>
 
                     <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -1141,7 +1168,10 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
                           <svg width="10" height="10" viewBox="0 0 24 24" fill="var(--color-sun)" stroke="var(--color-sun)" strokeWidth="1.5">
                             <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
                           </svg>
-                          {porter.rating.toFixed(1)}/5 ({porter.reviewCount} đánh giá)
+                          {porter.rating.toFixed(1)}/5
+                          {typeof porter.reviewCount === 'number' && porter.reviewCount > 0
+                            ? ` (${porter.reviewCount} đánh giá)`
+                            : ''}
                         </span>
                       ) : (
                         <span>Mới · Người bản địa</span>
@@ -1151,7 +1181,7 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
 
                   <a
                     href={`tel:${extractPrimaryDialNumber(porter.phone)}`}
-                    onClick={() => onShowToast?.(`Đang liên hệ ${porter.name}: ${porter.phone}`, 'info')}
+                    onClick={() => onShowToast?.(`Đang gọi ${porter.name}: ${porter.phone}`, 'info')}
                     className="btn btn-outline"
                     style={{
                       padding: '6px 11px',
@@ -1170,7 +1200,7 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
                     }}
                   >
                     <IconPhone size={12} color="var(--color-sky)" />
-                    Gọi Điện
+                    Gọi ngay
                   </a>
                 </div>
               ))}
@@ -1199,13 +1229,13 @@ const BentoCommandHubBase: React.FC<BentoCommandHubProps> = ({
               }}
             >
               <IconCompass size={14} color="var(--color-primary)" />
-              Tham Gia Diễn Đàn &amp; Ghép Đoàn
+              Vào diễn đàn tìm bạn ghép đoàn
             </button>
           )}
 
           <div style={{ fontSize: '0.73rem', color: 'var(--color-text-dim)', textAlign: 'center', lineHeight: 1.4, padding: '6px 10px', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
             <IconShieldAlert size={13} color="var(--color-sky)" />
-            Tất cả đơn vị dẫn đường đều được xác minh thực địa.
+            Thông tin người dẫn đường được đối chiếu thực tế từ cộng đồng.
           </div>
         </div>
       </div>

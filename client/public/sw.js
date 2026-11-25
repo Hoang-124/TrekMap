@@ -1,5 +1,5 @@
 /**
- * LOST Service Worker - Offline Free-Commercial Map Tile & App Shell Caching (v4)
+ * LOST Service Worker - Offline Free-Commercial Map Tile & App Shell Caching (v5)
  * Caches ONLY 100% free commercial open-data tile hosts:
  *   - tiles.openfreemap.org (OpenFreeMap vector styles/tiles/glyphs)
  *   - s3.amazonaws.com/elevation-tiles-prod/terrarium/* (AWS Open Data Terrarium DEM)
@@ -7,11 +7,13 @@
  * Never caches /api/* or /socket.io*.
  */
 
-const CACHE_STATIC = 'lost-static-v4';
+const CACHE_STATIC = 'lost-static-v5';
 const CACHE_TILES = 'lost-tiles-v1';
 const CACHE_OFFLINE_PACKS = 'lost-offline-packs-v1';
-const MAX_STATIC_ITEMS = 160;
+const MAX_STATIC_ITEMS = 240;
 const MAX_TILES_IN_CACHE = 450;
+const NAV_FETCH_TIMEOUT_MS = 8000;
+const TILE_FETCH_TIMEOUT_MS = 12000;
 let tilePutCounter = 0;
 let staticPutCounter = 0;
 
@@ -23,11 +25,26 @@ const STATIC_PRECACHE = [
   '/icons/icon-192.png',
 ];
 
+const STATIC_PRECACHE_SET = new Set(STATIC_PRECACHE);
+
 const MAP_TILE_HOSTS = [
   'tiles.openfreemap.org',
   's3.amazonaws.com',
   'gibs.earthdata.nasa.gov',
 ];
+
+async function fetchWithTimeout(request, timeoutMs) {
+  if (typeof AbortController === 'undefined') {
+    return fetch(request);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(request, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function precacheHtmlAssets(htmlText, cache) {
   try {
@@ -46,7 +63,7 @@ async function precacheHtmlAssets(htmlText, cache) {
       urls.map(async (assetUrl) => {
         const existing = await cache.match(assetUrl);
         if (existing) return;
-        const res = await fetch(assetUrl).catch(() => null);
+        const res = await fetchWithTimeout(assetUrl, TILE_FETCH_TIMEOUT_MS).catch(() => null);
         if (res && res.ok && res.status === 200) {
           await cache.put(assetUrl, res);
         }
@@ -57,14 +74,25 @@ async function precacheHtmlAssets(htmlText, cache) {
   }
 }
 
-async function trimCache(cacheName, maxItems) {
+async function trimCache(cacheName, maxItems, protectedPaths = null) {
   try {
     const cache = await caches.open(cacheName);
     const keys = await cache.keys();
-    if (keys.length > maxItems) {
-      const itemsToDelete = keys.slice(0, keys.length - maxItems);
-      await Promise.all(itemsToDelete.map((key) => cache.delete(key)));
-    }
+    if (keys.length <= maxItems) return;
+
+    const excess = keys.length - maxItems;
+    const evictable = protectedPaths
+      ? keys.filter((key) => {
+          try {
+            return !protectedPaths.has(new URL(key.url).pathname);
+          } catch {
+            return true;
+          }
+        })
+      : keys;
+
+    const itemsToDelete = evictable.slice(0, excess);
+    await Promise.all(itemsToDelete.map((key) => cache.delete(key)));
   } catch (err) {
     console.warn('[SW] Error trimming cache:', err);
   }
@@ -133,6 +161,12 @@ self.addEventListener('activate', (event) => {
           })
         )
       )
+      .then(() =>
+        Promise.all([
+          trimCache(CACHE_STATIC, MAX_STATIC_ITEMS, STATIC_PRECACHE_SET),
+          trimCache(CACHE_TILES, MAX_TILES_IN_CACHE),
+        ])
+      )
       .then(() => self.clients.claim())
   );
 });
@@ -169,7 +203,7 @@ self.addEventListener('fetch', (event) => {
 
     event.respondWith(
       (async () => {
-        if (tileKind === 'raster-dem') {
+        if (tileKind === 'raster-dem' || tileKind === 'vector-openfreemap') {
           const offlinePackCache = await caches.open(CACHE_OFFLINE_PACKS);
           const packedTile = await offlinePackCache.match(request);
           if (packedTile) {
@@ -184,7 +218,7 @@ self.addEventListener('fetch', (event) => {
         }
 
         try {
-          const networkResponse = await fetch(request);
+          const networkResponse = await fetchWithTimeout(request, TILE_FETCH_TIMEOUT_MS);
           const contentType = (networkResponse.headers.get('content-type') || '').toLowerCase();
           const isCacheable =
             networkResponse &&
@@ -197,14 +231,14 @@ self.addEventListener('fetch', (event) => {
           if (isCacheable) {
             await tileCache.put(request, networkResponse.clone());
             tilePutCounter += 1;
-            if (tilePutCounter % 25 === 0) {
-              void trimCache(CACHE_TILES, MAX_TILES_IN_CACHE);
+            if (tilePutCounter === 1 || tilePutCounter % 15 === 0) {
+              event.waitUntil(trimCache(CACHE_TILES, MAX_TILES_IN_CACHE));
             }
           }
           return networkResponse;
         } catch {
-          if (tileKind === 'vector-openfreemap') {
-            return new Response('Offline vector tile unavailable', { status: 503 });
+          if (tileKind === 'vector-openfreemap' || tileKind === 'raster-dem') {
+            return new Response('Offline map tile unavailable', { status: 503 });
           }
           return createOfflineImageFallbackResponse();
         }
@@ -226,8 +260,8 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       caches.open(CACHE_STATIC).then(async (cache) => {
         const cachedResponse = await cache.match(request);
-        const fetchPromise = fetch(request)
-          .then((networkResponse) => {
+        const fetchPromise = fetchWithTimeout(request, TILE_FETCH_TIMEOUT_MS)
+          .then(async (networkResponse) => {
             const isScriptOrStyle =
               parsedUrl.pathname.endsWith('.js') || parsedUrl.pathname.endsWith('.css');
             const responseContentType = (
@@ -236,17 +270,21 @@ self.addEventListener('fetch', (event) => {
             ).toLowerCase();
             const isHtmlPoison = isScriptOrStyle && responseContentType.includes('text/html');
             if (networkResponse && networkResponse.status === 200 && !isHtmlPoison) {
-              void cache.put(request, networkResponse.clone());
+              await cache.put(request, networkResponse.clone());
               staticPutCounter += 1;
-              if (staticPutCounter % 15 === 0) {
-                void trimCache(CACHE_STATIC, MAX_STATIC_ITEMS);
+              if (staticPutCounter === 1 || staticPutCounter % 15 === 0) {
+                await trimCache(CACHE_STATIC, MAX_STATIC_ITEMS, STATIC_PRECACHE_SET);
               }
             }
             return networkResponse;
           })
           .catch(() => cachedResponse || new Response('Offline asset unavailable', { status: 503 }));
 
-        return cachedResponse || fetchPromise;
+        if (cachedResponse) {
+          event.waitUntil(fetchPromise);
+          return cachedResponse;
+        }
+        return fetchPromise;
       })
     );
     return;
@@ -256,13 +294,17 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       (async () => {
         try {
-          const networkResponse = await fetch(request);
+          const networkResponse = await fetchWithTimeout(request, NAV_FETCH_TIMEOUT_MS);
           const contentType = (networkResponse.headers.get('content-type') || '').toLowerCase();
           if (networkResponse.ok && contentType.includes('text/html')) {
             const cache = await caches.open(CACHE_STATIC);
             const htmlClone = networkResponse.clone();
-            void cache.put('/index.html', networkResponse.clone());
-            void htmlClone.text().then((html) => precacheHtmlAssets(html, cache));
+            event.waitUntil(
+              Promise.all([
+                cache.put('/index.html', networkResponse.clone()),
+                htmlClone.text().then((html) => precacheHtmlAssets(html, cache)),
+              ])
+            );
           }
           return networkResponse;
         } catch {

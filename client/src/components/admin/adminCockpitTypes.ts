@@ -13,8 +13,21 @@ export type AdminCockpitSectionId =
 
 export type VietnamSectorId = 'all' | 'north' | 'central' | 'south';
 
+export interface CockpitCoordPoint {
+  lat: number;
+  lng: number;
+}
+
+export type CockpitCoordListener = (coords: CockpitCoordPoint | null) => void;
+
+export type CockpitGpxTrackPoint =
+  | [number, number]
+  | [number, number, number]
+  | { lat: number; lng: number; ele?: number; elevationM?: number };
+
 export interface CockpitTrailPoint {
   id: string;
+  slug?: string;
   name: string;
   province: string;
   district?: string;
@@ -35,6 +48,7 @@ export interface CockpitTrailPoint {
   hasWaterSource?: boolean;
   kidFriendly?: boolean;
   status?: string;
+  gpxTrack?: CockpitGpxTrackPoint[];
 }
 
 export interface CockpitIncidentPoint {
@@ -74,6 +88,21 @@ export interface CockpitBeaconPoint {
   sharePath: string;
 }
 
+export interface CockpitOverdueTimerPoint {
+  id: string;
+  userName: string;
+  trailName: string;
+  expectedReturnAt?: string;
+  alertedAt?: string;
+  emergencyContactName?: string;
+  emergencyContactPhone?: string;
+  emergencyContactEmail?: string;
+  trekkerPhone?: string;
+  notes?: string;
+  lat?: number;
+  lng?: number;
+}
+
 export interface CockpitContributionPoint {
   id: string;
   name: string;
@@ -94,6 +123,7 @@ export interface CockpitContributionPoint {
   permitRequired?: boolean;
   hasCampsite?: boolean;
   hasWaterSource?: boolean;
+  gpxTrack?: CockpitGpxTrackPoint[];
 }
 
 export interface CockpitUserPoint {
@@ -113,6 +143,7 @@ export type CockpitInspectorSelection =
   | { kind: 'contribution'; data: CockpitContributionPoint }
   | { kind: 'incident'; data: CockpitIncidentPoint }
   | { kind: 'beacon'; data: CockpitBeaconPoint }
+  | { kind: 'timer'; data: CockpitOverdueTimerPoint }
   | { kind: 'user'; data: CockpitUserPoint };
 
 export interface CockpitTriageItem {

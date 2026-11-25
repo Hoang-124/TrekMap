@@ -4,17 +4,37 @@ import { SavedTrailModel } from '../models/SavedTrail.js';
 import { GearChecklistModel } from '../models/GearChecklist.js';
 import { UserModel } from '../models/User.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
-import { resolveTrailByIdOrSlug } from '../utils/resolveTrail.js';
+import { isValidObjectId, resolveTrailByIdOrSlug } from '../utils/resolveTrail.js';
 import { sanitizeInput } from '../utils/validation.js';
 import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
 
 const DEFAULT_COLLECTION_NAME = 'Muốn đi';
 
+function parseStrictFiniteNumber(val: unknown): number | null {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseSafeBoolean(val: unknown, fallback: boolean): boolean {
+  if (typeof val === 'boolean') return val;
+  if (typeof val === 'string') {
+    const lower = val.trim().toLowerCase();
+    if (lower === 'true' || lower === '1') return true;
+    if (lower === 'false' || lower === '0' || lower === '') return false;
+  }
+  if (typeof val === 'number') {
+    if (val === 1) return true;
+    if (val === 0) return false;
+  }
+  return fallback;
+}
+
 // GET /api/saved-trails & GET /api/saved-trails/me - Get current user's wishlist / collections / saved offline trails
 export const getMySavedTrails = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
-    if (!userId || !Types.ObjectId.isValid(userId)) {
+    if (!userId || !isValidObjectId(userId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
     }
     if (mongoose.connection.readyState !== 1) {
@@ -23,6 +43,7 @@ export const getMySavedTrails = async (req: AuthRequest, res: Response) => {
     const saved = await SavedTrailModel.find({ userId: new Types.ObjectId(userId) })
       .populate('trailId')
       .sort({ createdAt: -1 })
+      .limit(500)
       .lean();
     const activeSaved = saved
       .filter((item: any) => Boolean(item.trailId))
@@ -178,8 +199,11 @@ export const toggleSavedTrail = async (req: AuthRequest, res: Response) => {
 
     const uid = new Types.ObjectId(userId);
     const { savedOffline, forceSave } = req.body || {};
+    const parsedForceSave = parseSafeBoolean(forceSave, false);
+    const hasSavedOffline = savedOffline !== undefined;
+    const parsedSavedOffline = parseSafeBoolean(savedOffline, false);
 
-    if (!forceSave && savedOffline === undefined) {
+    if (!parsedForceSave && !hasSavedOffline) {
       const deleted = await SavedTrailModel.findOneAndDelete({ userId: uid, trailId: trail._id });
       if (deleted) {
         await UserModel.updateOne({ _id: uid }, { $pull: { savedTrails: trail._id } }).catch(() => {});
@@ -187,15 +211,14 @@ export const toggleSavedTrail = async (req: AuthRequest, res: Response) => {
       }
     }
 
-    const toggleUpdate: Record<string, any> =
-      savedOffline !== undefined
-        ? {
-            $set: { savedOffline: Boolean(savedOffline) },
-            $setOnInsert: { collectionName: DEFAULT_COLLECTION_NAME },
-          }
-        : {
-            $setOnInsert: { savedOffline: false, collectionName: DEFAULT_COLLECTION_NAME },
-          };
+    const toggleUpdate: Record<string, any> = hasSavedOffline
+      ? {
+          $set: { savedOffline: parsedSavedOffline },
+          $setOnInsert: { collectionName: DEFAULT_COLLECTION_NAME },
+        }
+      : {
+          $setOnInsert: { savedOffline: false, collectionName: DEFAULT_COLLECTION_NAME },
+        };
 
     let doc: any = null;
     try {
@@ -205,14 +228,13 @@ export const toggleSavedTrail = async (req: AuthRequest, res: Response) => {
       });
     } catch (upsertErr: any) {
       if (upsertErr?.code === 11000) {
-        doc =
-          savedOffline !== undefined
-            ? await SavedTrailModel.findOneAndUpdate(
-                { userId: uid, trailId: trail._id },
-                { $set: { savedOffline: Boolean(savedOffline) } },
-                { new: true }
-              )
-            : await SavedTrailModel.findOne({ userId: uid, trailId: trail._id });
+        doc = hasSavedOffline
+          ? await SavedTrailModel.findOneAndUpdate(
+              { userId: uid, trailId: trail._id },
+              { $set: { savedOffline: parsedSavedOffline } },
+              { new: true }
+            )
+          : await SavedTrailModel.findOne({ userId: uid, trailId: trail._id });
       } else {
         throw upsertErr;
       }
@@ -302,18 +324,25 @@ export const upsertGearChecklist = async (req: AuthRequest, res: Response) => {
 
     const safeItems = items
       .filter((it: any) => it && typeof it.name === 'string' && it.name.trim())
-      .map((it: any, idx: number) => ({
-        id: String(it.id || idx + 1).slice(0, 40),
-        name: sanitizeInput(String(it.name)).slice(0, 140),
-        category: sanitizeInput(String(it.category || 'Khác')).slice(0, 60),
-        recommendedQty: Math.max(1, Math.min(20, Math.round(Number(it.recommendedQty) || 1))),
-        weightGrams: Math.max(0, Math.min(25000, Math.round(Number(it.weightGrams) || 0))),
-        isEssential: Boolean(it.isEssential),
-        checked: Boolean(it.checked),
-        reason: typeof it.reason === 'string' ? sanitizeInput(it.reason).slice(0, 140) : '',
-      }));
+      .map((it: any, idx: number) => {
+        const parsedQty = parseStrictFiniteNumber(it.recommendedQty);
+        const parsedWeight = parseStrictFiniteNumber(it.weightGrams);
+        return {
+          id: String(it.id || idx + 1).slice(0, 40),
+          name: sanitizeInput(String(it.name)).slice(0, 140),
+          category: sanitizeInput(String(it.category || 'Khác')).slice(0, 60),
+          recommendedQty: Math.max(1, Math.min(20, Math.round(parsedQty ?? 1))),
+          weightGrams: Math.max(0, Math.min(25000, Math.round(parsedWeight ?? 0))),
+          isEssential: parseSafeBoolean(it.isEssential, false),
+          checked: parseSafeBoolean(it.checked, false),
+          reason: typeof it.reason === 'string' ? sanitizeInput(it.reason).slice(0, 140) : '',
+        };
+      });
 
-    const safeBodyWeight = Math.max(30, Math.min(200, Math.round(Number(bodyWeightKg) || 65)));
+    const parsedBodyKg = parseStrictFiniteNumber(bodyWeightKg);
+    const safeBodyWeight = Math.max(30, Math.min(200, Math.round(parsedBodyKg ?? 65)));
+    const parsedDays = parseStrictFiniteNumber(createdForDays) ?? parseStrictFiniteNumber(trail.durationDays) ?? 1;
+    const safeDays = Math.max(1, Math.min(60, Math.round(parsedDays)));
 
     const doc = await GearChecklistModel.findOneAndUpdate(
       { userId: new Types.ObjectId(userId), trailId: trail._id },
@@ -323,7 +352,7 @@ export const upsertGearChecklist = async (req: AuthRequest, res: Response) => {
           title: sanitizeInput(String(title || `Checklist ${trail.name}`)).slice(0, 140),
           bodyWeightKg: safeBodyWeight,
           items: safeItems,
-          createdForDays: Math.max(1, Math.round(Number(createdForDays || trail.durationDays || 1))),
+          createdForDays: safeDays,
         },
       },
       { upsert: true, new: true }

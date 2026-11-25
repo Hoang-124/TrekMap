@@ -10,8 +10,8 @@ import {
   type HubQueryParams,
 } from './utils/routing.js';
 import { listOfflineTrailPacks } from './utils/offlinePack.js';
-import { clearSensitiveSessionStorage } from './utils/storageScope.js';
-import { triggerSmoothThemeTransition } from './utils/themeTransition.js';
+import { clearSensitiveSessionStorage, safeLocalStorageGet, safeLocalStorageRemove, safeLocalStorageSet } from './utils/storageScope.js';
+import { applyDocumentTheme, triggerSmoothThemeTransition } from './utils/themeTransition.js';
 import { isTopmostFocusTrap, useFocusTrap } from './hooks/useFocusTrap.js';
 import { useSlidingIndicator } from './hooks/useSlidingIndicator.js';
 import { SceneReveal } from './components/common/SceneReveal.js';
@@ -24,7 +24,7 @@ import { HubShowcaseStrip } from './components/landing/HubShowcaseStrip.js';
 import { SeasonExpeditionRadar } from './components/landing/SeasonExpeditionRadar.js';
 import { SafetyPledgeSection } from './components/landing/SafetyPledgeSection.js';
 import { ExpeditionHubBar } from './components/hub/ExpeditionHubBar.js';
-import { SocketProvider, useSocket } from './context/SocketContext.js';
+import { SocketProvider, useSocketConnection } from './context/SocketContext.js';
 import { AuthModal } from './components/auth/AuthModal.js';
 import { LogoutConfirmModal } from './components/auth/LogoutConfirmModal.js';
 import { Toast } from './components/common/Toast.js';
@@ -216,12 +216,12 @@ const PageLoadingFallback: React.FC = () => (
       }}
     />
     <span style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--color-text-muted)' }}>
-      Đang tải giao diện...
+      Đang mở trang...
     </span>
   </div>
 );
 
-const ModalLoadingFallback: React.FC<{ label?: string }> = ({ label = 'Đang mở cửa sổ...' }) =>
+const ModalLoadingFallback: React.FC<{ label?: string }> = ({ label = 'Đang mở...' }) =>
   createPortal(
     <div
       role="dialog"
@@ -269,16 +269,31 @@ const ModalLoadingFallback: React.FC<{ label?: string }> = ({ label = 'Đang m�
     document.body
   );
 
-const DisconnectBanner: React.FC<{ hasCompareDock?: boolean }> = ({ hasCompareDock = false }) => {
-  const { isConnected } = useSocket();
-  if (isConnected) return null;
+const DisconnectBanner: React.FC<{ hasBottomBar?: boolean }> = ({ hasBottomBar = false }) => {
+  const { isConnected } = useSocketConnection();
+  const [hasConnectedOnce, setHasConnectedOnce] = useState<boolean>(isConnected);
+  const [graceElapsed, setGraceElapsed] = useState<boolean>(false);
+
+  if (isConnected && !hasConnectedOnce) {
+    setHasConnectedOnce(true);
+  }
+
+  useEffect(() => {
+    if (isConnected || graceElapsed) return;
+    const timer = window.setTimeout(() => {
+      setGraceElapsed(true);
+    }, 3500);
+    return () => window.clearTimeout(timer);
+  }, [isConnected, graceElapsed]);
+
+  if (isConnected || (!hasConnectedOnce && !graceElapsed)) return null;
 
   return (
     <div
       role="status"
       style={{
         position: 'fixed',
-        bottom: hasCompareDock ? 84 : 24,
+        bottom: hasBottomBar ? 88 : 24,
         left: '50%',
         transform: 'translateX(-50%)',
         zIndex: 'var(--z-toast, 5000)' as unknown as number,
@@ -309,7 +324,7 @@ const DisconnectBanner: React.FC<{ hasCompareDock?: boolean }> = ({ hasCompareDo
           flexShrink: 0,
         }}
       />
-      <span>Mất kết nối máy chủ — đang tự động thử kết nối lại...</span>
+      <span>Mạng hơi chập chờn — đang tự kết nối lại...</span>
     </div>
   );
 };
@@ -364,7 +379,7 @@ const IncidentTickerBanner: React.FC<{
             onSelectIncident(currentInc);
           }
         }}
-        title="Bấm để xem hồ sơ cảnh báo sự cố & bằng chứng hiện trường"
+        title="Bấm để xem chi tiết cảnh báo & ảnh hiện trường"
         style={{
           flex: 1,
           maxWidth: 1360,
@@ -467,6 +482,57 @@ function formatIncidentTime(raw?: string): string {
   });
 }
 
+function formatIncidentSeverityVi(raw?: string): string {
+  const normalized = String(raw || '').trim().toLowerCase();
+  if (normalized === 'critical' || normalized === 'urgent' || normalized === 'emergency') return 'KHẨN CẤP';
+  if (normalized === 'high' || normalized === 'severe') return 'NGUY HIỂM CAO';
+  if (normalized === 'medium' || normalized === 'moderate') return 'CẢNH BÁO TRUNG BÌNH';
+  if (normalized === 'low' || normalized === 'info') return 'LƯU Ý AN TOÀN';
+  return normalized ? normalized.toUpperCase() : 'KHẨN CẤP';
+}
+
+function extractTelHref(raw?: string): string {
+  const clean = String(raw || '').trim();
+  const match = clean.match(/(?:\+84|0)[0-9\s.-]{7,13}|\b11[2345]\b/);
+  const digits = match ? match[0].replace(/[\s.-]/g, '') : '112';
+  return `tel:${digits}`;
+}
+
+function sweepUserScopedStorageKeys(): void {
+  if (typeof window === 'undefined') return;
+  const scopedPrefixes = [
+    'lost_cover_url_',
+    'lost_saved_meta_v1_',
+    'lost_checkins_',
+    'lost_annual_goals_v2_',
+    'lost_gear_locker_',
+  ];
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const k = localStorage.key(i);
+      if (k && scopedPrefixes.some((p) => k.startsWith(p))) {
+        keysToRemove.push(k);
+      }
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k));
+    sessionStorage.removeItem('lost_live_tracker_custom_route_id');
+  } catch {
+    // ignore storage access errors
+  }
+}
+
+function safeResolveAppRoute(path: string, hash: string, search?: string) {
+  try {
+    return resolveAppRoute(path, hash, search);
+  } catch {
+    return {
+      view: 'home' as AppView,
+      isProtected: false,
+    };
+  }
+}
+
 function getInitialRoute() {
   if (typeof window === 'undefined') {
     return {
@@ -478,7 +544,7 @@ function getInitialRoute() {
       sharedItineraryToken: null as string | null,
     };
   }
-  const resolved = resolveAppRoute(
+  const resolved = safeResolveAppRoute(
     window.location.pathname,
     window.location.hash,
     window.location.search
@@ -512,6 +578,38 @@ function getInitialTrail(trailId: string | null): Trail | null {
         `contrib-${c.id}` === trailId
     );
     if (contrib) {
+      const startLat = Number(contrib.startLat);
+      const startLng = Number(contrib.startLng);
+      const endLat = Number(contrib.endLat);
+      const endLng = Number(contrib.endLng);
+      const isValidVnCoord = (lat: number, lng: number) =>
+        Number.isFinite(lat) && Number.isFinite(lng) && lat >= 8 && lat <= 24 && lng >= 102 && lng <= 110;
+      const validTrack = Array.isArray(contrib.gpxTrack)
+        ? contrib.gpxTrack.filter(
+            (pt): pt is [number, number] =>
+              Array.isArray(pt) && pt.length >= 2 && isValidVnCoord(Number(pt[0]), Number(pt[1]))
+          )
+        : [];
+      const hasRealCoords = isValidVnCoord(startLat, startLng) && isValidVnCoord(endLat, endLng);
+      if (!hasRealCoords && validTrack.length < 2) {
+        return null;
+      }
+      const safeStartLat = hasRealCoords ? startLat : validTrack[0][0];
+      const safeStartLng = hasRealCoords ? startLng : validTrack[0][1];
+      const safeEndLat = hasRealCoords ? endLat : validTrack[validTrack.length - 1][0];
+      const safeEndLng = hasRealCoords ? endLng : validTrack[validTrack.length - 1][1];
+      const distanceKm = Number.isFinite(Number(contrib.distanceKm)) && Number(contrib.distanceKm) > 0
+        ? Number(contrib.distanceKm)
+        : 0;
+      const elevationGainM = Number.isFinite(Number(contrib.elevationGainM)) && Number(contrib.elevationGainM) >= 0
+        ? Number(contrib.elevationGainM)
+        : 0;
+      const maxAltitudeM = Number.isFinite(Number(contrib.maxAltitudeM)) && Number(contrib.maxAltitudeM) > 0
+        ? Number(contrib.maxAltitudeM)
+        : 0;
+      if (distanceKm <= 0) {
+        return null;
+      }
       const cover = contrib.coverImage || DEFAULT_VIETNAM_TRAIL_COVER;
       return {
         id: contrib.id || `contrib-${contrib._id || Date.now()}`,
@@ -521,23 +619,20 @@ function getInitialTrail(trailId: string | null): Trail | null {
         province: contrib.province || '',
         district: contrib.district || '',
         hamlet: contrib.hamlet || '',
-        distanceKm: Number(contrib.distanceKm) || 15,
-        elevationGainM: Number(contrib.elevationGainM) || 800,
-        maxAltitudeM: Number(contrib.maxAltitudeM) || 2000,
-        durationDays: Math.ceil((Number(contrib.distanceKm) || 15) / 10),
+        distanceKm,
+        elevationGainM,
+        maxAltitudeM,
+        durationDays: Math.max(1, Math.ceil(distanceKm / 12)),
         durationHoursNote: contrib.durationHoursNote || '1 ngày',
         difficultyLevel: Number(contrib.difficultyLevel) || 3,
         difficultyNote: (Number(contrib.difficultyLevel) || 3) >= 4 ? 'Thử thách cao' : 'Trung bình',
-        bestMonths:
-          Array.isArray(contrib.bestMonths) && contrib.bestMonths.length > 0
-            ? contrib.bestMonths
-            : [10, 11, 12, 1, 2, 3, 4],
+        bestMonths: Array.isArray(contrib.bestMonths) ? contrib.bestMonths : [],
         avoidMonths: Array.isArray(contrib.avoidMonths) ? contrib.avoidMonths : [],
-        startLat: Number(contrib.startLat) || 22.3364,
-        startLng: Number(contrib.startLng) || 103.8438,
-        endLat: Number(contrib.endLat) || 22.3032,
-        endLng: Number(contrib.endLng) || 103.7753,
-        description: contrib.description || 'Cung đường đóng góp cộng đồng.',
+        startLat: safeStartLat,
+        startLng: safeStartLng,
+        endLat: safeEndLat,
+        endLng: safeEndLng,
+        description: contrib.description || 'Cung đường do cộng đồng đóng góp.',
         transportationInfo: contrib.transportationInfo || '',
         coverImage: cover,
         galleryImages: [cover],
@@ -546,18 +641,21 @@ function getInitialTrail(trailId: string | null): Trail | null {
         hasCampsite: !!contrib.hasCampsite,
         hasWaterSource: !!contrib.hasWaterSource,
         kidFriendly: !!contrib.kidFriendly,
-        gpxTrack: contrib.gpxTrack || [
-          [Number(contrib.startLat) || 22.3364, Number(contrib.startLng) || 103.8438],
-          [Number(contrib.endLat) || 22.3032, Number(contrib.endLng) || 103.7753],
-        ],
+        gpxTrack:
+          validTrack.length >= 2
+            ? validTrack
+            : [
+                [safeStartLat, safeStartLng],
+                [safeEndLat, safeEndLng],
+              ],
         waypoints: contrib.waypoints || [],
         status: contrib.status || 'approved',
         createdAt: contrib.createdAt || new Date().toISOString(),
         updatedAt: contrib.updatedAt || new Date().toISOString(),
         rescueContact: contrib.rescueContact || {
-          name: 'Hạt Kiểm Lâm ' + (contrib.province || 'Địa phương'),
-          phone: '112 / 114 (Tổng đài Cứu nạn & PCCC Quốc gia 24/7)',
-          rangerContact: 'Trạm Kiểm Lâm ' + (contrib.district || 'Cửa Rừng'),
+          name: 'Hạt Kiểm lâm ' + (contrib.province || 'địa phương'),
+          phone: '112 / 114 (Tổng đài cứu nạn & PCCC quốc gia 24/7)',
+          rangerContact: 'Trạm Kiểm lâm ' + (contrib.district || 'cửa rừng'),
         },
         rating: 0,
         reviewCount: 0,
@@ -654,15 +752,31 @@ export function App() {
     isAiAssistantOpenRef.current = isAiAssistantOpen;
   }, [isAiAssistantOpen]);
 
-  // Floating Scroll-to-Top State
+  // Floating Scroll-to-Top & Compact Mobile Viewport State
   const [showScrollTop, setShowScrollTop] = useState(false);
+  const [isCompactMobile, setIsCompactMobile] = useState(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(max-width: 600px)').matches
+      : false
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(max-width: 600px)');
+    const onChange = () => setIsCompactMobile(mq.matches);
+    onChange();
+    mq.addEventListener?.('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, []);
 
-  // Toast Notification State
+  // Toast Notification State (with monotonic ID so duplicate messages reset countdown cleanly)
+  const toastSeqRef = useRef(0);
   const [toast, setToast] = useState<{
+    id: number;
     message: string;
     type: 'success' | 'error' | 'info' | 'warning';
     isOpen: boolean;
   }>({
+    id: 0,
     message: '',
     type: 'success',
     isOpen: false,
@@ -670,7 +784,8 @@ export function App() {
 
   const showToast = useCallback(
     (message: string, type: 'success' | 'error' | 'info' | 'warning' = 'success') => {
-      setToast({ message, type, isOpen: true });
+      toastSeqRef.current += 1;
+      setToast({ id: toastSeqRef.current, message, type, isOpen: true });
     },
     []
   );
@@ -732,25 +847,6 @@ export function App() {
       active = false;
     };
   }, []);
-
-  // If initial route is detail and trail wasn't in local seed/cache, fetch from API (or mark 404)
-  useEffect(() => {
-    if (initialRoute.view !== 'detail' || !initialRoute.trailId || selectedTrail) return;
-    const reqId = ++trailFetchSeqRef.current;
-    fetchTrailById(initialRoute.trailId)
-      .then((trail) => {
-        if (reqId !== trailFetchSeqRef.current) return;
-        if (trail) {
-          setSelectedTrail(trail);
-          setTrailLoadStatus('idle');
-        } else {
-          setTrailLoadStatus('not_found');
-        }
-      })
-      .catch(() => {
-        if (reqId === trailFetchSeqRef.current) setTrailLoadStatus('not_found');
-      });
-  }, [initialRoute.view, initialRoute.trailId, selectedTrail]);
 
   // Scroll listener for Scroll-to-Top button
   useEffect(() => {
@@ -851,19 +947,14 @@ export function App() {
         const current = document.documentElement.getAttribute('data-theme');
         const nextTheme: 'dark' | 'light' = current === 'light' ? 'dark' : 'light';
         triggerSmoothThemeTransition();
-        document.documentElement.setAttribute('data-theme', nextTheme);
-        try {
-          localStorage.setItem('theme', nextTheme);
-        } catch {
-          // ignore storage errors
-        }
+        applyDocumentTheme(nextTheme);
         window.dispatchEvent(
           new CustomEvent('lost:toggle-theme', { detail: { theme: nextTheme } })
         );
         showToast(
           nextTheme === 'light'
-            ? 'Đã chuyển sang Giao diện Sáng (Alt+T)'
-            : 'Đã chuyển sang Giao diện Tối (Alt+T)',
+            ? 'Đã đổi sang giao diện sáng (Alt+T)'
+            : 'Đã đổi sang giao diện tối (Alt+T)',
           'info'
         );
       }
@@ -935,7 +1026,7 @@ export function App() {
       if (worker) {
         setSwWaitingWorker(worker);
       } else {
-        showToast('Đã có phiên bản LOST mới! Tải lại trang để áp dụng bản cập nhật.', 'info');
+        showToast('LOST vừa có bản mới — tải lại trang để dùng ngay nhé.', 'info');
       }
     };
 
@@ -950,12 +1041,22 @@ export function App() {
       }
     };
 
+    const handleAuthChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ authenticated?: boolean; user?: UserProfile | null }>)?.detail;
+      if (detail?.authenticated === false || !safeLocalStorageGet('lost_token')) {
+        setCurrentUser(null);
+      } else if (detail?.user) {
+        setCurrentUser(detail.user);
+      }
+    };
+
     window.addEventListener('lost:show-toast', handleGlobalToast);
     window.addEventListener('lost:open-auth-modal', handleGlobalAuthOpen);
     window.addEventListener('lost:open-ai-assistant', handleGlobalAiOpen);
     window.addEventListener('lost:open-ai-with-prompt', handleGlobalAiOpen);
     window.addEventListener('lost:open-live-tracker', handleGlobalLiveTrackerOpen);
     window.addEventListener('lost:sw-update-available', handleSwUpdateAvailable);
+    window.addEventListener('lost:auth-changed', handleAuthChanged);
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     return () => {
       window.removeEventListener('lost:show-toast', handleGlobalToast);
@@ -964,6 +1065,7 @@ export function App() {
       window.removeEventListener('lost:open-ai-with-prompt', handleGlobalAiOpen);
       window.removeEventListener('lost:open-live-tracker', handleGlobalLiveTrackerOpen);
       window.removeEventListener('lost:sw-update-available', handleSwUpdateAvailable);
+      window.removeEventListener('lost:auth-changed', handleAuthChanged);
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     };
   }, [showToast]);
@@ -971,7 +1073,7 @@ export function App() {
   // Unified Single Router for URL Pathname, Hash & Query Params
   useEffect(() => {
     const syncRouteFromUrl = () => {
-      const resolved = resolveAppRoute(
+      const resolved = safeResolveAppRoute(
         window.location.pathname,
         window.location.hash,
         window.location.search
@@ -1087,17 +1189,17 @@ export function App() {
       channel.onmessage = (event) => {
         if (event.data?.type === 'ACCOUNT_ACTIVATED') {
           showToast(
-            `${event.data.message || 'Tài khoản của bạn đã được KÍCH HOẠT THÀNH CÔNG! Bạn có thể đăng nhập ngay.'}`,
+            `${event.data.message || 'Tài khoản đã kích hoạt xong! Giờ bạn đăng nhập được rồi.'}`,
             'success'
           );
         } else {
-          showToast(`Lỗi kích hoạt: ${event.data.message || 'Mã xác thực không hợp lệ.'}`, 'error');
+          showToast(`Chưa kích hoạt được: ${event.data.message || 'Mã xác thực không đúng hoặc đã hết hạn.'}`, 'error');
         }
       };
     }
     const handleStorage = (e: StorageEvent) => {
       if (e.key === 'lost_activated_signal' && e.newValue) {
-        showToast('Tài khoản của bạn đã được KÍCH HOẠT THÀNH CÔNG! Bạn có thể đăng nhập ngay.', 'success');
+        showToast('Tài khoản đã kích hoạt xong! Giờ bạn đăng nhập được rồi.', 'success');
         setIsAuthModalOpen(true);
       }
     };
@@ -1115,7 +1217,7 @@ export function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ activateToken }),
       })
-        .then((res) => res.json())
+        .then((res) => res.json().catch(() => ({})))
         .then((data) => {
           if (data.success) {
             if (channel) {
@@ -1125,24 +1227,31 @@ export function App() {
                 message: data.message,
               });
             }
-            localStorage.setItem('lost_activated_signal', Date.now().toString());
+            safeLocalStorageSet('lost_activated_signal', Date.now().toString());
             if (data.token && data.user) {
-              localStorage.setItem('lost_token', data.token);
+              safeLocalStorageSet('lost_token', data.token);
               setCurrentUser(data.user);
-              window.dispatchEvent(new CustomEvent('lost:auth-changed'));
-              showToast(data.message || 'Kích hoạt thành công và đã tự động đăng nhập!', 'success');
+              window.dispatchEvent(new CustomEvent('lost:auth-changed', { detail: { authenticated: true, user: data.user } }));
+              showToast(data.message || 'Kích hoạt xong và đăng nhập luôn cho bạn rồi!', 'success');
             } else {
-              showToast(data.message || 'Tài khoản của bạn đã được kích hoạt thành công!', 'success');
+              showToast(data.message || 'Tài khoản đã kích hoạt xong!', 'success');
               setIsAuthModalOpen(true);
             }
             window.history.replaceState({}, document.title, window.location.pathname);
           } else {
-            showToast(data.message || 'Mã kích hoạt không hợp lệ.', 'error');
+            showToast(data.message || 'Liên kết kích hoạt không hợp lệ hoặc đã hết hạn.', 'error');
             window.history.replaceState({}, document.title, window.location.pathname);
           }
         })
-        .catch(() => showToast('Không thể kết nối đến máy chủ kích hoạt.', 'error'));
+        .catch(() => showToast('Mạng hơi chập chờn, chưa kết nối được tới máy chủ kích hoạt.', 'error'));
     } else if (token) {
+      try {
+        const cleanUrl = new URL(window.location.href);
+        cleanUrl.searchParams.delete('resetToken');
+        window.history.replaceState({}, document.title, `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
+      } catch {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
       Promise.resolve().then(() => {
         setResetTokenUrl(token);
         setIsAuthModalOpen(true);
@@ -1173,7 +1282,7 @@ export function App() {
   // Auth Session Check + Silent Refresh Rotation
   useEffect(() => {
     async function checkAuthSession() {
-      const token = localStorage.getItem('lost_token');
+      const token = safeLocalStorageGet('lost_token');
 
       const tryRefresh = async (): Promise<boolean> => {
         try {
@@ -1211,12 +1320,13 @@ export function App() {
         if (res.ok && json.success && userData) {
           if (userData.isBanned) {
             localStorage.removeItem('lost_token');
+            sweepUserScopedStorageKeys();
             clearSensitiveSessionStorage();
             setCurrentUser(null);
             window.dispatchEvent(
               new CustomEvent('lost:auth-changed', { detail: { authenticated: false } })
             );
-            showToast('Tài khoản của bạn đã bị Ban Quản Trị khóa do vi phạm quy định!', 'error');
+            showToast('Tài khoản của bạn đã bị ban quản trị khóa do vi phạm quy định.', 'error');
             return;
           }
           setCurrentUser(userData);
@@ -1224,6 +1334,7 @@ export function App() {
           const refreshed = await tryRefresh();
           if (!refreshed) {
             localStorage.removeItem('lost_token');
+            sweepUserScopedStorageKeys();
             clearSensitiveSessionStorage();
             setCurrentUser(null);
             window.dispatchEvent(
@@ -1232,13 +1343,14 @@ export function App() {
           }
         } else if (res.status === 403 || json.isBanned) {
           localStorage.removeItem('lost_token');
+          sweepUserScopedStorageKeys();
           clearSensitiveSessionStorage();
           setCurrentUser(null);
           window.dispatchEvent(
             new CustomEvent('lost:auth-changed', { detail: { authenticated: false } })
           );
           if (json.isBanned) {
-            showToast('Tài khoản của bạn đã bị Ban Quản Trị khóa vĩnh viễn!', 'error');
+            showToast('Tài khoản của bạn đã bị ban quản trị khóa vĩnh viễn.', 'error');
           }
         }
       } catch {
@@ -1264,30 +1376,30 @@ export function App() {
       catalogTrails.length > 0 ? catalogTrails.length : trails.length > 0 ? trails.length : mockTrails.length;
 
     const viewTitles: Record<AppView, string> = {
-      home: 'LOST Việt Nam — Bản Đồ Trekking 3D, Thời Tiết Núi & An Toàn Thực Địa',
-      explore: 'Khám Phá Cung Đường Trekking Việt Nam | LOST',
-      detail: 'Chi Tiết Cung Đường Trekking | LOST Việt Nam',
-      forum: 'Diễn Đàn & Bộ Đàm Ghép Đoàn Trekking | LOST Việt Nam',
-      contribute: 'Đóng Góp Cung Đường & GPX Thực Địa | LOST Việt Nam',
-      profile: 'Hồ Sơ Thám Hiểm & Phân Tích Hành Trình | LOST Việt Nam',
-      messages: 'Tin Nhắn & Nhóm Đoàn Trekking | LOST Việt Nam',
-      notifications: 'Trung Tâm Thông Báo & Cảnh Báo | LOST Việt Nam',
-      admin: 'Trung Tâm Quản Trị & Kiểm Toán | LOST Việt Nam',
+      home: 'LOST Việt Nam — Bản đồ trekking 3D, thời tiết núi & an toàn đi rừng',
+      explore: 'Khám phá cung đường trekking Việt Nam | LOST',
+      detail: 'Chi tiết cung đường trekking | LOST Việt Nam',
+      forum: 'Diễn đàn & tìm bạn ghép đoàn | LOST Việt Nam',
+      contribute: 'Gửi cung đường & tracklog GPX mới | LOST Việt Nam',
+      profile: 'Hồ sơ & nhật ký leo núi | LOST Việt Nam',
+      messages: 'Tin nhắn & nhóm bạn đồng hành | LOST Việt Nam',
+      notifications: 'Thông báo & tin cảnh báo | LOST Việt Nam',
+      admin: 'Quản trị & kiểm duyệt | LOST Việt Nam',
       beacon: 'Theo dõi hành trình trực tiếp | LOST',
-      passport: `Hộ Chiếu Đỉnh Núi & Thử Thách ${totalCatalogTrailsCount} Cung Đường Việt Nam | LOST`,
-      almanac: 'Lịch Mùa Trekking & Săn Mây 12 Tháng Việt Nam | LOST',
-      planner: 'Thiết Kế Cung Đường GPX & Phân Tích Độ Dốc DEM | LOST',
-      toolkit: 'Công Cụ Sinh Tồn Thực Địa Offline (La Bàn, Mặt Trời, SOS) | LOST',
-      directory: 'Danh Bạ Kiểm Lâm VQG, Porter & Dự Toán Chi Phí VNĐ | LOST',
-      training: 'Giáo Án Thể Lực Leo Núi 4–8 Tuần Theo Đỉnh Mục Tiêu | LOST',
-      gear: 'Tủ Đồ & Tối Ưu Trọng Lượng Balo Trekking | LOST',
-      radar: 'Radar An Toàn Thực Địa & Cảnh Báo Sự Cố 24/7 | LOST',
+      passport: `Hộ chiếu đỉnh núi & ${totalCatalogTrailsCount} cung đường Việt Nam | LOST`,
+      almanac: 'Lịch mùa trekking & săn mây 12 tháng | LOST',
+      planner: 'Vẽ cung GPX & đo độ dốc địa hình | LOST',
+      toolkit: 'Đồ nghề đi rừng offline (la bàn, mặt trời, SOS) | LOST',
+      directory: 'Danh bạ kiểm lâm, porter & dự trù chi phí | LOST',
+      training: 'Rèn sức trước chuyến leo núi (4–8 tuần) | LOST',
+      gear: 'Cân balo & tủ đồ đi rừng | LOST',
+      radar: 'Tin cảnh báo an toàn trên tuyến 24/7 | LOST',
     };
 
     updateDocumentSeoMeta({
       title: viewTitles[currentView] || viewTitles.home,
       description:
-        'Nền tảng bản đồ trekking chuyên dụng cho địa hình Việt Nam với GPX chuẩn, 8 công cụ thám hiểm thực địa, bản đồ 3D DEM, gói Offline và ghép đoàn minh bạch.',
+        'Bản đồ cộng đồng cho người đi rừng Việt Nam với tracklog GPX đi thật, địa hình 3D, gói tải dùng khi mất sóng, danh bạ kiểm lâm và góc tìm bạn đồng hành.',
       path: buildCleanUrl(
         currentView,
         currentView === 'beacon'
@@ -1325,9 +1437,13 @@ export function App() {
       campsite: campsiteOnly || undefined,
       kidFriendly: kidFriendlyOnly || undefined,
       sortBy,
-    }).then((trailData) => {
-      if (active) setTrails(trailData);
-    });
+    })
+      .then((trailData) => {
+        if (active) setTrails(trailData);
+      })
+      .catch(() => {
+        // Offline / aborted filter request: keep existing list
+      });
     return () => {
       active = false;
     };
@@ -1371,65 +1487,80 @@ export function App() {
 
   const hasAnyActiveFilter = Boolean(searchQuery.trim()) || activeFilterCount > 0;
 
-  const handleToggleCompare = (trail: Trail) => {
-    setComparedTrails((prev) => {
-      const exists = prev.some((t) => t.id === trail.id);
-      if (exists) {
-        return prev.filter((t) => t.id !== trail.id);
-      }
-      if (prev.length >= 4) {
-        showToast('Chỉ có thể so sánh tối đa 4 cung đường cùng lúc.', 'info');
-        return prev;
-      }
-      showToast(`Đã thêm "${trail.name}" vào bảng so sánh.`, 'success');
-      return [...prev, trail];
-    });
-  };
+  const handleToggleCompare = useCallback(
+    (trail: Trail) => {
+      setComparedTrails((prev) => {
+        const exists = prev.some((t) => t.id === trail.id);
+        if (exists) {
+          return prev.filter((t) => t.id !== trail.id);
+        }
+        if (prev.length >= 4) {
+          showToast('Chỉ so sánh tối đa 4 cung một lúc thôi nhé.', 'info');
+          return prev;
+        }
+        showToast(`Đã thêm "${trail.name}" vào danh sách so sánh.`, 'success');
+        return [...prev, trail];
+      });
+    },
+    [showToast]
+  );
 
   const navigateToTrail = useCallback(
-    (trail: Trail) => {
+    (trail: Trail, initialTab?: string) => {
       if (!trail) return;
       if (currentView !== 'detail') {
         setPreviousView(currentView);
+      }
+      const tid = trail.id || (trail as TrailWithMongoId)._id;
+      if (tid) {
+        const basePath = buildCleanUrl('detail', String(tid));
+        const nextUrl = initialTab
+          ? `${basePath}?tab=${encodeURIComponent(initialTab)}`
+          : basePath;
+        window.history.pushState(
+          { view: 'detail', trailId: tid, ...(initialTab ? { tab: initialTab } : {}) },
+          '',
+          nextUrl
+        );
       }
       setSelectedTrail(trail);
       setTrailLoadStatus('idle');
       setCurrentView('detail');
       setHubInitialTrailId(null);
-      const tid = trail.id || (trail as TrailWithMongoId)._id;
-      if (tid) {
-        window.history.pushState(
-          { view: 'detail', trailId: tid },
-          '',
-          buildCleanUrl('detail', String(tid))
-        );
-      }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     },
     [currentView]
   );
 
   const handleSelectTrail = useCallback(
-    (trail: Trail) => {
-      navigateToTrail(trail);
+    (trail: Trail, initialTab?: string) => {
+      navigateToTrail(trail, initialTab);
     },
     [navigateToTrail]
   );
 
   const handleSelectTrailById = useCallback(
-    (trailId: string) => {
+    (trailId: string, initialTab?: string) => {
       const found =
         trailsRef.current.find(
           (t) => t.id === trailId || (t as TrailWithMongoId)._id === trailId
         ) || mockTrails.find((t) => t.id === trailId);
       if (found) {
         trailFetchSeqRef.current += 1;
-        navigateToTrail(found);
+        navigateToTrail(found, initialTab);
       } else {
+        const basePath = buildCleanUrl('detail', trailId);
+        const nextUrl = initialTab
+          ? `${basePath}?tab=${encodeURIComponent(initialTab)}`
+          : basePath;
+        window.history.pushState(
+          { view: 'detail', trailId, ...(initialTab ? { tab: initialTab } : {}) },
+          '',
+          nextUrl
+        );
         setCurrentView('detail');
         setSelectedTrail(null);
         setTrailLoadStatus('loading');
-        window.history.pushState({ view: 'detail', trailId }, '', buildCleanUrl('detail', trailId));
         const reqId = ++trailFetchSeqRef.current;
         fetchTrailById(trailId)
           .then((t) => {
@@ -1465,10 +1596,10 @@ export function App() {
         return;
       }
 
-      // Support full deep-links: /trails/:id, #trail/:id, #profile-<username>, /profile/:username, /hub?trailId=...
+      // Support full deep-links: /trails/:id?tab=map, #trail/:id, #profile-<username>, /profile/:username, /hub?trailId=...
       const [beforeHash, hashFrag] = trimmed.split('#');
       const [rawPathPart, rawQueryPart] = (beforeHash || '').split('?');
-      const resolved = resolveAppRoute(
+      const resolved = safeResolveAppRoute(
         rawPathPart ? (rawPathPart.startsWith('/') ? rawPathPart : `/${rawPathPart}`) : '/',
         hashFrag ? `#${hashFrag}` : '',
         rawQueryPart ? `?${rawQueryPart}` : ''
@@ -1486,7 +1617,10 @@ export function App() {
 
       if (resolved.view === 'detail' && resolved.trailId) {
         setActiveBeaconToken(null);
-        handleSelectTrailById(resolved.trailId);
+        const detailTab = rawQueryPart
+          ? new URLSearchParams(rawQueryPart).get('tab')?.trim() || undefined
+          : undefined;
+        handleSelectTrailById(resolved.trailId, detailTab);
         return;
       }
 
@@ -1544,8 +1678,8 @@ export function App() {
         return;
       }
 
-      if (resolved.isProtected && !currentUser && !localStorage.getItem('lost_token')) {
-        showToast('Vui lòng đăng nhập tài khoản để sử dụng tính năng này.', 'info');
+      if (resolved.isProtected && !currentUser && !safeLocalStorageGet('lost_token')) {
+        showToast('Đăng nhập một chút để dùng tính năng này nhé.', 'info');
         setAuthModalInitialMode('login');
         setIsAuthModalOpen(true);
         return;
@@ -1578,7 +1712,7 @@ export function App() {
     [currentView, currentUser, handleSelectTrailById, showToast]
   );
 
-  const handleResetFilters = () => {
+  const handleResetFilters = useCallback(() => {
     setSelectedRegion('All');
     setSelectedDifficulty(null);
     setSelectedDuration(null);
@@ -1587,10 +1721,10 @@ export function App() {
     setSortBy('rating_desc');
     setSearchQuery('');
     setSelectedSeasonMonth(null);
-  };
+  }, []);
 
   const handleConfirmLogout = async () => {
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (token) {
       try {
         await fetch('/api/auth/logout', {
@@ -1602,18 +1736,19 @@ export function App() {
         // Proceed with local logout even if offline
       }
     }
-    localStorage.removeItem('lost_token');
+    safeLocalStorageRemove('lost_token');
+    sweepUserScopedStorageKeys();
     clearSensitiveSessionStorage();
     setCurrentUser(null);
     setIsLogoutModalOpen(false);
     window.dispatchEvent(new CustomEvent('lost:auth-changed', { detail: { authenticated: false } }));
-    showToast('Đã đăng xuất tài khoản thành công.', 'info');
+    showToast('Đã đăng xuất. Hẹn gặp lại bạn ở cung đường tiếp theo.', 'info');
     handleNavigate('home');
   };
 
   const handleOpenIncidentReport = useCallback(() => {
     if (!currentUser) {
-      showToast('Vui lòng đăng nhập tài khoản để gửi báo cáo nguy hiểm thực địa.', 'info');
+      showToast('Đăng nhập một chút để gửi cảnh báo đường rừng nhé.', 'info');
       setAuthModalInitialMode('login');
       setIsAuthModalOpen(true);
       return;
@@ -1705,20 +1840,94 @@ export function App() {
       if (navigator.clipboard?.writeText) {
         navigator.clipboard.writeText(budgetNote).catch(() => { });
       }
-      showToast('Đã sao chép bảng dự toán chi phí & chuyển sang khu vực Lập Đoàn!', 'success');
+      showToast('Đã chép bảng dự trù chi phí và chuyển sang góc tìm bạn ghép đoàn!', 'success');
       handleNavigate('forum');
     },
     [handleNavigate, showToast]
   );
 
+  const handleOpenAuthModalLogin = useCallback(() => handleNavigate('login'), [handleNavigate]);
+  const handleOpenLogoutModal = useCallback(() => setIsLogoutModalOpen(true), []);
+  const handleOpenCommandPaletteModal = useCallback(() => setIsCommandPaletteOpen(true), []);
+  const handleOpenLiveTrackerDefault = useCallback(() => handleOpenLiveTracker(), [handleOpenLiveTracker]);
+  const handleDismissAlertBanner = useCallback(() => setIsAlertBannerDismissed(true), []);
+  const handleToggleCampsite = useCallback(() => setCampsiteOnly((prev) => !prev), []);
+  const handleOpenAdvancedFilter = useCallback(() => setIsFilterOpen(true), []);
+  const handleOpenEmergencyContacts = useCallback(() => setIsEmergencyContactsOpen(true), []);
+  const handleCloseEmergencyContacts = useCallback(() => setIsEmergencyContactsOpen(false), []);
+  const handleExploreClick = useCallback(() => handleNavigate('explore'), [handleNavigate]);
+  const handleExploreFullMap = useCallback(() => handleNavigate('planner'), [handleNavigate]);
+  const handleNavigateToForum = useCallback(() => handleNavigate('forum'), [handleNavigate]);
+  const handleClearMonthFilter = useCallback(() => setSelectedSeasonMonth(null), []);
+  const handleScrollToMap = useCallback(() => {
+    const mapEl = document.getElementById('gis-map-section');
+    if (mapEl) {
+      const offset = 80;
+      const bodyRect = document.body.getBoundingClientRect().top;
+      const elementRect = mapEl.getBoundingClientRect().top;
+      const offsetPosition = elementRect - bodyRect - offset;
+      window.scrollTo({ top: offsetPosition, behavior: 'smooth' });
+    }
+  }, []);
+  const handleScrollToAllTrails = useCallback(() => {
+    const trailsEl =
+      document.getElementById('all-trails-section') ||
+      document.getElementById('gis-map-section');
+    if (trailsEl) {
+      const offset = 80;
+      const bodyRect = document.body.getBoundingClientRect().top;
+      const elementRect = trailsEl.getBoundingClientRect().top;
+      const offsetPosition = elementRect - bodyRect - offset;
+      window.scrollTo({ top: offsetPosition, behavior: 'smooth' });
+    }
+  }, []);
+  const handleFilterSeasonMonth = useCallback((month: number) => {
+    setSelectedSeasonMonth(month);
+    const mapEl = document.getElementById('gis-map-section');
+    if (mapEl) mapEl.scrollIntoView({ behavior: 'smooth' });
+  }, []);
+  const buildPreservedCleanUrl = useCallback(() => {
+    const clean = buildCleanUrl(
+      currentView,
+      currentView === 'detail'
+        ? selectedTrail?.id
+        : currentView === 'beacon'
+          ? activeBeaconToken
+          : isHubView(currentView)
+            ? hubInitialTrailId
+            : null,
+      isHubView(currentView) ? hubQueryParams : null
+    );
+    if (typeof window === 'undefined') return clean;
+    try {
+      const currentParams = new URLSearchParams(window.location.search);
+      const preserved = new URLSearchParams();
+      if (currentView === 'detail') {
+        const tab = currentParams.get('tab')?.trim();
+        if (tab) preserved.set('tab', tab);
+      } else if (currentView === 'forum') {
+        const threadId = currentParams.get('threadId')?.trim();
+        if (threadId) preserved.set('threadId', threadId);
+      }
+      const q = preserved.toString();
+      if (!q) return clean;
+      return clean.includes('?') ? `${clean}&${q}` : `${clean}?${q}`;
+    } catch {
+      return clean;
+    }
+  }, [currentView, selectedTrail?.id, activeBeaconToken, hubInitialTrailId, hubQueryParams]);
+
   const isDedicatedAdminShell =
     currentView === 'admin' &&
     Boolean(currentUser && (currentUser.role === 'admin' || currentUser.role === 'moderator'));
+  const hasPwaBanner = Boolean(swWaitingWorker || (deferredPwaInstall && !pwaBannerDismissed));
+  const hasCompareDock = comparedTrails.length >= 1;
+  const shouldShowScrollTop = showScrollTop && !(isCompactMobile && (hasCompareDock || hasPwaBanner));
 
   return (
     <SocketProvider currentUser={currentUser}>
       <div className="lost-grain-overlay" aria-hidden="true" />
-      <DisconnectBanner hasCompareDock={comparedTrails.length >= 1} />
+      <DisconnectBanner hasBottomBar={hasCompareDock || hasPwaBanner} />
       <div
         style={{
           minHeight: '100vh',
@@ -1729,7 +1938,7 @@ export function App() {
       >
         <EmergencyContactsModal
           isOpen={isEmergencyContactsOpen}
-          onClose={() => setIsEmergencyContactsOpen(false)}
+          onClose={handleCloseEmergencyContacts}
           currentUser={currentUser}
           trails={allCatalogTrails}
         />
@@ -1741,11 +1950,11 @@ export function App() {
             trailsCount={allCatalogTrails.length}
             onNavigate={handleNavigate}
             onOpenIncidentModal={handleOpenIncidentReport}
-            onOpenAuthModal={() => handleNavigate('login')}
-            onSearchChange={(q) => setSearchQuery(q)}
-            onLogout={() => setIsLogoutModalOpen(true)}
-            onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
-            onOpenLiveTracker={() => handleOpenLiveTracker()}
+            onOpenAuthModal={handleOpenAuthModalLogin}
+            onSearchChange={setSearchQuery}
+            onLogout={handleOpenLogoutModal}
+            onOpenCommandPalette={handleOpenCommandPaletteModal}
+            onOpenLiveTracker={handleOpenLiveTrackerDefault}
             onOpenShortcuts={handleOpenShortcutsHelp}
           />
         )}
@@ -1755,7 +1964,7 @@ export function App() {
           <IncidentTickerBanner
             incidents={incidents}
             onSelectIncident={setSelectedIncidentDetail}
-            onDismiss={() => setIsAlertBannerDismissed(true)}
+            onDismiss={handleDismissAlertBanner}
           />
         )}
 
@@ -1765,39 +1974,19 @@ export function App() {
             {(currentView === 'home' || currentView === 'explore') && (
               <div>
                 <HeroExpeditionSection
-                  trails={displayedTrails}
+                  trails={allCatalogTrails}
                   selectedRegion={selectedRegion}
                   onSelectRegion={setSelectedRegion}
                   searchQuery={searchQuery}
                   onSearchChange={setSearchQuery}
                   campsiteOnly={campsiteOnly}
-                  onToggleCampsite={() => setCampsiteOnly((prev) => !prev)}
-                  onOpenAdvancedFilter={() => setIsFilterOpen(true)}
-                  onScrollToMap={() => {
-                    const mapEl = document.getElementById('gis-map-section');
-                    if (mapEl) {
-                      const offset = 80;
-                      const bodyRect = document.body.getBoundingClientRect().top;
-                      const elementRect = mapEl.getBoundingClientRect().top;
-                      const offsetPosition = elementRect - bodyRect - offset;
-                      window.scrollTo({ top: offsetPosition, behavior: 'smooth' });
-                    }
-                  }}
-                  onScrollToAllTrails={() => {
-                    const trailsEl =
-                      document.getElementById('all-trails-section') ||
-                      document.getElementById('gis-map-section');
-                    if (trailsEl) {
-                      const offset = 80;
-                      const bodyRect = document.body.getBoundingClientRect().top;
-                      const elementRect = trailsEl.getBoundingClientRect().top;
-                      const offsetPosition = elementRect - bodyRect - offset;
-                      window.scrollTo({ top: offsetPosition, behavior: 'smooth' });
-                    }
-                  }}
-                  onExploreClick={() => handleNavigate('explore')}
+                  onToggleCampsite={handleToggleCampsite}
+                  onOpenAdvancedFilter={handleOpenAdvancedFilter}
+                  onScrollToMap={handleScrollToMap}
+                  onScrollToAllTrails={handleScrollToAllTrails}
+                  onExploreClick={handleExploreClick}
                   onSelectTrail={handleSelectTrail}
-                  onOpenEmergencyContacts={() => setIsEmergencyContactsOpen(true)}
+                  onOpenEmergencyContacts={handleOpenEmergencyContacts}
                   activeFilterCount={activeFilterCount}
                 />
 
@@ -1815,9 +2004,9 @@ export function App() {
                   <SceneReveal>
                     <HubShowcaseStrip
                       trailsCount={allCatalogTrails.length}
-                      onNavigateHub={(hub) => handleNavigate(hub)}
-                      onOpenLiveTracker={() => handleOpenLiveTracker()}
-                      onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+                      onNavigateHub={handleNavigate}
+                      onOpenLiveTracker={handleOpenLiveTrackerDefault}
+                      onOpenCommandPalette={handleOpenCommandPaletteModal}
                     />
                   </SceneReveal>
 
@@ -1840,8 +2029,8 @@ export function App() {
                         selectedRegion={selectedRegion}
                         onSelectRegion={setSelectedRegion}
                         selectedMonth={selectedSeasonMonth}
-                        onClearMonthFilter={() => setSelectedSeasonMonth(null)}
-                        onExploreFullMap={() => handleNavigate('planner')}
+                        onClearMonthFilter={handleClearMonthFilter}
+                        onExploreFullMap={handleExploreFullMap}
                       />
                     </Suspense>
                   </SceneReveal>
@@ -1854,9 +2043,9 @@ export function App() {
                         currentUser={currentUser}
                         trails={allCatalogTrails}
                         onSelectTrail={handleSelectTrail}
-                        onShowToast={(msg, type) => showToast(msg, type)}
+                        onShowToast={showToast}
                         onRequireLogin={(action) => {
-                          showToast(`Vui lòng đăng nhập tài khoản để ${action}.`, 'info');
+                          showToast(`Đăng nhập để ${action} nhé.`, 'info');
                           setAuthModalInitialMode('login');
                           setIsAuthModalOpen(true);
                         }}
@@ -1869,11 +2058,7 @@ export function App() {
                     <SeasonExpeditionRadar
                       trails={allCatalogTrails}
                       onSelectTrail={handleSelectTrail}
-                      onFilterSeasonMonth={(month) => {
-                        setSelectedSeasonMonth(month);
-                        const mapEl = document.getElementById('gis-map-section');
-                        if (mapEl) mapEl.scrollIntoView({ behavior: 'smooth' });
-                      }}
+                      onFilterSeasonMonth={handleFilterSeasonMonth}
                     />
                   </SceneReveal>
 
@@ -1885,8 +2070,8 @@ export function App() {
                         trails={allCatalogTrails}
                         onSelectTrail={handleSelectTrail}
                         onOpenIncidentModal={handleOpenIncidentReport}
-                        onNavigateToForum={() => handleNavigate('forum')}
-                        onShowToast={(msg, type) => showToast(msg, type)}
+                        onNavigateToForum={handleNavigateToForum}
+                        onShowToast={showToast}
                       />
                     </Suspense>
                   </SceneReveal>
@@ -1905,7 +2090,7 @@ export function App() {
                         }}
                       >
                         <div>
-                          <div className="section-eyebrow">04 / Danh mục tuyến trek</div>
+                          <div className="section-eyebrow">04 / Kho cung đường</div>
                           <h2
                             className="font-editorial"
                             style={{
@@ -1917,14 +2102,14 @@ export function App() {
                               lineHeight: 1.12,
                             }}
                           >
-                            Kho cung đường{' '}
+                            Tất cả cung đường{' '}
                             <span style={{ color: 'var(--color-primary)', fontWeight: 700 }}>
                               Việt Nam ({displayedTrails.length})
                             </span>
                           </h2>
                           <p style={{ fontSize: '0.86rem', color: 'var(--color-text-muted)', margin: '6px 0 0 0' }}>
-                            Dữ liệu GPX, cự ly, độ dốc và lán hạ trại đã được cộng đồng xác thực.
-                            {selectedSeasonMonth ? ` Đang lọc theo mùa đẹp Tháng ${selectedSeasonMonth}.` : ''}
+                            Tracklog GPX, cự ly, độ dốc và bãi hạ trại gom từ những bước chân đi thật.
+                            {selectedSeasonMonth ? ` Đang lọc các cung vào mùa đẹp tháng ${selectedSeasonMonth}.` : ''}
                           </p>
                         </div>
 
@@ -2082,7 +2267,7 @@ export function App() {
                         >
                           <IconMountain size={28} color="var(--color-text-dim)" />
                           <div style={{ fontSize: '0.92rem', fontWeight: 600 }}>
-                            Không tìm thấy cung đường phù hợp với bộ lọc hiện tại.
+                            Chưa thấy cung nào khớp với bộ lọc bạn chọn.
                           </div>
                           {hasAnyActiveFilter && (
                             <button
@@ -2091,7 +2276,7 @@ export function App() {
                               onClick={handleResetFilters}
                               style={{ padding: '8px 18px', fontSize: '0.84rem', borderRadius: 4 }}
                             >
-                              Xóa bộ lọc &amp; Xem tất cả
+                              Xóa lọc, xem tất cả
                             </button>
                           )}
                         </div>
@@ -2146,22 +2331,28 @@ export function App() {
                             return (
                               <div
                                 key={t.id}
-                                role="button"
-                                tabIndex={0}
-                                onClick={() => handleSelectTrail(t)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter' || e.key === ' ') {
-                                    e.preventDefault();
-                                    handleSelectTrail(t);
-                                  }
-                                }}
                                 className="manifest-table-row"
                                 style={{
+                                  position: 'relative',
                                   borderLeft: isSelected
                                     ? '2px solid var(--color-primary)'
                                     : '2px solid transparent',
                                 }}
                               >
+                                <button
+                                  type="button"
+                                  onClick={() => handleSelectTrail(t)}
+                                  aria-label={`Mở chi tiết cung đường ${t.name}`}
+                                  style={{
+                                    position: 'absolute',
+                                    inset: 0,
+                                    zIndex: 1,
+                                    background: 'transparent',
+                                    border: 'none',
+                                    padding: 0,
+                                    cursor: 'pointer',
+                                  }}
+                                />
                                 <span
                                   className="font-editorial"
                                   style={{
@@ -2237,12 +2428,13 @@ export function App() {
 
                                 <div
                                   style={{
+                                    position: 'relative',
+                                    zIndex: 2,
                                     display: 'flex',
                                     justifyContent: 'flex-end',
                                     alignItems: 'center',
                                     gap: 10,
                                   }}
-                                  onClick={(e) => e.stopPropagation()}
                                 >
                                   <button
                                     type="button"
@@ -2288,23 +2480,35 @@ export function App() {
                         <div key="grid" className="tab-content-slide">
                           {displayedTrails[0] && (
                             <article
-                              role="button"
-                              tabIndex={0}
                               className="editorial-lead-spread"
-                              onClick={() => handleSelectTrail(displayedTrails[0])}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' || e.key === ' ') {
-                                  e.preventDefault();
-                                  handleSelectTrail(displayedTrails[0]);
-                                }
-                              }}
+                              style={{ position: 'relative' }}
                             >
+                              <button
+                                type="button"
+                                onClick={() => handleSelectTrail(displayedTrails[0])}
+                                aria-label={`Mở chi tiết tuyến nổi bật ${displayedTrails[0].name}`}
+                                style={{
+                                  position: 'absolute',
+                                  inset: 0,
+                                  zIndex: 1,
+                                  background: 'transparent',
+                                  border: 'none',
+                                  padding: 0,
+                                  cursor: 'pointer',
+                                }}
+                              />
                               <div className="editorial-lead-media">
                                 <img
                                   src={displayedTrails[0].coverImage}
                                   alt={displayedTrails[0].name}
                                   loading="lazy"
                                   decoding="async"
+                                  onError={(e) => {
+                                    const img = e.currentTarget as HTMLImageElement;
+                                    if (img.dataset.fallbackApplied === '1') return;
+                                    img.dataset.fallbackApplied = '1';
+                                    img.src = DEFAULT_VIETNAM_TRAIL_COVER;
+                                  }}
                                 />
                                 <span
                                   style={{
@@ -2324,7 +2528,7 @@ export function App() {
                                       '1px solid color-mix(in srgb, var(--color-sun) 40%, transparent)',
                                   }}
                                 >
-                                  Tuyến tiêu điểm
+                                  Tuyến nổi bật
                                 </span>
                               </div>
 
@@ -2478,16 +2682,13 @@ export function App() {
                                         color: 'var(--color-primary)',
                                       }}
                                     >
-                                      Mở hồ sơ địa hình &amp; GPX →
+                                      Xem bản đồ &amp; GPX →
                                     </span>
                                     <button
                                       type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleToggleCompare(displayedTrails[0]);
-                                      }}
+                                      onClick={() => handleToggleCompare(displayedTrails[0])}
                                       className="btn btn-outline"
-                                      style={{ padding: '6px 12px', fontSize: '0.74rem', borderRadius: 4 }}
+                                      style={{ position: 'relative', zIndex: 2, padding: '6px 12px', fontSize: '0.74rem', borderRadius: 4 }}
                                     >
                                       {comparedTrails.some((ct) => ct.id === displayedTrails[0].id)
                                         ? 'Đã chọn so sánh'
@@ -2532,7 +2733,7 @@ export function App() {
                               borderRadius: 6,
                             }}
                           >
-                            Xem Thêm {displayedTrails.length - visibleTrailCount} Cung Đường Khác
+                            Xem thêm {displayedTrails.length - visibleTrailCount} cung nữa
                           </button>
                         </div>
                       )}
@@ -2542,7 +2743,7 @@ export function App() {
                   {/* Safety & Leave No Trace Pledge */}
                   <SceneReveal>
                     <SafetyPledgeSection
-                      onOpenEmergencyContacts={() => setIsEmergencyContactsOpen(true)}
+                      onOpenEmergencyContacts={handleOpenEmergencyContacts}
                       onOpenIncidentReport={handleOpenIncidentReport}
                     />
                   </SceneReveal>
@@ -2565,7 +2766,7 @@ export function App() {
                     }}
                     onOpenIncidentModal={handleOpenIncidentReport}
                     onRequireLogin={(action) => {
-                      showToast(`Vui lòng đăng nhập tài khoản để ${action}.`, 'info');
+                      showToast(`Đăng nhập để ${action} nhé.`, 'info');
                       setAuthModalInitialMode('login');
                       setIsAuthModalOpen(true);
                     }}
@@ -2586,7 +2787,7 @@ export function App() {
                   }}
                 >
                   <div className="section-eyebrow" style={{ justifyContent: 'center', marginBottom: 10 }}>
-                    404 · Không tìm thấy tọa độ
+                    404 · Lạc mất tọa độ
                   </div>
                   <h2
                     className="font-editorial"
@@ -2597,7 +2798,7 @@ export function App() {
                       margin: '0 0 10px 0',
                     }}
                   >
-                    Cung Đường Không Tồn Tại Hoặc Đã Lưu Trữ
+                    Không tìm thấy cung đường này
                   </h2>
                   <p
                     style={{
@@ -2607,7 +2808,7 @@ export function App() {
                       marginBottom: 24,
                     }}
                   >
-                    Đường dẫn cung đường trekking bạn truy cập không có trong kho dữ liệu thực địa LOST Việt Nam.
+                    Có vẻ lối rẽ này chưa có trên bản đồ LOST hoặc đã được gộp sang một tuyến khác.
                   </p>
                   <div style={{ display: 'flex', justifyContent: 'center', gap: 10, flexWrap: 'wrap' }}>
                     <button
@@ -2616,7 +2817,7 @@ export function App() {
                       onClick={() => handleNavigate('home')}
                       style={{ borderRadius: 4, padding: '9px 20px' }}
                     >
-                      Về Trang Chủ
+                      Về trang chủ
                     </button>
                     <button
                       type="button"
@@ -2624,7 +2825,7 @@ export function App() {
                       onClick={() => handleNavigate('almanac')}
                       style={{ borderRadius: 4, padding: '9px 20px' }}
                     >
-                      Xem Lịch Mùa {allCatalogTrails.length} Cung Đường
+                      Xem lịch mùa {allCatalogTrails.length} cung
                     </button>
                   </div>
                 </div>
@@ -2748,7 +2949,7 @@ export function App() {
                   }}
                 >
                   <div className="section-eyebrow" style={{ justifyContent: 'center', marginBottom: 10 }}>
-                    Xác thực tài khoản
+                    Gửi cung đường mới
                   </div>
                   <h3
                     className="font-editorial"
@@ -2759,7 +2960,7 @@ export function App() {
                       marginBottom: 10,
                     }}
                   >
-                    Yêu Cầu Đăng Nhập
+                    Đăng nhập để đóng góp
                   </h3>
                   <p
                     style={{
@@ -2769,7 +2970,7 @@ export function App() {
                       marginBottom: 24,
                     }}
                   >
-                    Tính năng đóng góp cung đường mới và tải tracklog GPX lên cộng đồng yêu cầu tài khoản đã xác thực.
+                    Đăng nhập trước để gửi cung đường mới và file GPX bạn vừa đi về cho anh em cùng tham khảo nhé.
                   </p>
                   <button
                     type="button"
@@ -2780,7 +2981,7 @@ export function App() {
                     }}
                     style={{ padding: '10px 24px', fontSize: '0.88rem' }}
                   >
-                    Đăng Nhập Ngay
+                    Đăng nhập
                   </button>
                 </div>
               ) : (
@@ -2788,8 +2989,8 @@ export function App() {
                   <TrailContributionWizard
                     currentUser={currentUser}
                     onBack={() => {
-                      const isEditing = !!localStorage.getItem('lost_editing_contribution');
-                      localStorage.removeItem('lost_editing_contribution');
+                      const isEditing = !!safeLocalStorageGet('lost_editing_contribution');
+                      safeLocalStorageRemove('lost_editing_contribution');
                       handleNavigate(isEditing ? 'profile' : 'home');
                     }}
                     onSuccess={() => {
@@ -2816,7 +3017,7 @@ export function App() {
                   }}
                 >
                   <div className="section-eyebrow" style={{ justifyContent: 'center', marginBottom: 10 }}>
-                    Hồ sơ thám hiểm
+                    Hồ sơ cá nhân
                   </div>
                   <h3
                     className="font-editorial"
@@ -2827,7 +3028,7 @@ export function App() {
                       marginBottom: 10,
                     }}
                   >
-                    Yêu Cầu Đăng Nhập
+                    Đăng nhập để mở hồ sơ
                   </h3>
                   <p
                     style={{
@@ -2837,7 +3038,7 @@ export function App() {
                       marginBottom: 24,
                     }}
                   >
-                    Vui lòng đăng nhập để xem hồ sơ cá nhân, phân tích hành trình, kho cung đường đã lưu và huy hiệu.
+                    Đăng nhập để xem lại các đỉnh đã chạm, nhật ký chuyến đi, cung muốn đi và huy hiệu của bạn.
                   </p>
                   <button
                     type="button"
@@ -2848,7 +3049,7 @@ export function App() {
                     }}
                     style={{ padding: '10px 24px', fontSize: '0.88rem' }}
                   >
-                    Đăng Nhập Ngay
+                    Đăng nhập
                   </button>
                 </div>
               ) : (
@@ -2874,7 +3075,7 @@ export function App() {
                   onBack={() => handleNavigate('home')}
                   onShowToast={(msg, type) => showToast(msg, type)}
                   onRequireLogin={(action) => {
-                    showToast(`Vui lòng đăng nhập tài khoản để ${action}.`, 'info');
+                    showToast(`Đăng nhập để ${action} nhé.`, 'info');
                     setAuthModalInitialMode('login');
                     setIsAuthModalOpen(true);
                   }}
@@ -2919,7 +3120,7 @@ export function App() {
                       marginBottom: 10,
                     }}
                   >
-                    Từ Chối Quyền Truy Cập
+                    Khu vực dành riêng cho quản trị viên
                   </h3>
                   <p
                     style={{
@@ -2929,7 +3130,7 @@ export function App() {
                       marginBottom: 24,
                     }}
                   >
-                    Trang Quản Trị Hệ Thống chỉ dành cho Quản Trị Viên. Vui lòng đăng nhập bằng tài khoản Quản Trị.
+                    Trang này chỉ mở cho tài khoản quản trị hoặc kiểm duyệt viên của LOST.
                   </p>
                   <button
                     type="button"
@@ -2940,7 +3141,7 @@ export function App() {
                     }}
                     style={{ padding: '10px 24px', fontSize: '0.88rem' }}
                   >
-                    Đăng Nhập Tài Khoản Admin
+                    Đăng nhập tài khoản quản trị
                   </button>
                 </div>
               ) : (
@@ -2992,33 +3193,11 @@ export function App() {
           onClose={() => {
             setIsAuthModalOpen(false);
             setResetTokenUrl(null);
-            const clean = buildCleanUrl(
-              currentView,
-              currentView === 'detail'
-                ? selectedTrail?.id
-                : currentView === 'beacon'
-                  ? activeBeaconToken
-                  : isHubView(currentView)
-                    ? hubInitialTrailId
-                    : null,
-              isHubView(currentView) ? hubQueryParams : null
-            );
-            window.history.replaceState({ view: currentView }, '', clean);
+            window.history.replaceState({ view: currentView }, '', buildPreservedCleanUrl());
           }}
           onAuthSuccess={(user) => {
             setCurrentUser(user);
-            const clean = buildCleanUrl(
-              currentView,
-              currentView === 'detail'
-                ? selectedTrail?.id
-                : currentView === 'beacon'
-                  ? activeBeaconToken
-                  : isHubView(currentView)
-                    ? hubInitialTrailId
-                    : null,
-              isHubView(currentView) ? hubQueryParams : null
-            );
-            window.history.replaceState({ view: currentView }, '', clean);
+            window.history.replaceState({ view: currentView }, '', buildPreservedCleanUrl());
           }}
           onShowToast={showToast}
           initialResetToken={resetTokenUrl}
@@ -3033,6 +3212,7 @@ export function App() {
         />
 
         <Toast
+          toastId={toast.id}
           isOpen={toast.isOpen}
           message={toast.message}
           type={toast.type}
@@ -3058,7 +3238,7 @@ export function App() {
         />
 
         {isIncidentModalOpen && (
-          <Suspense fallback={<ModalLoadingFallback label="Đang mở biểu mẫu báo sự cố..." />}>
+          <Suspense fallback={<ModalLoadingFallback label="Đang mở phiếu báo sự cố..." />}>
             <IncidentReportModal
               isOpen={isIncidentModalOpen}
               onClose={() => setIsIncidentModalOpen(false)}
@@ -3081,7 +3261,7 @@ export function App() {
 
         {/* Safety Timer Check-in Modal (opened from Safety Radar Hub) */}
         {isSafetyTimerOpen && (
-          <Suspense fallback={<ModalLoadingFallback label="Đang mở bộ hẹn giờ báo bình an..." />}>
+          <Suspense fallback={<ModalLoadingFallback label="Đang mở hẹn giờ báo bình an..." />}>
             <SafetyTimerModal
               isOpen={isSafetyTimerOpen}
               onClose={() => setIsSafetyTimerOpen(false)}
@@ -3100,22 +3280,13 @@ export function App() {
 
         {/* Public Trekker Profile Modal (#profile-<username> / /profile/:username) */}
         {publicProfileUsername && (
-          <Suspense fallback={<ModalLoadingFallback label="Đang tải hồ sơ nhà thám hiểm..." />}>
+          <Suspense fallback={<ModalLoadingFallback label="Đang mở hồ sơ thành viên..." />}>
             <AuthorProfileModal
               author={{ name: publicProfileUsername, avatar: '' }}
               currentUser={currentUser}
               onClose={() => {
                 setPublicProfileUsername(null);
-                const clean = buildCleanUrl(
-                  currentView,
-                  currentView === 'detail'
-                    ? selectedTrail?.id
-                    : isHubView(currentView)
-                      ? hubInitialTrailId
-                      : null,
-                  isHubView(currentView) ? hubQueryParams : null
-                );
-                window.history.replaceState({ view: currentView }, '', clean);
+                window.history.replaceState({ view: currentView }, '', buildPreservedCleanUrl());
               }}
               onStartChat={() => {
                 setPublicProfileUsername(null);
@@ -3179,7 +3350,7 @@ export function App() {
                     }}
                   >
                     <IconShieldAlert size={18} color="var(--color-error)" />
-                    Hồ Sơ Cảnh Báo Sự Cố Khẩn
+                    Chi tiết cảnh báo trên tuyến
                   </h3>
                   <button
                     ref={incidentDetailCloseBtnRef}
@@ -3221,7 +3392,7 @@ export function App() {
                       gap: 8,
                     }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <span
                         style={{
                           background: 'var(--color-error)',
@@ -3233,11 +3404,17 @@ export function App() {
                           borderRadius: 4,
                         }}
                       >
-                        MỨC ĐỘ: {selectedIncidentDetail.severity?.toUpperCase() || 'KHẨN CẤP'}
+                        MỨC ĐỘ: {formatIncidentSeverityVi(selectedIncidentDetail.severity)}
                       </span>
-                      <span className="badge badge-success">
-                        <IconCheck size={12} color="var(--color-primary)" /> Đã xác minh
-                      </span>
+                      {selectedIncidentDetail.verifiedBy ? (
+                        <span className="badge badge-success">
+                          <IconCheck size={12} color="var(--color-primary)" /> Đã xác minh
+                        </span>
+                      ) : (
+                        <span className="badge badge-warning">
+                          Chờ kiểm chứng hiện trường
+                        </span>
+                      )}
                     </div>
                     <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
                       {formatIncidentTime(selectedIncidentDetail.reportedAt)}
@@ -3284,9 +3461,9 @@ export function App() {
                         gap: 6,
                       }}
                     >
-                      <span>Bằng Chứng Hình Ảnh Hiện Trường:</span>
+                      <span>Ảnh chụp từ hiện trường:</span>
                       <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>
-                        (Ảnh thực tế từ hiện trường)
+                        (Ảnh thực tế do người đi gửi về)
                       </span>
                     </div>
                     <div
@@ -3348,7 +3525,7 @@ export function App() {
                   }}
                 >
                   <div>
-                    <strong style={{ color: 'var(--color-text-main)' }}>Mô tả chi tiết sự cố:</strong>
+                    <strong style={{ color: 'var(--color-text-main)' }}>Diễn biến trên tuyến:</strong>
                     <p
                       style={{
                         margin: '6px 0 0 0',
@@ -3377,17 +3554,17 @@ export function App() {
                   >
                     <div>
                       <strong style={{ color: 'var(--color-primary)' }}>
-                        Cơ quan / Đơn vị xác minh:{' '}
+                        {selectedIncidentDetail.verifiedBy ? 'Đơn vị xác minh: ' : 'Người báo tin: '}
                       </strong>
                       <span style={{ color: 'var(--color-text-main)' }}>
                         {selectedIncidentDetail.verifiedBy ||
                           selectedIncidentDetail.userName ||
-                          'Trạm Kiểm Lâm Vườn Quốc Gia & BQT LOST'}
+                          'Thành viên cộng đồng LOST'}
                       </span>
                     </div>
                     {selectedIncidentDetail.coordinates && (
                       <div>
-                        <strong style={{ color: 'var(--color-sky)' }}>Tọa độ Vệ Tinh GPS: </strong>
+                        <strong style={{ color: 'var(--color-sky)' }}>Tọa độ GPS: </strong>
                         <span
                           style={{
                             color: 'var(--color-text-main)',
@@ -3411,12 +3588,23 @@ export function App() {
                         }}
                       >
                         <IconPhone size={13} color="var(--color-error-text, var(--color-error))" />
-                        Hotline Cứu Hộ Khẩn Cấp:
+                        Số cứu hộ khẩn cấp:
                       </strong>
-                      <span style={{ color: 'var(--color-error-text, var(--color-error))', fontWeight: 800 }}>
+                      <a
+                        href={extractTelHref(selectedIncidentDetail.rescueContact)}
+                        style={{
+                          color: 'var(--color-error-text, var(--color-error))',
+                          fontWeight: 800,
+                          textDecoration: 'underline',
+                          textUnderlineOffset: 3,
+                        }}
+                      >
                         {selectedIncidentDetail.rescueContact ||
-                          '112 / 114 (Tổng đài Tìm kiếm Cứu nạn & PCCC Quốc gia 24/7)'}
-                      </span>
+                          '112 / 114 (Tổng đài Tìm kiếm cứu nạn & PCCC quốc gia 24/7)'}
+                      </a>
+                    </div>
+                    <div style={{ fontSize: '0.74rem', color: 'var(--color-text-dim)', lineHeight: 1.45 }}>
+                      Lưu ý sóng rừng VN: 112/114/115 hỗ trợ gọi thoại miễn phí (không nhận SMS). Nếu chỉ có sóng yếu 2G, hãy gửi SMS tọa độ GPS tới SĐT người thân hoặc porter.
                     </div>
                   </div>
                 </div>
@@ -3428,7 +3616,7 @@ export function App() {
                     onClick={() => setSelectedIncidentDetail(null)}
                     style={{ flex: 1, borderRadius: 4 }}
                   >
-                    Đóng Cửa Sổ
+                    Đóng
                   </button>
                   <button
                     type="button"
@@ -3448,7 +3636,7 @@ export function App() {
                     }}
                   >
                     <IconAlertTriangle size={15} color="var(--color-on-danger)" />
-                    Gửi Báo Cáo SOS Hỗ Trợ Khẩn
+                    Báo sự cố / gọi hỗ trợ
                   </button>
                 </div>
               </div>
@@ -3485,7 +3673,7 @@ export function App() {
               }}
             >
               <IconScale size={16} color="var(--color-primary)" />
-              <span>Đã chọn {comparedTrails.length}/4 cung đường</span>
+              <span>Đang chọn {comparedTrails.length}/4 cung</span>
             </div>
 
             <button
@@ -3494,7 +3682,7 @@ export function App() {
               onClick={() => setIsCompareModalOpen(true)}
               style={{ padding: '6px 14px', fontSize: '0.78rem', borderRadius: 4 }}
             >
-              Mở Bảng So Sánh
+              So sánh ngay
             </button>
 
             <button
@@ -3511,7 +3699,7 @@ export function App() {
                 padding: 4,
               }}
             >
-              Xóa hết
+              Bỏ chọn
             </button>
           </div>
         )}
@@ -3532,7 +3720,7 @@ export function App() {
         )}
 
         {/* Floating Scroll-to-Top Button */}
-        {showScrollTop && (
+        {shouldShowScrollTop && (
           <button
             type="button"
             className="fab-pop-in interactive-click"
@@ -3541,7 +3729,7 @@ export function App() {
             aria-label="Cuộn lên đầu trang"
             style={{
               position: 'fixed',
-              bottom: 24,
+              bottom: hasCompareDock ? 82 : 24,
               right: 24,
               zIndex: 'var(--z-dropdown, 1100)' as unknown as number,
               background: 'var(--color-bg-card)',
@@ -3578,12 +3766,12 @@ export function App() {
           <TrekAssistantFab
             isOpen={isAiAssistantOpen}
             onToggle={handleOpenAiAssistant}
-            hasScrollTop={showScrollTop}
+            hasScrollTop={shouldShowScrollTop || hasCompareDock}
           />
         )}
 
         {isAiAssistantOpen && (
-          <Suspense fallback={<ModalLoadingFallback label="Đang khởi động Trợ lý LOST AI..." />}>
+          <Suspense fallback={<ModalLoadingFallback label="Đang mở trợ lý LOST AI..." />}>
             <TrekAssistantModal
               isOpen={isAiAssistantOpen}
               onClose={() => {
@@ -3603,7 +3791,7 @@ export function App() {
 
         {/* Global Ctrl+K Command Palette */}
         {isCommandPaletteOpen && (
-          <Suspense fallback={<ModalLoadingFallback label="Đang mở bảng lệnh nhanh..." />}>
+          <Suspense fallback={<ModalLoadingFallback label="Đang mở tìm kiếm nhanh..." />}>
             <CommandPaletteModal
               isOpen={isCommandPaletteOpen}
               trails={allCatalogTrails}
@@ -3631,7 +3819,7 @@ export function App() {
 
         {/* Live Field GPS Expedition Computer Modal */}
         {isLiveTrackerOpen && (
-          <Suspense fallback={<ModalLoadingFallback label="Đang khởi động Live GPS Tracker..." />}>
+          <Suspense fallback={<ModalLoadingFallback label="Đang bật Live GPS..." />}>
             <LiveTrekTrackerModal
               isOpen={isLiveTrackerOpen}
               trail={liveTrackerTrail || selectedTrail}
@@ -3665,14 +3853,14 @@ export function App() {
         )}
 
         {/* 1-Click PWA Service Worker Update or App Install Pill */}
-        {(swWaitingWorker || (deferredPwaInstall && !pwaBannerDismissed)) && (
+        {hasPwaBanner && (
           <div
             role="status"
             aria-live="polite"
             style={{
               position: 'fixed',
-              bottom: 24,
-              left: 24,
+              bottom: hasCompareDock ? 84 : 24,
+              left: isCompactMobile ? 12 : 24,
               zIndex: 'var(--z-dropdown, 1100)' as unknown as number,
               display: 'flex',
               alignItems: 'center',
@@ -3683,27 +3871,39 @@ export function App() {
               border: '1px solid var(--color-border-strong)',
               boxShadow: 'var(--shadow-card)',
               color: 'var(--color-text-main)',
-              maxWidth: 'calc(100vw - 96px)',
+              maxWidth: isCompactMobile ? 'calc(100vw - 88px)' : 'calc(100vw - 96px)',
               fontSize: '0.8rem',
             }}
           >
             <span style={{ fontWeight: 700 }}>
               {swWaitingWorker
-                ? 'Đã có bản cập nhật LOST mới'
-                : 'Cài đặt ứng dụng LOST dùng ngoại tuyến'}
+                ? 'LOST vừa có bản mới'
+                : 'Cài LOST về máy để dùng khi mất sóng'}
             </span>
             {swWaitingWorker ? (
               <button
                 type="button"
                 className="btn btn-primary"
                 onClick={() => {
-                  swWaitingWorker.postMessage({ type: 'SKIP_WAITING' });
+                  const worker = swWaitingWorker;
                   setSwWaitingWorker(null);
-                  window.location.reload();
+                  let reloaded = false;
+                  const triggerReload = () => {
+                    if (reloaded) return;
+                    reloaded = true;
+                    window.location.reload();
+                  };
+                  if ('serviceWorker' in navigator) {
+                    navigator.serviceWorker.addEventListener('controllerchange', triggerReload, {
+                      once: true,
+                    });
+                  }
+                  worker.postMessage({ type: 'SKIP_WAITING' });
+                  window.setTimeout(triggerReload, 2500);
                 }}
                 style={{ padding: '5px 12px', fontSize: '0.75rem', borderRadius: 4 }}
               >
-                Cập nhật ngay
+                Cập nhật
               </button>
             ) : (
               <button
@@ -3721,7 +3921,7 @@ export function App() {
                 }}
                 style={{ padding: '5px 12px', fontSize: '0.75rem', borderRadius: 4 }}
               >
-                Cài đặt
+                Cài ngay
               </button>
             )}
             <button

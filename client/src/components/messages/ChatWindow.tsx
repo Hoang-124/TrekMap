@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import type { Conversation } from '../../types.js';
 import type { RichMessage } from '../../services/messageService.js';
-import { uploadImageToCloudinary } from '../../services/api.js';
+import { uploadMessageImage } from '../../services/messageService.js';
 import { useSocket } from '../../hooks/useSocket.js';
+import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
 import {
   IconSearch,
   IconImage,
@@ -26,6 +28,8 @@ const ArrowLeft = ({ size = 18, color = 'currentColor', style }: { size?: number
   </svg>
 );
 
+const ALLOWED_IMAGE_MIME_REGEX = /^image\/(jpeg|jpg|png|webp|gif)$/i;
+
 interface TypingUser {
   userId: string;
   userName: string;
@@ -35,7 +39,7 @@ interface ChatWindowProps {
   conversation: Conversation | null;
   messages: RichMessage[];
   currentUserId: string;
-  onSendMessage: (content: string, images?: string[]) => Promise<boolean> | void;
+  onSendMessage: (content: string, images?: string[], targetConvId?: string) => Promise<boolean> | void;
   onEditMessage?: (messageId: string, newContent: string) => Promise<boolean>;
   onDeleteMessage?: (messageId: string) => Promise<boolean>;
   searchQuery?: string;
@@ -86,14 +90,14 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   onLoadOlder,
   onShowToast,
 }) => {
-  const [inputContent, setInputContent] = useState('');
+  const [draftsByConvId, setDraftsByConvId] = useState<Record<string, string>>({});
+  const [pendingImagesByConvId, setPendingImagesByConvId] = useState<Record<string, string[]>>({});
+  const [uploadingConvId, setUploadingConvId] = useState<string | null>(null);
   const [typingUsers, setTypingUsers] = useState<TypingUser[]>([]);
   const [isMobileViewport, setIsMobileViewport] = useState<boolean>(() =>
     typeof window !== 'undefined' ? window.innerWidth <= 768 : false
   );
   const [showSearchBar, setShowSearchBar] = useState(false);
-  const [pendingImages, setPendingImages] = useState<string[]>([]);
-  const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [editingMsgId, setEditingMsgId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
   const [savingEditId, setSavingEditId] = useState<string | null>(null);
@@ -103,6 +107,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
   const messageListRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const lightboxRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const remoteTypingTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const isNearBottomRef = useRef<boolean>(true);
@@ -113,34 +118,63 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
   const { socket, isUserOnline } = useSocket();
   const convId = conversation?._id || null;
+  const activeConvIdRef = useRef<string | null>(convId);
 
-  // Reset inline states when switching conversation
+  const inputContent = convId ? (draftsByConvId[convId] ?? '') : '';
+  const pendingImages = convId ? (pendingImagesByConvId[convId] ?? []) : [];
+  const isUploadingImage = Boolean(convId && uploadingConvId === convId);
+
+  useEffect(() => {
+    activeConvIdRef.current = convId;
+    wasLoadingOlderRef.current = false;
+  }, [convId]);
+
+  // Reset inline states when switching conversation (drafts & images remain isolated per convId)
   const [trackedConvId, setTrackedConvId] = useState<string | null>(convId);
   if (trackedConvId !== convId) {
     setTrackedConvId(convId);
     setShowSearchBar(false);
-    setPendingImages([]);
     setEditingMsgId(null);
     setEditDraft('');
     setConfirmDeleteId(null);
     setPreviewImageUrl(null);
   }
 
+  // Lightbox focus trap & Escape handler
+  useFocusTrap(Boolean(previewImageUrl), lightboxRef);
+  useEffect(() => {
+    if (!previewImageUrl) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      if (e.key === 'Escape' && isTopmostFocusTrap(lightboxRef.current)) {
+        e.preventDefault();
+        setPreviewImageUrl(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [previewImageUrl]);
+
   // Responsive viewport listener so Back button is hidden on desktop (>= 768px)
   useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return;
     const mq = window.matchMedia('(max-width: 768px)');
     const update = () => setIsMobileViewport(mq.matches);
-    update();
     mq.addEventListener('change', update);
     return () => mq.removeEventListener('change', update);
   }, []);
 
-  // Join direct/group conversation room & track actual typer names
+  // Join direct/group conversation room (including on socket reconnect) & track actual typer names
   useEffect(() => {
     if (!socket || !convId) return;
 
+    const handleConnect = () => {
+      socket.emit('joinConversation', convId);
+    };
+
     socket.emit('joinConversation', convId);
+    socket.on('connect', handleConnect);
+
     const timersMap = remoteTypingTimersRef.current;
 
     const clearRemoteTimer = (uid: string) => {
@@ -196,6 +230,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         userId: currentUserId,
       });
       socket.emit('leaveConversation', convId);
+      socket.off('connect', handleConnect);
       socket.off('userTyping', handleUserTyping);
       socket.off('userStoppedTyping', handleUserStoppedTyping);
       setTypingUsers([]);
@@ -247,7 +282,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   }, [messages, convId, currentUserId]);
 
   const handleTriggerLoadOlder = () => {
-    if (!onLoadOlder || loadingOlder) return;
+    if (!onLoadOlder || loadingOlder || isLoading) return;
     if (messageListRef.current) {
       prevScrollHeightRef.current = messageListRef.current.scrollHeight;
     }
@@ -256,10 +291,11 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!convId) return;
     const val = e.target.value;
-    setInputContent(val);
+    setDraftsByConvId((prev) => ({ ...prev, [convId]: val }));
 
-    if (socket && convId) {
+    if (socket) {
       socket.emit('typing', {
         conversationId: convId,
         userId: currentUserId,
@@ -269,9 +305,10 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         clearTimeout(typingTimeoutRef.current);
       }
 
+      const activeId = convId;
       typingTimeoutRef.current = setTimeout(() => {
         socket.emit('stopTyping', {
-          conversationId: convId,
+          conversationId: activeId,
           userId: currentUserId,
         });
       }, 2000);
@@ -279,23 +316,31 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   };
 
   const handlePickImages = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+    const inputEl = e.currentTarget;
+    const targetConvId = convId;
+    const files = inputEl.files;
+    if (!targetConvId || !files || files.length === 0) {
+      inputEl.value = '';
+      return;
+    }
 
-    const slots = Math.max(0, 4 - pendingImages.length);
+    const currentImages = pendingImagesByConvId[targetConvId] ?? [];
+    const slots = Math.max(0, 4 - currentImages.length);
     if (slots === 0) {
       onShowToast?.('Tối đa 4 hình ảnh mỗi tin nhắn.', 'info');
-      e.target.value = '';
+      inputEl.value = '';
       return;
     }
 
     const picked = Array.from(files).slice(0, slots);
-    setIsUploadingImage(true);
+    setUploadingConvId(targetConvId);
     try {
-      const uploaded: string[] = [];
       for (const file of picked) {
-        if (!file.type.startsWith('image/')) {
-          onShowToast?.('Chỉ chấp nhận định dạng ảnh (JPG, PNG, WebP).', 'error');
+        if (activeConvIdRef.current !== targetConvId) {
+          return;
+        }
+        if (!ALLOWED_IMAGE_MIME_REGEX.test(file.type)) {
+          onShowToast?.('Chỉ chấp nhận định dạng ảnh JPG, PNG, WebP hoặc GIF.', 'error');
           continue;
         }
         if (file.size > 5 * 1024 * 1024) {
@@ -308,25 +353,36 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           reader.onerror = () => reject(new Error('Không thể đọc tệp ảnh'));
           reader.readAsDataURL(file);
         });
-        const cloudUrl = await uploadImageToCloudinary(dataUrl, file.name, 'forum');
-        uploaded.push(cloudUrl);
-      }
-      if (uploaded.length > 0) {
-        setPendingImages((prev) => [...prev, ...uploaded].slice(0, 4));
+        const cloudUrl = await uploadMessageImage(dataUrl, file.name);
+        if (activeConvIdRef.current !== targetConvId) {
+          return;
+        }
+        setPendingImagesByConvId((prev) => {
+          const existing = prev[targetConvId] ?? [];
+          return {
+            ...prev,
+            [targetConvId]: [...existing, cloudUrl].slice(0, 4),
+          };
+        });
       }
     } catch (err: unknown) {
-      onShowToast?.(
-        err instanceof Error ? err.message : 'Không thể tải ảnh lên máy chủ.',
-        'error'
-      );
+      if (activeConvIdRef.current === targetConvId) {
+        onShowToast?.(
+          err instanceof Error ? err.message : 'Không thể tải ảnh lên máy chủ.',
+          'error'
+        );
+      }
     } finally {
-      setIsUploadingImage(false);
-      e.target.value = '';
+      setUploadingConvId((prev) => (prev === targetConvId ? null : prev));
+      inputEl.value = '';
     }
   };
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
+    const targetConvId = convId;
+    if (!targetConvId) return;
+
     const trimmed = inputContent.trim();
     if ((!trimmed && pendingImages.length === 0) || isSending || isUploadingImage) return;
 
@@ -335,47 +391,61 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       typingTimeoutRef.current = null;
     }
 
-    if (socket && convId) {
+    if (socket) {
       socket.emit('stopTyping', {
-        conversationId: convId,
+        conversationId: targetConvId,
         userId: currentUserId,
       });
     }
 
     const imagesToSend = [...pendingImages];
-    setInputContent('');
-    setPendingImages([]);
-    const ok = await onSendMessage(trimmed, imagesToSend.length > 0 ? imagesToSend : undefined);
+    setDraftsByConvId((prev) => ({ ...prev, [targetConvId]: '' }));
+    setPendingImagesByConvId((prev) => ({ ...prev, [targetConvId]: [] }));
+
+    const ok = await onSendMessage(
+      trimmed,
+      imagesToSend.length > 0 ? imagesToSend : undefined,
+      targetConvId
+    );
     if (ok === false) {
-      setInputContent(trimmed);
-      setPendingImages(imagesToSend);
+      // Restore draft/images strictly into targetConvId so another active chat is never overwritten
+      setDraftsByConvId((prev) => ({
+        ...prev,
+        [targetConvId]: prev[targetConvId] ? prev[targetConvId] : trimmed,
+      }));
+      setPendingImagesByConvId((prev) => ({
+        ...prev,
+        [targetConvId]: (prev[targetConvId]?.length ?? 0) > 0 ? prev[targetConvId] : imagesToSend,
+      }));
     }
   };
 
   const handleConfirmEdit = async (msgId: string) => {
-    if (!onEditMessage || !editDraft.trim() || savingEditId) return;
+    const targetConvId = convId;
+    if (!targetConvId || !onEditMessage || !editDraft.trim() || savingEditId) return;
     setSavingEditId(msgId);
     try {
       const ok = await onEditMessage(msgId, editDraft.trim());
-      if (ok) {
+      if (ok && activeConvIdRef.current === targetConvId) {
         setEditingMsgId(null);
         setEditDraft('');
       }
     } finally {
-      setSavingEditId(null);
+      setSavingEditId((prev) => (prev === msgId ? null : prev));
     }
   };
 
   const handleConfirmDelete = async (msgId: string) => {
-    if (!onDeleteMessage || deletingMsgId) return;
+    const targetConvId = convId;
+    if (!targetConvId || !onDeleteMessage || deletingMsgId) return;
     setDeletingMsgId(msgId);
     try {
       const ok = await onDeleteMessage(msgId);
-      if (ok) {
+      if (ok && activeConvIdRef.current === targetConvId) {
         setConfirmDeleteId(null);
       }
     } finally {
-      setDeletingMsgId(null);
+      setDeletingMsgId((prev) => (prev === msgId ? null : prev));
     }
   };
 
@@ -394,7 +464,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         }}
       >
         <h3 className="font-editorial" style={{ fontSize: '1.5rem', fontWeight: 500, margin: '0 0 6px 0', color: 'var(--color-text-main)' }}>
-          Tin Nhắn Trực Tiếp
+          Tin nhắn trực tiếp
         </h3>
         <p style={{ fontSize: '0.85rem', margin: 0 }}>
           Chọn một cuộc trò chuyện từ danh sách hoặc nhắn tin trực tiếp từ hồ sơ người dùng khác.
@@ -406,10 +476,17 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const isGroup = Boolean(conversation.isGroup);
   const other = conversation.otherParticipant;
   const otherName = isGroup
-    ? conversation.groupName || 'Nhóm Đoàn LOST'
+    ? conversation.groupName || 'Nhóm đoàn LOST'
     : other?.fullName || other?.username || 'Thành viên LOST';
   const otherAvatar = other?.avatarUrl || '';
   const isOnline = !isGroup && isUserOnline(other?._id, other?.email);
+
+  const participantNameById = new Map<string, string>(
+    (conversation.participants || []).map((p) => [
+      String(p._id),
+      p.fullName || p.username || 'Thành viên',
+    ])
+  );
 
   const typingLabel =
     typingUsers.length === 1
@@ -526,7 +603,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             </div>
             {isGroup ? (
               <div style={{ fontSize: '0.72rem', color: 'var(--color-sky)', fontWeight: 700 }}>
-                Phòng Chat Nhóm Đoàn • {conversation.participants?.length || 1} thành viên
+                Nhóm trò chuyện đoàn • {conversation.participants?.length || 1} thành viên
               </div>
             ) : isOnline ? (
               <div style={{ fontSize: '0.72rem', color: 'var(--color-primary)', fontWeight: 700 }}>
@@ -629,7 +706,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         }}
       >
         {/* Pagination button for older messages */}
-        {hasMore && onLoadOlder && (
+        {hasMore && onLoadOlder && !isLoading && (
           <div style={{ textAlign: 'center', marginBottom: 4 }}>
             <button
               type="button"
@@ -677,6 +754,29 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               const msgImages = !isDeleted && Array.isArray(msg.images) ? msg.images : [];
               const isEditingThis = editingMsgId === msg._id;
               const isConfirmingDeleteThis = confirmDeleteId === msg._id;
+
+              const otherReaderIds = isMe && isLastReadMessage && Array.isArray(msg.readBy)
+                ? Array.from(new Set(msg.readBy.map(String).filter((id) => id !== String(currentUserId))))
+                : [];
+              const readerNames = otherReaderIds
+                .map((id) => participantNameById.get(id))
+                .filter((name): name is string => Boolean(name));
+              let readReceiptText = '';
+              let readReceiptTitle: string | undefined;
+              if (isMe && isLastReadMessage && otherReaderIds.length > 0) {
+                if (!isGroup) {
+                  readReceiptText = ' • Đã xem';
+                } else if (readerNames.length === 1 && otherReaderIds.length === 1) {
+                  readReceiptText = ` • Đã xem bởi ${readerNames[0]}`;
+                } else if (readerNames.length === 2 && otherReaderIds.length === 2) {
+                  readReceiptText = ` • Đã xem bởi ${readerNames[0]}, ${readerNames[1]}`;
+                } else {
+                  readReceiptText = ` • Đã xem (${otherReaderIds.length} người)`;
+                  if (readerNames.length > 0) {
+                    readReceiptTitle = `Đã xem bởi: ${readerNames.join(', ')}`;
+                  }
+                }
+              }
 
               const prevMsg = idx > 0 ? messages[idx - 1] : null;
               const nextMsg = idx < messages.length - 1 ? messages[idx + 1] : null;
@@ -815,6 +915,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                             disabled={savingEditId === msg._id}
                             autoFocus
                             onKeyDown={(e) => {
+                              if (e.nativeEvent.isComposing) return;
                               if (e.key === 'Enter') {
                                 e.preventDefault();
                                 void handleConfirmEdit(msg._id);
@@ -841,7 +942,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                               type="button"
                               className="btn btn-primary"
                               disabled={!editDraft.trim() || savingEditId === msg._id}
-                              onClick={() => handleConfirmEdit(msg._id)}
+                              onClick={() => void handleConfirmEdit(msg._id)}
                               style={{ padding: '3px 10px', fontSize: '0.72rem', borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 4 }}
                             >
                               <IconCheck size={12} />
@@ -894,6 +995,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                                 <button
                                   key={imgIdx}
                                   type="button"
+                                  aria-label={`Xem ảnh đính kèm ${imgIdx + 1}`}
                                   onClick={() => setPreviewImageUrl(imgUrl)}
                                   style={{
                                     padding: 0,
@@ -934,10 +1036,10 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                             flexWrap: 'wrap',
                           }}
                         >
-                          <span>
+                          <span title={readReceiptTitle}>
                             {timeStr}
                             {msg.editedAt && !isDeleted ? ' • đã chỉnh sửa' : ''}
-                            {isMe && isLastReadMessage ? ' • Đã xem' : ''}
+                            {readReceiptText}
                           </span>
 
                           {isMe && !isDeleted && !isEditingThis && (onEditMessage || onDeleteMessage) && (
@@ -974,10 +1076,10 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                                     <button
                                       type="button"
                                       disabled={deletingMsgId === msg._id}
-                                      onClick={() => handleConfirmDelete(msg._id)}
+                                      onClick={() => void handleConfirmDelete(msg._id)}
                                       style={{
                                         background: 'var(--color-error)',
-                                        color: 'var(--color-on-primary)',
+                                        color: 'var(--color-on-danger)',
                                         border: 'none',
                                         borderRadius: 3,
                                         padding: '1px 6px',
@@ -1066,7 +1168,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       </div>
 
       {/* Pending Image Attachments Preview Strip */}
-      {pendingImages.length > 0 && (
+      {pendingImages.length > 0 && convId && (
         <div
           style={{
             display: 'flex',
@@ -1095,7 +1197,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               <img loading="lazy" decoding="async" src={url} alt={`Đính kèm ${idx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               <button
                 type="button"
-                onClick={() => setPendingImages((prev) => prev.filter((_, i) => i !== idx))}
+                onClick={() =>
+                  setPendingImagesByConvId((prev) => ({
+                    ...prev,
+                    [convId]: (prev[convId] ?? []).filter((_, i) => i !== idx),
+                  }))
+                }
                 aria-label="Bỏ ảnh đính kèm"
                 style={{
                   position: 'absolute',
@@ -1157,7 +1264,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           <IconImage size={17} />
           <input
             type="file"
-            accept="image/*"
+            accept="image/jpeg,image/png,image/webp,image/gif"
             multiple
             disabled={isUploadingImage || pendingImages.length >= 4}
             onChange={handlePickImages}
@@ -1200,63 +1307,68 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         </button>
       </form>
 
-      {/* Inline Image Lightbox Preview */}
-      {previewImageUrl && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Xem ảnh tin nhắn"
-          onClick={() => setPreviewImageUrl(null)}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'var(--overlay-bg)',
-            zIndex: 'var(--z-lightbox, 4000)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 20,
-          }}
-        >
-          <button
-            type="button"
+      {/* Portal Image Lightbox Preview with Focus Trap & Escape Handling */}
+      {previewImageUrl &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            ref={lightboxRef}
+            tabIndex={-1}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Xem ảnh tin nhắn"
             onClick={() => setPreviewImageUrl(null)}
-            aria-label="Đóng xem ảnh"
             style={{
-              position: 'absolute',
-              top: 20,
-              right: 20,
-              width: 38,
-              height: 38,
-              borderRadius: 4,
-              background: 'var(--color-bg-card)',
-              border: '1px solid var(--color-border-strong)',
-              color: 'var(--color-text-main)',
+              position: 'fixed',
+              inset: 0,
+              background: 'var(--overlay-bg)',
+              zIndex: 'var(--z-lightbox, 4000)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              cursor: 'pointer',
+              padding: 20,
             }}
           >
-            <IconX size={18} />
-          </button>
-          <img
-            loading="lazy"
-            decoding="async"
-            src={previewImageUrl}
-            alt="Ảnh phóng to"
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              maxWidth: '90vw',
-              maxHeight: '85vh',
-              borderRadius: 6,
-              border: '1px solid var(--color-border-strong)',
-              objectFit: 'contain',
-              boxShadow: 'var(--shadow-3d)',
-            }}
-          />
-        </div>
-      )}
+            <button
+              type="button"
+              onClick={() => setPreviewImageUrl(null)}
+              aria-label="Đóng xem ảnh"
+              style={{
+                position: 'absolute',
+                top: 20,
+                right: 20,
+                width: 38,
+                height: 38,
+                borderRadius: 4,
+                background: 'var(--color-bg-card)',
+                border: '1px solid var(--color-border-strong)',
+                color: 'var(--color-text-main)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+              }}
+            >
+              <IconX size={18} />
+            </button>
+            <img
+              loading="lazy"
+              decoding="async"
+              src={previewImageUrl}
+              alt="Ảnh phóng to"
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                maxWidth: '90vw',
+                maxHeight: '85vh',
+                borderRadius: 6,
+                border: '1px solid var(--color-border-strong)',
+                objectFit: 'contain',
+                boxShadow: 'var(--shadow-3d)',
+              }}
+            />
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

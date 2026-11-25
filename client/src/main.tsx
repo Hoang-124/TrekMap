@@ -37,7 +37,6 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
     navigator.serviceWorker
       .register('/sw.js')
       .then((reg) => {
-        console.log('[SW] ServiceWorker registered successfully with scope:', reg.scope);
         const notifyUpdate = (worker: ServiceWorker | null) => {
           if (!worker) return;
           window.dispatchEvent(new CustomEvent('lost:sw-update-available', { detail: { worker } }));

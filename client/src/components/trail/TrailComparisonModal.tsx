@@ -327,7 +327,7 @@ export const TrailComparisonModal: React.FC<TrailComparisonModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, visibleTrails.length, onClose]);
 
-  // Progressively enrich comparison curves with real Copernicus DEM data (keyed on trailIdsKey, skips cached IDs)
+  // Progressively enrich comparison curves with real AWS Open Data Terrarium DEM data (keyed on trailIdsKey, skips cached IDs)
   useEffect(() => {
     if (!isOpen || !trailIdsKey) return;
     const idsToFetch = trailIdsKey
@@ -690,10 +690,12 @@ export const TrailComparisonModal: React.FC<TrailComparisonModalProps> = ({
                 }}
                 onMouseMove={(e) => handleSvgPointer(e.clientX, e.currentTarget)}
                 onMouseLeave={() => setHoverIdx(null)}
+                onTouchStart={(e) => {
+                  if (e.touches[0]) handleSvgPointer(e.touches[0].clientX, e.currentTarget);
+                }}
                 onTouchMove={(e) => {
                   if (e.touches[0]) handleSvgPointer(e.touches[0].clientX, e.currentTarget);
                 }}
-                onTouchEnd={() => setHoverIdx(null)}
               >
                 <defs>
                   {elevationSeries.map((s) => (
@@ -931,7 +933,7 @@ export const TrailComparisonModal: React.FC<TrailComparisonModalProps> = ({
                   color: 'var(--color-text-muted)',
                 }}
               >
-                <span>Không thể tải dự báo thời tiết đỉnh 3 ngày lúc này (mất kết nối hoặc Open-Meteo đang bận).</span>
+                <span>Không thể tải dự báo thời tiết đỉnh 3 ngày lúc này (mất kết nối hoặc dịch vụ MET Norway đang bận).</span>
                 <button
                   type="button"
                   className="btn btn-outline"

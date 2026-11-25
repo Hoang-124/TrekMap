@@ -45,7 +45,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
     difficulty: 'Trung bình – Khó',
     duration: '2N1Đ',
     bestSeason: 'T9 – T4',
-    highlights: 'Nóc nhà Đông Dương 3.143m, đỉnh núi cao nhất Việt Nam và bán đảo Đông Dương với rừng trúc đỗ quyên bạt ngàn.',
+    highlights: 'Nóc nhà Đông Dương 3.143m — bước qua rừng trúc xanh rì, thảm đỗ quyên cổ thụ và những con dốc quen thuộc từ Trạm Tôn.',
     permitInfo: 'VQG Hoàng Liên',
     imageUrl: '/covers/trail-fansipan.svg',
     coordinates: { lat: 22.3032, lng: 103.7753 },
@@ -58,14 +58,14 @@ const TOP_10_SUMMITS: SummitItem[] = [
     altitudeM: 3083,
     province: 'Lai Châu',
     mountainRange: 'Biên giới Mường Tè',
-    difficulty: 'Rất Khó',
+    difficulty: 'Rất khó',
     duration: '3N2Đ',
     bestSeason: 'T10 – T4',
-    highlights: 'Đỉnh núi cao thứ 2 Việt Nam 3.083m — cung trekking độc lập dài bậc nhất Tây Bắc qua Cột mốc 42 biên giới Việt–Trung.',
+    highlights: 'Nóc nhà thứ 2 Việt Nam (3.083m) — hành trình dài hơi nhất Tây Bắc, đi qua rừng thảo quả và Cột mốc 42 biên giới Việt–Trung.',
     permitInfo: 'Đồn BP Pa Vệ Sử',
     imageUrl: '/covers/trail-pusilung.svg',
     coordinates: { lat: 22.6261, lng: 102.7871 },
-    milestones: ['Pa Vệ Sử (1.255m)', 'Cột Mốc 42 (2.866m)', 'Đỉnh Pu Si Lung (3.083m)'],
+    milestones: ['Pa Vệ Sử (1.255m)', 'Cột mốc 42 (2.866m)', 'Đỉnh Pu Si Lung (3.083m)'],
   },
   {
     rank: 3,
@@ -74,10 +74,10 @@ const TOP_10_SUMMITS: SummitItem[] = [
     altitudeM: 3049,
     province: 'Lai Châu',
     mountainRange: 'Dãy Hoàng Liên Sơn',
-    difficulty: 'Rất Khó',
+    difficulty: 'Rất khó',
     duration: '3N2Đ',
     bestSeason: 'T11 – T3',
-    highlights: 'Đỉnh núi cao thứ 3 Việt Nam 3.049m, thủ phủ hoa đỗ quyên cổ thụ đại ngàn và rừng trúc rêu phong ma mị.',
+    highlights: 'Đỉnh cao thứ 3 Việt Nam (3.049m) — rừng cổ thụ rêu phủ kín thân cây, mùa xuân bung nở từng vạt đỗ quyên đỏ rực trong mây.',
     permitInfo: 'Huyện Tam Đường',
     imageUrl: '/covers/trail-putaleng.svg',
     coordinates: { lat: 22.4226, lng: 103.6034 },
@@ -93,8 +93,8 @@ const TOP_10_SUMMITS: SummitItem[] = [
     difficulty: 'Khó',
     duration: '3N2Đ',
     bestSeason: 'T10 – T4',
-    highlights: 'Đỉnh núi cao thứ 4 Việt Nam 3.046m, nổi danh với sống lưng Núi Muối 2.100m ngắm hoàng hôn và biển mây cuộn sóng.',
-    permitInfo: 'Kiểm Lâm Bát Xát',
+    highlights: 'Đỉnh cao thứ 4 Việt Nam (3.046m) — ai đã đi đều nhớ buổi sớm đứng trên Núi Muối (2.100m) nhìn biển mây tràn qua sống lưng.',
+    permitInfo: 'Kiểm lâm Bát Xát',
     imageUrl: '/covers/trail-kyquansan.svg',
     coordinates: { lat: 22.5070, lng: 103.5874 },
     milestones: ['Sàng Ma Sáo (1.060m)', 'Núi Muối (2.100m)', 'Đỉnh Kỳ Quan San (3.046m)'],
@@ -106,14 +106,14 @@ const TOP_10_SUMMITS: SummitItem[] = [
     altitudeM: 3012,
     province: 'Lai Châu',
     mountainRange: 'Biên giới Phong Thổ',
-    difficulty: 'Rất Khó',
+    difficulty: 'Rất khó',
     duration: '3N2Đ',
     bestSeason: 'T10 – T4',
-    highlights: 'Đỉnh núi cao thứ 5 Việt Nam 3.012m thuộc xã Pa Vây Sử / Vàng Ma Chải — chinh phục Cột mốc biên giới số 79 (2.880m) cao nhất tuyến biên cương Việt–Trung.',
+    highlights: 'Đỉnh cao thứ 5 Việt Nam (3.012m) thuộc xã Pa Vây Sử / Vàng Ma Chải — nơi đặt Cột mốc biên giới 79 (2.880m) cao nhất tuyến Việt–Trung.',
     permitInfo: 'Đồn BP Vàng Ma Chải',
     imageUrl: '/covers/trail-khangsuvan.svg',
     coordinates: { lat: 22.754, lng: 103.4395 },
-    milestones: ['Vàng Ma Chải (1.936m)', 'Cột Mốc 79 (2.880m)', 'Đỉnh Khang Su Văn (3.012m)'],
+    milestones: ['Vàng Ma Chải (1.936m)', 'Cột mốc 79 (2.880m)', 'Đỉnh Khang Su Văn (3.012m)'],
   },
   {
     rank: 6,
@@ -121,11 +121,11 @@ const TOP_10_SUMMITS: SummitItem[] = [
     matchKey: 'tả liên',
     altitudeM: 2996,
     province: 'Lai Châu',
-    mountainRange: 'Khối Núi Tả Liên',
+    mountainRange: 'Khối núi Tả Liên',
     difficulty: 'Khó',
     duration: '2N1Đ',
     bestSeason: 'T9 – T4',
-    highlights: 'Đỉnh 2.996m nổi tiếng với khu rừng cổ tích nguyên sinh rêu phong và thảm lá phong đỏ rực rỡ mỗi độ thu về.',
+    highlights: 'Đỉnh 2.996m nép dưới khu rừng rêu nguyên sinh — cuối thu lá phong rụng đỏ lối đi, yên ắng chỉ nghe tiếng gió qua tán cây.',
     permitInfo: 'Chi cục KL Lai Châu',
     imageUrl: '/covers/trail-talienson.svg',
     coordinates: { lat: 22.4628, lng: 103.556 },
@@ -137,11 +137,11 @@ const TOP_10_SUMMITS: SummitItem[] = [
     matchKey: 'chì nhù',
     altitudeM: 2979,
     province: 'Yên Bái',
-    mountainRange: 'Khối Núi Trạm Tấu',
+    mountainRange: 'Khối núi Trạm Tấu',
     difficulty: 'Trung bình – Khó',
     duration: '2N1Đ',
     bestSeason: 'T9 – T11',
-    highlights: 'Đỉnh 2.979m — vương quốc hoa tím Chi Pâu đại ngàn và thảo nguyên săn mây đón gió lộng vùng Trạm Tấu.',
+    highlights: 'Đỉnh 2.979m lộng gió vùng Trạm Tấu — tháng 10 hoa tím Chi Pâu phủ kín triền đồi, phía dưới là biển mây dày đặc.',
     permitInfo: 'UBND Huyện Trạm Tấu',
     imageUrl: '/covers/trail-tachinhu.svg',
     coordinates: { lat: 21.5707, lng: 104.3065 },
@@ -157,7 +157,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
     difficulty: 'Khó',
     duration: '2N1Đ',
     bestSeason: 'T10 – T3',
-    highlights: 'Đỉnh 2.965m đi qua rừng thảo quả, Thác Ong Chúa hùng vĩ và biển mây trên sống núi Sàng Ma Sáo.',
+    highlights: 'Đỉnh 2.965m có đường đi qua rừng thảo quả thơm nồng, thác Ong Chúa đổ trắng xóa và sống núi Sàng Ma Sáo đón gió sớm.',
     permitInfo: 'Đồn BP Sàng Ma Sáo',
     imageUrl: '/covers/trail-nhiucosan.svg',
     coordinates: { lat: 22.5838, lng: 103.5834 },
@@ -173,7 +173,7 @@ const TOP_10_SUMMITS: SummitItem[] = [
     difficulty: 'Trung bình – Khó',
     duration: '2N1Đ',
     bestSeason: 'T10 – T4',
-    highlights: 'Đỉnh 2.913m với rừng táo mèo cổ thụ, rừng phong lá đỏ tháng 11–12 và bãi cỏ cháy rộng lớn trên đỉnh.',
+    highlights: 'Đỉnh 2.913m băng qua rừng táo mèo cổ thụ, rừng phong lá đỏ tháng 11–12 và bãi cỏ cháy rộng mênh mông trên đỉnh.',
     permitInfo: 'UBND Xã Nậm Có',
     imageUrl: '/covers/trail-lungcung.svg',
     coordinates: { lat: 21.9024, lng: 104.2308 },
@@ -186,14 +186,14 @@ const TOP_10_SUMMITS: SummitItem[] = [
     altitudeM: 2881,
     province: 'Lai Châu',
     mountainRange: 'Dãy Hoàng Liên Sơn (Tân Uyên)',
-    difficulty: 'Rất Khó',
+    difficulty: 'Rất khó',
     duration: '3N2Đ',
     bestSeason: 'T10 – T4',
-    highlights: 'Đỉnh núi 2.881m xuất phát từ bản Thào A (xã Hố Mít, Tân Uyên) — nổi tiếng với hệ thống suối đá lớn xếp tầng, vách đá dựng đứng và biển mây dày đặc.',
+    highlights: 'Đỉnh 2.881m xuất phát từ bản Thào A (Hố Mít, Tân Uyên) — nổi tiếng gắt với nhiều bậc suối đá lớn, vách dựng và mây giăng kín lối.',
     permitInfo: 'Chi cục KL Lai Châu',
     imageUrl: '/covers/trail-namkanghotao.svg',
     coordinates: { lat: 22.1508, lng: 103.9693 },
-    milestones: ['Bản Thào A (1.575m)', 'Lán Sườn Núi (2.574m)', 'Đỉnh Nam Kang Ho Tao (2.881m)'],
+    milestones: ['Bản Thào A (1.575m)', 'Lán sườn núi (2.574m)', 'Đỉnh Nam Kang Ho Tao (2.881m)'],
   },
 ];
 
@@ -237,9 +237,9 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
           <div>
-            <div className="section-eyebrow" style={{ marginBottom: 2 }}>Xếp hạng cao độ</div>
+            <div className="section-eyebrow" style={{ marginBottom: 2 }}>Thang cao độ</div>
             <h3 className="font-editorial" style={{ fontSize: '1.18rem', fontWeight: 500, color: 'var(--color-text-main)', margin: 0 }}>
-              Top 10 Đỉnh Cao Nhất
+              Top 10 nóc nhà Việt Nam
             </h3>
           </div>
           <span className="badge badge-sun" style={{ fontVariantNumeric: 'tabular-nums' }}>
@@ -294,7 +294,7 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
                   className="btn btn-outline interactive-click"
                   style={{ fontSize: '0.7rem', padding: '3px 8px', borderRadius: 4, fontWeight: 800 }}
                 >
-                  <span>Xem Cung Đường</span>
+                  <span>Xem cung này</span>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></svg>
                 </button>
               )}
@@ -387,7 +387,7 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
           }}
         >
           <IconMountain size={14} color="var(--color-sun)" />
-          THANG BẬC CAO ĐỘ VIỆT NAM
+          Thang cao độ Việt Nam
         </div>
 
         <h2
@@ -399,10 +399,10 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
             letterSpacing: '-0.02em',
           }}
         >
-          Top 10 Đỉnh Núi Cao Nhất Việt Nam
+          Top 10 đỉnh núi cao nhất Việt Nam
         </h2>
         <p style={{ color: 'var(--color-text-muted)', fontSize: '0.84rem', maxWidth: 580, margin: '0 auto' }}>
-          Hồ sơ cao độ thực địa chuẩn xác 100%, phân cấp độ khó và dữ liệu GPS.
+          Cao độ đo từ địa hình thực tế, các mốc dừng chân và đường GPX đi thật của 10 nóc nhà cao nhất nước.
         </p>
       </div>
 
@@ -421,7 +421,7 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
         <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <span style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              XẾP HẠNG ĐỈNH NÚI
+              Xếp hạng 10 đỉnh
             </span>
           </div>
 
@@ -490,7 +490,7 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
                           {s.name}
                         </strong>
                         {s.dbTrail && (
-                          <span title="Dữ liệu GPX đã xác thực trong hệ thống LOST">
+                          <span title="Đã có file GPX đi thật trên LOST">
                             <IconCheckCircle size={12} color="var(--color-primary)" />
                           </span>
                         )}
@@ -511,14 +511,14 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
                         fontWeight: 700,
                         padding: '1px 5px',
                         borderRadius: 3,
-                        background: s.difficulty.includes('Rất Khó')
+                        background: s.difficulty.toLowerCase().includes('rất khó')
                           ? 'color-mix(in srgb, var(--color-error) 14%, transparent)'
-                          : s.difficulty.includes('Khó')
+                          : s.difficulty.toLowerCase().includes('khó')
                           ? 'color-mix(in srgb, var(--color-earth) 14%, transparent)'
                           : 'color-mix(in srgb, var(--color-primary) 14%, transparent)',
-                        color: s.difficulty.includes('Rất Khó')
+                        color: s.difficulty.toLowerCase().includes('rất khó')
                           ? 'var(--color-error-text, var(--banner-danger-text))'
-                          : s.difficulty.includes('Khó')
+                          : s.difficulty.toLowerCase().includes('khó')
                           ? 'var(--color-earth)'
                           : 'var(--color-primary)',
                       }}
@@ -567,9 +567,9 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
                 decoding="async"
                 onError={(e) => {
                   const img = e.currentTarget;
-                  if (img.src !== TOP_10_SUMMITS[0].imageUrl) {
-                    img.src = TOP_10_SUMMITS[0].imageUrl;
-                  }
+                  if (img.dataset.fallbackApplied) return;
+                  img.dataset.fallbackApplied = '1';
+                  img.src = TOP_10_SUMMITS[0].imageUrl;
                 }}
                 style={{
                   position: 'absolute',
@@ -603,7 +603,7 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
                     borderRadius: 4,
                   }}
                 >
-                  TOP #{selectedSummit.rank} ĐỈNH NÚI
+                  Top #{selectedSummit.rank} Việt Nam
                 </span>
 
                 <div
@@ -642,7 +642,7 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
                     {selectedSummit.actualAltitude.toLocaleString('vi-VN')}m
                   </div>
                   <span style={{ fontSize: '0.65rem', color: 'color-mix(in srgb, var(--color-on-media) 82%, transparent)', fontWeight: 600 }}>
-                    Độ cao thực địa
+                    Cao độ đỉnh
                   </span>
                 </div>
               </div>
@@ -664,28 +664,28 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
                 }}
               >
                 <div style={{ background: 'var(--color-bg-card)', padding: '6px 8px', borderRadius: 4, border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                  <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Độ Khó</div>
+                  <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Độ khó</div>
                   <div style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: 2 }}>
                     {selectedSummit.difficulty}
                   </div>
                 </div>
 
                 <div style={{ background: 'var(--color-bg-card)', padding: '6px 8px', borderRadius: 4, border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                  <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Thời Lượng</div>
+                  <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Thời lượng</div>
                   <div style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--color-sky)', marginTop: 2 }}>
                     {selectedSummit.duration}
                   </div>
                 </div>
 
                 <div style={{ background: 'var(--color-bg-card)', padding: '6px 8px', borderRadius: 4, border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                  <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Mùa Đẹp</div>
+                  <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Mùa đẹp</div>
                   <div style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--color-earth)', marginTop: 2 }}>
                     {selectedSummit.bestSeason}
                   </div>
                 </div>
 
                 <div style={{ background: 'var(--color-bg-card)', padding: '6px 8px', borderRadius: 4, border: '1px solid var(--color-border)', textAlign: 'center' }}>
-                  <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Thủ Tục</div>
+                  <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)', fontWeight: 600 }}>Giấy phép</div>
                   <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-sun)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={selectedSummit.permitInfo}>
                     {selectedSummit.permitInfo.split(',')[0]}
                   </div>
@@ -703,7 +703,7 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
                 }}
               >
                 <div style={{ fontSize: '0.64rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', marginBottom: 6, letterSpacing: '0.04em' }}>
-                  LỘ TRÌNH CỘT MỐC TIÊU BIỂU
+                  Các mốc chính trên tuyến
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
                   {selectedSummit.milestones.map((m, idx) => (
@@ -735,7 +735,7 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-primary)', marginBottom: 2 }}>
                     <IconCheckCircle size={12} color="var(--color-primary)" />
-                    Tuyến GPX Sẵn Sàng: {selectedSummit.dbTrail.name}
+                    Đã có file GPX: {selectedSummit.dbTrail.name}
                   </div>
                   <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>
                     Chiều dài: {selectedSummit.dbTrail.distanceKm} km · Độ dốc: +{selectedSummit.dbTrail.elevationGainM || 1400}m
@@ -757,7 +757,7 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
                   }}
                 >
                   <IconRadar size={13} color="var(--color-sky)" />
-                  Ban Quản Trị đang đồng bộ tracklog GPS chi tiết cho đỉnh núi này.
+                  Tụi mình đang hoàn thiện tracklog GPS chi tiết cho đỉnh này.
                 </div>
               )}
             </div>
@@ -789,7 +789,7 @@ const SummitAltitudeLadderBase: React.FC<SummitAltitudeLadderProps> = ({
               }}
             >
               <IconMapPin size={15} color="var(--color-on-primary)" />
-              <span>{selectedSummit.dbTrail ? `Xem Hồ Sơ, Bản Đồ 3D & Lịch Trình ${selectedSummit.name}` : `Chưa Có Tuyến GPX Riêng Cho ${selectedSummit.name}`}</span>
+              <span>{selectedSummit.dbTrail ? `Xem bản đồ 3D & lịch trình ${selectedSummit.name}` : `Chưa có tracklog riêng cho ${selectedSummit.name}`}</span>
               {selectedSummit.dbTrail && (
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--color-on-primary)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></svg>
               )}

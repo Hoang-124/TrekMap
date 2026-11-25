@@ -3,11 +3,11 @@ import { IconShieldAlert } from '../common/SvgIcons.js';
 import { LegalNoticesModal, type LegalNoticeTab } from '../legal/LegalNoticesModal.js';
 
 const FEATURED_TRAIL_LINKS = [
-  { id: 'trail-fansipan', name: 'Fansipan (3,143m) - Nóc nhà Đông Dương' },
-  { id: 'trail-laothan', name: 'Lảo Thẩn (2,860m) - Săn mây Y Tý' },
-  { id: 'trail-taxua', name: 'Tà Xùa (2,865m) - Sống lưng Khủng Long' },
-  { id: 'trail-kyquansan', name: 'Bạch Mộc Lương Tử (3,046m) - Kỳ Quan San' },
-  { id: 'trail-tanangphandung', name: 'Tà Năng - Phan Dũng - Cung trekking huyền thoại' },
+  { id: 'trail-fansipan', name: 'Fansipan (3.143m) — Nóc nhà Đông Dương' },
+  { id: 'trail-laothan', name: 'Lảo Thẩn (2.860m) — Biển mây Y Tý' },
+  { id: 'trail-taxua', name: 'Tà Xùa (2.865m) — Sống lưng Khủng Long' },
+  { id: 'trail-kyquansan', name: 'Kỳ Quan San (3.046m) — Bạch Mộc Lương Tử' },
+  { id: 'trail-tanangphandung', name: 'Tà Năng – Phan Dũng — Đồi cỏ cháy xuyên ba tỉnh' },
 ];
 
 export const Footer: React.FC = React.memo(() => {
@@ -62,8 +62,9 @@ export const Footer: React.FC = React.memo(() => {
           </div>
 
           <p style={{ fontSize: '0.84rem', lineHeight: 1.65, color: 'var(--color-text-muted)', margin: 0 }}>
-            LOST là bản đồ cộng đồng lưu giữ các cung đường trekking hoang sơ tại Việt Nam — với
-            tracklog GPX thực địa, bản đồ 3D DEM, gói tải offline và danh bạ kiểm lâm cứu hộ 24/7.
+            LOST là sổ tay bản đồ của cộng đồng trekker Việt Nam — lưu giữ những lối mòn còn hoang sơ
+            qua tracklog GPX đi thật, bản đồ địa hình 3D, gói tải về máy phòng khi mất sóng và danh bạ
+            kiểm lâm cứu hộ 24/7.
           </p>
         </div>
 
@@ -77,7 +78,7 @@ export const Footer: React.FC = React.memo(() => {
               marginBottom: 16,
             }}
           >
-            Cung Đường Trọng Điểm
+            Những cung đường đáng đi
           </h4>
           <ul
             style={{
@@ -128,7 +129,7 @@ export const Footer: React.FC = React.memo(() => {
             }}
           >
             <IconShieldAlert size={16} color="var(--color-error-text, var(--color-error))" />
-            Cứu Hộ Khẩn Cấp (SOS 24/7)
+            Cứu hộ khẩn cấp (24/7)
           </h4>
           <div
             style={{
@@ -154,7 +155,7 @@ export const Footer: React.FC = React.memo(() => {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: '0.82rem', color: 'var(--color-text-main)', fontWeight: 600 }}>
-                Cấp cứu Y tế Khẩn:
+                Cấp cứu y tế:
               </span>
               <a
                 href="tel:115"
@@ -172,7 +173,7 @@ export const Footer: React.FC = React.memo(() => {
               }}
             >
               <div>
-                - <strong>Tìm kiếm Cứu nạn Quốc gia:</strong>{' '}
+                - <strong>Tìm kiếm cứu nạn quốc gia:</strong>{' '}
                 <a href="tel:112" style={{ color: 'var(--color-error-text, var(--color-error))', fontWeight: 700, textDecoration: 'none' }}>
                   112
                 </a>
@@ -200,12 +201,13 @@ export const Footer: React.FC = React.memo(() => {
               marginBottom: 16,
             }}
           >
-            An Toàn Là Trên Hết
+            Đi rừng an toàn
           </h4>
           <p style={{ fontSize: '0.82rem', lineHeight: 1.65, color: 'var(--color-text-muted)', margin: 0 }}>
-            Mọi thông tin trên LOST do cộng đồng người đi thực tế chia sẻ và đóng góp. Trekking là
-            hoạt động mạo hiểm có rủi ro thiên nhiên. Trekker cần kiểm tra thời tiết, tự chuẩn bị
-            thể lực kỹ lưỡng và thuê Porter/Guide bản địa có chuyên môn trước khi khởi hành.
+            Thông tin cung đường trên LOST do cộng đồng người đi thực tế ghi lại và chia sẻ. Đi rừng,
+            leo núi luôn tiềm ẩn rủi ro thiên nhiên và địa hình; bạn cần tự kiểm tra thời tiết, chuẩn
+            bị đủ thể lực, đồ giữ ấm và đi cùng porter hoặc người dẫn đường bản địa có chuyên môn
+            trước khi lên đường.
           </p>
         </div>
       </div>
@@ -299,9 +301,9 @@ export const Footer: React.FC = React.memo(() => {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
           <span style={{ color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
-            v2.6 · 3D DEM &amp; Offline Atlas
+            v2.6 · Bản đồ 3D &amp; Offline
           </span>
-          <span style={{ color: 'var(--color-text-muted)' }}>Cộng đồng Trekking Việt Nam</span>
+          <span style={{ color: 'var(--color-text-muted)' }}>Cộng đồng trekking Việt Nam</span>
         </div>
       </div>
 

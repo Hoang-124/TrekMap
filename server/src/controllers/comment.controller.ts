@@ -19,16 +19,24 @@ import { recordAuditLog } from '../utils/audit.js';
 
 const VALID_REACTIONS = new Set(['like', 'love', 'haha', 'wow', 'buon', 'huhu', 'sad', 'angry', 'dislike']);
 const DEFAULT_AVATAR = '/covers/avatar-default.svg';
+const THREAD_SLUG_REGEX = /^thread-[a-zA-Z0-9_-]{1,80}$/;
+
+function isValidThreadIdentifier(value: string): boolean {
+  return isValidObjectId(value) || THREAD_SLUG_REGEX.test(value);
+}
 
 export const getComments = async (req: Request, res: Response) => {
-  const { threadId } = req.params;
+  const threadId = String(req.params.threadId || '').trim();
+  if (!threadId || !isValidThreadIdentifier(threadId)) {
+    return res.status(400).json({ success: false, message: 'Mã bài viết không hợp lệ.' });
+  }
   try {
     if (mongoose.connection.readyState !== 1) {
       return res.json({ success: true, totalCount: 0, data: [] });
     }
     const userKeys = getUserKeys(req);
 
-    const allComments = await CommentModel.find({ threadId: String(threadId) })
+    const allComments = await CommentModel.find({ threadId })
       .populate('userId', 'fullName username avatarUrl')
       .sort({ createdAt: 1 })
       .limit(500)
@@ -102,12 +110,16 @@ export const getComments = async (req: Request, res: Response) => {
 };
 
 export const createComment = async (req: AuthRequest, res: Response) => {
-  const targetThreadId = String(req.params.threadId || '').trim();
+  const rawThreadId = String(req.params.threadId || '').trim();
   const { content, parentId } = req.body || {};
   const currentUserId = req.user?.userId;
 
   if (!currentUserId || !isValidObjectId(currentUserId)) {
     return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để gửi bình luận.' });
+  }
+
+  if (!rawThreadId || !isValidThreadIdentifier(rawThreadId)) {
+    return res.status(400).json({ success: false, message: 'Mã bài viết không hợp lệ.' });
   }
 
   if (typeof content !== 'string' || !content.trim()) {
@@ -140,10 +152,14 @@ export const createComment = async (req: AuthRequest, res: Response) => {
   }
 
   try {
-    const thread = await ThreadModel.findOne({ id: targetThreadId });
+    const threadQuery = isValidObjectId(rawThreadId)
+      ? { $or: [{ id: rawThreadId }, { _id: new mongoose.Types.ObjectId(rawThreadId) }] }
+      : { id: rawThreadId };
+    const thread = await ThreadModel.findOne(threadQuery);
     if (!thread) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy bài viết để bình luận.' });
     }
+    const targetThreadId = thread.id;
     if (thread.isLocked) {
       return res.status(403).json({
         success: false,
@@ -294,7 +310,7 @@ export const updateComment = async (req: AuthRequest, res: Response) => {
     const { commentId } = req.params;
     const { content } = req.body || {};
 
-    if (!currentUserId) {
+    if (!currentUserId || !isValidObjectId(currentUserId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
     }
     if (!isValidObjectId(commentId)) {
@@ -372,7 +388,7 @@ export const deleteComment = async (req: AuthRequest, res: Response) => {
     const isStaff = req.user?.role === 'admin' || req.user?.role === 'moderator';
     const { commentId } = req.params;
 
-    if (!currentUserId) {
+    if (!currentUserId || !isValidObjectId(currentUserId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
     }
     if (!isValidObjectId(commentId)) {
@@ -415,7 +431,7 @@ export const reactToComment = async (req: AuthRequest, res: Response) => {
   const { reactionType } = req.body || {};
   const currentUserId = req.user?.userId;
 
-  if (!currentUserId) {
+  if (!currentUserId || !isValidObjectId(currentUserId)) {
     return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để thả cảm xúc.' });
   }
 
@@ -540,7 +556,7 @@ export const toggleBestAnswer = async (req: AuthRequest, res: Response) => {
     if (!currentUserId || !isValidObjectId(currentUserId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
     }
-    if (!targetThreadId || !isValidObjectId(commentId)) {
+    if (!targetThreadId || !isValidThreadIdentifier(targetThreadId) || !isValidObjectId(commentId)) {
       return res.status(400).json({ success: false, message: 'Mã bài viết hoặc bình luận không hợp lệ.' });
     }
     if (mongoose.connection.readyState !== 1) {

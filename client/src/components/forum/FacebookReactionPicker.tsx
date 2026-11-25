@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { TrekReactionSvg, type ReactionType } from './TrekReactionSvg.js';
 
 export { TrekReactionSvg };
@@ -18,7 +19,12 @@ export interface ReactionItem {
 
 const REACTION_LIST: ReactionItem[] = [
   { id: 'like', label: 'Hữu ích', color: 'var(--color-primary)', icon: <TrekReactionSvg name="like" size={17} color="var(--color-primary)" /> },
-  { id: 'love', label: 'Yêu thích', color: 'var(--color-error)', icon: <TrekReactionSvg name="love" size={17} color="var(--color-error)" /> },
+  {
+    id: 'love',
+    label: 'Yêu thích',
+    color: 'var(--color-error-text, var(--color-error))',
+    icon: <TrekReactionSvg name="love" size={17} color="var(--color-error-text, var(--color-error))" />,
+  },
   { id: 'haha', label: 'Thú vị', color: 'var(--color-sun)', icon: <TrekReactionSvg name="haha" size={17} color="var(--color-sun)" /> },
   { id: 'wow', label: 'Ấn tượng', color: 'var(--color-sky)', icon: <TrekReactionSvg name="wow" size={17} color="var(--color-sky)" /> },
   { id: 'buon', label: 'Tiếc nuối', color: 'var(--color-stream)', icon: <TrekReactionSvg name="buon" size={17} color="var(--color-stream)" /> },
@@ -26,6 +32,10 @@ const REACTION_LIST: ReactionItem[] = [
   { id: 'angry', label: 'Đáng lo', color: 'var(--color-earth)', icon: <TrekReactionSvg name="angry" size={17} color="var(--color-earth)" /> },
   { id: 'dislike', label: 'Chưa đồng ý', color: 'var(--color-text-muted)', icon: <TrekReactionSvg name="dislike" size={17} color="var(--color-text-muted)" /> },
 ];
+
+const ESTIMATED_DOCK_WIDTH = 278;
+const ESTIMATED_DOCK_HEIGHT = 44;
+const VIEWPORT_MARGIN = 8;
 
 // Normalize legacy 'sad' reaction alias to 'buon' cleanly
 function normalizeReactionId(id: ReactionType | string | undefined): ReactionType {
@@ -40,6 +50,12 @@ function getSummaryCountForKey(summary: Record<string, number>, key: string): nu
     return base + (Number(summary.sad) || 0);
   }
   return base;
+}
+
+interface DockCoords {
+  top: number;
+  left: number;
+  flipped: boolean;
 }
 
 interface FacebookReactionPickerProps {
@@ -57,9 +73,13 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
 }) => {
   const [showPicker, setShowPicker] = useState(false);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const [alignLeft, setAlignLeft] = useState(false);
+  const [dockCoords, setDockCoords] = useState<DockCoords>({ top: 0, left: VIEWPORT_MARGIN, flipped: false });
   const triggerRef = useRef<HTMLDivElement | null>(null);
+  const triggerButtonRef = useRef<HTMLButtonElement | null>(null);
+  const dockRef = useRef<HTMLDivElement | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastPointerTypeRef = useRef<string>('');
+  const openedByHoverRef = useRef<boolean>(false);
 
   const normalizedCurrent = normalizeReactionId(currentReaction);
   const activeItem = REACTION_LIST.find((r) => r.id === normalizedCurrent);
@@ -84,56 +104,136 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
   }, [reactionsSummary, activeItem]);
 
   const computedTotal = React.useMemo(() => {
-    if (reactionsSummary && typeof reactionsSummary === 'object') {
-      const sum = Object.values(reactionsSummary).reduce((acc, count) => acc + (typeof count === 'number' ? count : 0), 0);
-      if (sum > 0) return sum;
+    if (reactionsSummary && typeof reactionsSummary === 'object' && Object.keys(reactionsSummary).length > 0) {
+      return Object.values(reactionsSummary).reduce(
+        (acc, count) => acc + (typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0),
+        0
+      );
     }
     return totalLikes || 0;
   }, [reactionsSummary, totalLikes]);
 
-  const openPickerWithBoundsCheck = () => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    if (triggerRef.current) {
-      const rect = triggerRef.current.getBoundingClientRect();
-      setAlignLeft(rect.left < 270);
+  const clearHideTimer = useCallback(() => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
     }
-    setShowPicker(true);
-  };
+  }, []);
 
-  const handleMouseLeave = () => {
+  const computeViewportClampedPosition = useCallback((): DockCoords | null => {
+    if (!triggerRef.current || typeof window === 'undefined') return null;
+    const rect = triggerRef.current.getBoundingClientRect();
+    const dockWidth = Math.min(dockRef.current?.offsetWidth || ESTIMATED_DOCK_WIDTH, window.innerWidth - VIEWPORT_MARGIN * 2);
+    const dockHeight = dockRef.current?.offsetHeight || ESTIMATED_DOCK_HEIGHT;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    const idealLeft = rect.left + dockWidth <= vw - VIEWPORT_MARGIN ? rect.left : rect.right - dockWidth;
+    const clampedLeft = Math.max(VIEWPORT_MARGIN, Math.min(idealLeft, vw - dockWidth - VIEWPORT_MARGIN));
+
+    const canPlaceAbove = rect.top >= dockHeight + 12;
+    const flipped = !canPlaceAbove && rect.bottom + dockHeight + 12 <= vh;
+    const rawTop = flipped ? rect.bottom : rect.top - dockHeight - 4;
+    const clampedTop = Math.max(VIEWPORT_MARGIN, Math.min(rawTop, vh - dockHeight - VIEWPORT_MARGIN));
+
+    return { top: clampedTop, left: clampedLeft, flipped };
+  }, []);
+
+  const openPickerWithBoundsCheck = useCallback(
+    (viaHover: boolean) => {
+      clearHideTimer();
+      openedByHoverRef.current = viaHover;
+      const nextPos = computeViewportClampedPosition();
+      if (nextPos) setDockCoords(nextPos);
+      setShowPicker(true);
+    },
+    [clearHideTimer, computeViewportClampedPosition]
+  );
+
+  const closePicker = useCallback(() => {
+    clearHideTimer();
+    openedByHoverRef.current = false;
+    setShowPicker(false);
+    setHoveredId(null);
+  }, [clearHideTimer]);
+
+  const handleMouseLeave = useCallback(() => {
+    clearHideTimer();
     timeoutRef.current = setTimeout(() => {
+      timeoutRef.current = null;
+      openedByHoverRef.current = false;
       setShowPicker(false);
       setHoveredId(null);
     }, 260);
-  };
+  }, [clearHideTimer]);
 
-  // Close picker when clicking/tapping outside on touch devices
+  // Close picker on outside click, Escape key (stopping propagation to parent modals), or viewport scroll/resize
   useEffect(() => {
     if (!showPicker) return;
+
     const handleOutside = (e: PointerEvent) => {
-      if (triggerRef.current && !triggerRef.current.contains(e.target as Node)) {
-        setShowPicker(false);
-        setHoveredId(null);
+      const target = e.target as Node | null;
+      if (
+        target &&
+        !triggerRef.current?.contains(target) &&
+        !dockRef.current?.contains(target)
+      ) {
+        closePicker();
       }
     };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        closePicker();
+        triggerButtonRef.current?.focus();
+      }
+    };
+
+    const handleReposition = () => {
+      if (!triggerRef.current) return;
+      const rect = triggerRef.current.getBoundingClientRect();
+      if (rect.bottom < 0 || rect.top > window.innerHeight) {
+        closePicker();
+        return;
+      }
+      const nextPos = computeViewportClampedPosition();
+      if (nextPos) setDockCoords(nextPos);
+    };
+
     document.addEventListener('pointerdown', handleOutside);
-    return () => document.removeEventListener('pointerdown', handleOutside);
-  }, [showPicker]);
+    document.addEventListener('keydown', handleKeyDown, true);
+    window.addEventListener('scroll', handleReposition, true);
+    window.addEventListener('resize', handleReposition);
+    return () => {
+      document.removeEventListener('pointerdown', handleOutside);
+      document.removeEventListener('keydown', handleKeyDown, true);
+      window.removeEventListener('scroll', handleReposition, true);
+      window.removeEventListener('resize', handleReposition);
+    };
+  }, [showPicker, closePicker, computeViewportClampedPosition]);
 
   useEffect(() => {
     return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      clearHideTimer();
     };
-  }, []);
+  }, [clearHideTimer]);
+
+  const triggerAriaLabel = activeItem
+    ? `Cảm xúc đã chọn: ${activeItem.label}, tổng ${computedTotal}. Nhấn để thay đổi hoặc bỏ cảm xúc`
+    : `Thả cảm xúc, tổng ${computedTotal}`;
 
   return (
     <div
       ref={triggerRef}
       style={{ position: 'relative', display: 'inline-block' }}
       onPointerEnter={(e) => {
-        // Ignore synthesized touch hover events so touch taps don't double-toggle!
+        // Ignore synthesized touch hover events so touch taps don't double-toggle
         if (e.pointerType === 'mouse') {
-          openPickerWithBoundsCheck();
+          openPickerWithBoundsCheck(true);
         }
       }}
       onPointerLeave={(e) => {
@@ -142,124 +242,156 @@ export const FacebookReactionPicker: React.FC<FacebookReactionPickerProps> = ({
         }
       }}
     >
-      {/* Floating Reaction Dock (Silky GPU Enter + Exit + Stagger Wave) */}
-      <div
-        aria-hidden={!showPicker}
-        className={`reaction-dock-shell${showPicker ? ' open' : ''}`}
-        style={{
-          position: 'absolute',
-          bottom: 'calc(100% + 2px)',
-          ...(alignLeft ? { left: 0 } : { right: 0 }),
-          transformOrigin: alignLeft ? 'bottom left' : 'bottom right',
-          paddingBottom: 6,
-          zIndex: 'var(--z-dropdown, 1100)',
-        }}
-        onPointerEnter={(e) => {
-          if (e.pointerType === 'mouse' && showPicker) openPickerWithBoundsCheck();
-        }}
-        onPointerLeave={(e) => {
-          if (e.pointerType === 'mouse') handleMouseLeave();
-        }}
-      >
-        <div
-          style={{
-            background: 'var(--color-bg-card)',
-            border: '1px solid var(--color-border-strong)',
-            borderRadius: 6,
-            padding: '4px 6px',
-            display: 'flex',
-            gap: 3,
-            boxShadow: 'var(--shadow-3d)',
-            alignItems: 'center',
-            whiteSpace: 'nowrap',
-            position: 'relative',
-          }}
-        >
-          {REACTION_LIST.map((item, idx) => {
-            const isHovered = hoveredId === item.id;
-            const isSelected = normalizedCurrent === item.id;
-            return (
-              <div
-                key={item.id}
-                className="reaction-dock-item"
-                style={{
-                  position: 'relative',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  ['--rx-delay' as string]: `${idx * 18}ms`,
-                }}
-              >
-                <div
-                  className={`reaction-tooltip-pill${isHovered && showPicker ? ' visible' : ''}`}
-                  style={{
-                    position: 'absolute',
-                    bottom: 'calc(100% + 7px)',
-                    background: 'var(--color-bg-main)',
-                    color: 'var(--color-text-main)',
-                    border: '1px solid var(--color-border-strong)',
-                    borderRadius: 4,
-                    padding: '2px 7px',
-                    fontSize: '0.68rem',
-                    fontWeight: 600,
-                    whiteSpace: 'nowrap',
-                    boxShadow: 'var(--shadow-card)',
-                    zIndex: 10,
-                  }}
-                >
-                  {item.label}
-                </div>
+      {/* Floating Reaction Dock (Portaled & Viewport-Clamped so narrow screens & modals never clip) */}
+      {showPicker &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            ref={dockRef}
+            role="menu"
+            aria-label="Chọn cảm xúc"
+            className="reaction-dock-shell open"
+            style={{
+              position: 'fixed',
+              top: dockCoords.top,
+              left: dockCoords.left,
+              transformOrigin: dockCoords.flipped ? 'top center' : 'bottom center',
+              paddingBottom: dockCoords.flipped ? 0 : 6,
+              paddingTop: dockCoords.flipped ? 6 : 0,
+              zIndex: 'calc(var(--z-modal-nested, 3100) + 50)',
+              maxWidth: 'calc(100vw - 16px)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onPointerEnter={(e) => {
+              if (e.pointerType === 'mouse') clearHideTimer();
+            }}
+            onPointerLeave={(e) => {
+              if (e.pointerType === 'mouse') handleMouseLeave();
+            }}
+          >
+            <div
+              style={{
+                background: 'var(--color-bg-card)',
+                border: '1px solid var(--color-border-strong)',
+                borderRadius: 6,
+                padding: '4px 6px',
+                display: 'flex',
+                gap: 3,
+                boxShadow: 'var(--shadow-3d)',
+                alignItems: 'center',
+                whiteSpace: 'nowrap',
+                position: 'relative',
+                overflowX: 'auto',
+                maxWidth: 'calc(100vw - 16px)',
+              }}
+            >
+              {REACTION_LIST.map((item, idx) => {
+                const isHovered = hoveredId === item.id;
+                const isSelected = normalizedCurrent === item.id;
+                return (
+                  <div
+                    key={item.id}
+                    className="reaction-dock-item"
+                    style={{
+                      position: 'relative',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      flexShrink: 0,
+                      ['--rx-delay' as string]: `${idx * 18}ms`,
+                    }}
+                  >
+                    <div
+                      className={`reaction-tooltip-pill${isHovered ? ' visible' : ''}`}
+                      style={{
+                        position: 'absolute',
+                        bottom: dockCoords.flipped ? undefined : 'calc(100% + 7px)',
+                        top: dockCoords.flipped ? 'calc(100% + 7px)' : undefined,
+                        background: 'var(--color-bg-main)',
+                        color: 'var(--color-text-main)',
+                        border: '1px solid var(--color-border-strong)',
+                        borderRadius: 4,
+                        padding: '2px 7px',
+                        fontSize: '0.68rem',
+                        fontWeight: 600,
+                        whiteSpace: 'nowrap',
+                        boxShadow: 'var(--shadow-card)',
+                        zIndex: 10,
+                      }}
+                    >
+                      {item.label}
+                    </div>
 
-                <button
-                  type="button"
-                  tabIndex={showPicker ? 0 : -1}
-                  className="reaction-item-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onSelectReaction(normalizedCurrent === item.id ? null : item.id);
-                    setShowPicker(false);
-                    setHoveredId(null);
-                  }}
-                  aria-label={item.label}
-                  style={{
-                    width: 30,
-                    height: 30,
-                    background: isSelected
-                      ? `color-mix(in srgb, ${item.color} 15%, transparent)`
-                      : isHovered
-                        ? 'var(--color-surface-elevated)'
-                        : 'transparent',
-                    border: isSelected ? `1px solid ${item.color}` : '1px solid transparent',
-                    cursor: 'pointer',
-                    padding: 0,
-                    borderRadius: 4,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                  onPointerEnter={(e) => {
-                    if (e.pointerType === 'mouse') setHoveredId(item.id as string);
-                  }}
-                  onPointerLeave={(e) => {
-                    if (e.pointerType === 'mouse') setHoveredId(null);
-                  }}
-                >
-                  {item.icon}
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="reaction-item-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelectReaction(normalizedCurrent === item.id ? null : item.id);
+                        closePicker();
+                      }}
+                      aria-label={item.label}
+                      aria-pressed={isSelected}
+                      style={{
+                        width: 30,
+                        height: 30,
+                        background: isSelected
+                          ? `color-mix(in srgb, ${item.color} 15%, transparent)`
+                          : isHovered
+                            ? 'var(--color-surface-elevated)'
+                            : 'transparent',
+                        border: isSelected ? `1px solid ${item.color}` : '1px solid transparent',
+                        cursor: 'pointer',
+                        padding: 0,
+                        borderRadius: 4,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                      onPointerEnter={(e) => {
+                        if (e.pointerType === 'mouse') setHoveredId(item.id as string);
+                      }}
+                      onPointerLeave={(e) => {
+                        if (e.pointerType === 'mouse') setHoveredId(null);
+                      }}
+                    >
+                      {item.icon}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>,
+          document.body
+        )}
 
       {/* Main Trigger Button — Unified 4px Swiss Field Chip */}
       <button
+        ref={triggerButtonRef}
         type="button"
         className="interactive-click"
+        aria-label={triggerAriaLabel}
+        aria-expanded={showPicker}
+        aria-haspopup="menu"
+        onPointerDown={(e) => {
+          lastPointerTypeRef.current = e.pointerType;
+        }}
         onClick={(e) => {
           e.stopPropagation();
-          if (!showPicker) openPickerWithBoundsCheck();
-          else setShowPicker(false);
+          const isKeyboardActivation = e.detail === 0;
+          const isMouseClick = !isKeyboardActivation && lastPointerTypeRef.current === 'mouse';
+          if (isMouseClick && (openedByHoverRef.current || !showPicker)) {
+            // Desktop hover opens dock; clicking main trigger quick-toggles reaction
+            onSelectReaction(normalizedCurrent ? null : 'like');
+            closePicker();
+            return;
+          }
+          if (!showPicker) {
+            openPickerWithBoundsCheck(false);
+          } else {
+            closePicker();
+          }
         }}
         style={{
           background: activeItem ? `color-mix(in srgb, ${activeItem.color} 12%, transparent)` : 'var(--color-bg-main)',

@@ -76,7 +76,7 @@ PHONG CÁCH GIAO TIẾP:
 - Định dạng Markdown sạch đẹp: in đậm từ khóa (**Lảo Thẩn**, **S.T.O.P**, **Quy tắc 3 lớp áo**), gạch đầu dòng thoáng, tuyệt đối không viết wall of text.
 - TUYỆT ĐỐI KHÔNG DÙNG BẤT KỲ EMOJI NÀO (Hệ thống LOST chỉ sử dụng Vector SVG thuần túy).
 - TUYỆT ĐỐI KHÔNG bịa số điện thoại cứu hộ, cao độ đỉnh hay tọa độ. Chỉ dùng đúng số liệu thực tế Việt Nam và hotline xác thực (112, 113, 114, 115, VQG Hoàng Liên 02143.871.494 / 0985.834.581, VQG Bạch Mã 0234.3871.330, VQG Bidoup - Núi Bà 0263.3502.005, VQG Chư Yang Sin 0262.3734.226, Khu BTTN Kon Chư Răng 0985.551.682).
-- Khi ngữ cảnh có sẵn dữ liệu thời tiết Open-Meteo, đánh giá Go/No-Go, sự cố thực địa hoặc hồ sơ người dùng, HÃY KHAI THÁC TRỰC TIẾP và trích dẫn chính xác số liệu đó.
+- Khi ngữ cảnh có sẵn dữ liệu thời tiết trực tuyến MET Norway (CC BY 4.0), đánh giá Go/No-Go, sự cố thực địa hoặc hồ sơ người dùng, HÃY KHAI THÁC TRỰC TIẾP và trích dẫn chính xác số liệu đó.
 - Khi người dùng ở tình huống nguy hiểm (AMS, lạc đường, hạ thân nhiệt, rắn cắn, gãy xương, lũ quét, sốc nhiệt, ong đốt, hoảng loạn), ưu tiên hướng dẫn sơ cứu chuẩn WFA (việc cần làm + CẤM KỴ) và số cứu hộ trước tiên.
 - Luôn bảo vệ quy định PCCC rừng (Nghị định 35/2019/NĐ-CP) và 7 nguyên tắc Leave No Trace.`;
 
@@ -85,8 +85,16 @@ let cachedTrails: Trail[] = mockTrails;
 let lastCacheTimestamp = 0;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
-// Gemini circuit breaker (prevents cascading timeouts during quota/outage)
+// Gemini circuit breaker (shared across text, vision & SSE streaming to prevent cascading timeouts)
 let geminiCircuitOpenUntil = 0;
+
+export function isGeminiCircuitOpen(): boolean {
+  return Date.now() < geminiCircuitOpenUntil;
+}
+
+export function openGeminiCircuit(durationMs = 60_000): void {
+  geminiCircuitOpenUntil = Date.now() + Math.max(5_000, durationMs);
+}
 
 export function invalidateAiTrailCache() {
   lastCacheTimestamp = 0;
@@ -115,9 +123,14 @@ export async function getAllAvailableTrails(): Promise<Trail[]> {
 
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
-    const dbPromise = TrailModel.find({ status: 'approved' }).lean().maxTimeMS(1500);
+    const dbPromise = TrailModel.find({ status: 'approved' })
+      .select('-gpxTrack')
+      .lean()
+      .maxTimeMS(1500)
+      .catch(() => null);
     const timeoutPromise = new Promise<null>((resolve) => {
       timeoutId = setTimeout(() => resolve(null), 1200);
+      timeoutId.unref?.();
     });
     const dbTrails = await Promise.race([dbPromise, timeoutPromise]);
     if (timeoutId) clearTimeout(timeoutId);
@@ -229,7 +242,8 @@ function buildSanitizedGeminiContents(
 
 /**
  * Call Live Google Gemini API via x-goog-api-key header (never URL query param)
- * with 7s timeout, fast-fail on 400/401/403, and 60s circuit breaker on quota errors.
+ * with bounded per-model & total deadline, response-body cleanup, fast-fail on 400/401/403,
+ * and 60s circuit breaker on quota errors.
  */
 async function generateWithGemini(
   prompt: string,
@@ -238,13 +252,16 @@ async function generateWithGemini(
 ): Promise<string | null> {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!apiKey) return null;
-  if (Date.now() < geminiCircuitOpenUntil) return null;
+  if (isGeminiCircuitOpen()) return null;
 
   const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest'];
   const systemInstructionText = `${SYSTEM_INSTRUCTION}\n\n[NGỮ CẢNH XÁC THỰC TỪ HỆ THỐNG LOST]:\n${contextData}`;
   const contents = buildSanitizedGeminiContents(history, prompt);
+  const overallDeadline = Date.now() + 11_000;
 
   for (const modelName of candidateModels) {
+    const remainingMs = overallDeadline - Date.now();
+    if (remainingMs < 1500) break;
     try {
       const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
       const response = await fetch(endpoint, {
@@ -253,7 +270,7 @@ async function generateWithGemini(
           'Content-Type': 'application/json',
           'x-goog-api-key': apiKey,
         },
-        signal: AbortSignal.timeout(7000),
+        signal: AbortSignal.timeout(Math.min(5500, remainingMs)),
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemInstructionText }] },
           contents,
@@ -272,12 +289,13 @@ async function generateWithGemini(
           return removeEmojis(text.trim());
         }
       } else {
+        response.body?.cancel().catch(() => {});
         if (response.status === 400 || response.status === 401 || response.status === 403) {
           console.warn(`[LOST AI] Gemini fast-fail HTTP ${response.status} on ${modelName}`);
           return null;
         }
         if (response.status === 429 || response.status === 503) {
-          geminiCircuitOpenUntil = Date.now() + 60_000;
+          openGeminiCircuit(60_000);
           console.warn(`[LOST AI] Gemini rate-limited/unavailable (${response.status}), opening 60s circuit breaker`);
           return null;
         }
@@ -287,6 +305,127 @@ async function generateWithGemini(
     }
   }
 
+  return null;
+}
+
+/**
+ * Leak-free SSE upstream streaming helper for Gemini `:streamGenerateContent?alt=sse`.
+ * Guarantees `reader.cancel()` on abort/timeout/error and flushes any trailing buffered `data:` line at EOF.
+ */
+export async function streamGeminiSseUpstream(params: {
+  prompt: string;
+  history?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  contextData?: string;
+  signal?: AbortSignal;
+  onDelta: (deltaText: string) => void;
+}): Promise<{ text: string; completed: boolean } | null> {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (!apiKey || isGeminiCircuitOpen() || params.signal?.aborted) return null;
+
+  const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+  const systemInstructionText = `${SYSTEM_INSTRUCTION}\n\n[NGỮ CẢNH XÁC THỰC TỪ HỆ THỐNG LOST]:\n${params.contextData || ''}`;
+  const contents = buildSanitizedGeminiContents(params.history || [], params.prompt);
+
+  for (const modelName of candidateModels) {
+    if (params.signal?.aborted) return null;
+    const timeoutController = new AbortController();
+    const timer = setTimeout(() => timeoutController.abort(), 14_000);
+    timer.unref?.();
+    const onParentAbort = () => timeoutController.abort();
+    params.signal?.addEventListener('abort', onParentAbort, { once: true });
+
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    try {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?alt=sse`;
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        signal: timeoutController.signal,
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemInstructionText }] },
+          contents,
+          generationConfig: { temperature: 0.35, topP: 0.9, maxOutputTokens: 2048 },
+        }),
+      });
+
+      if (!response.ok || !response.body) {
+        response.body?.cancel().catch(() => {});
+        if (response.status === 400 || response.status === 401 || response.status === 403) return null;
+        if (response.status === 429 || response.status === 503) {
+          openGeminiCircuit(60_000);
+          return null;
+        }
+        continue;
+      }
+
+      reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      let fullText = '';
+
+      const processLine = (rawLine: string) => {
+        const line = rawLine.trim();
+        if (!line.startsWith('data:')) return;
+        const jsonStr = line.slice(5).trim();
+        if (!jsonStr || jsonStr === '[DONE]') return;
+        try {
+          const parsed: any = JSON.parse(jsonStr);
+          const partText = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (typeof partText === 'string' && partText.length > 0) {
+            const clean = removeEmojis(partText);
+            if (clean) {
+              fullText += clean;
+              params.onDelta(clean);
+            }
+          }
+        } catch {
+          // Ignore non-JSON heartbeat fragments
+        }
+      };
+
+      while (true) {
+        if (timeoutController.signal.aborted) {
+          return fullText ? { text: fullText, completed: false } : null;
+        }
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          processLine(line);
+        }
+      }
+
+      // Flush final decoder bytes and any trailing buffered SSE line without trailing newline
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        for (const tailLine of buffer.split(/\r?\n/)) {
+          processLine(tailLine);
+        }
+      }
+
+      if (fullText.trim()) {
+        return { text: fullText.trim(), completed: true };
+      }
+    } catch {
+      // Clean fallthrough to next candidate model or offline fallback
+    } finally {
+      clearTimeout(timer);
+      params.signal?.removeEventListener('abort', onParentAbort);
+      if (reader) {
+        await reader.cancel().catch(() => {});
+        try {
+          reader.releaseLock();
+        } catch {
+          // Already released
+        }
+      }
+    }
+  }
   return null;
 }
 
@@ -402,6 +541,8 @@ function selectEmergencyContacts(normalizedQ: string, activeTrail?: Trail): Veri
     list.unshift(VERIFIED_VIETNAM_EMERGENCY_CONTACTS.laiChauForestry);
   } else if (hasWholePhrase(combined, 'pha luong') || hasWholePhrase(combined, 'moc chau') || hasWholePhrase(combined, 'van ho')) {
     list.unshift(VERIFIED_VIETNAM_EMERGENCY_CONTACTS.sonLaForestry);
+  } else if (hasWholePhrase(combined, 'yen tu') || hasWholePhrase(combined, 'chua dong') || hasWholePhrase(combined, 'uong bi')) {
+    list.unshift(VERIFIED_VIETNAM_EMERGENCY_CONTACTS.yenTuPark);
   } else if (hasWholePhrase(combined, 'binh lieu') || hasWholePhrase(combined, 'moc 1305') || hasWholePhrase(combined, 'cao xiem') || hasWholePhrase(combined, 'quang ninh')) {
     list.unshift(VERIFIED_VIETNAM_EMERGENCY_CONTACTS.quangNinhForestry);
   } else if (hasWholePhrase(combined, 'cuc phuong') || hasWholePhrase(combined, 'may bac') || hasWholePhrase(combined, 'nho quan') || hasWholePhrase(combined, 'ninh binh')) {
@@ -839,6 +980,7 @@ function buildStructuredGearChecklist(trail?: Trail, goNoGo?: GoNoGoAssessmentPa
  */
 function buildTrailItineraryCard(trail: Trail): ItineraryCardData {
   const isOneDay = trail.durationDays <= 1;
+  const isThreeDay = trail.durationDays >= 3;
   const steps = isOneDay
     ? [
         { day: 1, time: '05:30', title: 'Tập trung & Khởi động tại cửa rừng', description: `Kiểm tra balo, đăng ký khai báo (${trail.permitRequired ? trail.permitInfo || 'Trạm Kiểm lâm' : 'điểm xuất phát'}) tại ${trail.district || trail.province}.`, locationNote: `${trail.district ? trail.district + ', ' : ''}${trail.province}` },
@@ -847,15 +989,25 @@ function buildTrailItineraryCard(trail: Trail): ItineraryCardData {
         { day: 1, time: '12:30', title: 'Thu gom rác (LNT) & Hạ sơn', description: 'Kéo dài gậy trekking 5–10cm bảo vệ khớp gối, giữ cự ly nhóm an toàn.', locationNote: 'Đường xuống núi' },
         { day: 1, time: '16:00', title: 'Về chân núi & Kết thúc hành trình', description: 'Báo bình an cho người thân, giãn cơ hồi phục.', locationNote: 'Chân núi' },
       ]
-    : [
-        { day: 1, time: '07:30', title: 'Khai báo & Gặp Porter tại điểm xuất phát', description: `Kiểm tra CCCD gốc, chia đồ chung cho Porter (${trail.permitRequired ? trail.permitInfo || 'Thủ tục BQL VQG / Kiểm lâm' : 'Khai báo địa phương'}).`, locationNote: `${trail.district ? trail.district + ', ' : ''}${trail.province}` },
-        { day: 1, time: '08:30', title: 'Bắt đầu chặng 1 lên điểm nghỉ đêm', description: `Duy trì nhịp bước ổn định (Rest Step), ăn trưa nhẹ giữa chặng khoảng 11:30.`, locationNote: 'Tuyến lên lán / bãi trại' },
-        { day: 1, time: '16:30', title: trail.hasCampsite ? 'Hạ trại / Nhận lán nghỉ đêm' : 'Nghỉ đêm tại lán bản địa', description: 'Thay đồ khô ngay để tránh nhiễm lạnh, ăn tối nóng và ngủ sớm trước 21:00.', locationNote: trail.hasCampsite ? 'Bãi hạ trại / Lán nghỉ' : 'Lán nghỉ' },
-        { day: 2, time: '04:30', title: 'Thức dậy, ăn sáng nóng & Đẩy đỉnh săn mây', description: 'Mang đèn pin đội đầu, áo gió chắn lạnh và 1L nước ấm.', locationNote: 'Chặng đẩy đỉnh' },
-        { day: 2, time: '06:00', title: `Chạm đỉnh ${trail.name} (${trail.maxAltitudeM}m)`, description: 'Đón bình minh, săn biển mây và check-in hộ chiếu đỉnh trên LOST.', locationNote: `Đỉnh ${trail.name}` },
-        { day: 2, time: '08:30', title: 'Rút về lán, dọn sạch rác (LNT) & Hạ sơn', description: 'Thu gọn đồ đạc, kiểm đủ quân số và bắt đầu đổ dốc về chân núi.', locationNote: 'Đường hạ sơn' },
-        { day: 2, time: '15:00', title: 'Về điểm xuất phát an toàn', description: 'Tắt hẹn giờ báo bình an, kiểm tra sức khỏe đoàn và nghỉ ngơi.', locationNote: 'Chân núi' },
-      ];
+    : isThreeDay
+      ? [
+          { day: 1, time: '07:30', title: 'Khai báo & Gặp Porter tại điểm xuất phát', description: `Kiểm tra CCCD gốc, chia đồ chung cho Porter (${trail.permitRequired ? trail.permitInfo || 'Thủ tục BQL VQG / Biên phòng' : 'Khai báo địa phương'}).`, locationNote: `${trail.district ? trail.district + ', ' : ''}${trail.province}` },
+          { day: 1, time: '08:30', title: 'Chặng 1 xuyên rừng tới điểm hạ trại đêm 1', description: `Duy trì nhịp bước ổn định (Rest Step), nghỉ trưa nhẹ lúc 11:30 và hạ trại/nhận lán trước 16:30.`, locationNote: 'Lán / Bãi trại đêm 1' },
+          { day: 2, time: '05:00', title: 'Ăn sáng nóng & Đẩy chặng chính lên đỉnh', description: 'Mang balo gọn nhẹ (nước, áo gió, đèn pin, Oresol, thanh năng lượng) để tối ưu thể lực.', locationNote: 'Chặng đẩy đỉnh' },
+          { day: 2, time: '11:30', title: `Chạm đích / Đỉnh ${trail.name} (${trail.maxAltitudeM}m)`, description: 'Nghỉ ăn trưa nhanh, check-in tọa độ đỉnh trên LOST và kiểm soát giờ quay đầu an toàn.', locationNote: `Đỉnh ${trail.name}` },
+          { day: 2, time: '16:30', title: 'Rút về lán / bãi trại đêm 2 trước hoàng hôn', description: 'Thay đồ khô ngay, ăn tối nóng giàu tinh bột & đạm để phục hồi cơ bắp.', locationNote: 'Lán / Bãi trại đêm 2' },
+          { day: 3, time: '07:00', title: 'Thu gom sạch rác (LNT) & Hạ sơn', description: 'Kiểm đủ quân số, kéo dài gậy trekking bảo vệ khớp gối trên các đoạn đổ dốc dài.', locationNote: 'Đường hạ sơn' },
+          { day: 3, time: '15:00', title: 'Về điểm xuất phát an toàn', description: 'Tắt hẹn giờ báo bình an, báo cáo trạm kiểm lâm/biên phòng và nghỉ ngơi.', locationNote: 'Chân núi' },
+        ]
+      : [
+          { day: 1, time: '07:30', title: 'Khai báo & Gặp Porter tại điểm xuất phát', description: `Kiểm tra CCCD gốc, chia đồ chung cho Porter (${trail.permitRequired ? trail.permitInfo || 'Thủ tục BQL VQG / Kiểm lâm' : 'Khai báo địa phương'}).`, locationNote: `${trail.district ? trail.district + ', ' : ''}${trail.province}` },
+          { day: 1, time: '08:30', title: 'Bắt đầu chặng 1 lên điểm nghỉ đêm', description: `Duy trì nhịp bước ổn định (Rest Step), ăn trưa nhẹ giữa chặng khoảng 11:30.`, locationNote: 'Tuyến lên lán / bãi trại' },
+          { day: 1, time: '16:30', title: trail.hasCampsite ? 'Hạ trại / Nhận lán nghỉ đêm' : 'Nghỉ đêm tại lán bản địa', description: 'Thay đồ khô ngay để tránh nhiễm lạnh, ăn tối nóng và ngủ sớm trước 21:00.', locationNote: trail.hasCampsite ? 'Bãi hạ trại / Lán nghỉ' : 'Lán nghỉ' },
+          { day: 2, time: '04:30', title: 'Thức dậy, ăn sáng nóng & Đẩy đỉnh săn mây', description: 'Mang đèn pin đội đầu, áo gió chắn lạnh và 1L nước ấm.', locationNote: 'Chặng đẩy đỉnh' },
+          { day: 2, time: '06:00', title: `Chạm đỉnh ${trail.name} (${trail.maxAltitudeM}m)`, description: 'Đón bình minh, săn biển mây và check-in hộ chiếu đỉnh trên LOST.', locationNote: `Đỉnh ${trail.name}` },
+          { day: 2, time: '08:30', title: 'Rút về lán, dọn sạch rác (LNT) & Hạ sơn', description: 'Thu gọn đồ đạc, kiểm đủ quân số và bắt đầu đổ dốc về chân núi.', locationNote: 'Đường hạ sơn' },
+          { day: 2, time: '15:00', title: 'Về điểm xuất phát an toàn', description: 'Tắt hẹn giờ báo bình an, kiểm tra sức khỏe đoàn và nghỉ ngơi.', locationNote: 'Chân núi' },
+        ];
 
   return {
     trailId: trail.id,
@@ -1202,9 +1354,10 @@ async function resolveAuthoritativeContext(
         let timerId: ReturnType<typeof setTimeout> | undefined;
         try {
           const res = await Promise.race([
-            computeTrailGoNoGo(targetTrail.id),
+            computeTrailGoNoGo(targetTrail.id).catch(() => null),
             new Promise<null>((resolve) => {
               timerId = setTimeout(() => resolve(null), 1800);
+              timerId.unref?.();
             }),
           ]);
           goNoGo = res;
@@ -2294,9 +2447,22 @@ export async function getAiResponse(payload: ChatRequestPayload): Promise<ChatRe
       contextSnippet += `\nTỌA ĐỘ GPS NGƯỜI DÙNG: Lat ${liveCtx.userCoordinates.lat.toFixed(4)}, Lng ${liveCtx.userCoordinates.lng.toFixed(4)}\n`;
     }
 
-    contextSnippet += `\nDANH MỤC CUNG ĐƯỜNG XÁC THỰC TRÊN LOST:\n`;
-    for (const t of availableTrails) {
-      contextSnippet += `- [${sanitizePromptContextText(t.id, 64)}] ${sanitizePromptContextText(t.name, 90)} | ${sanitizePromptContextText(t.province, 50)} (${t.region}) | ${t.maxAltitudeM}m | ${t.distanceKm}km | +${t.elevationGainM}m | Cấp ${t.difficultyLevel}/5 | Mùa đẹp: ${t.bestMonths?.join(',')} | Cứu hộ: ${sanitizePromptContextText(t.rescueContact?.phone || '112/114', 50)}. ${sanitizePromptContextText(t.description || '', 120)}\n`;
+    // Bound trail catalog injected into Gemini context (max 40 prioritized trails) so prompt size stays bounded as catalog grows
+    const prioritizedTrails = [...availableTrails]
+      .sort((a, b) => {
+        const aFocus = liveCtx.targetTrail && a.id === liveCtx.targetTrail.id ? 1 : 0;
+        const bFocus = liveCtx.targetTrail && b.id === liveCtx.targetTrail.id ? 1 : 0;
+        if (aFocus !== bFocus) return bFocus - aFocus;
+        const aReg = liveCtx.targetTrail && a.region === liveCtx.targetTrail.region ? 1 : 0;
+        const bReg = liveCtx.targetTrail && b.region === liveCtx.targetTrail.region ? 1 : 0;
+        if (aReg !== bReg) return bReg - aReg;
+        return (b.maxAltitudeM || 0) - (a.maxAltitudeM || 0);
+      })
+      .slice(0, 40);
+
+    contextSnippet += `\nDANH MỤC CUNG ĐƯỜNG XÁC THỰC TRÊN LOST (${prioritizedTrails.length}/${availableTrails.length}):\n`;
+    for (const t of prioritizedTrails) {
+      contextSnippet += `- [${sanitizePromptContextText(t.id, 64)}] ${sanitizePromptContextText(t.name, 90)} | ${sanitizePromptContextText(t.province, 50)} (${t.region}) | ${t.maxAltitudeM}m | ${t.distanceKm}km | +${t.elevationGainM}m | Cấp ${t.difficultyLevel}/5 | Mùa đẹp: ${t.bestMonths?.join(',')} | Cứu hộ: ${sanitizePromptContextText(t.rescueContact?.phone || '112/114', 50)}. ${sanitizePromptContextText(t.description || '', 100)}\n`;
     }
 
     if (matchedFaqs.length > 0) {
@@ -2648,10 +2814,13 @@ async function generateMultimodalWithGemini(params: {
 }): Promise<string | null> {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!apiKey) return null;
-  if (Date.now() < geminiCircuitOpenUntil) return null;
+  if (isGeminiCircuitOpen()) return null;
 
   const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-flash-latest'];
+  const overallDeadline = Date.now() + 14_000;
   for (const modelName of candidateModels) {
+    const remainingMs = overallDeadline - Date.now();
+    if (remainingMs < 2000) break;
     try {
       const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
       const response = await fetch(endpoint, {
@@ -2660,7 +2829,7 @@ async function generateMultimodalWithGemini(params: {
           'Content-Type': 'application/json',
           'x-goog-api-key': apiKey,
         },
-        signal: AbortSignal.timeout(9500),
+        signal: AbortSignal.timeout(Math.min(7000, remainingMs)),
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: params.systemText }] },
           contents: [
@@ -2686,11 +2855,15 @@ async function generateMultimodalWithGemini(params: {
         if (typeof text === 'string' && text.trim()) {
           return removeEmojis(text);
         }
-      } else if (response.status === 429 || response.status === 503) {
-        geminiCircuitOpenUntil = Date.now() + 60_000;
-        break;
-      } else if (response.status === 400 || response.status === 401 || response.status === 403) {
-        break;
+      } else {
+        response.body?.cancel().catch(() => {});
+        if (response.status === 429 || response.status === 503) {
+          openGeminiCircuit(60_000);
+          break;
+        }
+        if (response.status === 400 || response.status === 401 || response.status === 403) {
+          break;
+        }
       }
     } catch {
       // Fall through cleanly to offline triage checklist

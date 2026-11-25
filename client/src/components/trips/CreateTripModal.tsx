@@ -5,6 +5,7 @@ import { mockTrails } from '../../data/seedData.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import { isTopmostFocusTrap, useFocusTrap } from '../../hooks/useFocusTrap.js';
 import type { Trail } from '../../types.js';
+import { safeLocalStorageGet } from '../../utils/storageScope.js';
 
 export interface TripBudgetDraft {
   trailId?: string;
@@ -19,6 +20,33 @@ interface CreateTripModalProps {
 }
 
 type TrailWithMongoId = Trail & { _id?: string };
+
+function getVietnamTodayIso(): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const y = parts.find((p) => p.type === 'year')?.value;
+    const m = parts.find((p) => p.type === 'month')?.value;
+    const d = parts.find((p) => p.type === 'day')?.value;
+    if (y && m && d) return `${y}-${m}-${d}`;
+  } catch {
+    // Fallback to UTC+7 offset
+  }
+  const vn = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  return `${vn.getUTCFullYear()}-${String(vn.getUTCMonth() + 1).padStart(2, '0')}-${String(vn.getUTCDate()).padStart(2, '0')}`;
+}
+
+function clampMaxMembers(raw: string | number, fallback = 6): number {
+  const str = String(raw).trim();
+  if (!str) return fallback;
+  const parsed = Math.round(Number(str));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(2, Math.min(30, parsed));
+}
 
 function parseDraftBudgetFields(
   draft: TripBudgetDraft,
@@ -45,7 +73,7 @@ function parseDraftBudgetFields(
     ? `${perPersonMatch[1].trim()} / người`
     : totalMatch
       ? `Tổng đoàn ${totalMatch[1].trim()}`
-      : 'Chia đều chi phí thực tế';
+      : 'Chia đều theo chi phí chuyến đi';
 
   const parsedMembers = groupMatch
     ? Math.max(2, Math.min(30, Number(groupMatch[1]) || 6))
@@ -55,7 +83,7 @@ function parseDraftBudgetFields(
     trailId: matched ? (matched.id || (matched as TrailWithMongoId)._id || '') : '',
     trailName: matched?.name || '',
     difficultyLevel: matched?.difficultyLevel || 3,
-    title: matched ? `Ghép đoàn chinh phục ${matched.name}` : 'Chuyến trekking ghép đoàn mới',
+    title: matched ? `Ghép đoàn đi ${matched.name}` : 'Chuyến trekking ghép đoàn mới',
     estimatedCost: parsedCost,
     maxMembers: parsedMembers,
     description: note,
@@ -78,9 +106,9 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
   const [description, setDescription] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [maxMembers, setMaxMembers] = useState(6);
+  const [maxMembersInput, setMaxMembersInput] = useState('6');
   const [meetingPoint, setMeetingPoint] = useState('');
-  const [estimatedCost, setEstimatedCost] = useState('Chia đều chi phí thực tế');
+  const [estimatedCost, setEstimatedCost] = useState('Chia đều theo chi phí chuyến đi');
   const [requirements, setRequirements] = useState('');
   const [tagsInput, setTagsInput] = useState('Trekking, Ghép Đoàn');
   const [error, setError] = useState('');
@@ -144,7 +172,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
       setDifficultyLevel(parsed.difficultyLevel);
       setTitle(parsed.title);
       setEstimatedCost(parsed.estimatedCost);
-      setMaxMembers(parsed.maxMembers);
+      setMaxMembersInput(String(parsed.maxMembers));
       setDescription(parsed.description);
       setError('');
     });
@@ -159,9 +187,9 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
     setDescription('');
     setStartDate('');
     setEndDate('');
-    setMaxMembers(6);
+    setMaxMembersInput('6');
     setMeetingPoint('');
-    setEstimatedCost('Chia đều chi phí thực tế');
+    setEstimatedCost('Chia đều theo chi phí chuyến đi');
     setRequirements('');
     setTagsInput('Trekking, Ghép Đoàn');
     setError('');
@@ -210,6 +238,8 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
 
   if (!isOpen) return null;
 
+  const todayVnIso = getVietnamTodayIso();
+
   const handleStartDateChange = (val: string) => {
     setStartDate(val);
     if (endDate && val && endDate < val) {
@@ -234,7 +264,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
     if (loadingRef.current) return;
     setError('');
 
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!token) {
       setError('Bạn cần đăng nhập để tạo chuyến đi ghép đoàn.');
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
@@ -246,10 +276,27 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
       return;
     }
 
+    if (startDate < todayVnIso) {
+      setError('Ngày khởi hành không thể nằm trong quá khứ.');
+      return;
+    }
+
     if (endDate < startDate) {
       setError('Ngày kết thúc phải lớn hơn hoặc bằng ngày khởi hành.');
       return;
     }
+
+    const durationDays = Math.round(
+      (new Date(`${endDate}T00:00:00Z`).getTime() - new Date(`${startDate}T00:00:00Z`).getTime()) /
+        (24 * 60 * 60 * 1000)
+    );
+    if (durationDays > 30) {
+      setError('Thời lượng chuyến đi tối đa 30 ngày.');
+      return;
+    }
+
+    const resolvedMaxMembers = clampMaxMembers(maxMembersInput, 6);
+    setMaxMembersInput(String(resolvedMaxMembers));
 
     loadingRef.current = true;
     setLoading(true);
@@ -284,7 +331,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
           tags: parsedTags.length > 0 ? parsedTags : ['Trekking', 'Ghép Đoàn'],
           startDate,
           endDate,
-          maxMembers,
+          maxMembers: resolvedMaxMembers,
           meetingPoint: meetingPoint.trim(),
           estimatedCost: estimatedCost.trim(),
         }),
@@ -408,10 +455,10 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
             </div>
             <div>
               <div style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-primary)', textTransform: 'uppercase', letterSpacing: '0.12em' }}>
-                Kế hoạch đồng hành
+                Ghép đoàn cùng đi
               </div>
               <h3 className="font-editorial" style={{ margin: 0, fontSize: '1.3rem', fontWeight: 600, color: 'var(--color-text-main)' }}>
-                Mở Chuyến Ghép Đoàn Mới
+                Mở chuyến ghép đoàn mới
               </h3>
             </div>
           </div>
@@ -471,7 +518,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
             <div>
-              <label style={labelStyle}>Chọn cung đường thực tế</label>
+              <label style={labelStyle}>Chọn cung đường có sẵn</label>
               <select
                 value={selectedTrailId}
                 onChange={(e) => handleTrailSelect(e.target.value)}
@@ -490,7 +537,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
             </div>
 
             <div>
-              <label style={labelStyle}>Tên cung mục tiêu</label>
+              <label style={labelStyle}>Tên cung đường</label>
               <input
                 type="text"
                 placeholder="VD: Fansipan, Tà Xùa, Lảo Thẩn..."
@@ -510,6 +557,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
               <input
                 type="date"
                 required
+                min={todayVnIso}
                 value={startDate}
                 onChange={(e) => handleStartDateChange(e.target.value)}
                 style={inputStyle}
@@ -521,7 +569,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
               <input
                 type="date"
                 required
-                min={startDate || undefined}
+                min={startDate || todayVnIso}
                 value={endDate}
                 onChange={(e) => {
                   setEndDate(e.target.value);
@@ -532,14 +580,15 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
             </div>
 
             <div>
-              <label style={labelStyle}>Số thành viên tối đa *</label>
+              <label style={labelStyle}>Số thành viên tối đa (2–30) *</label>
               <input
                 type="number"
                 min={2}
-                max={25}
+                max={30}
                 required
-                value={maxMembers}
-                onChange={(e) => setMaxMembers(Math.max(2, Math.min(25, Number(e.target.value) || 2)))}
+                value={maxMembersInput}
+                onChange={(e) => setMaxMembersInput(e.target.value)}
+                onBlur={() => setMaxMembersInput(String(clampMaxMembers(maxMembersInput, 6)))}
                 style={inputStyle}
               />
             </div>
@@ -572,7 +621,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
           </div>
 
           <div>
-            <label style={labelStyle}>Dự kiến chi phí đóng góp</label>
+            <label style={labelStyle}>Chi phí dự kiến mỗi người</label>
             <input
               type="text"
               placeholder="VD: Khoảng 1.800.000 VNĐ / người (Xe khứ hồi + Porter + Ăn)"
@@ -583,7 +632,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
           </div>
 
           <div>
-            <label style={labelStyle}>Mô tả kế hoạch &amp; Lộ trình</label>
+            <label style={labelStyle}>Lịch trình &amp; ghi chú thêm</label>
             <textarea
               rows={3}
               placeholder="Chi tiết lộ trình di chuyển, lịch nghỉ trại, phương tiện..."
@@ -595,7 +644,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
             <div>
-              <label style={labelStyle}>Yêu cầu thể lực &amp; Chuẩn bị</label>
+              <label style={labelStyle}>Yêu cầu thể lực &amp; đồ cần mang</label>
               <input
                 type="text"
                 placeholder="VD: Đã từng đi ít nhất 1 cung >2.000m, tự túc giày bám đá"
@@ -635,7 +684,7 @@ export const CreateTripModal: React.FC<CreateTripModalProps> = ({
               className="btn btn-primary"
               style={{ borderRadius: 4, padding: '8px 22px', fontSize: '0.84rem', fontWeight: 800 }}
             >
-              {loading ? 'Đang tạo chuyến...' : 'Đăng Mở Chuyến'}
+              {loading ? 'Đang tạo chuyến...' : 'Tạo chuyến đi'}
             </button>
           </div>
         </form>

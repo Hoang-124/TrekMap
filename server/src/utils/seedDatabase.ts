@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { TrailModel } from '../models/Trail.js';
 import { UserModel } from '../models/User.js';
 import { GuideModel } from '../models/Guide.js';
@@ -22,7 +23,11 @@ import { hashPassword } from './auth.js';
 
 export const seedAll13Collections = async (): Promise<boolean> => {
   try {
-    console.log('[MongoDB Seeder]: Initializing idempotent MongoDB seeding...');
+    const forceSync =
+      process.env.FORCE_SEED_SYNC === 'true' || process.env.SEED_FORCE_SYNC === 'true';
+    console.log(
+      `[MongoDB Seeder]: Initializing ${forceSync ? 'FORCE-SYNC' : 'non-destructive ($setOnInsert)'} MongoDB seeding...`
+    );
 
     // 1. Seed Categories (idempotent)
     const categoriesCount = await CategoryModel.countDocuments();
@@ -134,40 +139,57 @@ export const seedAll13Collections = async (): Promise<boolean> => {
           await GuideModel.deleteOne({ _id: dup._id });
         }
 
-        const updateFields: Record<string, unknown> = {
-          slug: g.slug,
-          name: g.name,
-          phone: g.phone,
-          avatarUrl: g.avatarUrl,
-          roleType: g.roleType,
-          region: g.region,
-          provinces: g.provinces,
-          trailSlugs: g.trailSlugs,
-          priceNote: g.priceNote,
-          basePricePerDayVnd: g.basePricePerDayVnd,
-          maxGroupSize: g.maxGroupSize,
-          specialties: g.specialties,
-          languages: g.languages,
-          certifications: g.certifications,
-          experienceYears: g.experienceYears,
-          bio: g.bio,
-          verified: g.verified,
-          isActive: g.isActive,
-        };
+        if (forceSync) {
+          const updateFields: Record<string, unknown> = {
+            slug: g.slug,
+            name: g.name,
+            phone: g.phone,
+            avatarUrl: g.avatarUrl,
+            roleType: g.roleType,
+            region: g.region,
+            provinces: g.provinces,
+            trailSlugs: g.trailSlugs,
+            priceNote: g.priceNote,
+            basePricePerDayVnd: g.basePricePerDayVnd,
+            maxGroupSize: g.maxGroupSize,
+            specialties: g.specialties,
+            languages: g.languages,
+            certifications: g.certifications,
+            experienceYears: g.experienceYears,
+            bio: g.bio,
+            verified: g.verified,
+            isActive: g.isActive,
+          };
 
-        if (reviewsMerged) {
-          const avgRating =
-            primaryReviews.length > 0
-              ? Math.round(
-                  (primaryReviews.reduce((sum, r) => sum + Number(r.rating || 0), 0) / primaryReviews.length) * 10
-                ) / 10
-              : 0;
-          updateFields.reviews = primaryReviews;
-          updateFields.reviewCount = primaryReviews.length;
-          updateFields.rating = avgRating;
+          if (reviewsMerged) {
+            const avgRating =
+              primaryReviews.length > 0
+                ? Math.round(
+                    (primaryReviews.reduce((sum, r) => sum + Number(r.rating || 0), 0) / primaryReviews.length) * 10
+                  ) / 10
+                : 0;
+            updateFields.reviews = primaryReviews;
+            updateFields.reviewCount = primaryReviews.length;
+            updateFields.rating = avgRating;
+          }
+
+          await GuideModel.updateOne({ _id: primary._id }, { $set: updateFields });
+        } else if (reviewsMerged || !primary.slug) {
+          const nonDestructivePatch: Record<string, unknown> = {};
+          if (!primary.slug) nonDestructivePatch.slug = g.slug;
+          if (reviewsMerged) {
+            const avgRating =
+              primaryReviews.length > 0
+                ? Math.round(
+                    (primaryReviews.reduce((sum, r) => sum + Number(r.rating || 0), 0) / primaryReviews.length) * 10
+                  ) / 10
+                : 0;
+            nonDestructivePatch.reviews = primaryReviews;
+            nonDestructivePatch.reviewCount = primaryReviews.length;
+            nonDestructivePatch.rating = avgRating;
+          }
+          await GuideModel.updateOne({ _id: primary._id }, { $set: nonDestructivePatch });
         }
-
-        await GuideModel.updateOne({ _id: primary._id }, { $set: updateFields });
       } else {
         await GuideModel.create({
           slug: g.slug,
@@ -197,58 +219,58 @@ export const seedAll13Collections = async (): Promise<boolean> => {
     const totalGuides = await GuideModel.countDocuments({ isActive: { $ne: false } });
     console.log(`[MongoDB Seeder]: Verified ${totalGuides} active official Guides in 'guides' collection.`);
 
-    // 4. Non-Destructive Trail Seeding + Geo/Contact Migration (all 36 DEM-verified trails)
-    // - Inserts full document if missing ($setOnInsert).
-    // - For existing seeded docs, repairs verified geo/waypoint/GPX/media/contact/season fields ($set)
-    //   while NEVER touching live rating, reviewCount, status, or createdBy.
+    // 4. Strictly Non-Destructive Trail Seeding ($setOnInsert only by default — preserves Admin edits!)
+    // Explicit overwrite sync ONLY when FORCE_SEED_SYNC=true is set for CLI maintenance.
     for (const t of mockTrails) {
+      const canonicalGeoAndMeta = {
+        startLat: t.startLat,
+        startLng: t.startLng,
+        endLat: t.endLat,
+        endLng: t.endLng,
+        startLocation: {
+          type: 'Point' as const,
+          coordinates: [t.startLng, t.startLat] as [number, number],
+        },
+        waypoints: t.waypoints,
+        gpxTrack: t.gpxTrack,
+        coverImage: t.coverImage,
+        galleryImages: t.galleryImages || [],
+        rescueContact: t.rescueContact,
+        region: t.region,
+        permitRequired: t.permitRequired,
+        permitInfo: t.permitInfo || '',
+        maxAltitudeM: t.maxAltitudeM,
+        elevationGainM: t.elevationGainM,
+        distanceKm: t.distanceKm,
+        bestMonths: t.bestMonths,
+        avoidMonths: t.avoidMonths,
+        altNames: t.altNames || [],
+      };
+      const initialInsertFields = {
+        id: t.id,
+        name: t.name,
+        province: t.province,
+        district: t.district,
+        durationDays: t.durationDays,
+        durationHoursNote: t.durationHoursNote,
+        difficultyLevel: t.difficultyLevel,
+        difficultyNote: t.difficultyNote,
+        description: t.description,
+        transportationInfo: t.transportationInfo,
+        hasCampsite: t.hasCampsite,
+        hasWaterSource: t.hasWaterSource,
+        kidFriendly: t.kidFriendly,
+        status: t.status,
+        rating: t.rating,
+        reviewCount: t.reviewCount,
+        ...(adminUser ? { createdBy: adminUser._id } : {}),
+      };
+
       await TrailModel.updateOne(
         { id: t.id },
-        {
-          $set: {
-            startLat: t.startLat,
-            startLng: t.startLng,
-            endLat: t.endLat,
-            endLng: t.endLng,
-            startLocation: {
-              type: 'Point',
-              coordinates: [t.startLng, t.startLat],
-            },
-            waypoints: t.waypoints,
-            gpxTrack: t.gpxTrack,
-            coverImage: t.coverImage,
-            galleryImages: t.galleryImages || [],
-            rescueContact: t.rescueContact,
-            region: t.region,
-            permitRequired: t.permitRequired,
-            permitInfo: t.permitInfo || '',
-            maxAltitudeM: t.maxAltitudeM,
-            elevationGainM: t.elevationGainM,
-            distanceKm: t.distanceKm,
-            bestMonths: t.bestMonths,
-            avoidMonths: t.avoidMonths,
-            altNames: t.altNames || [],
-          },
-          $setOnInsert: {
-            id: t.id,
-            name: t.name,
-            province: t.province,
-            district: t.district,
-            durationDays: t.durationDays,
-            durationHoursNote: t.durationHoursNote,
-            difficultyLevel: t.difficultyLevel,
-            difficultyNote: t.difficultyNote,
-            description: t.description,
-            transportationInfo: t.transportationInfo,
-            hasCampsite: t.hasCampsite,
-            hasWaterSource: t.hasWaterSource,
-            kidFriendly: t.kidFriendly,
-            status: t.status,
-            rating: t.rating,
-            reviewCount: t.reviewCount,
-            ...(adminUser ? { createdBy: adminUser._id } : {}),
-          },
-        },
+        forceSync
+          ? { $set: canonicalGeoAndMeta, $setOnInsert: initialInsertFields }
+          : { $setOnInsert: { ...canonicalGeoAndMeta, ...initialInsertFields } },
         { upsert: true }
       );
     }
@@ -256,77 +278,77 @@ export const seedAll13Collections = async (): Promise<boolean> => {
     const totalTrails = await TrailModel.countDocuments();
     console.log(`[MongoDB Seeder]: Verified ${totalTrails} Trails in MongoDB 'trails' collection.`);
 
-    // 5. Idempotent SummitChallengeModel Upsert (10 Real Vietnam Summit Collections)
+    // 5. Non-Destructive SummitChallengeModel Upsert ($setOnInsert by default; $set only when FORCE_SEED_SYNC=true)
     if (VIETNAM_SUMMIT_CHALLENGES.length > 0) {
       await SummitChallengeModel.bulkWrite(
-        VIETNAM_SUMMIT_CHALLENGES.map((c) => ({
-          updateOne: {
-            filter: { slug: c.slug },
-            update: {
-              $set: {
-                title: c.title,
-                subtitle: c.subtitle,
-                description: c.description,
-                badgeName: c.badgeName,
-                tier: c.tier,
-                region: c.region,
-                ruleType: c.ruleType,
-                requiredTrailSlugs: c.requiredTrailSlugs,
-                ...(typeof c.minAltitudeM === 'number' ? { minAltitudeM: c.minAltitudeM } : {}),
-                targetCount: c.targetCount,
-                ...(typeof c.targetKm === 'number' ? { targetKm: c.targetKm } : {}),
-                ...(typeof c.targetGainM === 'number' ? { targetGainM: c.targetGainM } : {}),
-                rewardPoints: c.rewardPoints,
-                coverImage: c.coverImage,
-                isActive: c.isActive,
-                sortOrder: c.sortOrder,
-              },
-              $setOnInsert: {
-                slug: c.slug,
-              },
+        VIETNAM_SUMMIT_CHALLENGES.map((c) => {
+          const challengeFields = {
+            title: c.title,
+            subtitle: c.subtitle,
+            description: c.description,
+            badgeName: c.badgeName,
+            tier: c.tier,
+            region: c.region,
+            ruleType: c.ruleType,
+            requiredTrailSlugs: c.requiredTrailSlugs,
+            ...(typeof c.minAltitudeM === 'number' ? { minAltitudeM: c.minAltitudeM } : {}),
+            targetCount: c.targetCount,
+            ...(typeof c.targetKm === 'number' ? { targetKm: c.targetKm } : {}),
+            ...(typeof c.targetGainM === 'number' ? { targetGainM: c.targetGainM } : {}),
+            rewardPoints: c.rewardPoints,
+            coverImage: c.coverImage,
+            isActive: c.isActive,
+            sortOrder: c.sortOrder,
+          };
+          return {
+            updateOne: {
+              filter: { slug: c.slug },
+              update: forceSync
+                ? { $set: challengeFields, $setOnInsert: { slug: c.slug } }
+                : { $setOnInsert: { slug: c.slug, ...challengeFields } },
+              upsert: true,
             },
-            upsert: true,
-          },
-        })),
+          };
+        }),
         { ordered: false }
       );
       const totalChallenges = await SummitChallengeModel.countDocuments();
       console.log(`[MongoDB Seeder]: Verified ${totalChallenges} Summit Challenges in 'summitchallenges' collection.`);
     }
 
-    // 6. Idempotent RangerStationModel Upsert (28 Verified VQG / KBT / Ranger / Rescue Entries)
+    // 6. Non-Destructive RangerStationModel Upsert ($setOnInsert by default; $set only when FORCE_SEED_SYNC=true)
     if (VIETNAM_RANGER_STATIONS.length > 0) {
       await RangerStationModel.bulkWrite(
-        VIETNAM_RANGER_STATIONS.map((s) => ({
-          updateOne: {
-            filter: { slug: s.slug },
-            update: {
-              $set: {
-                name: s.name,
-                authorityType: s.authorityType,
-                region: s.region,
-                province: s.province,
-                district: s.district,
-                address: s.address,
-                coordinates: s.coordinates,
-                hotlinePhone: s.hotlinePhone,
-                emergencyPhone: s.emergencyPhone,
-                permitRequired: s.permitRequired,
-                permitLeadDays: s.permitLeadDays,
-                permitFeeNote: s.permitFeeNote,
-                officeHours: s.officeHours,
-                coveredTrailSlugs: s.coveredTrailSlugs,
-                officialWebsite: s.officialWebsite,
-                verifiedSource: s.verifiedSource,
-                isActive: true,
-              },
-              $setOnInsert: {
-                slug: s.slug,
-              },
+        VIETNAM_RANGER_STATIONS.map((s) => {
+          const stationFields = {
+            name: s.name,
+            authorityType: s.authorityType,
+            region: s.region,
+            province: s.province,
+            district: s.district,
+            address: s.address,
+            coordinates: s.coordinates,
+            hotlinePhone: s.hotlinePhone,
+            emergencyPhone: s.emergencyPhone,
+            permitRequired: s.permitRequired,
+            permitLeadDays: s.permitLeadDays,
+            permitFeeNote: s.permitFeeNote,
+            officeHours: s.officeHours,
+            coveredTrailSlugs: s.coveredTrailSlugs,
+            officialWebsite: s.officialWebsite,
+            verifiedSource: s.verifiedSource,
+            isActive: true,
+          };
+          return {
+            updateOne: {
+              filter: { slug: s.slug },
+              update: forceSync
+                ? { $set: stationFields, $setOnInsert: { slug: s.slug } }
+                : { $setOnInsert: { slug: s.slug, ...stationFields } },
+              upsert: true,
             },
-            upsert: true,
-          },
-        })),
+          };
+        }),
         { ordered: false }
       );
       const totalRangers = await RangerStationModel.countDocuments();
@@ -473,27 +495,29 @@ export const seedAll13Collections = async (): Promise<boolean> => {
         const searchTextNormalized = removeVietnameseDiacritics(
           [item.question, item.trailName || '', ...(item.keywords || []), item.answer.slice(0, 320)].join(' ')
         );
+        const knowledgeFields = {
+          category: item.category,
+          trailId: item.trailId,
+          trailName: item.trailName,
+          question: item.question,
+          keywords: item.keywords,
+          answer: item.answer,
+          searchTextNormalized,
+          difficultyLevel: item.difficultyLevel,
+          sourceOrHotline: item.sourceOrHotline,
+          isActive: true,
+        };
         return {
           updateOne: {
             filter: { key: item.id },
-            update: {
-              $set: {
-                category: item.category,
-                trailId: item.trailId,
-                trailName: item.trailName,
-                question: item.question,
-                keywords: item.keywords,
-                answer: item.answer,
-                searchTextNormalized,
-                difficultyLevel: item.difficultyLevel,
-                sourceOrHotline: item.sourceOrHotline,
-                isActive: true,
-              },
-              $setOnInsert: {
-                key: item.id,
-                viewCount: 0,
-              },
-            },
+            update: forceSync
+              ? {
+                  $set: knowledgeFields,
+                  $setOnInsert: { key: item.id, viewCount: 0 },
+                }
+              : {
+                  $setOnInsert: { key: item.id, viewCount: 0, ...knowledgeFields },
+                },
             upsert: true,
           },
         };
@@ -501,6 +525,37 @@ export const seedAll13Collections = async (): Promise<boolean> => {
       await AiKnowledgeModel.bulkWrite(bulkOps, { ordered: false });
       const totalKnowledge = await AiKnowledgeModel.countDocuments();
       console.log(`[MongoDB Seeder]: Verified ${totalKnowledge} keyed AI Knowledge entries.`);
+    }
+
+    // 13. Non-destructive backfill of indexed `usernameLower` and `passportCode` for legacy users
+    try {
+      const legacyUsers = await UserModel.find({
+        $or: [
+          { usernameLower: { $exists: false } },
+          { usernameLower: null },
+          { usernameLower: '' },
+          { passportCode: { $exists: false } },
+          { passportCode: null },
+          { passportCode: '' },
+        ],
+      })
+        .select('_id username usernameLower passportCode')
+        .lean();
+
+      for (const u of legacyUsers) {
+        const patch: Record<string, string> = {};
+        if (!u.usernameLower && typeof u.username === 'string' && u.username.trim()) {
+          patch.usernameLower = u.username.trim().toLowerCase();
+        }
+        if (!u.passportCode) {
+          patch.passportCode = `LS-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+        }
+        if (Object.keys(patch).length > 0) {
+          await UserModel.updateOne({ _id: u._id }, { $set: patch }).catch(() => {});
+        }
+      }
+    } catch (backfillErr) {
+      console.warn('[MongoDB Seeder]: User index backfill notice:', (backfillErr as Error).message);
     }
 
     console.log('[MongoDB Seeder]: Idempotent sync complete.');

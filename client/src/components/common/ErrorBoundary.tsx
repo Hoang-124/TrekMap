@@ -12,6 +12,19 @@ interface State {
   errorInfo: ErrorInfo | null;
 }
 
+const CHUNK_RELOAD_KEY = 'lost_chunk_reload_at';
+
+function isDynamicImportError(error: Error | null): boolean {
+  const msg = String(error?.message || '').toLowerCase();
+  return (
+    msg.includes('failed to fetch dynamically imported module') ||
+    msg.includes('importing a module script failed') ||
+    msg.includes('error loading dynamically imported module') ||
+    msg.includes('chunkloaderror') ||
+    msg.includes('outdated optimize dep')
+  );
+}
+
 export class ErrorBoundary extends Component<Props, State> {
   public state: State = {
     hasError: false,
@@ -25,8 +38,30 @@ export class ErrorBoundary extends Component<Props, State> {
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('[LOST ErrorBoundary Captured Error]:', error, errorInfo);
+    const isOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
+    if (isDynamicImportError(error) && typeof window !== 'undefined' && isOnline) {
+      try {
+        const lastReload = Number(window.sessionStorage.getItem(CHUNK_RELOAD_KEY) || '0');
+        if (!Number.isFinite(lastReload) || Date.now() - lastReload > 12_000) {
+          window.sessionStorage.setItem(CHUNK_RELOAD_KEY, String(Date.now()));
+          window.location.reload();
+          return;
+        }
+      } catch {
+        // Ignore storage restrictions and fall through to UI
+      }
+    }
     this.setState({ errorInfo });
   }
+
+  private handleRetry = () => {
+    const isOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
+    if (isDynamicImportError(this.state.error) && isOnline) {
+      window.location.reload();
+      return;
+    }
+    this.setState({ hasError: false, error: null, errorInfo: null });
+  };
 
   private handleReset = () => {
     this.setState({ hasError: false, error: null, errorInfo: null });
@@ -84,13 +119,15 @@ export class ErrorBoundary extends Component<Props, State> {
             </div>
 
             <h3 className="font-editorial" style={{ fontSize: '1.5rem', fontWeight: 500, marginBottom: 8, color: 'var(--color-text-main)' }}>
-              {this.props.fallbackTitle || 'Đã có lỗi hiển thị giao diện'}
+              {this.props.fallbackTitle || 'Trang này vừa gặp chút trục trặc'}
             </h3>
             <p style={{ fontSize: '0.86rem', color: 'var(--color-text-muted)', marginBottom: 20, lineHeight: 1.6 }}>
-              Hệ thống đã tự động bảo vệ trạng thái ứng dụng. Bạn có thể làm mới bộ lọc tìm kiếm hoặc quay về Trang Chủ.
+              {typeof navigator !== 'undefined' && navigator.onLine === false
+                ? 'Thiết bị đang ngoại tuyến nên chưa tải được thành phần này. Bạn có thể quay về trang chủ hoặc thử lại khi có sóng.'
+                : 'Có một lỗi nhỏ khiến màn hình này chưa hiện ra được. Bạn thử tải lại hoặc quay về trang chủ nhé.'}
             </p>
 
-            {this.state.error && (
+            {import.meta.env.DEV && this.state.error && (
               <pre
                 style={{
                   textAlign: 'left',
@@ -111,11 +148,11 @@ export class ErrorBoundary extends Component<Props, State> {
             <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
               <button
                 type="button"
-                onClick={() => this.setState({ hasError: false })}
+                onClick={this.handleRetry}
                 className="btn btn-primary"
                 style={{ padding: '9px 20px', fontSize: '0.84rem' }}
               >
-                Thử Lại
+                Thử lại
               </button>
               <button
                 type="button"
@@ -123,7 +160,7 @@ export class ErrorBoundary extends Component<Props, State> {
                 className="btn btn-outline"
                 style={{ padding: '9px 20px', fontSize: '0.84rem' }}
               >
-                Về Trang Chủ
+                Về trang chủ
               </button>
             </div>
           </div>

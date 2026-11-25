@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Schema, model, Document, Types } from 'mongoose';
 
 export interface IUserAnnualGoals {
@@ -10,6 +11,7 @@ export interface IUserAnnualGoals {
 export interface IUser extends Document {
   username: string;
   usernameLower?: string;
+  passportCode?: string;
   email: string;
   passwordHash: string;
   fullName: string;
@@ -51,6 +53,14 @@ const userSchema = new Schema<IUser>(
   {
     username: { type: String, required: true, unique: true, trim: true },
     usernameLower: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
+    passportCode: {
+      type: String,
+      unique: true,
+      sparse: true,
+      uppercase: true,
+      trim: true,
+      match: /^LS-[A-Z0-9]{6,10}$/,
+    },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     passwordHash: { type: String, required: true, select: false },
     fullName: { type: String, required: true, trim: true },
@@ -71,7 +81,7 @@ const userSchema = new Schema<IUser>(
           year: { type: Number, min: 2024, max: 2035 },
           targetKm: { type: Number, min: 10, max: 5000 },
           targetElevationM: { type: Number, min: 500, max: 200000 },
-          targetPeaks: { type: Number, min: 1, max: 36 },
+          targetPeaks: { type: Number, min: 1, max: 200 },
         },
         { _id: false }
       ),
@@ -102,6 +112,9 @@ const userSchema = new Schema<IUser>(
 userSchema.pre('validate', function () {
   if (typeof this.username === 'string' && this.username.trim()) {
     this.usernameLower = this.username.trim().toLowerCase();
+  }
+  if (!this.passportCode) {
+    this.passportCode = `LS-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
   }
 });
 

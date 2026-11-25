@@ -94,7 +94,7 @@ const getDifficultyBadge = (difficulty: number) => {
   }
   if (diff === 3) {
     return {
-      label: 'Trung Bình',
+      label: 'Trung bình',
       color: 'var(--color-sun)',
       bg: 'color-mix(in srgb, var(--color-sun) 16%, transparent)',
       border: 'color-mix(in srgb, var(--color-sun) 42%, transparent)',
@@ -174,7 +174,7 @@ const InteractiveMapShowcaseBase: React.FC<InteractiveMapShowcaseProps> = ({
     if (!trail.gpxTrack || trail.gpxTrack.length === 0) {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: `Cung đường ${trail.name} đang cập nhật tracklog GPX.`, type: 'info' },
+          detail: { message: `Cung ${trail.name} đang được anh em bổ sung file GPX.`, type: 'info' },
         })
       );
       return;
@@ -186,18 +186,37 @@ const InteractiveMapShowcaseBase: React.FC<InteractiveMapShowcaseProps> = ({
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&apos;');
+    const waypointsXml = Array.isArray(trail.waypoints)
+      ? trail.waypoints
+          .filter(
+            (w) =>
+              Number.isFinite(Number(w?.lat)) &&
+              Number.isFinite(Number(w?.lng))
+          )
+          .map((w) => {
+            const eleXml =
+              typeof w.elevationM === 'number' && Number.isFinite(w.elevationM) && w.elevationM > 0
+                ? `\n    <ele>${Math.round(w.elevationM)}</ele>`
+                : '';
+            const descXml = w.description
+              ? `\n    <desc>${escapeXml(w.description)}</desc>`
+              : '';
+            return `  <wpt lat="${Number(w.lat)}" lon="${Number(w.lng)}">${eleXml}\n    <name>${escapeXml(w.name)}</name>${descXml}\n  </wpt>`;
+          })
+          .join('\n')
+      : '';
     const trackPointsXml = trail.gpxTrack
       .map(([lat, lng]) => `      <trkpt lat="${Number(lat)}" lon="${Number(lng)}"></trkpt>`)
       .join('\n');
     const safeName = escapeXml(trail.name);
     const safeDesc = escapeXml(trail.description || '');
     const gpxXml = `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="LOST Vietnam - https://lost.vn">
+<gpx version="1.1" creator="LOST Vietnam - https://lost.vn" xmlns="http://www.topografix.com/GPX/1/1">
   <metadata>
     <name>${safeName}</name>
     <desc>${safeDesc}</desc>
   </metadata>
-  <trk>
+${waypointsXml ? `${waypointsXml}\n` : ''}  <trk>
     <name>${safeName}</name>
     <trkseg>
 ${trackPointsXml}
@@ -215,7 +234,7 @@ ${trackPointsXml}
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     window.dispatchEvent(
       new CustomEvent('lost:show-toast', {
-        detail: { message: `Đã tải xuống file GPX của ${trail.name}!`, type: 'success' },
+        detail: { message: `Đã tải file GPX cung ${trail.name} về máy!`, type: 'success' },
       })
     );
   }, []);
@@ -240,7 +259,7 @@ ${trackPointsXml}
         }}
       >
         <div>
-          <div className="section-eyebrow">01 / Bản đồ thực địa Việt Nam</div>
+          <div className="section-eyebrow">01 / Bản đồ địa hình Việt Nam</div>
 
           <h2
             className="font-editorial"
@@ -255,7 +274,7 @@ ${trackPointsXml}
           >
             Bản đồ địa hình{' '}
             <span style={{ color: 'var(--color-primary)', fontWeight: 700 }}>
-              &amp; hồ sơ tuyến trek
+              &amp; thông tin từng cung
             </span>
           </h2>
 
@@ -268,7 +287,7 @@ ${trackPointsXml}
               maxWidth: 660,
             }}
           >
-            Chọn trực tiếp một đỉnh núi trên bản đồ hoặc từ danh sách bên phải để xem trắc diện cao độ, thông tin kiểm lâm và tải tệp GPX.
+            Chấm trực tiếp vào một đỉnh trên bản đồ hoặc lướt dải thẻ bên phải để xem đường dốc, số kiểm lâm gần nhất và tải sẵn file GPX về máy.
           </p>
         </div>
 
@@ -401,7 +420,7 @@ ${trackPointsXml}
 
       {/* SPLIT SCREEN LAYOUT (Matched Height, Zero Overflow or Vertical Clipping) */}
       <div className="map-showcase-split">
-        {/* LEFT COLUMN: Embedded Live Leaflet Map */}
+        {/* LEFT COLUMN: Embedded Live MapLibre Map */}
         <div
           id="gis-map-canvas"
           style={{
@@ -464,9 +483,9 @@ ${trackPointsXml}
                   decoding="async"
                   onError={(e) => {
                     const img = e.currentTarget;
-                    if (img.src !== VERIFIED_TRAIL_FALLBACK) {
-                      img.src = VERIFIED_TRAIL_FALLBACK;
-                    }
+                    if (img.dataset.fallbackApplied) return;
+                    img.dataset.fallbackApplied = '1';
+                    img.src = VERIFIED_TRAIL_FALLBACK;
                   }}
                   style={{
                     position: 'absolute',
@@ -648,7 +667,7 @@ ${trackPointsXml}
                       }}
                     >
                       <Mountain size={13} color="var(--color-earth)" />
-                      <span>ĐỈNH CAO NHẤT</span>
+                      <span>Đỉnh cao nhất</span>
                     </div>
                     <div style={{ fontSize: '1.02rem', fontWeight: 900, color: 'var(--color-text-main)' }}>
                       {activeTrail.maxAltitudeM.toLocaleString('vi-VN')}{' '}
@@ -678,7 +697,7 @@ ${trackPointsXml}
                       }}
                     >
                       <Footprints size={13} color="var(--color-sky)" />
-                      <span>CHIỀU DÀI CUNG</span>
+                      <span>Chiều dài</span>
                     </div>
                     <div style={{ fontSize: '1.02rem', fontWeight: 900, color: 'var(--color-text-main)' }}>
                       {activeTrail.distanceKm}{' '}
@@ -708,7 +727,7 @@ ${trackPointsXml}
                       }}
                     >
                       <TrendingUp size={13} color="var(--color-primary)" />
-                      <span>ĐỘ DỐC TÍCH LŨY</span>
+                      <span>Tổng độ dốc</span>
                     </div>
                     <div style={{ fontSize: '1.02rem', fontWeight: 900, color: 'var(--color-text-main)' }}>
                       +{activeTrail.elevationGainM.toLocaleString('vi-VN')}{' '}
@@ -739,7 +758,7 @@ ${trackPointsXml}
                       }}
                     >
                       <Clock size={13} color="var(--color-sun)" />
-                      <span>THỜI GIAN LÝ TƯỞNG</span>
+                      <span>Thời gian đi</span>
                     </div>
                     <div
                       style={{
@@ -810,7 +829,7 @@ ${trackPointsXml}
                           textTransform: 'uppercase',
                         }}
                       >
-                        Trạm Kiểm Lâm &amp; Giấy Phép
+                        Kiểm lâm &amp; giấy phép
                       </div>
                       <div
                         style={{
@@ -822,7 +841,7 @@ ${trackPointsXml}
                           textOverflow: 'ellipsis',
                         }}
                       >
-                        {activeTrail.rescueContact?.rangerContact || `Ban Quản Lý Rừng / Kiểm Lâm ${activeTrail.province}`}
+                        {activeTrail.rescueContact?.rangerContact || `Ban quản lý rừng / Kiểm lâm ${activeTrail.province}`}
                       </div>
                     </div>
                   </div>
@@ -830,7 +849,7 @@ ${trackPointsXml}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
                     <a
                       href={`tel:${extractPrimaryDialNumber(activeTrail.rescueContact?.phone)}`}
-                      title="Hotline cứu hộ trạm"
+                      title="Gọi trực tiếp trạm cứu hộ"
                       className="interactive-click"
                       style={{
                         display: 'inline-flex',
@@ -872,7 +891,7 @@ ${trackPointsXml}
                       gap: 6,
                     }}
                   >
-                    <span>Xem Hồ Sơ Chi Tiết</span>
+                    <span>Xem cung này</span>
                     <ArrowRight size={14} />
                   </button>
 
@@ -895,7 +914,7 @@ ${trackPointsXml}
                       gap: 6,
                       whiteSpace: 'nowrap',
                     }}
-                    title="Tải tệp GPX Tracklog thực địa để định vị ngoại tuyến"
+                    title="Tải file GPX về máy để dẫn đường khi mất sóng"
                   >
                     <Download size={14} color="var(--color-primary)" />
                     <span>Tải GPX</span>
@@ -921,10 +940,10 @@ ${trackPointsXml}
                         letterSpacing: '0.04em',
                       }}
                     >
-                      Cung Đường Cùng Vùng ({filteredTrails.length})
+                      Cung cùng vùng ({filteredTrails.length})
                     </span>
                     <span style={{ fontSize: '0.64rem', color: 'var(--color-primary)', fontWeight: 700 }}>
-                      Nhấp để bản đồ bay đến
+                      Chạm để xem trên bản đồ
                     </span>
                   </div>
 
@@ -969,9 +988,9 @@ ${trackPointsXml}
                             decoding="async"
                             onError={(e) => {
                               const img = e.currentTarget;
-                              if (img.src !== VERIFIED_TRAIL_FALLBACK) {
-                                img.src = VERIFIED_TRAIL_FALLBACK;
-                              }
+                              if (img.dataset.fallbackApplied) return;
+                              img.dataset.fallbackApplied = '1';
+                              img.src = VERIFIED_TRAIL_FALLBACK;
                             }}
                             style={{ width: 34, height: 34, borderRadius: 4, objectFit: 'cover', flexShrink: 0 }}
                           />
@@ -1014,7 +1033,7 @@ ${trackPointsXml}
             </div>
           ) : (
             <div style={{ padding: 32, textAlign: 'center', color: 'var(--color-text-dim)', margin: 'auto' }}>
-              Vui lòng chọn một cung đường để xem thông tin thực địa chi tiết.
+              Chọn một cung đường trên bản đồ để xem thông tin chi tiết nhé.
             </div>
           )}
         </div>
@@ -1055,21 +1074,21 @@ ${trackPointsXml}
             <IconLightbulb size={15} color="var(--color-sun)" />
           </div>
           <span>
-            <strong>Mẹo tương tác:</strong> Nhấp vào bất kỳ điểm nào trên bản đồ để mở popup thời tiết thực địa, xem hồ sơ kiểm lâm và tải file GPX.
+            <strong>Mẹo nhỏ:</strong> Chạm vào điểm bất kỳ trên bản đồ để chọn cung, xem nhanh thông số địa hình, số điện thoại kiểm lâm và tải nhanh file GPX.
           </span>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
           <span>
-            Đang hiển thị: <strong style={{ color: 'var(--color-primary)' }}>{filteredTrails.length} cung đường</strong>
+            Đang hiện: <strong style={{ color: 'var(--color-primary)' }}>{filteredTrails.length} cung</strong>
           </span>
           <span style={{ color: 'var(--color-border)' }}>|</span>
           <span>
-            Cao độ đỉnh: <strong style={{ color: 'var(--color-sky)' }}>Fansipan (3.143m)</strong>
+            Nóc nhà: <strong style={{ color: 'var(--color-sky)' }}>Fansipan (3.143m)</strong>
           </span>
           <span style={{ color: 'var(--color-border)' }}>|</span>
           <span>
-            Hệ quy chiếu: <strong style={{ color: 'var(--color-text-muted)' }}>WGS84 EPSG:4326</strong>
+            Hệ tọa độ: <strong style={{ color: 'var(--color-text-muted)' }}>WGS84 EPSG:4326</strong>
           </span>
         </div>
       </div>

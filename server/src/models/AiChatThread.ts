@@ -12,6 +12,7 @@ export interface IAiChatMessageItem {
 export interface IAiChatThread extends Document {
   userId?: Types.ObjectId;
   sessionId?: string;
+  isGuest: boolean;
   title: string;
   pinned: boolean;
   trailContextId?: string;
@@ -39,18 +40,29 @@ const aiChatThreadSchema = new Schema<IAiChatThread>(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', index: true, sparse: true },
     sessionId: { type: String, trim: true, index: true, sparse: true },
+    isGuest: { type: Boolean, default: false, index: true },
     title: { type: String, required: true, trim: true, maxlength: 120, default: 'Hội thoại LOST AI mới' },
     pinned: { type: Boolean, default: false },
     trailContextId: { type: String, trim: true },
     trailContextName: { type: String, trim: true },
     messages: { type: [aiChatMessageSchema], default: [] },
     messageCount: { type: Number, default: 0, min: 0 },
-    lastMessageAt: { type: Date, default: Date.now, index: true },
+    lastMessageAt: { type: Date, default: Date.now },
   },
   { timestamps: true }
 );
 
 aiChatThreadSchema.index({ userId: 1, pinned: -1, lastMessageAt: -1 });
 aiChatThreadSchema.index({ sessionId: 1, pinned: -1, lastMessageAt: -1 });
+aiChatThreadSchema.index(
+  { lastMessageAt: 1 },
+  {
+    name: 'guest_thread_ttl_30d',
+    expireAfterSeconds: 30 * 24 * 60 * 60,
+    partialFilterExpression: {
+      isGuest: true,
+    },
+  }
+);
 
 export const AiChatThreadModel = model<IAiChatThread>('AiChatThread', aiChatThreadSchema);

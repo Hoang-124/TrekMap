@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useSocket } from '../../context/SocketContext.js';
 import {
+  NOTIFICATIONS_SYNC_EVENT,
+  dispatchNotificationsSynced,
+  dispatchNotificationToast,
+  navigateNotificationLink,
   fetchNotifications,
   markNotificationAsRead,
   markAllNotificationsAsRead,
@@ -13,6 +17,8 @@ interface NotificationBellProps {
   onNavigate?: (view: string) => void;
 }
 
+const MAX_SEEN_NOTIF_IDS = 500;
+
 const NOTIFICATION_TABS: Array<{ id: NotificationCategory | 'all'; label: string }> = [
   { id: 'all', label: 'Tất cả' },
   { id: 'safety', label: 'An toàn' },
@@ -21,35 +27,6 @@ const NOTIFICATION_TABS: Array<{ id: NotificationCategory | 'all'; label: string
   { id: 'system', label: 'Hệ thống' },
 ];
 
-const navigateNotificationLink = (link: string, onNavigate?: (view: string) => void) => {
-  const trimmed = link.trim();
-  if (!trimmed) return;
-
-  if (trimmed.startsWith('/#trail/') || trimmed.startsWith('#trail/')) {
-    const trailId = trimmed.replace(/^\/?#trail\//, '');
-    if (trailId) {
-      const target = `/trails/${encodeURIComponent(trailId)}`;
-      window.history.pushState({}, '', target);
-      window.dispatchEvent(new PopStateEvent('popstate'));
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-      return;
-    }
-  }
-
-  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
-    window.history.pushState({}, '', trimmed);
-    window.dispatchEvent(new PopStateEvent('popstate'));
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    return;
-  }
-
-  if (onNavigate) {
-    onNavigate(trimmed.replace(/^#/, ''));
-  } else {
-    window.location.hash = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
-  }
-};
-
 export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser, onNavigate }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -57,8 +34,14 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
   const [categoryCounts, setCategoryCounts] = useState<{ [key: string]: number }>({});
   const [activeCategory, setActiveCategory] = useState<NotificationCategory | 'all'>('all');
   const [loadedKey, setLoadedKey] = useState<string>('');
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [nowTs, setNowTs] = useState<number>(() => Date.now());
+  const [isNarrowViewport, setIsNarrowViewport] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerWidth <= 520 : false
+  );
+  const [mobileDropdownTop, setMobileDropdownTop] = useState<number>(64);
+
   const dropdownRef = useRef<HTMLDivElement>(null);
   const seenNotifIdsRef = useRef<Set<string>>(new Set());
   const { socket } = useSocket();
@@ -69,56 +52,93 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
   const visibleNotifications = currentUserId ? notifications : [];
   const visibleUnreadCount = currentUserId ? unreadCount : 0;
   const visibleCategoryCounts = currentUserId ? categoryCounts : {};
+  const activeCategoryUnreadCount =
+    activeCategory === 'all'
+      ? visibleUnreadCount
+      : visibleCategoryCounts[activeCategory] || 0;
 
   const triggerReload = useCallback(() => {
     setRefreshTick((prev) => prev + 1);
   }, []);
 
+  // Track narrow mobile viewports to prevent 380px dropdown left-edge clipping
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(max-width: 520px)');
+    const onChange = () => setIsNarrowViewport(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
   useEffect(() => {
     if (!currentUserId) return;
     let cancelled = false;
+    const controller = new AbortController();
     const reqKey = `${currentUserId}:${activeCategory}:${refreshTick}`;
 
-    fetchNotifications(1, 30, activeCategory)
+    fetchNotifications(1, 30, activeCategory, controller.signal)
       .then((res) => {
-        if (cancelled) return;
+        if (cancelled || controller.signal.aborted) return;
+        if (!res.ok) {
+          // Surface error instead of overwriting badge & list with empty zeros
+          setFetchError(res.error || 'Không thể tải thông báo. Vui lòng thử lại.');
+          return;
+        }
         const list = res.notifications || [];
         seenNotifIdsRef.current = new Set(list.map((n) => n._id));
+        setFetchError(null);
         setNotifications(list);
         setUnreadCount(res.unreadCount || 0);
         setCategoryCounts(res.categoryCounts || {});
         setNowTs(Date.now());
       })
-      .catch(() => {
-        // Fail gracefully
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        if (!cancelled) {
+          setFetchError('Không thể tải thông báo. Vui lòng thử lại.');
+        }
       })
       .finally(() => {
-        if (!cancelled) {
+        if (!cancelled && !controller.signal.aborted) {
           setLoadedKey(reqKey);
         }
       });
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [currentUserId, activeCategory, refreshTick]);
 
-  // Cross-component sync with NotificationsPage
+  // Cross-component sync with NotificationsPage (ignore self-dispatched events to avoid double fetch loop)
   useEffect(() => {
-    const handleSynced = () => {
+    const handleSynced = (e: Event) => {
+      const detail = (e as CustomEvent<{ source?: string }>).detail;
+      if (detail?.source === 'bell') return;
       triggerReload();
     };
-    window.addEventListener('lost:notifications-synced', handleSynced);
-    return () => window.removeEventListener('lost:notifications-synced', handleSynced);
+    window.addEventListener(NOTIFICATIONS_SYNC_EVENT, handleSynced);
+    return () => window.removeEventListener(NOTIFICATIONS_SYNC_EVENT, handleSynced);
   }, [triggerReload]);
 
-  // Realtime Socket.io Notification Listener (deduplicated so repeats never inflate unread counts)
+  // Realtime Socket.io Notification Listener + Reconnect Backfill
   useEffect(() => {
     if (!socket || !currentUserId) return;
 
+    const handleReconnect = () => {
+      triggerReload();
+    };
+
     const handleNewNotification = (newNotif: NotificationItem) => {
-      const isDuplicate = Boolean(newNotif._id && seenNotifIdsRef.current.has(newNotif._id));
-      if (newNotif._id) seenNotifIdsRef.current.add(newNotif._id);
+      const notifId = newNotif._id ? String(newNotif._id) : '';
+      const isDuplicate = Boolean(notifId && seenNotifIdsRef.current.has(notifId));
+      if (notifId) {
+        seenNotifIdsRef.current.add(notifId);
+        if (seenNotifIdsRef.current.size > MAX_SEEN_NOTIF_IDS) {
+          const oldest = seenNotifIdsRef.current.values().next().value;
+          if (oldest !== undefined) seenNotifIdsRef.current.delete(oldest);
+        }
+      }
       if (activeCategory === 'all' || newNotif.category === activeCategory) {
         setNotifications((prev) => [newNotif, ...prev.filter((n) => n._id !== newNotif._id)]);
       }
@@ -133,12 +153,14 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
       }
     };
 
+    socket.on('connect', handleReconnect);
     socket.on('newNotification', handleNewNotification);
 
     return () => {
+      socket.off('connect', handleReconnect);
       socket.off('newNotification', handleNewNotification);
     };
-  }, [socket, currentUserId, activeCategory]);
+  }, [socket, currentUserId, activeCategory, triggerReload]);
 
   // Click outside & Escape key to close dropdown
   useEffect(() => {
@@ -175,51 +197,55 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
   };
 
   const handleMarkAllRead = async () => {
-    try {
-      await markAllNotificationsAsRead(activeCategory);
-      triggerReload();
-      window.dispatchEvent(new CustomEvent('lost:notifications-synced'));
-    } catch {
-      // ignore
+    const ok = await markAllNotificationsAsRead(activeCategory);
+    if (!ok) {
+      dispatchNotificationToast('Không thể đánh dấu tất cả thông báo đã đọc. Vui lòng thử lại.', 'error');
+      return;
     }
+    triggerReload();
+    dispatchNotificationsSynced('bell');
   };
 
   const handleMarkItemRead = async (e: React.MouseEvent, item: NotificationItem) => {
     e.stopPropagation();
     if (item.isRead) return;
-    try {
-      await markNotificationAsRead(item._id);
-      setNotifications((prev) =>
-        prev.map((n) => (n._id === item._id ? { ...n, isRead: true } : n))
-      );
-      decrementCountsForItem(item);
-      window.dispatchEvent(new CustomEvent('lost:notifications-synced'));
-    } catch {
-      // ignore
+    const ok = await markNotificationAsRead(item._id);
+    if (!ok) {
+      dispatchNotificationToast('Không thể cập nhật trạng thái thông báo. Vui lòng thử lại.', 'error');
+      return;
     }
+    setNotifications((prev) =>
+      prev.map((n) => (n._id === item._id ? { ...n, isRead: true } : n))
+    );
+    decrementCountsForItem(item);
+    dispatchNotificationsSynced('bell');
   };
 
   const handleDeleteItem = async (e: React.MouseEvent, item: NotificationItem) => {
     e.stopPropagation();
-    try {
-      await deleteNotification(item._id);
-      setNotifications((prev) => prev.filter((n) => n._id !== item._id));
-      decrementCountsForItem(item);
-      window.dispatchEvent(new CustomEvent('lost:notifications-synced'));
-    } catch {
-      // ignore
+    const ok = await deleteNotification(item._id);
+    if (!ok) {
+      dispatchNotificationToast('Không thể xóa thông báo lúc này. Vui lòng thử lại.', 'error');
+      return;
     }
+    setNotifications((prev) => prev.filter((n) => n._id !== item._id));
+    decrementCountsForItem(item);
+    dispatchNotificationsSynced('bell');
   };
 
   const handleItemClick = (item: NotificationItem) => {
     if (!item.isRead) {
-      markNotificationAsRead(item._id)
-        .then(() => window.dispatchEvent(new CustomEvent('lost:notifications-synced')))
-        .catch(() => {});
-      setNotifications((prev) =>
-        prev.map((n) => (n._id === item._id ? { ...n, isRead: true } : n))
-      );
-      decrementCountsForItem(item);
+      void markNotificationAsRead(item._id).then((ok) => {
+        if (ok) {
+          setNotifications((prev) =>
+            prev.map((n) => (n._id === item._id ? { ...n, isRead: true } : n))
+          );
+          decrementCountsForItem(item);
+          dispatchNotificationsSynced('bell');
+        } else {
+          dispatchNotificationToast('Không thể đánh dấu thông báo đã đọc.', 'error');
+        }
+      });
     }
 
     setIsOpen(false);
@@ -302,7 +328,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
   const formatTimeAgo = (dateStr?: string) => {
     if (!dateStr) return 'Vừa xong';
     try {
-      const diffMs = nowTs - new Date(dateStr).getTime();
+      const diffMs = Math.max(0, nowTs - new Date(dateStr).getTime());
       const diffMins = Math.floor(diffMs / 60000);
       if (diffMins < 1) return 'Vừa xong';
       if (diffMins < 60) return `${diffMins} phút trước`;
@@ -316,14 +342,20 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
     }
   };
 
+  const handleToggleOpen = () => {
+    setNowTs(Date.now());
+    if (!isOpen && dropdownRef.current) {
+      const rect = dropdownRef.current.getBoundingClientRect();
+      setMobileDropdownTop(Math.max(56, Math.round(rect.bottom + 8)));
+    }
+    setIsOpen((prev) => !prev);
+  };
+
   return (
     <div ref={dropdownRef} style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
       <button
         type="button"
-        onClick={() => {
-          setNowTs(Date.now());
-          setIsOpen((prev) => !prev);
-        }}
+        onClick={handleToggleOpen}
         aria-expanded={isOpen}
         aria-haspopup="true"
         style={{
@@ -343,7 +375,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
           flexShrink: 0,
           transition: 'border-color 0.2s ease, color 0.2s ease',
         }}
-        title="Thông báo thực địa LOST"
+        title="Thông báo"
         aria-label={`Thông báo${visibleUnreadCount > 0 ? ` (${visibleUnreadCount} chưa đọc)` : ''}`}
       >
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -379,21 +411,40 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
       {isOpen && (
         <div
           className="notification-dropdown"
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 10px)',
-            right: 0,
-            width: 380,
-            maxWidth: '92vw',
-            background: 'var(--color-bg-card)',
-            border: '1px solid var(--color-border-strong)',
-            borderRadius: 6,
-            boxShadow: 'var(--shadow-3d)',
-            zIndex: 'var(--z-dropdown, 1100)',
-            overflow: 'hidden',
-            display: 'flex',
-            flexDirection: 'column',
-          }}
+          style={
+            isNarrowViewport
+              ? {
+                  position: 'fixed',
+                  top: mobileDropdownTop,
+                  left: 12,
+                  right: 12,
+                  width: 'auto',
+                  maxWidth: 'calc(100vw - 24px)',
+                  background: 'var(--color-bg-card)',
+                  border: '1px solid var(--color-border-strong)',
+                  borderRadius: 6,
+                  boxShadow: 'var(--shadow-3d)',
+                  zIndex: 'var(--z-dropdown, 1100)',
+                  overflow: 'hidden',
+                  display: 'flex',
+                  flexDirection: 'column',
+                }
+              : {
+                  position: 'absolute',
+                  top: 'calc(100% + 10px)',
+                  right: 0,
+                  width: 'min(380px, calc(100vw - 24px))',
+                  maxWidth: 'calc(100vw - 24px)',
+                  background: 'var(--color-bg-card)',
+                  border: '1px solid var(--color-border-strong)',
+                  borderRadius: 6,
+                  boxShadow: 'var(--shadow-3d)',
+                  zIndex: 'var(--z-dropdown, 1100)',
+                  overflow: 'hidden',
+                  display: 'flex',
+                  flexDirection: 'column',
+                }
+          }
         >
           {/* Header */}
           <div
@@ -407,7 +458,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                Thông Báo Thực Địa
+                Thông báo
               </span>
               {visibleUnreadCount > 0 && (
                 <span
@@ -426,10 +477,10 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
               )}
             </div>
 
-            {visibleUnreadCount > 0 && (
+            {activeCategoryUnreadCount > 0 && (
               <button
                 type="button"
-                onClick={handleMarkAllRead}
+                onClick={() => void handleMarkAllRead()}
                 style={{
                   background: 'none',
                   border: 'none',
@@ -505,11 +556,60 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
             ))}
           </div>
 
+          {/* Inline Error Banner when cached items still exist */}
+          {fetchError && visibleNotifications.length > 0 && (
+            <div
+              style={{
+                padding: '8px 14px',
+                background: 'color-mix(in srgb, var(--color-error) 10%, transparent)',
+                borderBottom: '1px solid var(--color-border)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 8,
+                fontSize: '0.74rem',
+                color: 'var(--color-error-text, var(--color-error))',
+              }}
+            >
+              <span>{fetchError}</span>
+              <button
+                type="button"
+                onClick={triggerReload}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--color-primary)',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  padding: 0,
+                  flexShrink: 0,
+                  fontSize: '0.74rem',
+                }}
+              >
+                Thử lại
+              </button>
+            </div>
+          )}
+
           {/* Notification List */}
           <div style={{ maxHeight: 360, overflowY: 'auto' }}>
             {loading && visibleNotifications.length === 0 ? (
               <div style={{ padding: 24, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
                 Đang tải thông báo...
+              </div>
+            ) : fetchError && visibleNotifications.length === 0 ? (
+              <div style={{ padding: '28px 16px', textAlign: 'center', fontSize: '0.8rem' }}>
+                <div style={{ color: 'var(--color-error-text, var(--color-error))', fontWeight: 700, marginBottom: 10 }}>
+                  {fetchError}
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={triggerReload}
+                  style={{ padding: '5px 14px', fontSize: '0.76rem', fontWeight: 700, borderRadius: 4 }}
+                >
+                  Thử lại
+                </button>
               </div>
             ) : visibleNotifications.length === 0 ? (
               <div style={{ padding: '32px 16px', textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
@@ -635,11 +735,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
               type="button"
               onClick={() => {
                 setIsOpen(false);
-                if (onNavigate) onNavigate('notifications');
-                else {
-                  window.history.pushState({}, '', '/notifications');
-                  window.dispatchEvent(new PopStateEvent('popstate'));
-                }
+                navigateNotificationLink('/notifications', onNavigate);
               }}
               style={{
                 background: 'none',
@@ -654,7 +750,7 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({ currentUser,
                 gap: 6,
               }}
             >
-              <span>Xem tất cả thông báo chi tiết</span>
+              <span>Xem tất cả thông báo</span>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="9 18 15 12 9 6" />
               </svg>

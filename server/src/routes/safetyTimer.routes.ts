@@ -8,11 +8,25 @@ import {
   cancelSafetyTimer,
   extendSafetyTimer,
   getAdminSafetyTimers,
+  adminMarkSafetyTimerSafe,
+  adminExtendSafetyTimer,
 } from '../controllers/safetyTimer.controller.js';
 
 const router = Router();
 
 router.get('/safety-timers/admin', authMiddleware as any, requireRole('admin', 'moderator') as any, getAdminSafetyTimers as any);
+router.patch(
+  '/safety-timers/admin/:id/mark-safe',
+  authMiddleware as any,
+  requireRole('admin', 'moderator') as any,
+  adminMarkSafetyTimerSafe as any
+);
+router.patch(
+  '/safety-timers/admin/:id/extend',
+  authMiddleware as any,
+  requireRole('admin', 'moderator') as any,
+  adminExtendSafetyTimer as any
+);
 router.get('/safety-timers/me', authMiddleware as any, getMySafetyTimers as any);
 router.post('/safety-timers', authMiddleware as any, createSafetyTimer as any);
 router.patch('/safety-timers/:id/extend', authMiddleware as any, extendSafetyTimer as any);

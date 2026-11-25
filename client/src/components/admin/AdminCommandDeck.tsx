@@ -2,8 +2,11 @@ import React, { useCallback, useMemo, useState } from 'react';
 import type {
   AdminCockpitSectionId,
   CockpitBeaconPoint,
+  CockpitContributionPoint,
+  CockpitCoordPoint,
   CockpitIncidentPoint,
   CockpitInspectorSelection,
+  CockpitOverdueTimerPoint,
   CockpitTrailPoint,
   CockpitTriageItem,
 } from './adminCockpitTypes.js';
@@ -44,12 +47,14 @@ export interface AdminCommandDeckProps {
   trails: CockpitTrailPoint[];
   incidents: CockpitIncidentPoint[];
   beacons: CockpitBeaconPoint[];
+  pendingContributions?: CockpitContributionPoint[];
+  overdueTimers?: CockpitOverdueTimerPoint[];
   triageItems: CockpitTriageItem[];
   stats: AdminCommandDeckStats;
   selectedId?: string | null;
   onSelect: (selection: CockpitInspectorSelection) => void;
-  onNavigateSection: (section: AdminCockpitSectionId) => void;
-  onPointerCoordChange?: (coords: { lat: number; lng: number } | null) => void;
+  onNavigateSection: (section: AdminCockpitSectionId, fieldSubTab?: 'pois' | 'reviews') => void;
+  onPointerCoordChange?: (coords: CockpitCoordPoint | null) => void;
   onOpenContributeWizard: () => void;
   onOpenCreateTrail?: () => void;
   isStrictAdmin: boolean;
@@ -60,15 +65,15 @@ const getTriageKindLabel = (kind: CockpitTriageItem['kind']): string => {
     case 'sos':
       return 'SOS';
     case 'overdue':
-      return 'QUÁ HẠN';
+      return 'Quá hạn';
     case 'dispute':
-      return 'TRANH CHẤP';
+      return 'Tranh chấp';
     case 'incident':
-      return 'SỰ CỐ';
+      return 'Sự cố';
     case 'contribution':
-      return 'ĐÓNG GÓP';
+      return 'Đóng góp';
     case 'inquiry':
-      return 'YÊU CẦU';
+      return 'Yêu cầu';
   }
 };
 
@@ -85,7 +90,9 @@ const truncateLabel = (value: string, maxChars: number): string => {
 
 const normalizeRegionKey = (region?: string): 'north' | 'central' | 'south' => {
   const norm = (region || '').toLowerCase();
-  if (norm.includes('trung') || norm.includes('tây nguyên')) return 'central';
+  if (norm.includes('trung') || norm.includes('tây nguyên') || norm.includes('tay nguyen')) {
+    return 'central';
+  }
   if (norm.includes('nam')) return 'south';
   return 'north';
 };
@@ -96,6 +103,7 @@ interface PulseTileConfig {
   value: number;
   sub: string;
   target: AdminCockpitSectionId;
+  fieldSubTab?: 'pois' | 'reviews';
   tone?: 'danger' | 'warn' | 'ok';
   icon: React.ReactNode;
 }
@@ -105,6 +113,8 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
     trails,
     incidents,
     beacons,
+    pendingContributions = [],
+    overdueTimers = [],
     triageItems,
     stats,
     selectedId,
@@ -121,20 +131,20 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
       if (stats.urgentSafetyCount > 0) {
         return {
           lampClass: 'admin-readiness-lamp admin-readiness-lamp--danger',
-          label: 'KHẨN CẤP SOS',
+          label: 'Khẩn cấp SOS',
           textColor: 'var(--color-error-text, var(--color-error))',
         };
       }
       if (stats.activeIncidents + stats.pendingContributions > 0) {
         return {
           lampClass: 'admin-readiness-lamp admin-readiness-lamp--warn',
-          label: 'CẦN XỬ LÝ',
-          textColor: 'var(--color-sun)',
+          label: 'Cần xử lý',
+          textColor: 'var(--color-earth)',
         };
       }
       return {
         lampClass: 'admin-readiness-lamp admin-readiness-lamp--ok',
-        label: 'TRẠNG THÁI ỔN ĐỊNH',
+        label: 'Vận hành ổn định',
         textColor: 'var(--color-primary)',
       };
     }, [stats.activeIncidents, stats.pendingContributions, stats.urgentSafetyCount]);
@@ -196,15 +206,15 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
           id: 'users',
           label: 'Thành viên',
           value: stats.totalUsers,
-          sub: 'Tài khoản hệ thống',
-          target: 'users',
+          sub: isStrictAdmin ? 'Tài khoản đã đăng ký' : 'Xem trong thống kê tổng quan',
+          target: isStrictAdmin ? 'users' : 'stats',
           icon: <IconUsers size={15} />,
         },
         {
           id: 'trails',
           label: 'Cung đường',
           value: stats.totalTrails,
-          sub: 'Dữ liệu thực địa',
+          sub: 'Đang hiển thị trên bản đồ',
           target: 'trails',
           tone: 'ok',
           icon: <IconCompass size={15} />,
@@ -213,7 +223,7 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
           id: 'contributions',
           label: 'Chờ duyệt',
           value: stats.pendingContributions,
-          sub: 'Hồ sơ đóng góp',
+          sub: 'Đóng góp từ cộng đồng',
           target: 'contributions',
           tone: stats.pendingContributions > 0 ? 'warn' : undefined,
           icon: <IconFileText size={15} />,
@@ -222,7 +232,7 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
           id: 'incidents',
           label: 'Sự cố',
           value: stats.activeIncidents,
-          sub: 'Cảnh báo hiện hành',
+          sub: 'Cảnh báo đang mở',
           target: 'incidents',
           tone: stats.activeIncidents > 0 ? 'danger' : undefined,
           icon: <IconAlertTriangle size={15} />,
@@ -231,7 +241,7 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
           id: 'forum',
           label: 'Diễn đàn',
           value: stats.totalThreads,
-          sub: 'Chủ đề thảo luận',
+          sub: 'Bài thảo luận',
           target: 'forum',
           icon: <IconMessageSquare size={15} />,
         },
@@ -239,28 +249,30 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
           id: 'reviews',
           label: 'Đánh giá',
           value: stats.totalReviews,
-          sub: 'Phản hồi trekker',
+          sub: 'Nhận xét sau chuyến đi',
           target: 'field',
+          fieldSubTab: 'reviews',
           icon: <IconStar size={15} />,
         },
         {
           id: 'checkins',
           label: 'Check-in',
           value: stats.totalCheckins,
-          sub: 'Lượt chinh phục',
+          sub: 'Lượt ghi dấu đỉnh',
           target: 'stats',
           icon: <IconMapPin size={15} />,
         },
         {
           id: 'guides',
-          label: 'HDV / Porter',
+          label: 'Porter & HDV',
           value: stats.totalGuides,
-          sub: 'Đội ngũ dẫn đường',
+          sub: 'Quản lý yêu cầu dẫn đường',
           target: 'inquiries',
           icon: <IconBackpack size={15} />,
         },
       ],
       [
+        isStrictAdmin,
         stats.activeIncidents,
         stats.pendingContributions,
         stats.totalCheckins,
@@ -360,7 +372,7 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
                 style={{ cursor: 'pointer' }}
               >
                 <span className="admin-dot admin-dot--ok" />
-                <span>{`${stats.totalTrails} tuyến`}</span>
+                <span>{`${stats.totalTrails} cung đường`}</span>
               </button>
               <button
                 type="button"
@@ -369,7 +381,7 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
                 style={{ cursor: 'pointer' }}
               >
                 <IconRadio size={11} />
-                <span>{`${activeBeaconsCount} đèn hiệu · ${stats.activeSafetyTimers} hẹn giờ`}</span>
+                <span>{`${activeBeaconsCount} tín hiệu trực tiếp · ${stats.activeSafetyTimers} hẹn giờ`}</span>
               </button>
               <button
                 type="button"
@@ -407,7 +419,7 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
                   onClick={onOpenCreateTrail}
                 >
                   <IconPlus size={13} />
-                  <span>Thêm cung</span>
+                  <span>Thêm cung đường</span>
                 </button>
               </>
             ) : (
@@ -429,13 +441,15 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
             trails={trails}
             incidents={incidents}
             beacons={beacons}
+            pendingContributions={pendingContributions}
+            overdueTimers={overdueTimers}
             selectedId={selectedId}
             onSelect={onSelect}
             onPointerCoordChange={onPointerCoordChange}
           />
 
           {/* Right: Live Triage Queue */}
-          <section className="admin-triage-panel" aria-label="Hàng đợi ưu tiên thực địa">
+          <section className="admin-triage-panel" aria-label="Việc cần xử lý trước">
             <div className="admin-triage-head">
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 <h2
@@ -447,10 +461,10 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
                     letterSpacing: '-0.01em',
                   }}
                 >
-                  Hàng đợi ưu tiên thực địa
+                  Việc cần xử lý trước
                 </h2>
                 <span style={{ fontSize: '0.71rem', color: 'var(--color-text-dim)' }}>
-                  Nhấn từng mục để khóa tọa độ trên bảng thanh tra
+                  Chọn từng mục để xem chi tiết bên phải
                 </span>
               </div>
 
@@ -584,10 +598,10 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
                     <IconCheckCircle size={17} color="var(--color-primary)" style={{ flexShrink: 0, marginTop: 1 }} />
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                       <strong style={{ fontSize: '0.82rem', color: 'var(--color-text-main)' }}>
-                        Hệ thống thực địa thông suốt
+                        Các cung đường đang ổn định
                       </strong>
                       <span style={{ fontSize: '0.73rem', color: 'var(--color-text-muted)', lineHeight: 1.45 }}>
-                        Không ghi nhận tín hiệu SOS, tranh chấp cảnh báo hay hồ sơ chờ xử lý khẩn.
+                        Chưa có tín hiệu SOS, khiếu nại hay cảnh báo khẩn nào cần xử lý.
                       </span>
                     </div>
                   </div>
@@ -611,7 +625,7 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
                           color: 'var(--color-text-dim)',
                         }}
                       >
-                        Đỉnh tiêu biểu đang giám sát
+                        Các đỉnh tiêu biểu
                       </span>
                       <button
                         type="button"
@@ -687,7 +701,7 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
         {/* 3. BOTTOM ANALYTICS & PULSE DECK */}
         <div className="admin-analytics-grid">
           {/* Left: Vietnam Altitude Spectrum Chart */}
-          <section className="admin-altitude-panel" aria-label="Phổ cao độ đỉnh núi Việt Nam">
+          <section className="admin-altitude-panel" aria-label="Cao độ các đỉnh núi Việt Nam">
             <div
               style={{
                 display: 'flex',
@@ -709,10 +723,10 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
                   }}
                 >
                   <IconMountain size={15} color="var(--color-primary)" />
-                  <span>Phổ cao độ đỉnh núi Việt Nam</span>
+                  <span>Cao độ các đỉnh núi Việt Nam</span>
                 </h2>
                 <p style={{ margin: '3px 0 0 0', fontSize: '0.72rem', color: 'var(--color-text-dim)' }}>
-                  Top 8 cung đường cao nhất · nhấn thanh cao độ để mở bảng thanh tra
+                  8 cung đường cao nhất · chọn từng cung để xem chi tiết bên phải
                 </p>
               </div>
               {topPeaks[0] && (
@@ -731,7 +745,7 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
                 width="100%"
                 height={chartH}
                 role="img"
-                aria-label="Biểu đồ phổ cao độ 8 đỉnh núi cao nhất Việt Nam"
+                aria-label="Biểu đồ cao độ 8 đỉnh núi cao nhất Việt Nam"
                 style={{ display: 'block', overflow: 'visible' }}
               >
                 {/* Vertical elevation reference ticks (1000m, 2000m, 3000m) */}
@@ -887,7 +901,7 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
                   borderRadius: 5,
                 }}
               >
-                Đang đồng bộ phổ cao độ từ kho cung đường thực địa...
+                Đang tải dữ liệu cao độ các cung đường...
               </div>
             )}
 
@@ -998,7 +1012,7 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
           </section>
 
           {/* Right: Operational Pulse Matrix (8 clickable telemetry tiles) */}
-          <section className="admin-pulse-panel" aria-label="Nhịp vận hành hệ thống">
+          <section className="admin-pulse-panel" aria-label="Tổng quan hoạt động">
             <div
               style={{
                 display: 'flex',
@@ -1020,7 +1034,7 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
                   }}
                 >
                   <IconShieldAlert size={15} color="var(--color-primary)" />
-                  <span>Nhịp vận hành hệ thống</span>
+                  <span>Tổng quan hoạt động</span>
                 </h2>
                 <p
                   style={{
@@ -1030,7 +1044,7 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
                     fontVariantNumeric: 'tabular-nums',
                   }}
                 >
-                  {`${stats.totalTripPlans.toLocaleString('vi-VN')} lịch trình · ${stats.totalTripReports.toLocaleString('vi-VN')} nhật ký hành trình`}
+                  {`${stats.totalTripPlans.toLocaleString('vi-VN')} lịch trình ghép đoàn · ${stats.totalTripReports.toLocaleString('vi-VN')} nhật ký chuyến đi`}
                 </p>
               </div>
               <button
@@ -1050,7 +1064,7 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
                   tile.tone === 'danger'
                     ? 'var(--color-error-text, var(--color-error))'
                     : tile.tone === 'warn'
-                      ? 'var(--color-sun)'
+                      ? 'var(--color-earth)'
                       : tile.tone === 'ok'
                         ? 'var(--color-primary)'
                         : 'var(--color-text-main)';
@@ -1060,7 +1074,7 @@ export const AdminCommandDeck: React.FC<AdminCommandDeckProps> = React.memo(
                     key={tile.id}
                     type="button"
                     className="admin-pulse-tile"
-                    onClick={() => onNavigateSection(tile.target)}
+                    onClick={() => onNavigateSection(tile.target, tile.fieldSubTab)}
                     style={{
                       textAlign: 'left',
                       cursor: 'pointer',

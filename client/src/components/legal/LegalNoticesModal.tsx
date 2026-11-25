@@ -407,8 +407,8 @@ export const LegalNoticesModal: React.FC<LegalNoticesModalProps> = ({
                 <ul style={listStyle}>
                   <li>
                     <strong>Thông tin tài khoản:</strong> Họ tên hiển thị, địa chỉ email, mật khẩu mã hóa một chiều
-                    (PBKDF2-HMAC-SHA512) hoặc mã định danh Google OAuth (chỉ khi bạn chủ động chọn Đăng nhập bằng
-                    Google).
+                    (PBKDF2-HMAC-SHA512) hoặc mã định danh Google OAuth (mã Google Identity Services chỉ được tải theo
+                    yêu cầu khi bạn mở khung đăng nhập và chủ động chọn Đăng nhập bằng Google).
                   </li>
                   <li>
                     <strong>Dữ liệu an toàn &amp; cứu hộ (tự nguyện kích hoạt):</strong> Danh bạ liên hệ khẩn cấp (tên,
@@ -544,11 +544,29 @@ export const LegalNoticesModal: React.FC<LegalNoticesModalProps> = ({
                     (<strong>US Government Public Domain</strong>).
                   </li>
                   <li>
+                    <strong>Thuật toán thiên văn &amp; Mặt trời (Bình minh / Hoàng hôn / Giờ vàng):</strong>{' '}
+                    <a
+                      href="https://gml.noaa.gov/grad/solcalc/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={linkStyle}
+                    >
+                      NOAA Solar Equations
+                    </a>{' '}
+                    (National Oceanic and Atmospheric Administration —{' '}
+                    <strong>US Government Public Domain</strong>).
+                  </li>
+                  <li>
                     <strong>Định tuyến tham khảo (tùy chọn cấu hình):</strong>{' '}
                     <a href="https://openrouteservice.org/" target="_blank" rel="noopener noreferrer" style={linkStyle}>
                       openrouteservice by HeiGIT
                     </a>{' '}
                     | © OpenStreetMap contributors.
+                  </li>
+                  <li>
+                    <strong>Xác thực tài khoản tùy chọn:</strong> Google Identity Services (chỉ tải theo yêu cầu khi
+                    người dùng chủ động chọn Đăng nhập bằng Google, tuân thủ Điều khoản dịch vụ &amp; Chính sách quyền
+                    riêng tư của Google).
                   </li>
                 </ul>
               </div>
@@ -568,11 +586,10 @@ export const LegalNoticesModal: React.FC<LegalNoticesModalProps> = ({
                     <strong>Feather Icons (MIT License)</strong> và <strong>Lucide Icons (ISC License)</strong>.
                   </li>
                   <li>
-                    <strong>Thư viện lõi:</strong> React &amp; React DOM (MIT), Leaflet (BSD-2-Clause),
-                    Leaflet.markercluster (MIT), MapLibre GL JS (BSD-3-Clause, gồm thành phần Mapbox GL JS v1.13
-                    BSD-3-Clause, d3-color BSD-3-Clause &amp; glfx.js MIT), Socket.IO (MIT), Express (MIT), Mongoose
-                    (MIT), MongoDB Node Driver (Apache-2.0), Cloudinary SDK (MIT), Nodemailer (MIT-0), dotenv
-                    (BSD-2-Clause).
+                    <strong>Thư viện lõi:</strong> React &amp; React DOM (MIT), MapLibre GL JS (BSD-3-Clause, gồm thành
+                    phần Mapbox GL JS v1.13 BSD-3-Clause, d3-color BSD-3-Clause &amp; glfx.js MIT), Socket.IO (MIT),
+                    Express (MIT), cors (MIT), Mongoose (MIT), MongoDB Node Driver (Apache-2.0), Cloudinary SDK (MIT),
+                    Nodemailer (MIT-0), dotenv (BSD-2-Clause).
                   </li>
                 </ul>
 

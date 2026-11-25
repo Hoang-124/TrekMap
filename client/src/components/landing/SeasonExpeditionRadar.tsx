@@ -44,182 +44,182 @@ const MONTH_METEOROLOGY: MonthMeteorology[] = [
   {
     month: 1,
     label: 'Tháng 1',
-    seasonTheme: 'Mùa Sương Muối, Băng Giá & Săn Mây Tây Bắc',
-    badge: 'Mùa Săn Băng',
+    seasonTheme: 'Tháng giêng sương muối, băng giá và biển mây Tây Bắc',
+    badge: 'Săn băng & mây',
     iconName: 'snowflake',
     IconComponent: IconSnowflake,
-    overviewText: 'Khám phá các đỉnh núi cao miền Bắc mùa mây dày đặc, ngắm băng tuyết và hoa mai anh đào nở sớm.',
-    preparationTip: 'Cần áo lông vũ chống nước, găng tay giữ nhiệt chuyên dụng và miếng dán giữ nhiệt.',
+    overviewText: 'Sáng sớm trên những đỉnh cao miền Bắc, gió cắt mặt, cành trúc đọng băng và biển mây dày phủ kín thung lũng.',
+    preparationTip: 'Đừng chủ quan với cái rét đêm trên 2.500m: mang áo lông vũ chắn gió, găng giữ ấm và vài miếng dán nhiệt dự phòng.',
     color: 'var(--color-sky)',
     tempRange: '2°C - 10°C',
-    cloudChance: '85% Săn mây',
-    terrainState: 'Khô ráo, có băng giá',
+    cloudChance: '85% có biển mây',
+    terrainState: 'Khô ráo, sáng sớm dễ có băng',
     fallbackImage: '/covers/trail-fansipan.svg',
   },
   {
     month: 2,
     label: 'Tháng 2',
-    seasonTheme: 'Mùa Hoa Rừng Tây Bắc & Du Xuân Đầu Năm',
-    badge: 'Mùa Hoa Rừng',
+    seasonTheme: 'Hoa mơ, hoa mận trắng sườn núi đầu xuân',
+    badge: 'Mùa hoa rừng',
     iconName: 'flower',
     IconComponent: IconFlower,
-    overviewText: 'Khám phá thung lũng hoa mơ, hoa mận trắng muốt và khí hậu mùa xuân dịu mát miền rẻo cao.',
-    preparationTip: 'Đem theo máy ảnh sạc đầy pin dự phòng vì mùa này săn ảnh hoa và mây cực đẹp.',
+    overviewText: 'Trời bắt đầu ấm dần, bản làng vùng cao phủ trắng hoa mận hoa mơ, nắng sớm dịu nhẹ rất dễ chịu cho những bước chân đầu năm.',
+    preparationTip: 'Pin máy ảnh và điện thoại tụt rất nhanh khi trời lạnh — nhớ cất pin dự phòng trong túi ngủ để giữ ấm qua đêm.',
     color: 'var(--color-primary)',
     tempRange: '8°C - 16°C',
-    cloudChance: '80% Biển mây',
-    terrainState: 'Ấm dần, tiết trời dịu mát',
+    cloudChance: '80% biển mây',
+    terrainState: 'Ấm dần, trời khô thoáng',
     fallbackImage: '/covers/trail-laothan.svg',
   },
   {
     month: 3,
     label: 'Tháng 3',
-    seasonTheme: 'Vương Quốc Hoa Đỗ Quyên & Rừng Cổ Thụ',
-    badge: 'Đại Ngàn Đỗ Quyên',
+    seasonTheme: 'Đỗ quyên cổ thụ nở rực trên dãy Hoàng Liên',
+    badge: 'Mùa đỗ quyên',
     iconName: 'flower',
     IconComponent: IconFlower,
-    overviewText: 'Chinh phục các đỉnh cao Hoàng Liên Sơn ngắm thảm hoa đỗ quyên cổ thụ bung nở rực rỡ.',
-    preparationTip: 'Lộ trình dài và dốc cao, nên rèn luyện thể lực leo cầu thang trước 2 tuần.',
+    overviewText: 'Dưới tán rừng rêu phong của Pu Ta Leng, Fansipan hay Tả Liên, từng vạt đỗ quyên đỏ vàng bung nở giữa mây mù.',
+    preparationTip: 'Các cung ngắm đỗ quyên đều dài và dốc gắt — nên chạy bộ hoặc leo cầu thang trước chuyến đi ít nhất 2 tuần.',
     color: 'var(--color-sun)',
     tempRange: '12°C - 20°C',
-    cloudChance: '70% Săn mây',
-    terrainState: 'Đường khô, thảm hoa rực rỡ',
+    cloudChance: '70% săn mây',
+    terrainState: 'Đường khô, rừng vào mùa hoa',
     fallbackImage: '/covers/trail-kyquansan.svg',
   },
   {
     month: 4,
     label: 'Tháng 4',
-    seasonTheme: 'Rừng Nguyên Sinh & Thảm Thực Vật Miền Nam - Tây Nguyên',
-    badge: 'Mùa Rừng Xanh',
+    seasonTheme: 'Rừng già Tây Nguyên và các đỉnh miền Nam vào mùa khô',
+    badge: 'Mùa rừng xanh',
     iconName: 'sun',
     IconComponent: IconSunMedium,
-    overviewText: 'Trekking các cánh rừng già Bidoup, Chư Yang Sin, Núi Dinh và Núi Chứa Chan.',
-    preparationTip: 'Nên mang 2.5L nước/ngày và kem chống nắng khi đi các cung phía Nam.',
+    overviewText: 'Đất khô ráo, nắng xuyên tán thông ở Bidoup, Chư Yang Sin, Núi Dinh hay Chứa Chan — đẹp để đi dài ngày mà ít gặp vắt.',
+    preparationTip: 'Nắng phía Nam khá gắt, mỗi người nên mang tối thiểu 2,5 lít nước mỗi ngày, mũ rộng vành và gói điện giải.',
     color: 'var(--color-earth)',
     tempRange: '16°C - 25°C',
-    cloudChance: '60% Nắng đẹp',
-    terrainState: 'Đường khô ráo, rừng thông reo',
+    cloudChance: '60% nắng đẹp',
+    terrainState: 'Đường đất khô, rừng thông thoáng',
     fallbackImage: '/covers/trail-bidoup.svg',
   },
   {
     month: 5,
     label: 'Tháng 5',
-    seasonTheme: 'Mùa Nước Đổ Ruộng Bậc Thang & Thung Lũng Xanh',
-    badge: 'Nước Đổ Trùng Điệp',
+    seasonTheme: 'Mùa nước đổ loang nắng trên ruộng bậc thang',
+    badge: 'Mùa nước đổ',
     iconName: 'droplet',
     IconComponent: IconDroplet,
-    overviewText: 'Chiêm ngưỡng những mặt gương trời ruộng bậc thang kỳ vĩ và khí hậu đầu hè mát lành.',
-    preparationTip: 'Mang kính râm chống chói phản chiếu từ mặt nước ruộng bậc thang.',
+    overviewText: 'Nước dẫn về khắp sườn đồi Tây Bắc, thung lũng phản chiếu mây trời như gương, không khí trên cao vẫn mát lành.',
+    preparationTip: 'Nắng đầu hè phản chiếu từ mặt nước khá chói — nhớ mang kính râm và áo khoác nhẹ phòng mưa rào bất chợt.',
     color: 'var(--color-sky)',
     tempRange: '18°C - 26°C',
-    cloudChance: '65% Nắng trong',
-    terrainState: 'Ruộng bậc thang ngập nước',
+    cloudChance: '65% nắng trong',
+    terrainState: 'Bậc thang đầy nước, lối mòn ẩm nhẹ',
     fallbackImage: '/covers/trail-chuyangsin.svg',
   },
   {
     month: 6,
     label: 'Tháng 6',
-    seasonTheme: 'Mùa Suối Thác, Hang Động & Tránh Nóng Rừng Già',
-    badge: 'Mùa Thác Bạc',
+    seasonTheme: 'Trốn nắng hè dưới tán rừng già và suối thác mát',
+    badge: 'Mùa suối thác',
     iconName: 'trees',
     IconComponent: IconTrees,
-    overviewText: 'Trốn nóng mùa hè dưới tán rừng đại ngàn, tắm suối mát và thám hiểm rừng nguyên sinh.',
-    preparationTip: 'Bắt buộc mang túi chống nước điện thoại, giày trekking có lỗ thoát nước nhanh.',
+    overviewText: 'Giữa những ngày thành phố oi bức, bước vào rừng Bạch Mã, K50 hay các con suối đầu nguồn để nghe tiếng thác đổ mát rượi.',
+    preparationTip: 'Bọc kín điện thoại và quần áo bằng túi chống nước, chọn giày đế bám tốt và thoát nước nhanh.',
     color: 'var(--color-primary)',
     tempRange: '22°C - 30°C',
-    cloudChance: '55% Thác nước đẹp',
-    terrainState: 'Suối mát, thảm thực vật tốt',
+    cloudChance: '55% nhiều thác đẹp',
+    terrainState: 'Suối nhiều nước, dễ trơn đá rêu',
     fallbackImage: '/covers/trail-bachma.svg',
   },
   {
     month: 7,
     label: 'Tháng 7',
-    seasonTheme: 'Trekking Ven Biển, Cực Đông & Duyên Hải Miền Trung',
-    badge: 'Biển Xanh Mùa Hạ',
+    seasonTheme: 'Băng đồi cát đón bình minh đầu tiên trên đất liền',
+    badge: 'Biển xanh mùa hạ',
     iconName: 'sun',
     IconComponent: IconSun,
-    overviewText: 'Đón ánh bình minh đầu tiên trên đất liền và trekking các cung ven biển duyên hải miền Trung.',
-    preparationTip: 'Nắng gắt ven biển đòi hỏi mũ tai bèo rộng vành, khăn trùm và bổ sung viên điện giải oresol.',
+    overviewText: 'Duyên hải miền Trung trời xanh trong, thích hợp chinh phục Cực Đông Mũi Đôi hay những cung ven biển lộng gió.',
+    preparationTip: 'Nắng cát rất mất sức: chuẩn bị mũ tai bèo, khăn che gáy, áo dài tay thoáng khí và gói oresol bù nước.',
     color: 'var(--color-earth)',
     tempRange: '25°C - 33°C',
-    cloudChance: '50% Nắng gắt',
-    terrainState: 'Cát biển, đồi dốc lộng gió',
+    cloudChance: '50% nắng gắt',
+    terrainState: 'Cát biển, đồi dốc gió mạnh',
     fallbackImage: '/covers/trail-muidoi.svg',
   },
   {
     month: 8,
     label: 'Tháng 8',
-    seasonTheme: 'Thảo Nguyên Cỏ Xanh & Đại Ngàn Rừng Thác',
-    badge: 'Thảo Nguyên Xanh',
+    seasonTheme: 'Thảo nguyên cỏ xanh và đại ngàn rừng thác',
+    badge: 'Đồi cỏ xanh',
     iconName: 'sparkles',
     IconComponent: IconSparkles,
-    overviewText: 'Băng qua những đồi cỏ xanh ngút ngàn, rừng thông reo và các con thác hùng vĩ miền Trung - Tây Nguyên.',
-    preparationTip: 'Mang theo áo mưa bộ chống thấm dự phòng và kiểm tra dự báo thời tiết trước khi hạ trại trên đồi trống.',
+    overviewText: 'Sau những cơn mưa đầu mùa, đồi cỏ Tà Năng phủ một màu xanh non mơn mởn, gió thổi rì rào qua những vạt thông.',
+    preparationTip: 'Luôn mang áo mưa bộ chống thấm tốt và xem kỹ dự báo giông trước khi hạ trại trên sống đồi trống.',
     color: 'var(--color-primary)',
     tempRange: '18°C - 26°C',
-    cloudChance: '70% Mây thung lũng',
-    terrainState: 'Đồi cỏ xanh, trơn nhẹ',
+    cloudChance: '70% mây thung lũng',
+    terrainState: 'Đồi cỏ xanh, đất trơn sau mưa',
     fallbackImage: '/covers/trail-tanangphandung.svg',
   },
   {
     month: 9,
     label: 'Tháng 9',
-    seasonTheme: 'Mùa Lúa Chín Vàng Rực Khắp Miền Núi Phía Bắc',
-    badge: 'Mùa Lúa Chín Vàng',
+    seasonTheme: 'Nắng thu nhuộm vàng sườn núi phía Bắc',
+    badge: 'Mùa lúa chín',
     iconName: 'sun',
     IconComponent: IconSun,
-    overviewText: 'Hành trình ngắm mùa vàng óng ả Mù Cang Chải, Sa Pa, Y Tý và Pù Luông.',
-    preparationTip: 'Mùa cao điểm trekking Tây Bắc, bạn nên liên hệ porter và xe trước ít nhất 10 ngày.',
+    overviewText: 'Hương lúa mới quyện trong gió sớm từ Mù Cang Chải, Sa Pa, Y Tý đến Pù Luông — trời se lạnh vừa đủ để đi bộ cả ngày không mệt.',
+    preparationTip: 'Mùa đẹp nên khách đi khá đông — bạn nên nhắn trước cho porter và đặt xe sớm khoảng 10 ngày.',
     color: 'var(--color-sun)',
     tempRange: '15°C - 24°C',
-    cloudChance: '75% Nắng thu vàng',
-    terrainState: 'Khô ráo, lúa chín vàng',
+    cloudChance: '75% nắng thu vàng',
+    terrainState: 'Khô ráo, sườn núi nhuộm vàng',
     fallbackImage: '/covers/trail-nhiucosan.svg',
   },
   {
     month: 10,
     label: 'Tháng 10',
-    seasonTheme: 'Mùa Hoa Chi Pâu, Tam Giác Mạch & Biển Mây',
-    badge: 'Mùa Hoa Tím Chi Pâu',
+    seasonTheme: 'Đồi tím Chi Pâu, tam giác mạch và biển mây đầu mùa',
+    badge: 'Hoa tím Chi Pâu',
     iconName: 'cloud',
     IconComponent: IconCloud,
-    overviewText: 'Đắm mình trong đồi hoa tím Chi Pâu, hoa tam giác mạch Hà Giang và săn biển mây cuồn cuộn.',
-    preparationTip: 'Đỉnh Tà Chì Nhù nhiều gió mạnh, cần lều cắm trại 2 lớp có cọc neo nhôm chắc chắn.',
+    overviewText: 'Sườn núi Trạm Tấu tím ngắt một dải Chi Pâu trong gió lộng, còn Hà Giang bước vào mùa tam giác mạch phớt hồng.',
+    preparationTip: 'Gió trên đỉnh Tà Chì Nhù rất mạnh về đêm — cần lều 2 lớp cọc nhôm chắc chắn và áo gió kín cổ.',
     color: 'var(--color-sky)',
     tempRange: '12°C - 20°C',
-    cloudChance: '85% Biển mây',
-    terrainState: 'Đồi hoa tím, gió mạnh',
+    cloudChance: '85% biển mây',
+    terrainState: 'Đồi hoa tím, gió lớn trên sống núi',
     fallbackImage: '/covers/trail-tachinhu.svg',
   },
   {
     month: 11,
     label: 'Tháng 11',
-    seasonTheme: 'Đỉnh Cao Săn Mây & Mùa Thu Lá Đỏ',
-    badge: 'Đỉnh Cao Săn Mây',
+    seasonTheme: 'Biển mây dày nhất năm và rừng phong chuyển lá đỏ',
+    badge: 'Mùa biển mây',
     iconName: 'mountain',
     IconComponent: IconMountain,
-    overviewText: 'Tỉ lệ gặp biển mây cao nhất năm trên toàn bộ các đỉnh núi Hoàng Liên Sơn và Tây Bắc.',
-    preparationTip: 'Đêm trên độ cao 2.500m nhiệt độ có thể xuống 4°C, cần túi ngủ có nhiệt độ chịu lạnh từ 0°C đến 5°C.',
+    overviewText: 'Sáng nào cũng dễ gặp biển mây cuồn cuộn trên các đỉnh Hoàng Liên Sơn và Tây Bắc; dưới tán rừng là thảm lá phong đỏ rụng đầy lối mòn.',
+    preparationTip: 'Đêm trên độ cao 2.500m nhiệt độ có thể xuống 4°C — nhớ mang túi ngủ chịu lạnh từ 0°C đến 5°C và tất len giữ ấm chân.',
     color: 'var(--color-primary)',
     tempRange: '6°C - 16°C',
-    cloudChance: '90% Đỉnh cao săn mây',
-    terrainState: 'Khô ráo tuyệt đối',
+    cloudChance: '90% dễ gặp biển mây',
+    terrainState: 'Khô ráo, trời quang',
     fallbackImage: '/covers/trail-taxua.svg',
   },
   {
     month: 12,
     label: 'Tháng 12',
-    seasonTheme: 'Mùa Săn Băng Tuyết & Lửa Trại Basecamp',
-    badge: 'Băng Tuyết Mùa Đông',
+    seasonTheme: 'Sương giá mùa đông và đêm lửa trại trên đỉnh cao',
+    badge: 'Săn băng mùa đông',
     iconName: 'flame',
     IconComponent: IconFlame,
-    overviewText: 'Trải nghiệm cái lạnh mùa đông, săn băng trên các đỉnh cao và cắm trại đêm ngắm sao.',
-    preparationTip: 'Trang bị áo khoác 3 lớp chống gió tuyết, gậy trekking và bình giữ nhiệt nước nóng.',
+    overviewText: 'Cái lạnh buốt khiến ly trà gừng bên bếp lửa ấm hơn bao giờ hết; những đêm trời quang thấy rõ dải sao vắt ngang sống núi.',
+    preparationTip: 'Mặc đủ 3 lớp giữ nhiệt chống gió, mang theo gậy trekking và bình giữ nhiệt đựng nước nóng.',
     color: 'var(--color-earth)',
     tempRange: '0°C - 8°C',
-    cloudChance: '85% Băng tuyết & mây',
-    terrainState: 'Rất lạnh, sương giá',
-    fallbackImage: '/covers/trail-chuachan.svg',
+    cloudChance: '85% băng giá & mây',
+    terrainState: 'Rất lạnh, dễ có sương muối',
+    fallbackImage: '/covers/trail-fansipan.svg',
   },
 ];
 
@@ -272,26 +272,26 @@ const SeasonExpeditionRadarBase: React.FC<SeasonExpeditionRadarProps> = ({
   const dynamicHighlights = useMemo(() => {
     if (!matchedTrails || matchedTrails.length === 0) {
       return [
-        `Khí hậu lý tưởng cho các hoạt động thám hiểm ngoài trời trong tháng ${activeMonth}.`,
-        'Cung đường được kiểm duyệt với dữ liệu GPS và hướng dẫn viên địa phương.',
-        'Thời tiết thuận lợi, phù hợp cho cả người mới và trekker chuyên nghiệp.',
+        `Tháng ${activeMonth} thời tiết khá thuận lợi để ra rừng và leo núi.`,
+        'Mỗi cung đều có tracklog GPS đi thật và số điện thoại kiểm lâm khu vực.',
+        'Có đủ lựa chọn từ cung đi nhẹ trong ngày đến đỉnh cao nhiều ngày.',
       ];
     }
 
     const items: string[] = [];
     const top = matchedTrails[0];
     if (top && top.name) {
-      items.push(`Cung đường tiêu biểu: ${top.name} (${top.province || 'Việt Nam'}) – Cao độ ${top.maxAltitudeM || 0}m, cự ly ${top.distanceKm || 0}km`);
+      items.push(`Nổi bật nhất: ${top.name} (${top.province || 'Việt Nam'}) — đỉnh ${top.maxAltitudeM || 0}m, dài ${top.distanceKm || 0}km`);
     }
 
     if (matchedTrails.length > 1) {
       const second = matchedTrails[1];
       if (second && second.name) {
-        items.push(`Tuyến thám hiểm ${second.province || 'Việt Nam'}: ${second.name} – Độ khó ${second.difficultyLevel || 3}/5`);
+        items.push(`Gợi ý thêm ở ${second.province || 'Việt Nam'}: ${second.name} — độ khó ${second.difficultyLevel || 3}/5`);
       }
     }
 
-    items.push(`Hệ sinh thái có ${matchedTrails.length} cung đường lý tưởng sẵn sàng khám phá trong tháng ${activeMonth}`);
+    items.push(`Hiện có ${matchedTrails.length} cung vào đúng mùa đẹp trong tháng ${activeMonth}.`);
 
     return items;
   }, [matchedTrails, activeMonth]);
@@ -321,7 +321,7 @@ const SeasonExpeditionRadarBase: React.FC<SeasonExpeditionRadarProps> = ({
     >
       {/* Editorial Header */}
       <div style={{ marginBottom: 24 }}>
-        <div className="section-eyebrow">02 / Lịch khí hậu theo tháng</div>
+        <div className="section-eyebrow">02 / Lịch mùa theo tháng</div>
         <h2
           className="font-editorial"
           style={{
@@ -339,7 +339,7 @@ const SeasonExpeditionRadarBase: React.FC<SeasonExpeditionRadarProps> = ({
           </span>
         </h2>
         <p style={{ color: 'var(--color-text-muted)', fontSize: '0.88rem', maxWidth: 640, margin: 0 }}>
-          Mùa hoa rừng, mùa lúa chín, săn mây và thời tiết vùng cao tổng hợp theo đặc trưng khí tượng cho {trails.length} cung đường thực địa Việt Nam.
+          Mùa hoa rừng, mùa lúa chín, săn mây và thời tiết vùng cao gom lại từ thực tế của {trails.length} cung đường Việt Nam.
         </p>
       </div>
 
@@ -535,7 +535,7 @@ const SeasonExpeditionRadarBase: React.FC<SeasonExpeditionRadarProps> = ({
             </div>
             <div>
               <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--color-sun)', textTransform: 'uppercase', marginBottom: 2 }}>
-                Kinh Nghiệm Chuẩn Bị
+                Lời dặn trước giờ đi
               </div>
               <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', lineHeight: 1.45 }}>
                 {selectedMeteorology.preparationTip}
@@ -559,11 +559,11 @@ const SeasonExpeditionRadarBase: React.FC<SeasonExpeditionRadarProps> = ({
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <h4 style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
-                Tuyến Đường Đề Xuất Tháng {selectedMeteorology.month}
+                Gợi ý đi trong tháng {selectedMeteorology.month}
               </h4>
               {matchedTrails.length > 0 && (
                 <span style={{ fontSize: '0.72rem', color: 'var(--color-primary)', fontWeight: 700 }}>
-                  {matchedTrails.length} cung đường
+                  {matchedTrails.length} cung
                 </span>
               )}
             </div>
@@ -603,7 +603,10 @@ const SeasonExpeditionRadarBase: React.FC<SeasonExpeditionRadarProps> = ({
                       border: '1px solid var(--color-border)',
                     }}
                     onError={(e) => {
-                      (e.target as HTMLImageElement).src = selectedMeteorology.fallbackImage;
+                      const img = e.currentTarget;
+                      if (img.dataset.fallbackApplied) return;
+                      img.dataset.fallbackApplied = '1';
+                      img.src = selectedMeteorology.fallbackImage;
                     }}
                   />
 
@@ -672,10 +675,10 @@ const SeasonExpeditionRadarBase: React.FC<SeasonExpeditionRadarProps> = ({
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <IconCompass size={16} color="var(--color-primary)" />
               <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                Xem toàn bộ {matchedTrails.length} cung đường tháng {selectedMeteorology.month} trên Bản Đồ Thực Địa
+                Xem cả {matchedTrails.length} cung tháng {selectedMeteorology.month} trên bản đồ
               </span>
             </div>
-            <span style={{ fontSize: '0.8rem', color: 'var(--color-primary)', fontWeight: 800, flexShrink: 0 }}>Lên Bản Đồ</span>
+            <span style={{ fontSize: '0.8rem', color: 'var(--color-primary)', fontWeight: 800, flexShrink: 0 }}>Mở bản đồ</span>
           </button>
         </div>
       </div>

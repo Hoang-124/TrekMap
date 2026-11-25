@@ -117,10 +117,10 @@ function getDifficultyToken(level: number): string {
 }
 
 const GROUP_LABELS: Record<PaletteRow['group'], string> = {
-  ai: 'Trợ Lý Trí Tuệ Địa Hình',
-  trails: 'Cung Đường Thực Địa DEM',
-  hubs: 'Hệ Sinh Thái Công Cụ & Live GPS',
-  rangers: 'Trạm Kiểm Lâm, VQG & Cứu Hộ 24/7',
+  ai: 'Hỏi trợ lý đường rừng',
+  trails: 'Cung đường thực địa',
+  hubs: 'Công cụ & Live GPS',
+  rangers: 'Trạm kiểm lâm, VQG & cứu hộ 24/7',
 };
 
 function buildHubEntries(
@@ -132,10 +132,10 @@ function buildHubEntries(
     {
       id: 'hub-passport',
       view: 'passport',
-      title: `Hộ Chiếu Đỉnh & ${challengesCount} Thử Thách`,
-      subtitle: 'Sưu tầm tem đỉnh 3.000m, bảng xếp hạng & chứng nhận GPS',
+      title: `Hộ chiếu đỉnh núi & ${challengesCount} thử thách`,
+      subtitle: 'Ghi dấu các đỉnh 3.000m, bảng xếp hạng & xác thực GPS',
       keywords: 'ho chieu dinh passport thu thach 3000m huy hieu bang xep hang',
-      badge: 'Hub',
+      badge: 'Công cụ',
       accent: 'var(--color-sun)',
       kind: 'hub',
       icon: <IconMountain size={16} />,
@@ -143,10 +143,10 @@ function buildHubEntries(
     {
       id: 'hub-almanac',
       view: 'almanac',
-      title: 'Lịch Mùa 12 Tháng & Săn Mây',
-      subtitle: `Bản đồ nhiệt khí hậu ${trailsCount} tuyến, mùa đỗ quyên & tránh bão lũ`,
+      title: 'Lịch mùa 12 tháng & săn mây',
+      subtitle: `Canh biển mây, mùa đỗ quyên và mùa lũ trên ${trailsCount} cung đường`,
       keywords: 'lich mua almanac san may mua kho bao lu do quyen 12 thang',
-      badge: 'Hub',
+      badge: 'Công cụ',
       accent: 'var(--color-sky)',
       kind: 'hub',
       icon: <IconCalendar size={16} />,
@@ -154,10 +154,10 @@ function buildHubEntries(
     {
       id: 'hub-planner',
       view: 'planner',
-      title: 'Thiết Kế GPX & Phân Tích Độ Dốc',
-      subtitle: 'Vẽ tuyến trên bản đồ, lấy cao độ DEM thật, tính Naismith/Tobler',
+      title: 'Vẽ GPX & đo độ dốc địa hình',
+      subtitle: 'Chấm tuyến trên bản đồ, lấy cao độ DEM thật & ước lượng giờ đi',
       keywords: 'thiet ke gpx route planner ban do cao do dem do doc naismith tobler',
-      badge: 'Hub',
+      badge: 'Công cụ',
       accent: 'var(--color-primary)',
       kind: 'hub',
       icon: <IconCompass size={16} />,
@@ -165,8 +165,8 @@ function buildHubEntries(
     {
       id: 'hub-toolkit',
       view: 'toolkit',
-      title: 'Công Cụ Sinh Tồn Offline & La Bàn',
-      subtitle: 'La bàn GPS, giờ mặt trời NOAA, nước/calo, còi SOS & Học viện sơ cứu',
+      title: 'Đồ nghề đi rừng offline & la bàn',
+      subtitle: 'La bàn GPS, giờ mặt trời, ước tính nước/calo, còi SOS & sổ tay sơ cứu',
       keywords: 'cong cu sinh ton toolkit la ban gps mat troi noaa sos coi so cuu offline',
       badge: 'Offline',
       accent: 'var(--color-earth)',
@@ -176,10 +176,10 @@ function buildHubEntries(
     {
       id: 'hub-training',
       view: 'training',
-      title: 'Giáo Án Thể Lực Leo Núi',
-      subtitle: 'Lộ trình 4–8 tuần tăng tiến & điểm sẵn sàng cho từng đỉnh',
+      title: 'Rèn sức trước chuyến đi',
+      subtitle: 'Lộ trình tập 4–8 tuần tăng sức bền theo từng đỉnh mục tiêu',
       keywords: 'giao an the luc training luyen tap suc ben cao do leo nui',
-      badge: 'Hub',
+      badge: 'Công cụ',
       accent: 'var(--color-primary)',
       kind: 'hub',
       icon: <IconHiking size={16} />,
@@ -187,10 +187,10 @@ function buildHubEntries(
     {
       id: 'hub-directory',
       view: 'directory',
-      title: 'Kiểm Lâm, Porter & Máy Tính Chi Phí',
-      subtitle: `${rangersCount} trạm VQG, trung tâm HDV chính thức & bảng dự trù VNĐ`,
+      title: 'Kiểm lâm, porter & dự trù chi phí',
+      subtitle: `${rangersCount} trạm VQG, người dẫn đường bản địa & bảng tính VNĐ`,
       keywords: 'kiem lam vqg porter hdv guide chi phi du toan vnd giay phep directory',
-      badge: 'Hub',
+      badge: 'Công cụ',
       accent: 'var(--color-stream)',
       kind: 'hub',
       icon: <IconShieldAlert size={16} />,
@@ -198,10 +198,10 @@ function buildHubEntries(
     {
       id: 'hub-gear',
       view: 'gear',
-      title: 'Tủ Đồ & Tối Ưu Trọng Lượng Balo',
-      subtitle: 'Phân tích Base Weight, tỉ lệ cân nặng cơ thể & đồng bộ đám mây',
+      title: 'Cân balo & tủ đồ đi rừng',
+      subtitle: 'Cân trọng lượng Base Weight, kiểm tra đồ mang theo & lưu vào tài khoản',
       keywords: 'tu do toi uu balo gear pack base weight ultralight trong luong checklist',
-      badge: 'Hub',
+      badge: 'Công cụ',
       accent: 'var(--color-sun)',
       kind: 'hub',
       icon: <IconBackpack size={16} />,
@@ -209,10 +209,10 @@ function buildHubEntries(
     {
       id: 'hub-radar',
       view: 'radar',
-      title: 'Radar An Toàn Thực Địa Toàn Quốc',
-      subtitle: 'Cảnh báo sạt lở, lũ suối & báo cáo mặt đường 7 ngày qua',
+      title: 'Tin cảnh báo an toàn trên tuyến',
+      subtitle: 'Cảnh báo sạt lở, lũ suối & tình trạng đường 7 ngày gần nhất',
       keywords: 'radar an toan canh bao su co sat lo lu suoi tinh trang duong safety',
-      badge: 'Live',
+      badge: 'Mới nhất',
       accent: 'var(--color-error)',
       kind: 'hub',
       icon: <IconRadar size={16} />,
@@ -220,8 +220,8 @@ function buildHubEntries(
     {
       id: 'action-live-tracker',
       view: 'live-tracker',
-      title: 'Chế Độ Leo Núi Trực Tiếp (Live GPS)',
-      subtitle: 'Đo tốc độ, khoảng cách mốc kế tiếp & cảnh báo lệch cung >100m',
+      title: 'Ghi hành trình trực tiếp (Live GPS)',
+      subtitle: 'Đo tốc độ, khoảng cách tới mốc kế tiếp & báo lệch đường >100m',
       keywords: 'leo nui truc tiep live gps tracker off-trail dinh vi ghi tracklog',
       badge: 'GPS',
       accent: 'var(--color-primary)',
@@ -231,7 +231,7 @@ function buildHubEntries(
     {
       id: 'action-emergency',
       view: 'emergency',
-      title: 'Danh Bạ Cứu Hộ 24/7 & Hotline 112 / 114',
+      title: 'Danh bạ cứu hộ 24/7 & số 112 / 114',
       subtitle: 'Gọi nhanh tổng đài quốc gia, VQG & trạm kiểm lâm toàn quốc',
       keywords: 'cuu ho khan cap sos 112 114 115 113 danh ba hotline emergency',
       badge: '24/7',
@@ -243,7 +243,7 @@ function buildHubEntries(
       id: 'action-shortcuts',
       view: 'shortcuts',
       title: 'Bảng phím tắt (?)',
-      subtitle: 'Xem nhanh toàn bộ phím tắt Ctrl+K, /, ?, Alt+A, Alt+T & Esc',
+      subtitle: 'Xem nhanh các phím Ctrl+K, /, ?, Alt+A, Alt+T & Esc',
       keywords: 'bang phim tat keyboard shortcuts hotkeys tro giup help ? alt+a alt+t ctrl+k',
       badge: '?',
       accent: 'var(--color-sky)',
@@ -322,7 +322,7 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
         key: 'ai-dynamic-prompt',
         group: 'ai',
         title: `Hỏi LOST AI: "${trimmedQuery}"`,
-        subtitle: 'Phân tích Go/No-Go, so sánh đỉnh, sơ cứu thực địa hoặc lập lịch trình bằng AI',
+        subtitle: 'Hỏi nhanh chuyện thời tiết, so sánh đỉnh, đồ đạc hoặc lên lịch trình',
         badge: 'LOST AI',
         accent: 'var(--color-primary)',
         icon: <IconSparkles size={16} color="var(--color-primary)" />,
@@ -625,7 +625,7 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
               setQuery(e.target.value);
               setActiveIdx(0);
             }}
-            placeholder={`Tìm ${trails.length} cung đường, 8 Hub công cụ, ${VIETNAM_RANGER_STATIONS.length} Trạm Kiểm Lâm hoặc hỏi LOST AI...`}
+            placeholder={`Tìm trong ${trails.length} cung đường, công cụ, ${VIETNAM_RANGER_STATIONS.length} trạm kiểm lâm hoặc hỏi LOST AI...`}
             aria-label="Nhập từ khóa tìm kiếm nhanh"
             style={{
               flex: 1,
@@ -701,7 +701,7 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
               [
                 { id: 'all', label: 'Tất cả' },
                 { id: 'trails', label: `Cung đường (${trails.length})` },
-                { id: 'hubs', label: '8 Hub & GPS' },
+                { id: 'hubs', label: 'Công cụ & GPS' },
                 { id: 'rangers', label: `Kiểm lâm & VQG (${VIETNAM_RANGER_STATIONS.length})` },
               ] as const
             ).map((tab) => {
@@ -829,7 +829,7 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
               fontSize: '0.86rem',
             }}
           >
-            Không tìm thấy kết quả khớp với &ldquo;{trimmedQuery}&rdquo;. Thử gõ tên đỉnh (Fansipan, Pu Si Lung, Tà Xùa) hoặc ít nhất 3 ký tự để hỏi LOST AI.
+            Không thấy kết quả nào khớp với &ldquo;{trimmedQuery}&rdquo;. Thử gõ tên đỉnh như Fansipan, Pu Si Lung, Tà Xùa hoặc gõ từ 3 ký tự để hỏi LOST AI nhé.
           </div>
         ) : (
           <div
@@ -1005,10 +1005,10 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
             <span>
-              <strong style={{ color: 'var(--color-text-muted)' }}>↑↓</strong> Di chuyển
+              <strong style={{ color: 'var(--color-text-muted)' }}>↑↓</strong> Chọn
             </span>
             <span>
-              <strong style={{ color: 'var(--color-text-muted)' }}>Enter</strong> Mở mục chọn
+              <strong style={{ color: 'var(--color-text-muted)' }}>Enter</strong> Mở
             </span>
             <span>
               <strong style={{ color: 'var(--color-text-muted)' }}>Esc</strong> Đóng
@@ -1040,7 +1040,7 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
               </a>
             )}
             <span style={{ fontWeight: 700, color: 'var(--color-text-muted)', letterSpacing: '0.04em' }}>
-              LOST FIELD ATLAS · CTRL+K
+              LOST · Ctrl+K
             </span>
           </div>
         </div>

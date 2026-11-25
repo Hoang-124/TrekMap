@@ -13,6 +13,13 @@ import { isValidObjectId, resolveTrailByIdOrSlug } from '../utils/resolveTrail.j
 import { sendNotification } from '../utils/notification.js';
 import { recordActivity } from '../utils/audit.js';
 import { evictUserFromRoom, evictAllFromRoom } from '../config/socket.js';
+import { getVietnamTodayIso } from '../services/goNoGo.service.js';
+
+function parseStrictTripNumber(val: unknown): number | null {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
 
 const VALID_TRIP_STATUSES = new Set(['recruiting', 'full', 'in_progress', 'completed', 'cancelled']);
 const VALID_REGIONS = new Set(['Miền Bắc', 'Miền Trung', 'Miền Nam']);
@@ -157,13 +164,17 @@ export const createTripPlan = async (req: AuthRequest, res: Response) => {
 // GET /api/trips - Filtered & paginated list of trip plans (supports region, trailId, difficulty, month, fromDate, toDate, search, mine)
 export const getTripPlans = async (req: AuthRequest, res: Response) => {
   try {
-    if (mongoose.connection.readyState !== 1) {
-      return res.json({ success: true, data: [], pagination: { total: 0, page: 1, limit: 10 } });
-    }
-
     const rawStatus = typeof req.query.status === 'string' ? req.query.status : 'recruiting';
-    const page = Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1);
+    const page = Math.min(Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1), 1000);
     const limit = Math.min(Math.max(parseInt(String(req.query.limit || '10'), 10) || 10, 1), 50);
+
+    if (mongoose.connection.readyState !== 1) {
+      return res.json({
+        success: true,
+        data: [],
+        pagination: { total: 0, page, limit, totalPages: 0, hasMore: false },
+      });
+    }
 
     const query: any = {};
     if (rawStatus !== 'all' && VALID_TRIP_STATUSES.has(rawStatus)) {
@@ -331,7 +342,7 @@ export const getTripCalendar = async (req: Request, res: Response) => {
         coverImage: t.coverImage,
         creator: t.creatorId,
       };
-      const dateKey = new Date(t.startDate).toISOString().split('T')[0];
+      const dateKey = getVietnamTodayIso(new Date(t.startDate));
       if (!days[dateKey]) days[dateKey] = [];
       days[dateKey].push(item);
       return item;
@@ -362,7 +373,15 @@ export const getTripPlanById = async (req: AuthRequest, res: Response) => {
       return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
     }
 
-    const trip = await TripPlanModel.findByIdAndUpdate(id, { $inc: { viewsCount: 1 } }, { new: true })
+    const skipView =
+      req.query.skipView === '1' ||
+      req.query.skipView === 'true' ||
+      req.query.noView === '1' ||
+      req.query.silent === '1';
+    const trip = await (skipView
+      ? TripPlanModel.findById(id)
+      : TripPlanModel.findByIdAndUpdate(id, { $inc: { viewsCount: 1 } }, { new: true })
+    )
       .populate('creatorId', 'fullName avatarUrl reputationScore badges bio')
       .populate('currentMembers', 'fullName avatarUrl reputationScore badges')
       .populate('pendingRequests.userId', 'fullName avatarUrl reputationScore')
@@ -501,8 +520,9 @@ export const updateTripPlan = async (req: AuthRequest, res: Response) => {
     }
 
     let nextMax = trip.maxMembers;
-    if (maxMembers !== undefined && Number.isFinite(Number(maxMembers))) {
-      const parsedMax = Math.min(50, Math.max(2, Math.round(Number(maxMembers))));
+    const rawMaxMembers = parseStrictTripNumber(maxMembers);
+    if (rawMaxMembers !== null) {
+      const parsedMax = Math.min(50, Math.max(2, Math.round(rawMaxMembers)));
       if (parsedMax < trip.currentMembers.length) {
         return res.status(400).json({
           success: false,
@@ -512,51 +532,68 @@ export const updateTripPlan = async (req: AuthRequest, res: Response) => {
       nextMax = parsedMax;
     }
 
+    const setFields: Record<string, any> = {
+      title: nextTitle,
+      description: nextDesc || nextTitle,
+      requirements: nextReq,
+      meetingPoint: nextMeeting,
+      estimatedCost: nextBudget,
+      startDate: nextStart,
+      endDate: nextEnd,
+      maxMembers: nextMax,
+    };
+    const unsetFields: Record<string, any> = {};
+
     const rawDiff = difficultyLevel !== undefined ? difficultyLevel : difficulty;
-    if (rawDiff !== undefined && Number.isFinite(Number(rawDiff))) {
-      trip.difficultyLevel = Math.min(5, Math.max(1, Math.round(Number(rawDiff))));
+    const parsedDiff = parseStrictTripNumber(rawDiff);
+    if (parsedDiff !== null) {
+      setFields.difficultyLevel = Math.min(5, Math.max(1, Math.round(parsedDiff)));
     }
 
     if (trailId !== undefined) {
       const resolvedTrail = trailId ? await resolveTrailByIdOrSlug(String(trailId)) : null;
-      trip.trailId = resolvedTrail?._id || undefined;
+      if (resolvedTrail?._id) {
+        setFields.trailId = resolvedTrail._id;
+      } else {
+        unsetFields.trailId = '';
+      }
       if (trailName === undefined) {
-        trip.trailName = resolvedTrail?.name || '';
+        setFields.trailName = resolvedTrail?.name || '';
       }
     }
     if (trailName !== undefined) {
-      trip.trailName = sanitizeInput(String(trailName)).slice(0, 160);
+      setFields.trailName = sanitizeInput(String(trailName)).slice(0, 160);
     }
 
     if (Array.isArray(tags)) {
-      trip.tags = tags
+      setFields.tags = tags
         .filter((t: unknown) => typeof t === 'string' && t.trim())
         .slice(0, 10)
         .map((t: string) => sanitizeInput(t).slice(0, 30));
     }
 
     const titleChanged = nextTitle !== trip.title;
-    trip.title = nextTitle;
-    trip.description = nextDesc || nextTitle;
-    trip.requirements = nextReq;
-    trip.meetingPoint = nextMeeting;
-    trip.estimatedCost = nextBudget;
-    trip.startDate = nextStart;
-    trip.endDate = nextEnd;
-    trip.maxMembers = nextMax;
 
-    if (trip.status === 'recruiting' && trip.currentMembers.length >= trip.maxMembers) {
-      trip.status = 'full';
-    } else if (trip.status === 'full' && trip.currentMembers.length < trip.maxMembers) {
-      trip.status = 'recruiting';
+    if (trip.status === 'recruiting' && trip.currentMembers.length >= nextMax) {
+      setFields.status = 'full';
+    } else if (trip.status === 'full' && trip.currentMembers.length < nextMax) {
+      setFields.status = 'recruiting';
     }
 
-    await trip.save();
+    // Atomic field-level $set/$unset avoids clobbering concurrent sharedGear / expenses / safetyGate writes
+    await TripPlanModel.findByIdAndUpdate(
+      trip._id,
+      {
+        $set: setFields,
+        ...(Object.keys(unsetFields).length > 0 ? { $unset: unsetFields } : {}),
+      },
+      { new: true, runValidators: true }
+    );
 
     if (titleChanged && trip.groupConversationId) {
       await ConversationModel.updateOne(
         { _id: trip.groupConversationId },
-        { $set: { groupName: `Đoàn: ${trip.title}`.slice(0, 140) } }
+        { $set: { groupName: `Đoàn: ${nextTitle}`.slice(0, 140) } }
       ).catch(() => {});
     }
 
@@ -619,7 +656,25 @@ export const kickTripMember = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ success: false, message: 'Người này không nằm trong danh sách thành viên đoàn.' });
     }
 
-    await TripPlanModel.updateOne({ _id: trip._id }, { $pull: { currentMembers: memberObjId } });
+    await TripPlanModel.updateOne(
+      { _id: trip._id },
+      {
+        $pull: { currentMembers: memberObjId },
+        $set: { settledTransfers: [] },
+      }
+    );
+    // Cleanly release any shared gear previously assigned to the kicked member
+    await TripPlanModel.updateOne(
+      { _id: trip._id },
+      {
+        $unset: { 'sharedGear.$[elem].assignedUserId': '' },
+        $set: {
+          'sharedGear.$[elem].assignedUserName': 'Chưa nhận',
+          'sharedGear.$[elem].packed': false,
+        },
+      },
+      { arrayFilters: [{ 'elem.assignedUserId': memberObjId }] }
+    );
     await TripPlanModel.updateOne(
       {
         _id: trip._id,
@@ -931,11 +986,26 @@ export const leaveTrip = async (req: AuthRequest, res: Response) => {
 
     const updated = await TripPlanModel.findByIdAndUpdate(
       id,
-      { $pull: { currentMembers: userObjId } },
+      {
+        $pull: { currentMembers: userObjId },
+        $set: { settledTransfers: [] },
+      },
       { new: true }
     );
 
     if (updated) {
+      // Cleanly release any shared gear previously assigned to the departing member
+      await TripPlanModel.updateOne(
+        { _id: id },
+        {
+          $unset: { 'sharedGear.$[elem].assignedUserId': '' },
+          $set: {
+            'sharedGear.$[elem].assignedUserName': 'Chưa nhận',
+            'sharedGear.$[elem].packed': false,
+          },
+        },
+        { arrayFilters: [{ 'elem.assignedUserId': userObjId }] }
+      );
       await TripPlanModel.updateOne(
         {
           _id: id,
@@ -990,10 +1060,13 @@ export const updateTripStatus = async (req: AuthRequest, res: Response) => {
       return res.status(403).json({ success: false, message: 'Chỉ trưởng đoàn mới có quyền cập nhật trạng thái chuyến đi.' });
     }
 
-    trip.status = status as any;
-    await trip.save();
+    const updatedTrip = await TripPlanModel.findByIdAndUpdate(
+      trip._id,
+      { $set: { status: status as any } },
+      { new: true, runValidators: true }
+    );
 
-    return res.json({ success: true, message: 'Đã cập nhật trạng thái chuyến đi!', data: trip });
+    return res.json({ success: true, message: 'Đã cập nhật trạng thái chuyến đi!', data: updatedTrip || trip });
   } catch (err) {
     console.error('[Update Trip Status Error]:', err);
     return res.status(500).json({ success: false, message: 'Lỗi khi cập nhật trạng thái chuyến đi.' });
@@ -1140,6 +1213,13 @@ export const toggleSafetyGateStep = async (req: AuthRequest, res: Response) => {
     const { stepKey, checked, reset } = req.body || {};
 
     if (reset === true) {
+      const isLeaderOrAdmin = String(trip.creatorId) === String(userId) || req.user?.role === 'admin';
+      if (!isLeaderOrAdmin) {
+        return res.status(403).json({
+          success: false,
+          message: 'Chỉ trưởng đoàn mới có quyền đặt lại toàn bộ Cổng Kiểm Tra An Toàn.',
+        });
+      }
       const resetSet: Record<string, boolean> = {};
       for (const k of VALID_SAFETY_GATE_KEYS) {
         resetSet[`safetyGate.${k}`] = false;
@@ -1202,8 +1282,8 @@ export const addSharedGear = async (req: AuthRequest, res: Response) => {
 
     const cleanName = sanitizeInput(String(itemName || '')).trim();
     const cleanCategory = sanitizeInput(String(category)).slice(0, 60) || 'Dùng chung';
-    const rawWeight = Math.round(Number(weightG));
-    const safeWeightG = Number.isFinite(rawWeight) && rawWeight >= 0 ? Math.min(100_000, rawWeight) : 500;
+    const parsedWeight = parseStrictTripNumber(weightG);
+    const safeWeightG = parsedWeight !== null && parsedWeight >= 0 ? Math.min(100_000, Math.round(parsedWeight)) : 500;
 
     if (!cleanName) {
       return res.status(400).json({ success: false, message: 'Vui lòng nhập tên vật dụng dùng chung.' });
@@ -1292,6 +1372,33 @@ export const updateSharedGear = async (req: AuthRequest, res: Response) => {
     }
 
     const { packed, claim, weightG, category, itemName, assignedUserId, assignedUserName } = req.body || {};
+    const isCreator = String(trip.creatorId) === String(userId);
+    const hasCurrentAssignee = Boolean(target.assignedUserId);
+    const isCurrentAssignee = hasCurrentAssignee && String(target.assignedUserId) === String(userId);
+    const canManageItem = isCreator || !hasCurrentAssignee || isCurrentAssignee;
+
+    const wantsMetadataOrAssignmentChange =
+      weightG !== undefined ||
+      category !== undefined ||
+      itemName !== undefined ||
+      assignedUserId !== undefined ||
+      assignedUserName !== undefined ||
+      typeof packed === 'boolean' ||
+      claim === false;
+
+    if (wantsMetadataOrAssignmentChange && !canManageItem) {
+      return res.status(403).json({
+        success: false,
+        message: 'Chỉ trưởng đoàn hoặc người đang phụ trách mới có quyền chỉnh sửa/hủy nhận vật dụng này.',
+      });
+    }
+    if (claim === true && hasCurrentAssignee && !isCurrentAssignee && !isCreator) {
+      return res.status(409).json({
+        success: false,
+        message: 'Vật dụng này đã có thành viên khác phụ trách. Vui lòng liên hệ trưởng đoàn để điều chuyển.',
+      });
+    }
+
     const setFields: Record<string, any> = {};
     const unsetFields: Record<string, any> = {};
 
@@ -1300,8 +1407,12 @@ export const updateSharedGear = async (req: AuthRequest, res: Response) => {
     }
 
     if (weightG !== undefined) {
-      const parsedW = Math.round(Number(weightG));
-      if (!Number.isFinite(parsedW) || parsedW < 0 || parsedW > 100_000) {
+      const parsedRaw = parseStrictTripNumber(weightG);
+      if (parsedRaw === null) {
+        return res.status(400).json({ success: false, message: 'Trọng lượng không hợp lệ (0 - 100.000g).' });
+      }
+      const parsedW = Math.round(parsedRaw);
+      if (parsedW < 0 || parsedW > 100_000) {
         return res.status(400).json({ success: false, message: 'Trọng lượng không hợp lệ (0 - 100.000g).' });
       }
       setFields['sharedGear.$.weightG'] = parsedW;
@@ -1321,10 +1432,34 @@ export const updateSharedGear = async (req: AuthRequest, res: Response) => {
       if (cleanItem) setFields['sharedGear.$.itemName'] = cleanItem;
     }
 
-    if (assignedUserId !== undefined) {
-      if (assignedUserId === null || assignedUserId === '') {
-        unsetFields['sharedGear.$.assignedUserId'] = '';
-        setFields['sharedGear.$.assignedUserName'] = 'Chưa nhận';
+    // Resolve final assignee state cleanly FIRST so assignedUserId NEVER collides between $set and $unset (fixes Mongo Error 40 -> 500)
+    type AssigneeMutation =
+      | { mode: 'none' }
+      | { mode: 'set_user'; userId: mongoose.Types.ObjectId; userName: string }
+      | { mode: 'set_label'; userName: string }
+      | { mode: 'unassign'; clearPacked?: boolean };
+
+    let assigneeMutation: AssigneeMutation = { mode: 'none' };
+
+    if (claim === true) {
+      const user = await UserModel.findById(userId).select('fullName username').lean();
+      assigneeMutation = {
+        mode: 'set_user',
+        userId: new mongoose.Types.ObjectId(userId),
+        userName: user?.fullName || user?.username || 'Thành viên',
+      };
+    } else if (claim === false) {
+      assigneeMutation = { mode: 'unassign', clearPacked: true };
+    } else if (assignedUserId !== undefined) {
+      if (assignedUserId === null) {
+        assigneeMutation = { mode: 'unassign' };
+      } else if (assignedUserId === '') {
+        const cleanSlotLabel = typeof assignedUserName === 'string' ? sanitizeInput(assignedUserName).slice(0, 80) : '';
+        if (cleanSlotLabel && cleanSlotLabel !== 'Chưa nhận') {
+          assigneeMutation = { mode: 'set_label', userName: cleanSlotLabel };
+        } else {
+          assigneeMutation = { mode: 'unassign' };
+        }
       } else if (typeof assignedUserId === 'string' && isValidObjectId(assignedUserId.trim())) {
         const cleanAssigneeId = assignedUserId.trim();
         const memberSet = new Set([String(trip.creatorId), ...trip.currentMembers.map((m) => String(m))]);
@@ -1332,32 +1467,41 @@ export const updateSharedGear = async (req: AuthRequest, res: Response) => {
           return res.status(400).json({ success: false, message: 'Người được phân công không thuộc danh sách thành viên đoàn.' });
         }
         const assigneeDoc = await UserModel.findById(cleanAssigneeId).select('fullName username').lean();
-        setFields['sharedGear.$.assignedUserId'] = new mongoose.Types.ObjectId(cleanAssigneeId);
-        setFields['sharedGear.$.assignedUserName'] =
-          assigneeDoc?.fullName ||
-          assigneeDoc?.username ||
-          sanitizeInput(String(assignedUserName || '')).slice(0, 80) ||
-          'Thành viên';
+        assigneeMutation = {
+          mode: 'set_user',
+          userId: new mongoose.Types.ObjectId(cleanAssigneeId),
+          userName:
+            assigneeDoc?.fullName ||
+            assigneeDoc?.username ||
+            sanitizeInput(String(assignedUserName || '')).slice(0, 80) ||
+            'Thành viên',
+        };
       } else if (typeof assignedUserName === 'string' && assignedUserName.trim()) {
-        unsetFields['sharedGear.$.assignedUserId'] = '';
-        setFields['sharedGear.$.assignedUserName'] = sanitizeInput(assignedUserName).slice(0, 80);
+        assigneeMutation = { mode: 'set_label', userName: sanitizeInput(assignedUserName).slice(0, 80) };
+      } else {
+        return res.status(400).json({ success: false, message: 'Mã người được phân công không hợp lệ.' });
       }
     } else if (typeof assignedUserName === 'string') {
       const cleanAssigneeName = sanitizeInput(assignedUserName).slice(0, 80);
-      setFields['sharedGear.$.assignedUserName'] = cleanAssigneeName || 'Chưa nhận';
       if (!cleanAssigneeName || cleanAssigneeName === 'Chưa nhận') {
-        unsetFields['sharedGear.$.assignedUserId'] = '';
+        assigneeMutation = { mode: 'unassign' };
+      } else {
+        assigneeMutation = { mode: 'set_label', userName: cleanAssigneeName };
       }
     }
 
-    if (claim === true) {
-      const user = await UserModel.findById(userId).select('fullName username').lean();
-      setFields['sharedGear.$.assignedUserId'] = new mongoose.Types.ObjectId(userId);
-      setFields['sharedGear.$.assignedUserName'] = user?.fullName || user?.username || 'Thành viên';
-    } else if (claim === false) {
+    if (assigneeMutation.mode === 'set_user') {
+      setFields['sharedGear.$.assignedUserId'] = assigneeMutation.userId;
+      setFields['sharedGear.$.assignedUserName'] = assigneeMutation.userName;
+    } else if (assigneeMutation.mode === 'set_label') {
+      unsetFields['sharedGear.$.assignedUserId'] = '';
+      setFields['sharedGear.$.assignedUserName'] = assigneeMutation.userName;
+    } else if (assigneeMutation.mode === 'unassign') {
       unsetFields['sharedGear.$.assignedUserId'] = '';
       setFields['sharedGear.$.assignedUserName'] = 'Chưa nhận';
-      setFields['sharedGear.$.packed'] = false;
+      if (assigneeMutation.clearPacked) {
+        setFields['sharedGear.$.packed'] = false;
+      }
     }
 
     const updateDoc: Record<string, any> = {};
@@ -1435,7 +1579,8 @@ export const addTripExpense = async (req: AuthRequest, res: Response) => {
     }
     const { title, amountVnd, splitCount, paidByUserId, paidByName } = req.body || {};
     const cleanTitle = sanitizeInput(String(title || '')).trim();
-    const amount = Math.round(Number(amountVnd));
+    const rawAmount = parseStrictTripNumber(amountVnd);
+    const amount = rawAmount !== null ? Math.round(rawAmount) : NaN;
     if (!cleanTitle || !Number.isFinite(amount) || amount < 1000 || amount > 500_000_000) {
       return res.status(400).json({ success: false, message: 'Vui lòng nhập tên khoản chi và số tiền hợp lệ (từ 1.000đ).' });
     }
@@ -1464,9 +1609,8 @@ export const addTripExpense = async (req: AuthRequest, res: Response) => {
       (isCreator && typeof paidByName === 'string' && paidByName.trim() ? sanitizeInput(paidByName).slice(0, 80) : '') ||
       'Thành viên';
 
-    const rawSplit = Number(splitCount);
-    const memberCount =
-      Number.isFinite(rawSplit) && rawSplit >= 1 ? Math.round(rawSplit) : trip.currentMembers.length || 1;
+    const rawSplit = parseStrictTripNumber(splitCount);
+    const memberCount = rawSplit !== null && rawSplit >= 1 ? Math.round(rawSplit) : trip.currentMembers.length || 1;
 
     const newExpense = {
       id: `exp-${crypto.randomBytes(6).toString('hex')}`,
@@ -1483,7 +1627,10 @@ export const addTripExpense = async (req: AuthRequest, res: Response) => {
         _id: trip._id,
         $expr: { $lt: [{ $size: { $ifNull: ['$expenses', []] } }, MAX_EXPENSE_ITEMS] },
       },
-      { $push: { expenses: newExpense } },
+      {
+        $push: { expenses: newExpense },
+        $set: { settledTransfers: [] },
+      },
       { new: true }
     )
       .select('expenses')
@@ -1540,7 +1687,8 @@ export const updateTripExpense = async (req: AuthRequest, res: Response) => {
     }
 
     if (amountVnd !== undefined) {
-      const amount = Math.round(Number(amountVnd));
+      const rawAmount = parseStrictTripNumber(amountVnd);
+      const amount = rawAmount !== null ? Math.round(rawAmount) : NaN;
       if (!Number.isFinite(amount) || amount < 1000 || amount > 500_000_000) {
         return res.status(400).json({ success: false, message: 'Số tiền không hợp lệ (từ 1.000đ đến 500.000.000đ).' });
       }
@@ -1548,7 +1696,8 @@ export const updateTripExpense = async (req: AuthRequest, res: Response) => {
     }
 
     if (splitCount !== undefined) {
-      const parsedSplit = Math.round(Number(splitCount));
+      const rawSplit = parseStrictTripNumber(splitCount);
+      const parsedSplit = rawSplit !== null ? Math.round(rawSplit) : NaN;
       if (Number.isFinite(parsedSplit) && parsedSplit >= 1 && parsedSplit <= 50) {
         setFields['expenses.$.splitCount'] = parsedSplit;
       }
@@ -1570,7 +1719,7 @@ export const updateTripExpense = async (req: AuthRequest, res: Response) => {
 
     const updated = await TripPlanModel.findOneAndUpdate(
       { _id: trip._id, 'expenses.id': expenseId },
-      { $set: setFields },
+      { $set: { ...setFields, settledTransfers: [] } },
       { new: true }
     )
       .select('expenses')
@@ -1609,7 +1758,10 @@ export const deleteTripExpense = async (req: AuthRequest, res: Response) => {
 
     const updated = await TripPlanModel.findByIdAndUpdate(
       trip._id,
-      { $pull: { expenses: { id: expenseId } } },
+      {
+        $pull: { expenses: { id: expenseId } },
+        $set: { settledTransfers: [] },
+      },
       { new: true }
     )
       .select('expenses')

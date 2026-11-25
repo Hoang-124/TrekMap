@@ -55,7 +55,7 @@
     {
       "name": "Lịch Mùa & Săn Mây",
       "short_name": "Almanac",
-      "description": "Ma trận khí hậu 12 tháng ERA5 & radar săn mây 36 đỉnh Việt Nam",
+      "description": "Ma trận khí hậu 12 tháng NASA POWER & radar săn mây 36 đỉnh Việt Nam",
       "url": "/almanac",
       "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
     }

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { Trail, ItineraryStep } from '../../types.js';
 import { createExpeditionItinerary, deleteSharedItinerary } from '../../services/api.js';
-import { scopedStorageKey } from '../../utils/storageScope.js';
+import { safeLocalStorageGet, scopedStorageKey } from '../../utils/storageScope.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import {
   IconCalendar,
@@ -42,49 +42,131 @@ interface ItineraryTabProps {
   trail: Trail;
 }
 
+type EditableItineraryStep = ItineraryStep & { _uid?: string };
+
+let stepUidSeq = 0;
+function makeStepUid(prefix = 'step'): string {
+  stepUidSeq += 1;
+  return `${prefix}-${Date.now()}-${stepUidSeq}`;
+}
+
+function getVietnamDateIso(date: Date = new Date()): string {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(date);
+  } catch {
+    return new Date(date.getTime() + 7 * 3600_000).toISOString().slice(0, 10);
+  }
+}
+
+function buildDefaultStepsForTrail(trail: Trail): EditableItineraryStep[] {
+  const baseSteps: EditableItineraryStep[] = [
+    { _uid: makeStepUid('def'), day: 1, time: '05:00', title: 'Tập trung & lên xe tới chân núi', description: 'Kiểm tra lại balo, nước uống và giày tất trước khi xuất phát tới cửa rừng.', locationNote: 'Chân núi / Cửa rừng' },
+    { _uid: makeStepUid('def'), day: 1, time: '08:30', title: 'Vào rừng bắt đầu leo', description: 'Gặp porter/người dẫn đường, trình báo kiểm lâm (nếu cần), khởi động nhẹ rồi lên dốc.', locationNote: trail.province },
+    { _uid: makeStepUid('def'), day: 1, time: '12:00', title: 'Nghỉ trưa bên suối', description: 'Dừng ăn trưa, châm thêm nước và để đôi chân hồi lại trước đoạn dốc chiều.', locationNote: 'Điểm nghỉ giữa đường' },
+    { _uid: makeStepUid('def'), day: 1, time: '17:00', title: 'Tới bãi trại & nấu cơm tối', description: 'Dựng lều trước khi tối hẳn, nhóm bếp nấu bữa tối nóng rồi nghỉ sớm giữ sức.', locationNote: trail.hasCampsite ? 'Bãi hạ trại qua đêm' : 'Lán nghỉ' },
+  ];
+
+  if (trail.durationDays >= 2) {
+    baseSteps.push(
+      { _uid: makeStepUid('def'), day: 2, time: '04:30', title: 'Dậy sớm đón mây', description: 'Pha ly cà phê hoặc trà gừng nóng, ngắm bình minh và biển mây tràn qua thung lũng.', locationNote: 'Sống núi đón mây' },
+      { _uid: makeStepUid('def'), day: 2, time: '06:30', title: 'Chạm chóp đỉnh', description: `Lên tới đỉnh ${trail.name} (${trail.maxAltitudeM}m), nghỉ lấy hơi và chụp tấm ảnh kỷ niệm cả nhóm.`, locationNote: `Đỉnh ${trail.name}` },
+      { _uid: makeStepUid('def'), day: 2, time: '09:00', title: 'Thu lều & xuống núi', description: 'Gom sạch rác mang xuống núi, kiểm đủ người rồi bắt đầu đổ dốc về chân núi.', locationNote: 'Đường xuống núi' },
+      { _uid: makeStepUid('def'), day: 2, time: '14:30', title: 'Ra tới cửa rừng', description: 'Về lại điểm xuất phát, tắm rửa, ăn bữa cơm ấm bụng cùng anh em rồi lên xe về.', locationNote: 'Chân núi' }
+    );
+  }
+
+  if (trail.durationDays >= 3) {
+    baseSteps.push(
+      { _uid: makeStepUid('def'), day: 3, time: '07:00', title: 'Đi nốt chặng cuối ra khỏi rừng', description: 'Hoàn tất đoạn đường còn lại ra cửa rừng, báo bình an về trạm kiểm lâm rồi lên xe về lại trung tâm.', locationNote: trail.province }
+    );
+  }
+
+  return baseSteps;
+}
+
+function loadDraftForTrail(storageKey: string, trail: Trail): {
+  title: string;
+  startDate: string;
+  memberCount: number;
+  steps: EditableItineraryStep[];
+} {
+  const fallbackTitle = `Kế hoạch đi ${trail.name}`;
+  const fallbackDate = getVietnamDateIso();
+  try {
+    const saved = localStorage.getItem(storageKey);
+    if (saved) {
+      const parsed = JSON.parse(saved) as {
+        title?: string;
+        startDate?: string;
+        memberCount?: number;
+        steps?: EditableItineraryStep[];
+      };
+      const validSteps =
+        Array.isArray(parsed.steps) && parsed.steps.length > 0
+          ? parsed.steps.map((s) => ({ ...s, _uid: s._uid || makeStepUid('saved') }))
+          : buildDefaultStepsForTrail(trail);
+      return {
+        title: parsed.title || fallbackTitle,
+        startDate: parsed.startDate || fallbackDate,
+        memberCount: Number(parsed.memberCount) > 0 ? Number(parsed.memberCount) : 4,
+        steps: validSteps,
+      };
+    }
+  } catch {
+    // ignore corrupted cache
+  }
+  return {
+    title: fallbackTitle,
+    startDate: fallbackDate,
+    memberCount: 4,
+    steps: buildDefaultStepsForTrail(trail),
+  };
+}
+
 export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
   const storageKey = scopedStorageKey(`lost_itinerary_${trail.id}`);
+  const [trackedTrailKey, setTrackedTrailKey] = useState(storageKey);
+  const initialDraft = loadDraftForTrail(storageKey, trail);
 
-  const [title, setTitle] = useState(() => {
-    const saved = localStorage.getItem(storageKey);
-    if (saved) {
-      try {
-        return JSON.parse(saved).title || `Hành trình thám hiểm ${trail.name}`;
-      } catch {
-        // ignore corrupted cache
-      }
-    }
-    return `Hành trình thám hiểm ${trail.name}`;
-  });
-
-  const [startDate, setStartDate] = useState(() => {
-    const saved = localStorage.getItem(storageKey);
-    if (saved) {
-      try {
-        return JSON.parse(saved).startDate || new Date().toISOString().split('T')[0];
-      } catch {
-        // ignore corrupted cache
-      }
-    }
-    return new Date().toISOString().split('T')[0];
-  });
-
-  const [memberCount, setMemberCount] = useState<number>(() => {
-    const saved = localStorage.getItem(storageKey);
-    if (saved) {
-      try {
-        return JSON.parse(saved).memberCount || 4;
-      } catch {
-        // ignore corrupted cache
-      }
-    }
-    return 4;
-  });
+  const [title, setTitle] = useState(() => initialDraft.title);
+  const [startDate, setStartDate] = useState(() => initialDraft.startDate);
+  const [memberCount, setMemberCount] = useState<number>(() => initialDraft.memberCount);
+  const [steps, setSteps] = useState<EditableItineraryStep[]>(() => initialDraft.steps);
 
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [editingShareToken, setEditingShareToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [isDesktopSticky, setIsDesktopSticky] = useState<boolean>(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(min-width: 901px)').matches
+      : true
+  );
+
+  // Immediately reset draft state during render when switching trails so Trail A never overwrites Trail B's localStorage
+  if (trackedTrailKey !== storageKey) {
+    setTrackedTrailKey(storageKey);
+    const nextDraft = loadDraftForTrail(storageKey, trail);
+    setTitle(nextDraft.title);
+    setStartDate(nextDraft.startDate);
+    setMemberCount(nextDraft.memberCount);
+    setSteps(nextDraft.steps);
+    setShareUrl(null);
+    setEditingShareToken(null);
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(min-width: 901px)');
+    const onChange = (e: MediaQueryListEvent) => setIsDesktopSticky(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
   // Saved Cloud Itineraries ("Lịch Trình Đã Lưu Của Tôi")
   const [isSavedListOpen, setIsSavedListOpen] = useState(false);
@@ -94,7 +176,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
   const [deletingToken, setDeletingToken] = useState<string | null>(null);
 
   const loadMyItineraries = useCallback(async (signal?: AbortSignal) => {
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!token) {
       setSavedItineraries([]);
       return;
@@ -122,7 +204,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
 
   useEffect(() => {
     const controller = new AbortController();
-    if (localStorage.getItem('lost_token')) {
+    if (safeLocalStorageGet('lost_token')) {
       fetch('/api/itineraries/me', {
         headers: getApiHeaders(),
         signal: controller.signal,
@@ -138,7 +220,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
         });
     }
     const handleAuthChanged = () => {
-      if (localStorage.getItem('lost_token')) {
+      if (safeLocalStorageGet('lost_token')) {
         void loadMyItineraries();
       } else {
         setSavedItineraries([]);
@@ -152,49 +234,9 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
     };
   }, [loadMyItineraries]);
 
-  const defaultSteps = useCallback((): ItineraryStep[] => {
-    const baseSteps: ItineraryStep[] = [
-      { day: 1, time: '05:00', title: 'Tập trung & Di chuyển', description: 'Tập trung tại điểm hẹn, kiểm tra balo, di chuyển bằng xe đến chân núi.', locationNote: 'Chân núi / Cửa rừng' },
-      { day: 1, time: '08:30', title: 'Bắt đầu trekking', description: 'Gặp Hướng dẫn viên/Porter, làm thủ tục với Kiểm lâm (nếu có) và bắt đầu hành trình.', locationNote: trail.province },
-      { day: 1, time: '12:00', title: 'Nghỉ trưa & Ăn nhẹ', description: 'Dừng chân tại suối/trạm nghỉ, bổ sung năng lượng và nước ngọt.', locationNote: 'Trạm nghỉ giữa đường' },
-      { day: 1, time: '17:00', title: 'Hạ trại & Dựng lều', description: 'Đến điểm cắm trại, nhóm lửa nấu ăn, thưởng thức bữa tối giữa không gian rừng đêm.', locationNote: trail.hasCampsite ? 'Bãi cắm trại qua đêm' : 'Lán nghỉ' },
-    ];
-
-    if (trail.durationDays >= 2) {
-      baseSteps.push(
-        { day: 2, time: '04:30', title: 'Thức dậy & Săn mây', description: 'Đón bình minh, thưởng thức cà phê/trà nóng và đón biển mây cuồn cuộn.', locationNote: 'Điểm săn mây' },
-        { day: 2, time: '06:30', title: 'Chinh phục cột mốc / Đỉnh núi', description: `Chạm tay vào đỉnh ${trail.name} (${trail.maxAltitudeM}m), chụp ảnh lưu niệm cùng nhóm.`, locationNote: `Đỉnh ${trail.name}` },
-        { day: 2, time: '09:00', title: 'Thu dọn lều & Hạ sơn', description: 'Dọn sạch rác (LNT policy), kiểm tra đủ quân số và bắt đầu đường về.', locationNote: 'Đường xuống núi' },
-        { day: 2, time: '14:30', title: 'Về điểm xuất phát & Kết thúc', description: 'Về đến chân núi, tắm rửa, thưởng thức đặc sản địa phương và chia tay.', locationNote: 'Chân núi' }
-      );
-    }
-
-    if (trail.durationDays >= 3) {
-      baseSteps.push(
-        { day: 3, time: '07:00', title: 'Hoàn tất chặng về & Tổng kết', description: 'Di chuyển nốt chặng cuối ra cửa rừng, báo bình an về trạm Kiểm lâm và lên xe về lại trung tâm.', locationNote: trail.province }
-      );
-    }
-
-    return baseSteps;
-  }, [trail.name, trail.province, trail.hasCampsite, trail.durationDays, trail.maxAltitudeM]);
-
-  const [steps, setSteps] = useState<ItineraryStep[]>(() => {
-    const saved = localStorage.getItem(storageKey);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed.steps) && parsed.steps.length > 0) {
-          return parsed.steps;
-        }
-      } catch {
-        // ignore corrupted cache
-      }
-    }
-    return defaultSteps();
-  });
-
-  // Auto-save itinerary to localStorage on changes
+  // Auto-save itinerary to localStorage on changes (guarded to active trail key)
   useEffect(() => {
+    if (trackedTrailKey !== storageKey) return;
     try {
       localStorage.setItem(
         storageKey,
@@ -208,7 +250,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
     } catch {
       // ignore storage quota errors
     }
-  }, [storageKey, title, startDate, memberCount, steps]);
+  }, [trackedTrailKey, storageKey, title, startDate, memberCount, steps]);
 
   // Listen for AI 1-click Apply live updates (`lost:itinerary-updated`)
   useEffect(() => {
@@ -230,9 +272,10 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
         : null;
 
       if (incomingRaw && incomingRaw.length > 0) {
-        const mapped: ItineraryStep[] = incomingRaw.map((rawItem: unknown, idx: number) => {
+        const mapped: EditableItineraryStep[] = incomingRaw.map((rawItem: unknown, idx: number) => {
           const s = (rawItem && typeof rawItem === 'object' ? rawItem : {}) as Record<string, unknown>;
           return {
+            _uid: makeStepUid('ai'),
             day: Math.max(1, Math.min(7, Number(s.day) || 1)),
             time: String(s.time || '07:00'),
             title: String(s.title || s.activity || `Chặng ${idx + 1}`),
@@ -250,7 +293,12 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
           const parsed = JSON.parse(saved);
           if (parsed.title) setTitle(parsed.title);
           if (Array.isArray(parsed.steps) && parsed.steps.length > 0) {
-            setSteps(parsed.steps);
+            setSteps(
+              (parsed.steps as EditableItineraryStep[]).map((s) => ({
+                ...s,
+                _uid: s._uid || makeStepUid('ls'),
+              }))
+            );
           }
         }
       } catch {
@@ -274,11 +322,12 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
     setSteps([
       ...steps,
       {
+        _uid: makeStepUid('add'),
         day: lastStep ? lastStep.day : 1,
         time: '18:00',
-        title: 'Hoạt động bổ sung',
-        description: 'Mô tả chi tiết hoạt động...',
-        locationNote: 'Trạm dừng',
+        title: 'Chặng mới',
+        description: 'Ghi chú việc cần làm ở chặng này...',
+        locationNote: 'Điểm dừng',
       },
     ]);
   };
@@ -300,10 +349,10 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
   const handleSaveItinerary = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!localStorage.getItem('lost_token')) {
+    if (!safeLocalStorageGet('lost_token')) {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: 'Vui lòng đăng nhập để lưu lịch trình lên đám mây và tạo link chia sẻ.', type: 'info' },
+          detail: { message: 'Đăng nhập một chút để lưu lịch trình và tạo link gửi cho cả nhóm nhé.', type: 'info' },
         })
       );
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal', { detail: { mode: 'login' } }));
@@ -312,7 +361,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
 
     setSubmitting(true);
 
-    const effectiveStartDate = startDate || new Date().toISOString().split('T')[0];
+    const effectiveStartDate = startDate || getVietnamDateIso();
     const computedTotalDays = Math.max(1, ...steps.map((s) => Number(s.day) || 1));
     const canonicalSteps = steps.map((s) => ({
       day: s.day,
@@ -327,7 +376,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
 
     const payload = {
       trailId: trail.id,
-      title: title || `Kế Hoạch Khám Phá ${trail.name}`,
+      title: title || `Kế hoạch đi ${trail.name}`,
       startDate: effectiveStartDate,
       totalDays: computedTotalDays,
       memberCount: memberCount || 4,
@@ -343,7 +392,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
         });
         const json = await res.json().catch(() => ({}));
         if (!res.ok || !json.success) {
-          throw new Error(json.message || 'Không thể cập nhật lịch trình lúc này.');
+          throw new Error(json.message || 'Chưa cập nhật được lịch trình lúc này.');
         }
         const nextUrl = `${window.location.origin}/#itinerary/${editingShareToken}`;
         setShareUrl(nextUrl);
@@ -357,7 +406,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
         void loadMyItineraries();
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
-            detail: { message: json.message || 'Đã cập nhật lịch trình đã lưu thành công!', type: 'success' },
+            detail: { message: json.message || 'Đã cập nhật lịch trình!', type: 'success' },
           })
         );
       } else {
@@ -370,7 +419,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
           void loadMyItineraries();
           window.dispatchEvent(
             new CustomEvent('lost:show-toast', {
-              detail: { message: 'Đã lưu lịch trình và tạo liên kết chia sẻ thành công!', type: 'success' },
+              detail: { message: 'Đã lưu lịch trình và tạo link gửi nhóm!', type: 'success' },
             })
           );
         }
@@ -379,7 +428,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
           detail: {
-            message: err instanceof Error ? err.message : 'Vui lòng đăng nhập để lưu và chia sẻ lịch trình.',
+            message: err instanceof Error ? err.message : 'Đăng nhập để lưu và chia sẻ lịch trình nhé.',
             type: 'error',
           },
         })
@@ -390,15 +439,16 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
   };
 
   const handleLoadSavedForEdit = (item: SavedItineraryRecord) => {
-    setTitle(item.title || `Hành trình thám hiểm ${trail.name}`);
+    setTitle(item.title || `Kế hoạch đi ${trail.name}`);
     if (item.startDate) {
       const parsed = new Date(item.startDate);
       if (!Number.isNaN(parsed.getTime())) {
-        setStartDate(parsed.toISOString().split('T')[0]);
+        setStartDate(getVietnamDateIso(parsed));
       }
     }
     setMemberCount(Math.max(1, Number(item.memberCount) || 4));
-    const loadedSteps: ItineraryStep[] = (item.timelineSteps || []).map((s, idx) => ({
+    const loadedSteps: EditableItineraryStep[] = (item.timelineSteps || []).map((s, idx) => ({
+      _uid: makeStepUid('edit'),
       day: Math.max(1, Number(s.day) || 1),
       time: String(s.time || '08:00'),
       title: String(s.activity || s.title || `Chặng ${idx + 1}`),
@@ -430,14 +480,14 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
       }
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: 'Đã xóa lịch trình đã lưu thành công!', type: 'success' },
+          detail: { message: 'Đã xóa lịch trình khỏi danh sách.', type: 'success' },
         })
       );
     } catch (err: unknown) {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
           detail: {
-            message: err instanceof Error ? err.message : 'Không thể xóa lịch trình lúc này.',
+            message: err instanceof Error ? err.message : 'Chưa xóa được lịch trình lúc này.',
             type: 'error',
           },
         })
@@ -458,14 +508,19 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
       .catch(() => {
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
-            detail: { message: 'Trình duyệt không cho phép sao chép tự động. Vui lòng chọn và copy link thủ công.', type: 'info' },
+            detail: { message: 'Trình duyệt không cho chép tự động — bạn bôi đen rồi copy tay giúp mình nhé.', type: 'info' },
           })
         );
       });
   };
 
-  // HTML5 Canvas Card Export (dynamic height — zero step truncation, available pre-save)
-  const handleExportCanvasImage = () => {
+  // HTML5 Canvas Card Export (dynamic height, dual-theme CSS tokens, awaits fonts)
+  const handleExportCanvasImage = async () => {
+    try {
+      await document.fonts?.ready;
+    } catch {
+      // ignore font loading timeout
+    }
     const rowHeight = 76;
     const headerHeight = 195;
     const footerHeight = 72;
@@ -477,31 +532,44 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    const rootStyle = getComputedStyle(document.documentElement);
+    const readToken = (name: string, fallback: string) =>
+      rootStyle.getPropertyValue(name).trim() || fallback;
+
+    const bgMain = readToken('--color-bg-main', 'rgb(12, 15, 13)');
+    const bgCard = readToken('--color-bg-card', 'rgb(20, 25, 22)');
+    const primaryColor = readToken('--color-primary', 'rgb(82, 183, 136)');
+    const textMain = readToken('--color-text-main', 'rgb(244, 243, 238)');
+    const textMuted = readToken('--color-text-muted', 'rgb(168, 176, 170)');
+    const borderColor = readToken('--color-border-strong', 'rgb(64, 74, 68)');
+    const sunColor = readToken('--color-sun', 'rgb(212, 163, 72)');
+    const skyColor = readToken('--color-sky', 'rgb(111, 168, 199)');
+
     const grad = ctx.createLinearGradient(0, 0, 0, computedHeight);
-    grad.addColorStop(0, '#0c0f0d');
-    grad.addColorStop(1, '#141916');
+    grad.addColorStop(0, bgMain);
+    grad.addColorStop(1, bgCard);
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, 800, computedHeight);
 
     const canvasFont = "'Plus Jakarta Sans', 'Inter', 'Be Vietnam Pro', sans-serif";
 
-    ctx.fillStyle = '#52b788';
+    ctx.fillStyle = primaryColor;
     ctx.font = `bold 24px ${canvasFont}`;
-    ctx.fillText('LOST — LỊCH TRÌNH THÁM HIỂM', 48, 58);
+    ctx.fillText('LOST — LỊCH TRÌNH CHUYẾN ĐI', 48, 58);
 
-    ctx.fillStyle = '#f4f3ee';
+    ctx.fillStyle = textMain;
     ctx.font = `bold 21px ${canvasFont}`;
     ctx.fillText(title.slice(0, 56), 48, 100);
 
-    ctx.fillStyle = '#a8b0aa';
+    ctx.fillStyle = textMuted;
     ctx.font = `15px ${canvasFont}`;
     ctx.fillText(
-      `Cung đường: ${trail.name} (${trail.maxAltitudeM}m) · Khởi hành: ${startDate} · Đoàn: ${memberCount} người`,
+      `Cung: ${trail.name} (${trail.maxAltitudeM}m) · Ngày đi: ${startDate} · Nhóm ${memberCount} người`,
       48,
       134
     );
 
-    ctx.strokeStyle = 'rgba(244, 243, 238, 0.16)';
+    ctx.strokeStyle = borderColor;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(48, 156);
@@ -510,20 +578,20 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
 
     let yPos = 196;
     steps.forEach((s) => {
-      ctx.fillStyle = '#52b788';
+      ctx.fillStyle = primaryColor;
       ctx.beginPath();
       ctx.arc(58, yPos - 6, 6, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.fillStyle = '#d4a348';
+      ctx.fillStyle = sunColor;
       ctx.font = `bold 15px ${canvasFont}`;
       ctx.fillText(`[Ngày ${s.day} · ${s.time}]`, 80, yPos);
 
-      ctx.fillStyle = '#f4f3ee';
+      ctx.fillStyle = textMain;
       ctx.font = `bold 16px ${canvasFont}`;
       ctx.fillText((s.title || '').slice(0, 44), 232, yPos);
 
-      ctx.fillStyle = '#a8b0aa';
+      ctx.fillStyle = textMuted;
       ctx.font = `14px ${canvasFont}`;
       const desc = s.description.length > 74 ? `${s.description.substring(0, 74)}...` : s.description;
       ctx.fillText(desc, 80, yPos + 25);
@@ -531,9 +599,9 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
       yPos += rowHeight;
     });
 
-    ctx.fillStyle = '#6fa8c7';
+    ctx.fillStyle = skyColor;
     ctx.font = `bold 14px ${canvasFont}`;
-    ctx.fillText('LOST Vietnam · Bản Đồ Địa Hình & Cứu Hộ Quốc Gia 112 / 114', 48, computedHeight - 28);
+    ctx.fillText('LOST Việt Nam · Bản đồ địa hình & Cứu hộ 112 / 114', 48, computedHeight - 28);
 
     const dataUrl = canvas.toDataURL('image/png');
     const link = document.createElement('a');
@@ -551,12 +619,12 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <div>
-              <div className="section-eyebrow" style={{ marginBottom: 6 }}>Lộ trình hành quân</div>
+              <div className="section-eyebrow" style={{ marginBottom: 6 }}>Kế hoạch từng chặng</div>
               <h3 className="font-editorial" style={{ fontSize: '1.45rem', fontWeight: 500, color: 'var(--color-text-main)', marginBottom: 4 }}>
-                Lịch trình thời gian chi tiết
+                Lịch trình theo từng mốc giờ
               </h3>
               <p style={{ fontSize: '0.82rem', color: 'var(--color-text-dim)' }}>
-                Tùy chỉnh mốc thời gian (hỗ trợ đến {maxDayOptions} ngày), thêm hoặc xóa chặng di chuyển của đoàn thám hiểm.
+                Chỉnh lại giờ giấc (tối đa {maxDayOptions} ngày), thêm hoặc bớt điểm dừng sao cho vừa sức cả nhóm.
               </p>
             </div>
           </div>
@@ -566,7 +634,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               {steps.map((step, idx) => (
-                <div key={idx} style={{ position: 'relative', background: 'var(--color-bg-main)', padding: 14, borderRadius: 4, border: '1px solid var(--color-border)' }}>
+                <div key={step._uid || `${step.day}-${step.time}-${idx}`} style={{ position: 'relative', background: 'var(--color-bg-main)', padding: 14, borderRadius: 4, border: '1px solid var(--color-border)' }}>
                   <div
                     style={{
                       position: 'absolute',
@@ -658,7 +726,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
               onClick={handleAddStep}
               style={{ marginTop: 16, width: '100%', justifyContent: 'center', borderStyle: 'dashed', borderRadius: 4 }}
             >
-              + Thêm mốc thời gian mới
+              + Thêm một chặng nữa
             </button>
           </div>
         </div>
@@ -670,7 +738,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
             onClick={() => {
               const next = !isSavedListOpen;
               setIsSavedListOpen(next);
-              if (next && localStorage.getItem('lost_token')) {
+              if (next && safeLocalStorageGet('lost_token')) {
                 void loadMyItineraries();
               }
             }}
@@ -693,10 +761,10 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
               <IconCalendar size={18} color="var(--color-primary)" />
               <div>
                 <div style={{ fontSize: '0.96rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                  Lịch Trình Đã Lưu Của Tôi ({savedItineraries.length})
+                  Lịch trình bạn đã lưu ({savedItineraries.length})
                 </div>
                 <div style={{ fontSize: '0.76rem', color: 'var(--color-text-dim)' }}>
-                  Mở để tải lại lên chỉnh sửa, mở link chia sẻ hoặc xóa các lịch trình đã lưu trên đám mây
+                  Mở lại bản cũ để chỉnh sửa, lấy link gửi cả nhóm hoặc dọn bớt các chuyến đã đi
                 </div>
               </div>
             </div>
@@ -721,17 +789,17 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
 
           {isSavedListOpen && (
             <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {!localStorage.getItem('lost_token') ? (
+              {!safeLocalStorageGet('lost_token') ? (
                 <div style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)', textAlign: 'center', padding: '16px 10px' }}>
-                  Vui lòng đăng nhập để xem và quản lý danh sách lịch trình đã lưu của bạn.
+                  Đăng nhập để xem lại các lịch trình bạn đã lưu nhé.
                 </div>
               ) : loadingSavedList ? (
                 <div style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)', textAlign: 'center', padding: '16px 10px' }}>
-                  Đang tải danh sách lịch trình đã lưu...
+                  Đang mở danh sách lịch trình...
                 </div>
               ) : savedItineraries.length === 0 ? (
                 <div style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)', textAlign: 'center', padding: '16px 10px', border: '1px dashed var(--color-border)', borderRadius: 4 }}>
-                  Bạn chưa lưu lịch trình nào lên đám mây. Hãy bấm &ldquo;Lưu Lịch Trình &amp; Tạo Link Chia Sẻ&rdquo; ở khung bên phải!
+                  Bạn chưa lưu lịch trình nào. Bấm &ldquo;Lưu &amp; tạo link gửi nhóm&rdquo; ở khung bên phải để giữ lại nhé.
                 </div>
               ) : (
                 savedItineraries.map((item) => {
@@ -766,7 +834,12 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
                               <IconMapPin size={12} color="var(--color-primary)" />
                               {itemTrailName}
                             </span>
-                            <span>· Khởi hành: {item.startDate ? new Date(item.startDate).toLocaleDateString('vi-VN') : 'Chưa rõ'}</span>
+                            <span>
+                              · Khởi hành:{' '}
+                              {item.startDate && Number.isFinite(new Date(item.startDate).getTime())
+                                ? new Date(item.startDate).toLocaleDateString('vi-VN')
+                                : 'Chưa rõ'}
+                            </span>
                             <span>· {item.memberCount || 1} người</span>
                             <span>· {(item.timelineSteps || []).length} chặng</span>
                           </div>
@@ -886,10 +959,10 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
 
       {/* Right Column: Form Settings & Group Share Export */}
       <div>
-        <div className="card" style={{ position: 'sticky', top: 84 }}>
-          <div className="section-eyebrow" style={{ marginBottom: 6 }}>Xuất bản lịch trình</div>
+        <div className="card" style={isDesktopSticky ? { position: 'sticky', top: 84 } : undefined}>
+          <div className="section-eyebrow" style={{ marginBottom: 6 }}>Gửi cho cả nhóm</div>
           <h3 className="font-editorial" style={{ fontSize: '1.35rem', fontWeight: 500, color: 'var(--color-text-main)', marginBottom: 14 }}>
-            Thông Tin Lịch Trình Đoàn
+            Thông tin chuyến đi
           </h3>
 
           {editingShareToken && (
@@ -938,8 +1011,9 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
 
           <form onSubmit={handleSaveItinerary}>
             <div className="form-group">
-              <label className="form-label">Tên chuyến đi:</label>
+              <label className="form-label" htmlFor="itinerary-title-input">Tên chuyến đi</label>
               <input
+                id="itinerary-title-input"
                 type="text"
                 className="form-input"
                 value={title}
@@ -949,8 +1023,9 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
             </div>
 
             <div className="form-group">
-              <label className="form-label">Ngày bắt đầu khởi hành:</label>
+              <label className="form-label" htmlFor="itinerary-start-date-input">Ngày xuất phát</label>
               <input
+                id="itinerary-start-date-input"
                 type="date"
                 className="form-input"
                 value={startDate}
@@ -960,8 +1035,9 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
             </div>
 
             <div className="form-group">
-              <label className="form-label">Số lượng thành viên (người):</label>
+              <label className="form-label" htmlFor="itinerary-member-count-input">Số người đi cùng</label>
               <input
+                id="itinerary-member-count-input"
                 type="number"
                 min={1}
                 max={100}
@@ -981,8 +1057,8 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
               {submitting
                 ? 'Đang lưu...'
                 : editingShareToken
-                ? 'Cập Nhật Lịch Trình Đã Lưu'
-                : 'Lưu Lịch Trình & Tạo Link Chia Sẻ'}
+                ? 'Cập nhật lịch trình'
+                : 'Lưu & tạo link gửi nhóm'}
             </button>
 
             <button
@@ -992,7 +1068,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
               disabled={steps.length === 0}
               style={{ width: '100%', justifyContent: 'center', fontSize: '0.84rem', marginBottom: 14, borderRadius: 4 }}
             >
-              Xuất Card Ảnh Chia Sẻ Nhóm (PNG)
+              Tải ảnh lịch trình (PNG)
             </button>
           </form>
 
@@ -1000,7 +1076,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
           {shareUrl && (
             <div style={{ background: 'var(--color-bg-main)', padding: 14, borderRadius: 6, border: '1px solid var(--color-primary)' }}>
               <div style={{ fontSize: '0.76rem', color: 'var(--color-text-dim)', fontWeight: 700, marginBottom: 6 }}>
-                LINK CHIA SẺ TRỰC TIẾP:
+                Link gửi nhanh cho nhóm:
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <input
@@ -1024,7 +1100,7 @@ export const ItineraryTab: React.FC<ItineraryTabProps> = ({ trail }) => {
                   onClick={handleCopyLink}
                   style={{ padding: '5px 10px', borderRadius: 4, flexShrink: 0 }}
                 >
-                  {copied ? 'Đã copy' : 'Copy Link'}
+                  {copied ? 'Đã chép' : 'Chép link'}
                 </button>
               </div>
             </div>

@@ -414,7 +414,7 @@ export async function auditTrailPackReadiness(
     ? 0
     : Math.round((summedGrams / 1000) * 10) / 10;
 
-  // Live Open-Meteo summit min temp via -6.5°C / 1000m moist-adiabatic lapse rate
+  // Live MET Norway (CC BY 4.0) summit min temp via -6.5°C / 1000m moist-adiabatic lapse rate
   let summitTempMinC: number | null = null;
   let weatherNote = `Ước tính nhiệt độ theo cao độ ${trail.maxAltitudeM.toLocaleString()}m.`;
   try {
@@ -424,7 +424,7 @@ export async function auditTrailPackReadiness(
       const gridEle = Number.isFinite(Number(live.elevation)) ? Number(live.elevation) : null;
       const deltaM = gridEle !== null ? Math.max(0, trail.maxAltitudeM - gridEle) : 0;
       summitTempMinC = Math.round(gridMin - (deltaM / 1000) * 6.5);
-      weatherNote = `Open-Meteo trực tuyến: chân núi ${Math.round(gridMin)}°C -> đỉnh ${trail.maxAltitudeM.toLocaleString()}m ước tính ~${summitTempMinC}°C.`;
+      weatherNote = `MET Norway (CC BY 4.0) trực tuyến: chân núi ${Math.round(gridMin)}°C -> đỉnh ${trail.maxAltitudeM.toLocaleString()}m ước tính ~${summitTempMinC}°C.`;
     }
   } catch {
     // Offline altitude estimate

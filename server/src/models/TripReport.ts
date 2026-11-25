@@ -85,6 +85,8 @@ const tripReportSchema = new Schema<ITripReport>(
 );
 
 tripReportSchema.index({ trailId: 1, createdAt: -1 });
+tripReportSchema.index({ authorId: 1, createdAt: -1 });
+tripReportSchema.index({ isFeatured: 1, createdAt: -1 });
 tripReportSchema.index({ createdAt: -1 });
 
 export const TripReportModel = model<ITripReport>('TripReport', tripReportSchema);

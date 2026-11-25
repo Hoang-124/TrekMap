@@ -17,18 +17,54 @@ interface ExpeditionCalendarGridProps {
   trips: TripPlanItem[];
   currentUser?: UserProfile | null;
   onTripUpdated?: () => void;
+  onOpenAuthorProfile?: (author: { name: string; avatar: string; userId?: string }) => void;
 }
 
 const WEEKDAY_LABELS = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
 const REGION_OPTIONS = ['All', 'Miền Bắc', 'Miền Trung', 'Miền Nam'] as const;
 
-function toLocalDateKey(dateLike: string | Date): string | null {
+function toVietnamDateKey(dateLike?: string | Date | null): string | null {
+  if (!dateLike) return null;
+  if (typeof dateLike === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateLike.trim())) {
+    return dateLike.trim();
+  }
   const d = typeof dateLike === 'string' ? new Date(dateLike) : dateLike;
   if (Number.isNaN(d.getTime())) return null;
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(d);
+    const y = parts.find((p) => p.type === 'year')?.value;
+    const m = parts.find((p) => p.type === 'month')?.value;
+    const day = parts.find((p) => p.type === 'day')?.value;
+    if (y && m && day) return `${y}-${m}-${day}`;
+  } catch {
+    // Fallback to UTC+7 offset
+  }
+  const vn = new Date(d.getTime() + 7 * 60 * 60 * 1000);
+  const y = vn.getUTCFullYear();
+  const m = String(vn.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(vn.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+function getVietnamTodayInfo(): { year: number; month: number; dateKey: string } {
+  const dateKey = toVietnamDateKey(new Date()) || '2026-01-01';
+  const [yStr, mStr] = dateKey.split('-');
+  return {
+    year: Number(yStr) || new Date().getFullYear(),
+    month: Number(mStr) || new Date().getMonth() + 1,
+    dateKey,
+  };
+}
+
+function formatDayMonthFromKey(dateKey: string): string {
+  const parts = dateKey.split('-');
+  if (parts.length !== 3) return dateKey;
+  return `${parts[2]}/${parts[1]}`;
 }
 
 function getDifficultyColor(level?: number): string {
@@ -105,23 +141,40 @@ export const ExpeditionCalendarGrid: React.FC<ExpeditionCalendarGridProps> = ({
   trips,
   currentUser,
   onTripUpdated,
+  onOpenAuthorProfile,
 }) => {
-  const now = new Date();
-  const [viewYear, setViewYear] = useState(now.getFullYear());
-  const [viewMonth, setViewMonth] = useState(now.getMonth() + 1); // 1..12
+  const initialToday = getVietnamTodayInfo();
+  const [viewYear, setViewYear] = useState(initialToday.year);
+  const [viewMonth, setViewMonth] = useState(initialToday.month); // 1..12
   const [regionFilter, setRegionFilter] = useState<(typeof REGION_OPTIONS)[number]>('All');
   const [serverCalendarTrips, setServerCalendarTrips] = useState<TripPlanItem[] | null>(null);
   const [loadedCalendarKey, setLoadedCalendarKey] = useState<string>('');
   const [selectedTrip, setSelectedTrip] = useState<TripPlanItem | null>(null);
 
   const currentUserId = String(currentUser?.id || (currentUser as (UserProfile & { _id?: string }) | null)?._id || '');
-  const calendarQueryKey = `${viewYear}-${viewMonth}-${regionFilter}-${trips.length}`;
+  const tripsVersionHash = useMemo(
+    () =>
+      trips
+        .map((t) => {
+          const rec = t as CalendarTripRecord;
+          const mCount = Array.isArray(t.currentMembers)
+            ? t.currentMembers.length
+            : typeof rec.memberCount === 'number'
+              ? rec.memberCount
+              : 1;
+          return `${t._id}:${t.status}:${mCount}:${t.maxMembers}:${t.startDate}:${t.endDate}:${t.updatedAt || ''}`;
+        })
+        .join('|'),
+    [trips]
+  );
+  const calendarQueryKey = `${viewYear}-${viewMonth}-${regionFilter}-${tripsVersionHash}`;
   const loadingCalendar = loadedCalendarKey !== calendarQueryKey;
+  const hasCompletedInitialFetch = loadedCalendarKey !== '';
 
   // Query GET /api/trips/calendar?year=&month=&region= with graceful fallback to client grouping
   useEffect(() => {
     const controller = new AbortController();
-    const requestKey = `${viewYear}-${viewMonth}-${regionFilter}-${trips.length}`;
+    const requestKey = `${viewYear}-${viewMonth}-${regionFilter}-${tripsVersionHash}`;
 
     const qs = new URLSearchParams({
       year: String(viewYear),
@@ -151,41 +204,57 @@ export const ExpeditionCalendarGrid: React.FC<ExpeditionCalendarGridProps> = ({
       });
 
     return () => controller.abort();
-  }, [viewYear, viewMonth, regionFilter, trips.length]);
+  }, [viewYear, viewMonth, regionFilter, tripsVersionHash]);
 
-  // Active trips for this month (server calendar result if available, otherwise client-grouped fallback)
+  const monthBounds = useMemo(() => {
+    const daysInMonth = new Date(viewYear, viewMonth, 0).getDate();
+    const ym = `${viewYear}-${String(viewMonth).padStart(2, '0')}`;
+    return {
+      monthStartKey: `${ym}-01`,
+      monthEndKey: `${ym}-${String(daysInMonth).padStart(2, '0')}`,
+      daysInMonth,
+    };
+  }, [viewYear, viewMonth]);
+
+  // Active trips overlapping this view month (Vietnam TZ) with strict region filter
   const monthTrips = useMemo(() => {
     const source = serverCalendarTrips !== null ? serverCalendarTrips : trips;
     return source.filter((trip) => {
-      const start = new Date(trip.startDate);
-      if (Number.isNaN(start.getTime())) return false;
-      const sameMonth = start.getFullYear() === viewYear && start.getMonth() + 1 === viewMonth;
-      if (!sameMonth) return false;
+      const startKey = toVietnamDateKey(trip.startDate);
+      if (!startKey) return false;
+      const rawEndKey = toVietnamDateKey(trip.endDate);
+      const endKey = rawEndKey && rawEndKey >= startKey ? rawEndKey : startKey;
+      const overlapsMonth = startKey <= monthBounds.monthEndKey && endKey >= monthBounds.monthStartKey;
+      if (!overlapsMonth) return false;
       if (regionFilter !== 'All') {
         const reg = resolveTripRegion(trip);
-        if (reg && reg !== regionFilter) return false;
+        if (reg !== regionFilter) return false;
       }
       return true;
     });
-  }, [serverCalendarTrips, trips, viewYear, viewMonth, regionFilter]);
+  }, [serverCalendarTrips, trips, monthBounds, regionFilter]);
 
-  // Group departures by YYYY-MM-DD
+  // Group trips by YYYY-MM-DD in Vietnam TZ (cross-month trips starting earlier pin to day 1 of view month)
   const tripsByDay = useMemo(() => {
-    const map = new Map<string, TripPlanItem[]>();
+    const map = new Map<string, Array<{ trip: TripPlanItem; isCarryOver: boolean; startKey: string; endKey: string }>>();
     monthTrips.forEach((trip) => {
-      const key = toLocalDateKey(trip.startDate);
-      if (!key) return;
-      const list = map.get(key) || [];
-      list.push(trip);
-      map.set(key, list);
+      const startKey = toVietnamDateKey(trip.startDate);
+      if (!startKey) return;
+      const rawEndKey = toVietnamDateKey(trip.endDate);
+      const endKey = rawEndKey && rawEndKey >= startKey ? rawEndKey : startKey;
+      const isCarryOver = startKey < monthBounds.monthStartKey;
+      const displayKey = isCarryOver ? monthBounds.monthStartKey : startKey;
+      const list = map.get(displayKey) || [];
+      list.push({ trip, isCarryOver, startKey, endKey });
+      map.set(displayKey, list);
     });
     return map;
-  }, [monthTrips]);
+  }, [monthTrips, monthBounds.monthStartKey]);
 
   // Build Mon-first calendar grid cells
   const calendarCells = useMemo(() => {
     const firstOfMonth = new Date(viewYear, viewMonth - 1, 1);
-    const daysInMonth = new Date(viewYear, viewMonth, 0).getDate();
+    const daysInMonth = monthBounds.daysInMonth;
     // JS getDay(): 0=Sun..6=Sat -> convert to Mon=0..Sun=6
     const startOffset = (firstOfMonth.getDay() + 6) % 7;
 
@@ -201,9 +270,9 @@ export const ExpeditionCalendarGrid: React.FC<ExpeditionCalendarGridProps> = ({
       cells.push({ day: null, dateKey: null });
     }
     return cells;
-  }, [viewYear, viewMonth]);
+  }, [viewYear, viewMonth, monthBounds.daysInMonth]);
 
-  const todayKey = toLocalDateKey(now);
+  const todayKey = initialToday.dateKey;
 
   const handlePrevMonth = () => {
     if (viewMonth === 1) {
@@ -289,8 +358,9 @@ export const ExpeditionCalendarGrid: React.FC<ExpeditionCalendarGridProps> = ({
           <button
             type="button"
             onClick={() => {
-              setViewYear(now.getFullYear());
-              setViewMonth(now.getMonth() + 1);
+              const vnToday = getVietnamTodayInfo();
+              setViewYear(vnToday.year);
+              setViewMonth(vnToday.month);
             }}
             className="btn btn-outline"
             style={{ padding: '5px 10px', fontSize: '0.74rem', borderRadius: 4, fontWeight: 700 }}
@@ -452,7 +522,7 @@ export const ExpeditionCalendarGrid: React.FC<ExpeditionCalendarGridProps> = ({
                     </div>
                   )}
 
-                  {dayTrips.map((trip) => {
+                  {dayTrips.map(({ trip, isCarryOver, startKey, endKey }) => {
                     const { seatsLeft } = getTripSeatMetrics(trip);
                     const diffColor = getDifficultyColor(trip.difficultyLevel);
 
@@ -461,7 +531,7 @@ export const ExpeditionCalendarGrid: React.FC<ExpeditionCalendarGridProps> = ({
                         key={trip._id}
                         type="button"
                         onClick={() => setSelectedTrip(trip)}
-                        title={`${trip.title} — ${seatsLeft === 0 ? 'Hết chỗ' : `Còn ${seatsLeft} chỗ`} — Bấm mở Không Gian Đoàn`}
+                        title={`${trip.title} (${formatDayMonthFromKey(startKey)}${endKey !== startKey ? `–${formatDayMonthFromKey(endKey)}` : ''}) — ${seatsLeft === 0 ? 'Hết chỗ' : `Còn ${seatsLeft} chỗ`} — Bấm mở sổ đoàn`}
                         style={{
                           width: '100%',
                           textAlign: 'left',
@@ -486,7 +556,7 @@ export const ExpeditionCalendarGrid: React.FC<ExpeditionCalendarGridProps> = ({
                             textOverflow: 'ellipsis',
                           }}
                         >
-                          {trip.trailName || trip.title}
+                          {isCarryOver ? `↪ ${trip.trailName || trip.title}` : trip.trailName || trip.title}
                         </span>
                         <span
                           style={{
@@ -496,6 +566,7 @@ export const ExpeditionCalendarGrid: React.FC<ExpeditionCalendarGridProps> = ({
                             fontVariantNumeric: 'tabular-nums',
                           }}
                         >
+                          {isCarryOver ? `Từ ${formatDayMonthFromKey(startKey)} • ` : ''}
                           {seatsLeft === 0 ? 'Hết chỗ' : `Còn ${seatsLeft} chỗ`} • Cấp {trip.difficultyLevel || 3}
                         </span>
                       </button>
@@ -509,7 +580,21 @@ export const ExpeditionCalendarGrid: React.FC<ExpeditionCalendarGridProps> = ({
       </div>
 
       {/* Compact Departure Agenda Strip for the Selected Month */}
-      {monthTrips.length > 0 ? (
+      {!hasCompletedInitialFetch && loadingCalendar && monthTrips.length === 0 ? (
+        <div
+          style={{
+            padding: '24px 16px',
+            textAlign: 'center',
+            background: 'var(--color-bg-card)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 4,
+            color: 'var(--color-text-muted)',
+            fontSize: '0.82rem',
+          }}
+        >
+          Đang tải lịch khởi hành Tháng {viewMonth}/{viewYear}...
+        </div>
+      ) : monthTrips.length > 0 ? (
         <div
           style={{
             background: 'var(--color-bg-card)',
@@ -522,11 +607,18 @@ export const ExpeditionCalendarGrid: React.FC<ExpeditionCalendarGridProps> = ({
           }}
         >
           <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-            Lịch xuất phát tháng {viewMonth}/{viewYear} — bấm để mở Không Gian Đoàn
+            Lịch xuất phát tháng {viewMonth}/{viewYear} — bấm để mở sổ đoàn
           </div>
           {monthTrips.map((trip) => {
             const { maxCount, seatsLeft } = getTripSeatMetrics(trip);
             const diffColor = getDifficultyColor(trip.difficultyLevel);
+            const startKey = toVietnamDateKey(trip.startDate);
+            const endKey = toVietnamDateKey(trip.endDate);
+            const dateRangeLabel = startKey
+              ? endKey && endKey > startKey
+                ? `${formatDayMonthFromKey(startKey)}–${formatDayMonthFromKey(endKey)}`
+                : formatDayMonthFromKey(startKey)
+              : '';
 
             return (
               <button
@@ -552,7 +644,7 @@ export const ExpeditionCalendarGrid: React.FC<ExpeditionCalendarGridProps> = ({
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
-                      {new Date(trip.startDate).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })}
+                      {dateRangeLabel}
                     </span>
                     <span style={{ fontSize: '0.86rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
                       {trip.title}
@@ -619,11 +711,14 @@ export const ExpeditionCalendarGrid: React.FC<ExpeditionCalendarGridProps> = ({
           tripId={selectedTrip._id}
           tripTitle={selectedTrip.title}
           memberCount={selectedMetrics.memberCount}
+          currentUserId={currentUserId}
+          currentUser={currentUser}
           isCreator={selectedIsCreator}
           isMember={selectedIsMember}
           isOpen={Boolean(selectedTrip)}
           onClose={() => setSelectedTrip(null)}
           onTripUpdated={onTripUpdated}
+          onOpenAuthorProfile={onOpenAuthorProfile}
           onShowToast={(message, type) => {
             window.dispatchEvent(new CustomEvent('lost:show-toast', { detail: { message, type } }));
           }}

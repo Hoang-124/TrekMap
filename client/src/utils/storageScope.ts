@@ -90,20 +90,48 @@ function decodeJwtPayloadUid(token: string): string {
 }
 
 /**
+ * Private-mode / quota-safe localStorage wrappers so Safari Private Browsing,
+ * opaque-origin iframes, or exceeded storage quota never throw uncaught errors.
+ */
+export function safeLocalStorageGet(key: string): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+export function safeLocalStorageSet(key: string, value: string): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function safeLocalStorageRemove(key: string): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    localStorage.removeItem(key);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Returns the active authenticated user's ID from the stored JWT, or `'guest'`.
  */
 export function getActiveStorageUid(explicitUid?: string | null): string {
   if (explicitUid && explicitUid.trim()) {
     return explicitUid.trim();
   }
-  if (typeof window === 'undefined') return 'guest';
-  try {
-    const token = localStorage.getItem('lost_token');
-    if (!token) return 'guest';
-    return decodeJwtPayloadUid(token) || 'guest';
-  } catch {
-    return 'guest';
-  }
+  const token = safeLocalStorageGet('lost_token');
+  if (!token) return 'guest';
+  return decodeJwtPayloadUid(token) || 'guest';
 }
 
 /**

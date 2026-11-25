@@ -2,15 +2,23 @@ import { Response } from 'express';
 import mongoose from 'mongoose';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { TripReportModel } from '../models/TripReport.js';
+import { TripPlanModel } from '../models/TripPlan.js';
 import { UserModel } from '../models/User.js';
 import { awardReputationPoints, deductReputationPoints, PENALTY_POINTS } from '../utils/reputation.js';
 import { sanitizeInput, isSafeHttpUrl } from '../utils/validation.js';
 import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
-import { isValidObjectId, resolveTrailObjectId } from '../utils/resolveTrail.js';
+import { isValidObjectId, resolveTrailByIdOrSlug, resolveTrailObjectId } from '../utils/resolveTrail.js';
 import { recordActivity, recordAuditLog } from '../utils/audit.js';
+import { sendNotification } from '../utils/notification.js';
 
 const VALID_REACTIONS = ['like', 'love', 'wow'] as const;
 type TripReportReaction = (typeof VALID_REACTIONS)[number];
+
+function parseStrictReportNum(val: unknown): number | null {
+  if (val === undefined || val === null || val === '' || typeof val === 'boolean') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
 
 function formatReportForViewer(report: any, viewerId?: string) {
   const { userReactionsMap, ...publicReport } = report;
@@ -67,12 +75,13 @@ export const createTripReport = async (req: AuthRequest, res: Response) => {
 
     const cleanTitle = sanitizeInput(title).slice(0, 180);
     const cleanContent = sanitizeInput(content).slice(0, 10000);
+    const cleanSummary = sanitizeInput(typeof summary === 'string' && summary.trim() ? summary : cleanTitle).slice(0, 400);
     if (!cleanTitle || !cleanContent) {
       return res.status(400).json({ success: false, message: 'Tiêu đề hoặc nội dung nhật ký không hợp lệ.' });
     }
 
-    if (containsProfanity(`${cleanTitle} ${cleanContent}`)) {
-      const matched = getProfanityMatch(`${cleanTitle} ${cleanContent}`);
+    if (containsProfanity(`${cleanTitle} ${cleanSummary} ${cleanContent}`)) {
+      const matched = getProfanityMatch(`${cleanTitle} ${cleanSummary} ${cleanContent}`);
       await deductReputationPoints(authorId, PENALTY_POINTS.PROFANITY_VIOLATION, `Nhật ký chứa từ ngữ vi phạm ("${matched}")`);
       return res.status(400).json({
         success: false,
@@ -80,9 +89,32 @@ export const createTripReport = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const resolvedTrailId = await resolveTrailObjectId(trailId);
-    if (!resolvedTrailId) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường tương ứng trong hệ thống.' });
+    const resolvedTrail = await resolveTrailByIdOrSlug(trailId);
+    if (!resolvedTrail || (resolvedTrail.status && resolvedTrail.status !== 'approved')) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường đã duyệt tương ứng trong hệ thống.' });
+    }
+    const resolvedTrailId = resolvedTrail._id;
+
+    let verifiedTripPlanId: mongoose.Types.ObjectId | undefined;
+    if (tripPlanId !== undefined && tripPlanId !== null && tripPlanId !== '') {
+      if (typeof tripPlanId !== 'string' || !isValidObjectId(tripPlanId)) {
+        return res.status(400).json({ success: false, message: 'Mã chuyến đi liên kết (tripPlanId) không hợp lệ.' });
+      }
+      const linkedTrip = await TripPlanModel.findById(tripPlanId).select('creatorId currentMembers').lean();
+      if (!linkedTrip) {
+        return res.status(404).json({ success: false, message: 'Không tìm thấy chuyến đi liên kết.' });
+      }
+      const isTripMember =
+        String(linkedTrip.creatorId) === String(authorId) ||
+        (linkedTrip.currentMembers || []).some((m: any) => String(m) === String(authorId));
+      const isStaff = req.user?.role === 'admin' || req.user?.role === 'moderator';
+      if (!isTripMember && !isStaff) {
+        return res.status(403).json({
+          success: false,
+          message: 'Bạn chỉ có thể gắn nhật ký với chuyến đi mà bạn là thành viên.',
+        });
+      }
+      verifiedTripPlanId = new mongoose.Types.ObjectId(tripPlanId);
     }
 
     let parsedTripDate = new Date();
@@ -97,42 +129,46 @@ export const createTripReport = async (req: AuthRequest, res: Response) => {
     const safePhotos = Array.isArray(photos) ? photos.filter((u: unknown) => isSafeHttpUrl(u)).slice(0, 10) : [];
     const safeGpx: number[][] = Array.isArray(gpxTrackActual)
       ? gpxTrackActual
-          .filter(
-            (pt: any) =>
-              Array.isArray(pt) &&
-              pt.length >= 2 &&
-              Number.isFinite(Number(pt[0])) &&
-              Number.isFinite(Number(pt[1])) &&
-              Number(pt[0]) >= -90 &&
-              Number(pt[0]) <= 90 &&
-              Number(pt[1]) >= -180 &&
-              Number(pt[1]) <= 180
-          )
-          .slice(0, 3000)
-          .map((pt: any) => (pt.length >= 3 && Number.isFinite(Number(pt[2])) ? [Number(pt[0]), Number(pt[1]), Number(pt[2])] : [Number(pt[0]), Number(pt[1])]))
+          .reduce<number[][]>((acc, pt: any) => {
+            if (acc.length >= 3000 || !Array.isArray(pt) || pt.length < 2) return acc;
+            const lat = parseStrictReportNum(pt[0]);
+            const lng = parseStrictReportNum(pt[1]);
+            if (lat === null || lng === null || lat < -90 || lat > 90 || lng < -180 || lng > 180) return acc;
+            const alt = pt.length >= 3 ? parseStrictReportNum(pt[2]) : null;
+            acc.push(alt !== null ? [lat, lng, alt] : [lat, lng]);
+            return acc;
+          }, [])
       : [];
+
+    const parsedGroupSize = parseStrictReportNum(groupSize);
+    const parsedDifficulty = parseStrictReportNum(difficultyActual);
+    const parsedRating = parseStrictReportNum(rating);
 
     const report = await TripReportModel.create({
       authorId: new mongoose.Types.ObjectId(authorId),
       trailId: resolvedTrailId,
-      tripPlanId: tripPlanId && isValidObjectId(tripPlanId) ? new mongoose.Types.ObjectId(tripPlanId) : undefined,
+      tripPlanId: verifiedTripPlanId,
       title: cleanTitle,
-      summary: sanitizeInput(typeof summary === 'string' && summary.trim() ? summary : cleanTitle).slice(0, 400),
+      summary: cleanSummary,
       content: cleanContent,
       photos: safePhotos,
       gpxTrackActual: safeGpx,
       tripDate: parsedTripDate,
       duration: sanitizeInput(String(duration || '2 ngày 1 đêm')).slice(0, 60),
-      groupSize: Math.min(Math.max(Number(groupSize) || 2, 1), 100),
+      groupSize: Math.min(Math.max(Math.round(parsedGroupSize ?? 2), 1), 100),
       totalCost: sanitizeInput(String(totalCost || '')).slice(0, 100),
-      difficultyActual: Math.min(Math.max(Number(difficultyActual) || 3, 1), 5),
+      difficultyActual: Math.min(Math.max(Math.round(parsedDifficulty ?? 3), 1), 5),
       weatherCondition: sanitizeInput(String(weatherCondition || 'Thời tiết đẹp')).slice(0, 120),
-      highlights: Array.isArray(highlights) ? highlights.slice(0, 10).map((s: unknown) => sanitizeInput(String(s))) : [],
-      warnings: Array.isArray(warnings) ? warnings.slice(0, 10).map((s: unknown) => sanitizeInput(String(s))) : [],
-      recommendations: Array.isArray(recommendations)
-        ? recommendations.slice(0, 10).map((s: unknown) => sanitizeInput(String(s)))
+      highlights: Array.isArray(highlights)
+        ? highlights.slice(0, 10).map((s: unknown) => sanitizeInput(String(s)).slice(0, 300))
         : [],
-      rating: Math.min(Math.max(Number(rating) || 5, 1), 5),
+      warnings: Array.isArray(warnings)
+        ? warnings.slice(0, 10).map((s: unknown) => sanitizeInput(String(s)).slice(0, 300))
+        : [],
+      recommendations: Array.isArray(recommendations)
+        ? recommendations.slice(0, 10).map((s: unknown) => sanitizeInput(String(s)).slice(0, 300))
+        : [],
+      rating: Math.min(Math.max(Math.round(parsedRating ?? 5), 1), 5),
     });
 
     const author = await UserModel.findById(authorId).select('fullName').lean();
@@ -163,13 +199,18 @@ export const createTripReport = async (req: AuthRequest, res: Response) => {
 // GET /api/trip-reports - List trip reports (strips voter map, includes viewer's userReaction)
 export const getTripReports = async (req: AuthRequest, res: Response) => {
   try {
-    if (mongoose.connection.readyState !== 1) {
-      return res.json({ success: true, data: [], pagination: { total: 0, page: 1, limit: 10 } });
-    }
     const rawTrailId = req.query.trailId;
     const rawAuthorId = req.query.authorId;
-    const page = Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1);
+    const page = Math.min(Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1), 1000);
     const limit = Math.min(Math.max(parseInt(String(req.query.limit || '10'), 10) || 10, 1), 50);
+
+    if (mongoose.connection.readyState !== 1) {
+      return res.json({
+        success: true,
+        data: [],
+        pagination: { total: 0, page, limit, totalPages: 0, hasMore: false },
+      });
+    }
 
     const query: any = {};
     if (typeof rawTrailId === 'string' && rawTrailId.trim()) {
@@ -184,7 +225,7 @@ export const getTripReports = async (req: AuthRequest, res: Response) => {
     const skip = (page - 1) * limit;
     const [reports, total] = await Promise.all([
       TripReportModel.find(query)
-        .select('-comments')
+        .select('-comments -gpxTrackActual')
         .populate('authorId', 'fullName avatarUrl reputationScore badges')
         .populate('trailId', 'id name province region coverImage')
         .sort({ createdAt: -1 })
@@ -219,7 +260,15 @@ export const getTripReportById = async (req: AuthRequest, res: Response) => {
       return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
     }
 
-    const report = await TripReportModel.findByIdAndUpdate(id, { $inc: { viewsCount: 1 } }, { new: true })
+    const skipView =
+      req.query.skipView === '1' ||
+      req.query.skipView === 'true' ||
+      req.query.noView === '1' ||
+      req.query.silent === '1';
+    const report = await (skipView
+      ? TripReportModel.findById(id)
+      : TripReportModel.findByIdAndUpdate(id, { $inc: { viewsCount: 1 } }, { new: true })
+    )
       .populate('authorId', 'fullName avatarUrl reputationScore badges bio')
       .populate('trailId', 'id name province region coverImage difficultyLevel')
       .lean();
@@ -387,31 +436,38 @@ export const updateTripReport = async (req: AuthRequest, res: Response) => {
     if (duration !== undefined) {
       report.duration = sanitizeInput(String(duration || '2 ngày 1 đêm')).slice(0, 60);
     }
-    if (groupSize !== undefined && Number.isFinite(Number(groupSize))) {
-      report.groupSize = Math.min(Math.max(Math.round(Number(groupSize)), 1), 100);
+    const parsedGroupSize = parseStrictReportNum(groupSize);
+    if (parsedGroupSize !== null) {
+      report.groupSize = Math.min(Math.max(Math.round(parsedGroupSize), 1), 100);
     }
     if (totalCost !== undefined) {
       report.totalCost = sanitizeInput(String(totalCost || '')).slice(0, 100);
     }
-    if (difficultyActual !== undefined && Number.isFinite(Number(difficultyActual))) {
-      report.difficultyActual = Math.min(Math.max(Math.round(Number(difficultyActual)), 1), 5);
+    const parsedDifficulty = parseStrictReportNum(difficultyActual);
+    if (parsedDifficulty !== null) {
+      report.difficultyActual = Math.min(Math.max(Math.round(parsedDifficulty), 1), 5);
     }
     if (weatherCondition !== undefined) {
       report.weatherCondition = sanitizeInput(String(weatherCondition || '')).slice(0, 120);
     }
     if (highlights !== undefined) {
-      report.highlights = Array.isArray(highlights) ? highlights.slice(0, 10).map((s: unknown) => sanitizeInput(String(s))) : [];
+      report.highlights = Array.isArray(highlights)
+        ? highlights.slice(0, 10).map((s: unknown) => sanitizeInput(String(s)).slice(0, 300))
+        : [];
     }
     if (warnings !== undefined) {
-      report.warnings = Array.isArray(warnings) ? warnings.slice(0, 10).map((s: unknown) => sanitizeInput(String(s))) : [];
+      report.warnings = Array.isArray(warnings)
+        ? warnings.slice(0, 10).map((s: unknown) => sanitizeInput(String(s)).slice(0, 300))
+        : [];
     }
     if (recommendations !== undefined) {
       report.recommendations = Array.isArray(recommendations)
-        ? recommendations.slice(0, 10).map((s: unknown) => sanitizeInput(String(s)))
+        ? recommendations.slice(0, 10).map((s: unknown) => sanitizeInput(String(s)).slice(0, 300))
         : [];
     }
-    if (rating !== undefined && Number.isFinite(Number(rating))) {
-      report.rating = Math.min(Math.max(Math.round(Number(rating)), 1), 5);
+    const parsedRating = parseStrictReportNum(rating);
+    if (parsedRating !== null) {
+      report.rating = Math.min(Math.max(Math.round(parsedRating), 1), 5);
     }
 
     await report.save();
@@ -446,6 +502,9 @@ export const deleteTripReport = async (req: AuthRequest, res: Response) => {
     if (!isValidObjectId(id)) {
       return res.status(400).json({ success: false, message: 'Mã nhật ký không hợp lệ.' });
     }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
 
     const report = await TripReportModel.findById(id).select('authorId title').lean();
     if (!report) {
@@ -459,6 +518,12 @@ export const deleteTripReport = async (req: AuthRequest, res: Response) => {
     await UserModel.updateOne(
       { _id: report.authorId, tripReportsCount: { $gt: 0 } },
       { $inc: { tripReportsCount: -1 } }
+    ).catch(() => {});
+    // Claw back +30 creation reward to prevent create-delete reputation farming
+    await deductReputationPoints(
+      String(report.authorId),
+      PENALTY_POINTS.DELETED_POST,
+      'Gỡ bài nhật ký chuyến đi (hoàn điểm thưởng)'
     ).catch(() => {});
     await recordAuditLog(req, 'DELETE_TRIP_REPORT', 'trip_reports', `Xóa nhật ký "${report.title}" (${id})`);
 
@@ -525,7 +590,7 @@ export const addTripReportComment = async (req: AuthRequest, res: Response) => {
       { $push: { comments: newComment } },
       { new: true }
     )
-      .select('comments commentsCount')
+      .select('authorId title comments commentsCount')
       .lean();
 
     if (!updated) {
@@ -534,6 +599,19 @@ export const addTripReportComment = async (req: AuthRequest, res: Response) => {
 
     const nextCount = Array.isArray(updated.comments) ? updated.comments.length : 0;
     await TripReportModel.updateOne({ _id: id }, { $set: { commentsCount: nextCount } });
+
+    if (updated.authorId && String(updated.authorId) !== String(userId)) {
+      sendNotification({
+        recipientId: String(updated.authorId),
+        sender: { id: userId, name: authorName, avatarUrl: authorAvatar },
+        type: 'community_comment',
+        category: 'social',
+        title: 'Bình luận mới trên nhật ký chuyến đi',
+        message: `${authorName} vừa bình luận trên nhật ký "${updated.title}": "${cleanContent.slice(0, 100)}"`,
+        link: `/trip-reports/${id}`,
+        relatedId: String(commentId),
+      }).catch(() => {});
+    }
 
     return res.status(201).json({
       success: true,

@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
+import type { UserProfile } from '../../types.js';
+import { AuthorProfileModal } from '../forum/AuthorProfileModal.js';
 import {
   IconX,
   IconMessageSquare,
@@ -24,6 +26,7 @@ import {
   IconDownload,
   IconEdit,
 } from '../common/SvgIcons.js';
+import { safeLocalStorageGet } from '../../utils/storageScope.js';
 
 interface SharedGearItem {
   id: string;
@@ -55,6 +58,15 @@ interface PendingApplicant {
   requestedAt?: string;
 }
 
+interface SafetyGateStepMeta {
+  checked?: boolean;
+  checkedBy?: string | { _id?: string; fullName?: string; username?: string };
+  checkedByName?: string;
+  checkedAt?: string;
+}
+
+type SafetyGateValue = boolean | SafetyGateStepMeta;
+
 interface TripDetailPayload {
   _id: string;
   title: string;
@@ -73,7 +85,9 @@ interface TripDetailPayload {
   currentMembers?: Array<{ _id?: string; fullName?: string; avatarUrl?: string; reputationScore?: number } | string>;
   pendingRequests?: PendingApplicant[];
   sharedGear?: SharedGearItem[];
-  safetyGate?: Record<string, boolean>;
+  safetyGate?: Record<string, SafetyGateValue>;
+  safetyGateAudit?: Record<string, SafetyGateStepMeta>;
+  safetyGateMeta?: Record<string, SafetyGateStepMeta>;
   expenses?: ExpenseItem[];
   settledTransfers?: string[];
   hasPendingRequest?: boolean;
@@ -84,12 +98,14 @@ interface SquadWorkspaceModalProps {
   tripTitle: string;
   memberCount: number;
   currentUserId?: string;
+  currentUser?: UserProfile | null;
   isCreator?: boolean;
   isMember?: boolean;
   isOpen: boolean;
   onClose: () => void;
   onOpenGroupChat?: (conversationId: string) => void;
   onTripUpdated?: () => void;
+  onOpenAuthorProfile?: (author: { name: string; avatar: string; userId?: string }) => void;
   onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
 }
 
@@ -99,6 +115,7 @@ interface MemberSettlementBalance {
   paidVnd: number;
   balanceVnd: number;
   isEstimatedSlot?: boolean;
+  isDeparted?: boolean;
 }
 
 interface DebtTransfer {
@@ -120,6 +137,58 @@ interface GreedyDebtSettlement {
 }
 
 const SETTLEMENT_DUST_VND = 1;
+const MAX_TRIP_MEMBERS_CAP = 30;
+const MIN_EXPENSE_VND = 1000;
+const MAX_EXPENSE_VND = 500_000_000;
+
+interface TripDetailFetchResult {
+  doc: TripDetailPayload;
+  viewerRole: 'creator' | 'member' | 'guest' | null;
+}
+
+const TRIP_DETAIL_DEDUPE_TTL_MS = 2000;
+const recentTripDetailFetches = new Map<string, { ts: number; promise: Promise<TripDetailFetchResult> }>();
+
+function fetchTripDetailRequest(tripId: string, skipView: boolean): Promise<TripDetailFetchResult> {
+  const url = skipView
+    ? `/api/trips/${encodeURIComponent(tripId)}?skipView=1`
+    : `/api/trips/${encodeURIComponent(tripId)}`;
+  return fetch(url, {
+    headers: getApiHeaders(),
+  }).then(async (res) => {
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success || !data.data) {
+      throw new Error(data?.message || 'Chưa tải được sổ đoàn, bạn thử mở lại nhé.');
+    }
+    const viewerRole =
+      data.viewerRole === 'creator' || data.viewerRole === 'member' || data.viewerRole === 'guest'
+        ? (data.viewerRole as 'creator' | 'member' | 'guest')
+        : null;
+    return { doc: data.data as TripDetailPayload, viewerRole };
+  });
+}
+
+function fetchTripDetailDeduped(tripId: string, skipView: boolean): Promise<TripDetailFetchResult> {
+  if (skipView) {
+    return fetchTripDetailRequest(tripId, true);
+  }
+  const now = Date.now();
+  const cached = recentTripDetailFetches.get(tripId);
+  if (cached && now - cached.ts < TRIP_DETAIL_DEDUPE_TTL_MS) {
+    return cached.promise;
+  }
+  for (const [k, entry] of recentTripDetailFetches.entries()) {
+    if (now - entry.ts >= TRIP_DETAIL_DEDUPE_TTL_MS) {
+      recentTripDetailFetches.delete(k);
+    }
+  }
+  const promise = fetchTripDetailRequest(tripId, false).catch((err) => {
+    recentTripDetailFetches.delete(tripId);
+    throw err;
+  });
+  recentTripDetailFetches.set(tripId, { ts: now, promise });
+  return promise;
+}
 
 function extractUserIdFromToken(): string {
   try {
@@ -165,33 +234,33 @@ interface SquadSafetyGateStep {
 const SQUAD_SAFETY_GATE_STEPS: SquadSafetyGateStep[] = [
   {
     id: 'permit',
-    title: 'Giấy phép VQG / Biên phòng & Khai báo',
-    detail: 'Hoàn tất giấy phép vào rừng (BQL VQG/Kiểm lâm hoặc Đồn Biên phòng) và danh sách CCCD cả đoàn.',
+    title: 'Giấy phép VQG / Biên phòng & khai báo đoàn',
+    detail: 'Hoàn tất giấy phép vào rừng (BQL VQG, Kiểm lâm hoặc Đồn Biên phòng) và gom đủ thông tin CCCD cả đoàn.',
   },
   {
     id: 'beacon',
-    title: 'Live Beacon & Báo người thân ở nhà',
-    detail: 'Kích hoạt Live Beacon / Hẹn giờ báo bình an và gửi lịch trình dự kiến cho người thân.',
+    title: 'Bật hẹn giờ báo bình an & dặn người thân ở nhà',
+    detail: 'Bật Live Beacon hoặc hẹn giờ báo bình an, gửi trước lịch trình và giờ dự kiến xuống núi cho người nhà.',
   },
   {
     id: 'gonogo',
-    title: 'Kiểm tra Go/No-Go thời tiết 24h trước giờ G',
-    detail: 'Rà soát dự báo mưa lớn, gió đỉnh, sạt lở đường mòn và chỉ số Go/No-Go trong vòng 24 giờ.',
+    title: 'Xem lại thời tiết 24 giờ trước lúc xuất phát',
+    detail: 'Kiểm tra mưa lớn, gió đỉnh, nguy cơ sạt lở đường mòn và chốt phương án đi hay hoãn trong vòng 24 giờ.',
   },
   {
     id: 'wfa_gear',
-    title: 'Bộ sơ cứu WFA & Đèn pin dự phòng',
-    detail: 'Kiểm tra túi sơ cứu dã ngoại (WFA), còi SOS, chăn giữ nhiệt và đèn pin đội đầu kèm pin dự phòng.',
+    title: 'Túi sơ cứu dã ngoại (WFA) & đèn pin dự phòng',
+    detail: 'Kiểm tra đủ đồ sơ cứu WFA, còi báo hiệu, chăn giữ nhiệt và đèn pin đội đầu kèm pin dự phòng.',
   },
   {
     id: 'turnaround',
-    title: 'Thống nhất Giờ Quay Đầu An Toàn',
-    detail: 'Chốt mốc giờ quay đầu bắt buộc để cả đoàn xuống trại hoặc cửa rừng trước hoàng hôn ít nhất 30 phút.',
+    title: 'Chốt mốc giờ quay đầu an toàn',
+    detail: 'Thống nhất giờ quay đầu bắt buộc để cả đoàn về tới lán hoặc cửa rừng trước lúc trời tối ít nhất 30 phút.',
   },
   {
     id: 'hotline',
-    title: 'Lưu Hotline Kiểm Lâm & 112 Offline',
-    detail: 'Lưu số trực ban Kiểm lâm/VQG địa phương, số cứu hộ quốc gia 112 và tải sẵn GPX ngoại tuyến.',
+    title: 'Lưu sẵn số Kiểm lâm, cứu hộ 112 & bản đồ offline',
+    detail: 'Lưu số trực ban Kiểm lâm/VQG địa phương, số cứu hộ khẩn cấp 112 và tải sẵn tệp GPX vào máy.',
   },
 ];
 
@@ -229,18 +298,18 @@ interface SharedGearPreset {
 }
 
 const VIETNAM_SQUAD_GEAR_PRESETS: SharedGearPreset[] = [
-  { key: 'tent-4p', name: 'Lều 4N', weightG: 3200, category: 'Lán trại & Nấu ăn' },
+  { key: 'tent-4p', name: 'Lều 4 người', weightG: 3200, category: 'Lán trại & Nấu ăn' },
   { key: 'stove-gas', name: 'Bếp & gas', weightG: 950, category: 'Lán trại & Nấu ăn' },
-  { key: 'wfa-kit', name: 'Túi WFA', weightG: 650, category: 'Y tế & An toàn' },
+  { key: 'wfa-kit', name: 'Túi sơ cứu WFA', weightG: 650, category: 'Y tế & An toàn' },
   { key: 'uhf-radio', name: 'Bộ đàm UHF', weightG: 480, category: 'Y tế & An toàn' },
   { key: 'tarp', name: 'Bạt tăng', weightG: 720, category: 'Lán trại & Nấu ăn' },
   { key: 'rope', name: 'Dây thừng', weightG: 1100, category: 'Y tế & An toàn' },
 ];
 
 const TRIP_STATUS_LABELS: Record<string, string> = {
-  recruiting: 'Đang tuyển thành viên',
-  full: 'Đã đủ chỗ',
-  in_progress: 'Đang diễn ra',
+  recruiting: 'Đang mở ghép đoàn',
+  full: 'Đã đủ người',
+  in_progress: 'Đang trên cung',
   completed: 'Đã hoàn thành',
   cancelled: 'Đã hủy chuyến',
 };
@@ -268,7 +337,8 @@ function getVietnamDateCompact(): string {
     }).format(new Date());
     return iso.replace(/-/g, '');
   } catch {
-    return new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const vn = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    return `${vn.getUTCFullYear()}${String(vn.getUTCMonth() + 1).padStart(2, '0')}${String(vn.getUTCDate()).padStart(2, '0')}`;
   }
 }
 
@@ -298,6 +368,74 @@ function formatDateViOptional(raw?: string): string {
   } catch {
     return d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
   }
+}
+
+function formatDateTimeViOptional(raw?: string): string {
+  if (!raw) return '';
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return '';
+  try {
+    return d.toLocaleString('vi-VN', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return d.toLocaleString('vi-VN', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+}
+
+function toVietnamDateInputValue(raw?: string): string {
+  if (!raw) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) return raw.trim();
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) {
+    return /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : '';
+  }
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(d);
+    const y = parts.find((p) => p.type === 'year')?.value;
+    const m = parts.find((p) => p.type === 'month')?.value;
+    const day = parts.find((p) => p.type === 'day')?.value;
+    if (y && m && day) return `${y}-${m}-${day}`;
+  } catch {
+    // Fallback to UTC+7 offset
+  }
+  const vn = new Date(d.getTime() + 7 * 60 * 60 * 1000);
+  return `${vn.getUTCFullYear()}-${String(vn.getUTCMonth() + 1).padStart(2, '0')}-${String(vn.getUTCDate()).padStart(2, '0')}`;
+}
+
+function clampTripMaxMembers(raw: string | number, minMembers: number): number {
+  const floorVal = Math.max(2, Math.min(MAX_TRIP_MEMBERS_CAP, minMembers));
+  const str = String(raw).trim();
+  if (!str) return floorVal;
+  const parsed = Math.round(Number(str));
+  if (!Number.isFinite(parsed)) return floorVal;
+  return Math.max(floorVal, Math.min(MAX_TRIP_MEMBERS_CAP, parsed));
+}
+
+function buildGearAssigneePayload(member: SquadRosterMember | null): Record<string, unknown> {
+  if (!member) {
+    return { assignedUserId: null, assignedUserName: 'Chưa nhận' };
+  }
+  const rawId = extractRawMemberId(member.id);
+  if (rawId) {
+    return { assignedUserId: rawId, assignedUserName: member.name };
+  }
+  // Estimated roster slot (slot:N): omit assignedUserId so server preserves assignedUserName
+  return { assignedUserName: member.name };
 }
 
 function buildRangerManifestCsv(params: {
@@ -356,7 +494,7 @@ function buildRangerManifestCsv(params: {
     row(['Thành viên đã xác nhận', confirmedMemberCount]),
     row(['Vị trí dự kiến (chưa rõ họ tên)', estimatedSlotCount]),
     row(['Tổng quy mô đoàn', roster.length]),
-    row(['Cổng Kiểm Tra An Toàn Trước Giờ G', gateStatusLabel]),
+    row(['Kiểm tra an toàn trước khi vào rừng', gateStatusLabel]),
     row(['Ngày xuất bảng khai báo', formatDateViOptional(new Date().toISOString())]),
     '',
     row(['DANH SÁCH THÀNH VIÊN THAM GIA']),
@@ -422,7 +560,7 @@ function buildRangerManifestCsv(params: {
 
   lines.push(
     '',
-    row(['CỔNG KIỂM TRA AN TOÀN TRƯỚC GIỜ G (6 BƯỚC)']),
+    row(['KIỂM TRA AN TOÀN TRƯỚC KHI VÀO RỪNG (6 BƯỚC)']),
     row(['Bước', 'Hạng mục an toàn', 'Trạng thái'])
   );
   SQUAD_SAFETY_GATE_STEPS.forEach((step, idx) => {
@@ -511,16 +649,16 @@ function buildZaloGearAssignmentReport(
   const packedCount = items.filter((item) => item.packed).length;
 
   const lines: string[] = [
-    '[PHÂN CÔNG TRANG BỊ CHUNG ĐOÀN - LOST]',
+    '[PHÂN CÔNG ĐỒ CHUNG CẢ ĐOÀN - LOST]',
     `Chuyến đi: ${tripTitle}`,
-    `Tổng tải đồ chung: ${formatWeightKg(totalG)} kg (${totalG.toLocaleString('vi-VN')} g) | Tiến độ: ${packedCount}/${items.length} món`,
+    `Tổng tải đồ chung: ${formatWeightKg(totalG)} kg (${totalG.toLocaleString('vi-VN')} g) | Đã chuẩn bị: ${packedCount}/${items.length} món`,
   ];
 
   const assignedMembers = memberLoads.filter((m) => m.itemCount > 0);
   if (assignedMembers.length > 0) {
-    lines.push('', '--- PHÂN CÔNG CÂN TẢI THEO THÀNH VIÊN ---');
+    lines.push('', '--- AI MANG GÌ ---');
     assignedMembers.forEach((member) => {
-      const loadTag = member.isOverloaded ? ` [CẢNH BÁO >${fairLoadThresholdPct}%]` : '';
+      const loadTag = member.isOverloaded ? ` [NẶNG TẢI >${fairLoadThresholdPct}%]` : '';
       lines.push(
         `• ${member.name}: ${formatWeightKg(member.totalG)} kg (${member.pct.toFixed(0)}%)${loadTag}`
       );
@@ -536,7 +674,7 @@ function buildZaloGearAssignmentReport(
 
   if (unassignedItems.length > 0) {
     const unassignedG = unassignedItems.reduce((sum, it) => sum + it.weightG, 0);
-    lines.push('', `--- CHƯA PHÂN CÔNG (${formatWeightKg(unassignedG)} kg) ---`);
+    lines.push('', `--- CHƯA CÓ NGƯỜI NHẬN (${formatWeightKg(unassignedG)} kg) ---`);
     unassignedItems.forEach((it) => {
       lines.push(`  - ${it.name} (${it.weightG.toLocaleString('vi-VN')} g • ${it.category})`);
     });
@@ -546,7 +684,7 @@ function buildZaloGearAssignmentReport(
   if (overloaded.length > 0) {
     lines.push(
       '',
-      `Lưu ý cân bằng tải: ${overloaded.map((m) => `${m.name} (${m.pct.toFixed(0)}%)`).join(', ')} đang gánh >${fairLoadThresholdPct}% tổng đồ chung.`
+      `Lưu ý chia đều đồ: ${overloaded.map((m) => `${m.name} (${m.pct.toFixed(0)}%)`).join(', ')} đang mang hơn ${fairLoadThresholdPct}% tổng đồ chung.`
     );
   }
 
@@ -576,10 +714,12 @@ function copyTextViaExecCommand(text: string): boolean {
 }
 
 /**
- * Pure Greedy Minimum-Transfer Debt Settlement Matrix:
- * - Includes ALL squad participants (joined members, creator, payers, plus unnamed seat slots if roster is partial).
- * - Disambiguates colliding member display names by Mongo `_id` so two members sharing a name never merge.
- * - Uses consistent `SETTLEMENT_DUST_VND = 1` inclusive thresholds so settled status and per-member balances never contradict.
+ * Pure Greedy Minimum-Transfer Debt Settlement Matrix (Exact Integer VND):
+ * - Separates active cost-sharing squad members from departed payers (`uid:<id>`) so a departed payer sharing
+ *   a display name with an active member NEVER credits the active member and NEVER inflates active headcount.
+ * - Uses largest-remainder integer VND allocation so every balance is an exact integer summing to 0,
+ *   guaranteeing greedy transfers sum identically to each member's `balanceVnd` with 0 VND rounding drift.
+ * - Honors `exp.splitCount` when full roster membership is unavailable.
  */
 function computeGreedyDebtSettlement(
   expenses: ExpenseItem[],
@@ -589,6 +729,8 @@ function computeGreedyDebtSettlement(
   const displayNameByKey = new Map<string, string>();
   const paidByKey = new Map<string, number>();
   const estimatedKeys = new Set<string>();
+  const activeKeySet = new Set<string>();
+  const departedKeySet = new Set<string>();
   const keyByUserId = new Map<string, string>();
   const keysByBaseName = new Map<string, string[]>();
 
@@ -601,7 +743,6 @@ function computeGreedyDebtSettlement(
     const baseKey = cleanName.toLowerCase();
     const existingKeys = keysByBaseName.get(baseKey) || [];
 
-    // If no userId is provided and a member with the same name already exists, treat as the same entry
     if (!cleanId && existingKeys.length > 0) return;
 
     const participantKey = cleanId ? `uid:${cleanId}` : `name:${baseKey}:${existingKeys.length + 1}`;
@@ -609,6 +750,7 @@ function computeGreedyDebtSettlement(
 
     displayNameByKey.set(participantKey, displayName);
     paidByKey.set(participantKey, 0);
+    activeKeySet.add(participantKey);
     if (cleanId) {
       keyByUserId.set(cleanId, participantKey);
     }
@@ -627,25 +769,40 @@ function computeGreedyDebtSettlement(
   }
 
   let totalVnd = 0;
+  let maxSavedSplitCount = 0;
   for (const exp of expenses) {
     const amount = Math.max(0, Math.round(Number(exp.amountVnd) || 0));
     totalVnd += amount;
+    const rawSplit = Math.round(Number(exp.splitCount));
+    if (Number.isFinite(rawSplit) && rawSplit >= 1 && rawSplit <= MAX_TRIP_MEMBERS_CAP) {
+      maxSavedSplitCount = Math.max(maxSavedSplitCount, rawSplit);
+    }
     const payerName = (exp.paidByName || '').trim() || 'Thành viên';
     const payerUid = (exp.paidByUserId || '').trim();
     const baseKey = payerName.toLowerCase();
 
     let targetKey: string | undefined;
-    if (payerUid && keyByUserId.has(payerUid)) {
-      targetKey = keyByUserId.get(payerUid);
+    if (payerUid) {
+      if (keyByUserId.has(payerUid)) {
+        targetKey = keyByUserId.get(payerUid);
+      } else {
+        // Departed payer with distinct userId: NEVER merge by display name into an active member
+        targetKey = `uid:${payerUid}`;
+        const departedLabel = `${payerName} (đã rời đoàn)`;
+        displayNameByKey.set(targetKey, departedLabel);
+        paidByKey.set(targetKey, 0);
+        keyByUserId.set(payerUid, targetKey);
+        departedKeySet.add(targetKey);
+      }
     } else {
       const candidates = keysByBaseName.get(baseKey);
       if (candidates && candidates.length > 0) {
         targetKey = candidates[0];
       } else {
-        targetKey = payerUid ? `uid:${payerUid}` : `payer:${baseKey}`;
+        targetKey = `payer:${baseKey}`;
         displayNameByKey.set(targetKey, payerName);
         paidByKey.set(targetKey, 0);
-        if (payerUid) keyByUserId.set(payerUid, targetKey);
+        activeKeySet.add(targetKey);
         keysByBaseName.set(baseKey, [targetKey]);
       }
     }
@@ -655,9 +812,19 @@ function computeGreedyDebtSettlement(
     }
   }
 
-  const targetCount = Math.max(1, Math.round(Number(memberCount) || 1), displayNameByKey.size);
-  let slotIndex = displayNameByKey.size + 1;
-  while (displayNameByKey.size < targetCount) {
+  const hasPopulatedActiveRoster =
+    Array.isArray(tripDetail?.currentMembers) && tripDetail.currentMembers.length > 0;
+  const fallbackSplitTarget =
+    !hasPopulatedActiveRoster && maxSavedSplitCount > 1 ? maxSavedSplitCount : 1;
+  const activeTargetCount = Math.max(
+    1,
+    Math.round(Number(memberCount) || 1),
+    activeKeySet.size,
+    fallbackSplitTarget
+  );
+
+  let slotIndex = activeKeySet.size + 1;
+  while (activeKeySet.size < activeTargetCount) {
     const placeholder = `Thành viên #${slotIndex}`;
     const baseKey = placeholder.toLowerCase();
     const key = `slot:${slotIndex}`;
@@ -665,46 +832,53 @@ function computeGreedyDebtSettlement(
     if (!keysByBaseName.has(baseKey)) {
       displayNameByKey.set(key, placeholder);
       paidByKey.set(key, 0);
+      activeKeySet.add(key);
       keysByBaseName.set(baseKey, [key]);
       estimatedKeys.add(key);
     }
   }
 
-  const participantCount = Math.max(1, displayNameByKey.size);
-  const exactShare = totalVnd / participantCount;
-  const perPersonAverageVnd = Math.round(exactShare);
+  const shareParticipants =
+    activeKeySet.size > 0 ? Array.from(activeKeySet) : Array.from(displayNameByKey.keys());
+  const participantCount = Math.max(1, shareParticipants.length);
+  const perPersonAverageVnd = Math.round(totalVnd / participantCount);
 
-  const rawBalances: Array<MemberSettlementBalance & { rawNet: number }> = Array.from(
-    displayNameByKey.entries()
-  ).map(([key, name]) => {
-    const paidVnd = paidByKey.get(key) || 0;
-    const rawNet = paidVnd - exactShare;
-    const roundedNet = Math.abs(rawNet) < SETTLEMENT_DUST_VND ? 0 : Math.round(rawNet);
-    return {
-      id: key,
-      name,
-      paidVnd,
-      balanceVnd: roundedNet,
-      isEstimatedSlot: estimatedKeys.has(key),
-      rawNet,
-    };
+  // Largest-remainder exact integer VND allocation across active cost-sharing participants
+  const baseShareVnd = Math.floor(totalVnd / participantCount);
+  const remainderVnd = totalVnd - baseShareVnd * participantCount;
+  const sortedShareKeys = [...shareParticipants].sort((a, b) => {
+    const paidDiff = (paidByKey.get(a) || 0) - (paidByKey.get(b) || 0);
+    if (paidDiff !== 0) return paidDiff;
+    return a.localeCompare(b);
+  });
+  const owedByKey = new Map<string, number>();
+  sortedShareKeys.forEach((key, idx) => {
+    owedByKey.set(key, baseShareVnd + (idx < remainderVnd ? 1 : 0));
   });
 
-  rawBalances.sort((a, b) => {
+  const balances: MemberSettlementBalance[] = Array.from(displayNameByKey.entries()).map(
+    ([key, name]) => {
+      const paidVnd = paidByKey.get(key) || 0;
+      const isDeparted = departedKeySet.has(key);
+      const owedVnd = isDeparted ? 0 : owedByKey.get(key) || 0;
+      return {
+        id: key,
+        name,
+        paidVnd,
+        balanceVnd: paidVnd - owedVnd,
+        isEstimatedSlot: estimatedKeys.has(key),
+        isDeparted,
+      };
+    }
+  );
+
+  balances.sort((a, b) => {
     if (b.balanceVnd !== a.balanceVnd) return b.balanceVnd - a.balanceVnd;
     if (b.paidVnd !== a.paidVnd) return b.paidVnd - a.paidVnd;
     return a.name.localeCompare(b.name, 'vi');
   });
 
-  const balances: MemberSettlementBalance[] = rawBalances.map(({ id, name, paidVnd, balanceVnd, isEstimatedSlot }) => ({
-    id,
-    name,
-    paidVnd,
-    balanceVnd,
-    isEstimatedSlot,
-  }));
-
-  if (totalVnd <= 0 || participantCount <= 1) {
+  if (totalVnd <= 0 || balances.length <= 1) {
     return {
       totalVnd,
       participantCount,
@@ -715,40 +889,38 @@ function computeGreedyDebtSettlement(
     };
   }
 
-  const debtors = rawBalances
-    .filter((m) => m.rawNet <= -SETTLEMENT_DUST_VND)
-    .map((m) => ({ id: m.id, name: m.name, remaining: -m.rawNet }));
-  const creditors = rawBalances
-    .filter((m) => m.rawNet >= SETTLEMENT_DUST_VND)
-    .map((m) => ({ id: m.id, name: m.name, remaining: m.rawNet }));
+  const debtors = balances
+    .filter((m) => m.balanceVnd <= -SETTLEMENT_DUST_VND)
+    .map((m) => ({ id: m.id, name: m.name, remaining: -m.balanceVnd }));
+  const creditors = balances
+    .filter((m) => m.balanceVnd >= SETTLEMENT_DUST_VND)
+    .map((m) => ({ id: m.id, name: m.name, remaining: m.balanceVnd }));
 
   const transfers: DebtTransfer[] = [];
 
-  // Pass 1: Exact-pair matching (reduces transfer count on partitioned subgroups)
+  // Pass 1: Exact integer pair matching (reduces transfer count on partitioned subgroups)
   for (const debtor of debtors) {
     if (debtor.remaining < SETTLEMENT_DUST_VND) continue;
     const exactCreditor = creditors.find(
-      (c) => c.remaining >= SETTLEMENT_DUST_VND && Math.abs(c.remaining - debtor.remaining) < SETTLEMENT_DUST_VND
+      (c) => c.remaining >= SETTLEMENT_DUST_VND && c.remaining === debtor.remaining
     );
     if (exactCreditor) {
-      const amount = Math.round((debtor.remaining + exactCreditor.remaining) / 2);
-      if (amount >= SETTLEMENT_DUST_VND) {
-        transfers.push({
-          fromId: debtor.id,
-          from: debtor.name,
-          toId: exactCreditor.id,
-          to: exactCreditor.name,
-          amountVnd: amount,
-          key: `${debtor.id}->${exactCreditor.id}:${amount}`,
-        });
-      }
+      const amount = debtor.remaining;
+      transfers.push({
+        fromId: debtor.id,
+        from: debtor.name,
+        toId: exactCreditor.id,
+        to: exactCreditor.name,
+        amountVnd: amount,
+        key: `${debtor.id}->${exactCreditor.id}:${amount}`,
+      });
       debtor.remaining = 0;
       exactCreditor.remaining = 0;
     }
   }
 
-  // Pass 2: Greedy largest-debtor to largest-creditor matching
-  const maxSteps = (participantCount + 2) * 4;
+  // Pass 2: Greedy exact-integer largest-debtor to largest-creditor matching
+  const maxSteps = (balances.length + 2) * 4;
   for (let step = 0; step < maxSteps; step += 1) {
     const activeDebtors = debtors
       .filter((d) => d.remaining >= SETTLEMENT_DUST_VND)
@@ -762,16 +934,15 @@ function computeGreedyDebtSettlement(
     const topDebtor = activeDebtors[0];
     const topCreditor = activeCreditors[0];
     const settleAmount = Math.min(topDebtor.remaining, topCreditor.remaining);
-    const roundedAmount = Math.round(settleAmount);
 
-    if (roundedAmount >= SETTLEMENT_DUST_VND) {
+    if (settleAmount >= SETTLEMENT_DUST_VND) {
       transfers.push({
         fromId: topDebtor.id,
         from: topDebtor.name,
         toId: topCreditor.id,
         to: topCreditor.name,
-        amountVnd: roundedAmount,
-        key: `${topDebtor.id}->${topCreditor.id}:${roundedAmount}`,
+        amountVnd: settleAmount,
+        key: `${topDebtor.id}->${topCreditor.id}:${settleAmount}`,
       });
     }
 
@@ -797,30 +968,30 @@ function buildZaloSettlementReport(
 ): string {
   const settledSet = new Set(settledTransfers);
   const lines: string[] = [
-    '[QUYẾT TOÁN CHI PHÍ ĐOÀN - LOST]',
+    '[CHIA TIỀN CHUYẾN ĐI - LOST]',
     `Chuyến đi: ${tripTitle}`,
     `Tổng chi phí: ${settlement.totalVnd.toLocaleString('vi-VN')} đ (${settlement.participantCount} thành viên)`,
-    `Bình quân / người: ${settlement.perPersonAverageVnd.toLocaleString('vi-VN')} đ`,
+    `Chia đều mỗi người: ${settlement.perPersonAverageVnd.toLocaleString('vi-VN')} đ`,
   ];
 
   if (expenses.length > 0) {
-    lines.push('', '--- CHI TIẾT KHOẢN CHI ---');
+    lines.push('', '--- CÁC KHOẢN ĐÃ CHI ---');
     expenses.forEach((exp, idx) => {
       lines.push(
-        `${idx + 1}. ${exp.title}: ${Math.round(Number(exp.amountVnd) || 0).toLocaleString('vi-VN')} đ (Ứng bởi: ${exp.paidByName || 'Thành viên'})`
+        `${idx + 1}. ${exp.title}: ${Math.round(Number(exp.amountVnd) || 0).toLocaleString('vi-VN')} đ (Đã ứng: ${exp.paidByName || 'Thành viên'})`
       );
     });
   }
 
   if (settlement.balances.length > 0) {
-    lines.push('', '--- ĐỐI SOÁT THÀNH VIÊN ---');
+    lines.push('', '--- TỔNG KẾT TỪNG NGƯỜI ---');
     settlement.balances.forEach((m) => {
       const statusText =
         m.balanceVnd >= SETTLEMENT_DUST_VND
           ? `Nhận lại +${m.balanceVnd.toLocaleString('vi-VN')} đ`
           : m.balanceVnd <= -SETTLEMENT_DUST_VND
-            ? `Cần bù ${Math.abs(m.balanceVnd).toLocaleString('vi-VN')} đ`
-            : 'Đã cân bằng';
+            ? `Chuyển thêm ${Math.abs(m.balanceVnd).toLocaleString('vi-VN')} đ`
+            : 'Vừa đủ';
       lines.push(`- ${m.name}: Đã ứng ${m.paidVnd.toLocaleString('vi-VN')} đ | ${statusText}`);
     });
   }
@@ -828,14 +999,14 @@ function buildZaloSettlementReport(
   lines.push(
     '',
     settlement.isSettled
-      ? '--- AI TRẢ AI ---'
-      : `--- AI TRẢ AI (TỐI ƯU ${settlement.transfers.length} GIAO DỊCH) ---`
+      ? '--- AI CHUYỂN AI ---'
+      : `--- AI CHUYỂN AI (GỌN ${settlement.transfers.length} LƯỢT CHUYỂN) ---`
   );
   if (settlement.isSettled) {
-    lines.push('Tất cả thành viên đã cân bằng chi phí — không cần chuyển khoản thêm.');
+    lines.push('Cả đoàn đã chia đều xong xuôi — không ai cần chuyển thêm.');
   } else {
     settlement.transfers.forEach((t, idx) => {
-      const tag = settledSet.has(t.key) ? ' [ĐÃ THANH TOÁN]' : '';
+      const tag = settledSet.has(t.key) ? ' [ĐÃ CHUYỂN]' : '';
       lines.push(`${idx + 1}. ${t.from} → ${t.to}: ${t.amountVnd.toLocaleString('vi-VN')} đ${tag}`);
     });
   }
@@ -848,18 +1019,21 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
   tripTitle,
   memberCount,
   currentUserId,
+  currentUser,
   isCreator: isCreatorProp = false,
   isMember: isMemberProp = true,
   isOpen,
   onClose,
   onOpenGroupChat,
   onTripUpdated,
+  onOpenAuthorProfile,
   onShowToast,
 }) => {
   const [activeTab, setActiveTab] = useState<'gear' | 'expenses' | 'requests'>('gear');
   const [tripDetail, setTripDetail] = useState<TripDetailPayload | null>(null);
   const [serverViewerRole, setServerViewerRole] = useState<{ tripId: string; role: 'creator' | 'member' | 'guest' } | null>(null);
   const [loadedRequestKey, setLoadedRequestKey] = useState<string>('');
+  const [loadErrorState, setLoadErrorState] = useState<{ key: string; message: string } | null>(null);
   const [reloadTick, setReloadTick] = useState<number>(0);
 
   const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -873,9 +1047,19 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
 
   const [isSafetyGateOpen, setIsSafetyGateOpen] = useState(false);
   const [savingSafetyStep, setSavingSafetyStep] = useState<string | null>(null);
+  const [pendingInProgressConfirm, setPendingInProgressConfirm] = useState(false);
   const [newGearWeightG, setNewGearWeightG] = useState('500');
   const [newGearCarrierId, setNewGearCarrierId] = useState('');
   const [isAddingGear, setIsAddingGear] = useState(false);
+
+  // Inline Gear Edit state
+  const [editingGearId, setEditingGearId] = useState<string | null>(null);
+  const [editGearName, setEditGearName] = useState('');
+  const [editGearWeightG, setEditGearWeightG] = useState('500');
+  const [editGearCategory, setEditGearCategory] = useState('Lán trại & Nấu ăn');
+  const [editGearCarrierId, setEditGearCarrierId] = useState('');
+  const [editGearPacked, setEditGearPacked] = useState(false);
+  const [isSavingGearEdit, setIsSavingGearEdit] = useState(false);
 
   // Creator management state (Edit Trip, Update Status, Delete Trip, Kick Member)
   const [isEditingTrip, setIsEditingTrip] = useState(false);
@@ -894,6 +1078,12 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
   const [isDeletingTrip, setIsDeletingTrip] = useState(false);
   const [confirmKickMemberId, setConfirmKickMemberId] = useState<string | null>(null);
   const [kickingMemberId, setKickingMemberId] = useState<string | null>(null);
+  const [inspectedAuthor, setInspectedAuthor] = useState<{
+    name: string;
+    avatar: string;
+    userId?: string;
+  } | null>(null);
+  const [failedAvatarKeys, setFailedAvatarKeys] = useState<string[]>([]);
 
   useEffect(() => {
     onShowToastRef.current = onShowToast;
@@ -912,10 +1102,14 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
   const [togglingSettlementKey, setTogglingSettlementKey] = useState<string | null>(null);
   const [processingApplicantId, setProcessingApplicantId] = useState<string | null>(null);
 
-  // Non-member join fallback state (when clicked from calendar)
+  // Non-member join / withdraw fallback state (when clicked from calendar)
   const [joinNote, setJoinNote] = useState('');
   const [isSubmittingJoin, setIsSubmittingJoin] = useState(false);
-  const [joinRequestedTripId, setJoinRequestedTripId] = useState<string | null>(null);
+  const [isWithdrawingJoin, setIsWithdrawingJoin] = useState(false);
+  const [joinRequestOverride, setJoinRequestOverride] = useState<{
+    tripId: string;
+    pending: boolean;
+  } | null>(null);
 
   // Add Gear state
   const [newGearName, setNewGearName] = useState('');
@@ -930,10 +1124,14 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
     setNewGearCarrierId('');
     setNewGearCategory('Lán trại & Nấu ăn');
     setIsSafetyGateOpen(false);
+    setPendingInProgressConfirm(false);
     setIsEditingTrip(false);
     setConfirmDeleteTrip(false);
     setConfirmKickMemberId(null);
+    setEditingGearId(null);
     setEditingExpenseId(null);
+    setJoinRequestOverride(null);
+    setFailedAvatarKeys([]);
   }
 
   // Add Expense state
@@ -948,9 +1146,13 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
 
   const currentRequestKey = isOpen ? `${tripId}:${reloadTick}` : '';
   const isLoading = isOpen && loadedRequestKey !== currentRequestKey;
+  const loadError = loadErrorState?.key === currentRequestKey ? loadErrorState.message : null;
   const activeTripDetail = tripDetail && tripDetail._id === tripId ? tripDetail : null;
   const activeViewerRole = serverViewerRole && serverViewerRole.tripId === tripId ? serverViewerRole.role : null;
-  const joinRequested = joinRequestedTripId === tripId || Boolean(activeTripDetail?.hasPendingRequest);
+  const joinRequested =
+    joinRequestOverride && joinRequestOverride.tripId === tripId
+      ? joinRequestOverride.pending
+      : Boolean(activeTripDetail?.hasPendingRequest);
   const displayTripTitle = activeTripDetail?.title || tripTitle;
 
   const sharedGear = useMemo(
@@ -961,7 +1163,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
     () => (Array.isArray(activeTripDetail?.expenses) ? activeTripDetail.expenses : []),
     [activeTripDetail]
   );
-  const settledTransfers = useMemo(
+  const rawSettledTransfers = useMemo(
     () => (Array.isArray(activeTripDetail?.settledTransfers) ? activeTripDetail.settledTransfers : []),
     [activeTripDetail]
   );
@@ -970,22 +1172,35 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
     [activeTripDetail]
   );
 
+  const isAnyGearMutating =
+    isAddingGear || isSavingGearEdit || Boolean(togglingGearId) || Boolean(deletingGearId);
+
   const isBusyMutation =
     isOpeningChat ||
-    isAddingGear ||
+    isAnyGearMutating ||
     isAddingExpense ||
     isSavingExpense ||
     isSavingTrip ||
     isUpdatingStatus ||
     isDeletingTrip ||
     isSubmittingJoin ||
+    isWithdrawingJoin ||
     Boolean(savingSafetyStep) ||
     Boolean(togglingSettlementKey) ||
     Boolean(kickingMemberId) ||
     Boolean(processingApplicantId) ||
-    Boolean(deletingGearId) ||
-    Boolean(deletingExpenseId) ||
-    Boolean(togglingGearId);
+    Boolean(deletingExpenseId);
+
+  const openMemberProfile = useCallback(
+    (author: { name: string; avatar: string; userId?: string }) => {
+      if (onOpenAuthorProfile) {
+        onOpenAuthorProfile(author);
+      } else {
+        setInspectedAuthor(author);
+      }
+    },
+    [onOpenAuthorProfile]
+  );
 
   // LIFO Focus Trap for Squad Workspace dialog
   useFocusTrap(isOpen, dialogRef);
@@ -1003,43 +1218,35 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
 
   useEffect(() => {
     if (!isOpen || !tripId) return;
-    const controller = new AbortController();
+    let cancelled = false;
     const requestKey = `${tripId}:${reloadTick}`;
+    const skipView = reloadTick > 0;
 
-    fetch(`/api/trips/${encodeURIComponent(tripId)}`, {
-      headers: getApiHeaders(),
-      signal: controller.signal,
-    })
-      .then(async (res) => {
-        const data = await res.json().catch(() => null);
-        if (!res.ok || !data?.success || !data.data) {
-          throw new Error(data?.message || 'Không thể tải dữ liệu không gian đoàn.');
-        }
-        return data;
-      })
-      .then((data) => {
-        if (controller.signal.aborted) return;
-        const doc: TripDetailPayload = data.data;
+    fetchTripDetailDeduped(tripId, skipView)
+      .then(({ doc, viewerRole }) => {
+        if (cancelled) return;
         setTripDetail(doc);
-        if (data.viewerRole === 'creator' || data.viewerRole === 'member' || data.viewerRole === 'guest') {
-          setServerViewerRole({ tripId, role: data.viewerRole });
+        setLoadErrorState(null);
+        if (viewerRole) {
+          setServerViewerRole({ tripId, role: viewerRole });
         }
       })
       .catch((err: unknown) => {
-        if (!controller.signal.aborted) {
-          onShowToastRef.current?.(
-            extractErrorMessage(err, 'Không thể tải dữ liệu không gian đoàn.'),
-            'error'
-          );
+        if (!cancelled) {
+          const msg = extractErrorMessage(err, 'Chưa tải được sổ đoàn, bạn thử mở lại nhé.');
+          setLoadErrorState({ key: requestKey, message: msg });
+          onShowToastRef.current?.(msg, 'error');
         }
       })
       .finally(() => {
-        if (!controller.signal.aborted) {
+        if (!cancelled) {
           setLoadedRequestKey(requestKey);
         }
       });
 
-    return () => controller.abort();
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, tripId, reloadTick]);
 
   // Cleanup clipboard feedback timers & delayed CSV blob URL revocations on unmount
@@ -1082,6 +1289,12 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
     () => computeGreedyDebtSettlement(expenses, activeTripDetail, liveMemberCount),
     [expenses, activeTripDetail, liveMemberCount]
   );
+
+  // Filter settledTransfers strictly against active computed transfers so stale keys never produce false badges
+  const settledTransfers = useMemo(() => {
+    const activeKeys = new Set(settlement.transfers.map((t) => t.key));
+    return rawSettledTransfers.filter((key) => activeKeys.has(key));
+  }, [rawSettledTransfers, settlement.transfers]);
 
   const squadRoster = useMemo(
     () => buildSquadRoster(activeTripDetail, liveMemberCount),
@@ -1181,14 +1394,40 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
     ? newGearCarrierId
     : '';
 
-  const safetyGateChecks = useMemo(() => {
+  const effectiveIsCreator = activeViewerRole ? activeViewerRole === 'creator' : isCreatorProp;
+  const effectiveIsMember = activeViewerRole ? activeViewerRole === 'creator' || activeViewerRole === 'member' : isMemberProp;
+
+  const safetyGateDetails = useMemo(() => {
     const saved = activeTripDetail?.safetyGate || {};
-    const record = {} as Record<SquadSafetyGateStepId, boolean>;
+    const auditMap = activeTripDetail?.safetyGateAudit || activeTripDetail?.safetyGateMeta || {};
+    const record = {} as Record<
+      SquadSafetyGateStepId,
+      { checked: boolean; checkedByName: string; checkedAt: string }
+    >;
     for (const stepId of SQUAD_SAFETY_GATE_IDS) {
-      record[stepId] = Boolean(saved[stepId]);
+      const rawVal = saved[stepId];
+      const metaVal = auditMap[stepId];
+      const objMeta =
+        rawVal && typeof rawVal === 'object' ? (rawVal as SafetyGateStepMeta) : metaVal || null;
+      const checked =
+        typeof rawVal === 'boolean' ? rawVal : Boolean(rawVal && typeof rawVal === 'object' ? rawVal.checked : false);
+      const checkedByObj =
+        objMeta?.checkedBy && typeof objMeta.checkedBy === 'object' ? objMeta.checkedBy : null;
+      const checkedByName =
+        (objMeta?.checkedByName || checkedByObj?.fullName || checkedByObj?.username || '').trim();
+      const checkedAt = objMeta?.checkedAt ? formatDateTimeViOptional(objMeta.checkedAt) : '';
+      record[stepId] = { checked, checkedByName, checkedAt };
     }
     return record;
   }, [activeTripDetail]);
+
+  const safetyGateChecks = useMemo(() => {
+    const record = {} as Record<SquadSafetyGateStepId, boolean>;
+    for (const stepId of SQUAD_SAFETY_GATE_IDS) {
+      record[stepId] = safetyGateDetails[stepId].checked;
+    }
+    return record;
+  }, [safetyGateDetails]);
 
   const safetyGateCompletedCount = useMemo(
     () => SQUAD_SAFETY_GATE_IDS.filter((stepId) => safetyGateChecks[stepId]).length,
@@ -1198,7 +1437,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
 
   const handleToggleSafetyGateStep = useCallback(
     async (stepId: SquadSafetyGateStepId) => {
-      if (!tripId || savingSafetyStep) return;
+      if (!effectiveIsCreator || !tripId || savingSafetyStep) return;
       const nextChecked = !safetyGateChecks[stepId];
       setSavingSafetyStep(stepId);
       try {
@@ -1210,22 +1449,29 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.success && data.data) {
           setTripDetail((prev) =>
-            prev && prev._id === tripId ? { ...prev, safetyGate: data.data } : prev
+            prev && prev._id === tripId
+              ? {
+                  ...prev,
+                  safetyGate: data.data,
+                  ...(data.audit ? { safetyGateAudit: data.audit } : {}),
+                  ...(data.meta ? { safetyGateMeta: data.meta } : {}),
+                }
+              : prev
           );
         } else {
-          onShowToastRef.current?.(data.message || 'Không thể lưu trạng thái Cổng Kiểm Tra An Toàn.', 'error');
+          onShowToastRef.current?.(data.message || 'Chưa lưu được mục kiểm tra an toàn, bạn thử lại nhé.', 'error');
         }
       } catch {
-        onShowToastRef.current?.('Lỗi kết nối máy chủ khi cập nhật an toàn đoàn.', 'error');
+        onShowToastRef.current?.('Mất kết nối nên chưa lưu được mục an toàn.', 'error');
       } finally {
         setSavingSafetyStep(null);
       }
     },
-    [tripId, safetyGateChecks, savingSafetyStep]
+    [effectiveIsCreator, tripId, safetyGateChecks, savingSafetyStep]
   );
 
   const handleResetSafetyGate = useCallback(async () => {
-    if (!tripId || savingSafetyStep) return;
+    if (!effectiveIsCreator || !tripId || savingSafetyStep) return;
     setSavingSafetyStep('reset');
     try {
       const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/safety-gate`, {
@@ -1236,18 +1482,25 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success && data.data) {
         setTripDetail((prev) =>
-          prev && prev._id === tripId ? { ...prev, safetyGate: data.data } : prev
+          prev && prev._id === tripId
+            ? {
+                ...prev,
+                safetyGate: data.data,
+                safetyGateAudit: data.audit || {},
+                safetyGateMeta: data.meta || {},
+              }
+            : prev
         );
-        onShowToastRef.current?.('Đã đặt lại 6 bước Cổng Kiểm Tra An Toàn trên đám mây.', 'info');
+        onShowToastRef.current?.('Đã bỏ chọn cả 6 bước an toàn để rà soát lại từ đầu.', 'info');
       } else {
-        onShowToastRef.current?.(data.message || 'Không thể đặt lại trạng thái an toàn.', 'error');
+        onShowToastRef.current?.(data.message || 'Chưa đặt lại được danh sách an toàn.', 'error');
       }
     } catch {
-      onShowToastRef.current?.('Lỗi kết nối máy chủ khi đặt lại trạng thái an toàn.', 'error');
+      onShowToastRef.current?.('Mất kết nối nên chưa đặt lại được danh sách an toàn.', 'error');
     } finally {
       setSavingSafetyStep(null);
     }
-  }, [tripId, savingSafetyStep]);
+  }, [effectiveIsCreator, tripId, savingSafetyStep]);
 
   const pickLightestCarrier = useCallback((): { id: string; name: string } => {
     if (gearLoadSummary.memberLoads.length === 0) return { id: '', name: '' };
@@ -1256,8 +1509,9 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
   }, [gearLoadSummary.memberLoads]);
 
   const handleAddPresetGearItem = async (preset: SharedGearPreset) => {
-    if (isAddingGear) return;
+    if (isAnyGearMutating) return;
     const carrier = pickLightestCarrier();
+    const rawCarrierUid = extractRawMemberId(carrier.id);
     setIsAddingGear(true);
     try {
       const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/gear`, {
@@ -1267,8 +1521,8 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
           itemName: preset.name,
           category: preset.category,
           weightG: preset.weightG,
-          assignedUserId: extractRawMemberId(carrier.id) || undefined,
-          assignedUserName: carrier.name || undefined,
+          ...(rawCarrierUid ? { assignedUserId: rawCarrierUid } : {}),
+          ...(carrier.name ? { assignedUserName: carrier.name } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -1277,15 +1531,15 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
         setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, sharedGear: nextGear } : prev));
         onShowToastRef.current?.(
           carrier.name
-            ? `Đã thêm "${preset.name}" (${preset.weightG.toLocaleString('vi-VN')} g) giao cho ${carrier.name}.`
-            : `Đã thêm "${preset.name}" (${preset.weightG.toLocaleString('vi-VN')} g) vào trang bị chung.`,
+            ? `Đã thêm "${preset.name}" (${preset.weightG.toLocaleString('vi-VN')} g) — nhờ ${carrier.name} mang giúp.`
+            : `Đã thêm "${preset.name}" (${preset.weightG.toLocaleString('vi-VN')} g) vào danh sách đồ chung.`,
           'success'
         );
       } else {
-        onShowToastRef.current?.(data.message || 'Không thể thêm trang bị chung.', 'error');
+        onShowToastRef.current?.(data.message || 'Chưa thêm được món đồ chung này.', 'error');
       }
     } catch {
-      onShowToastRef.current?.('Lỗi kết nối máy chủ khi thêm trang bị.', 'error');
+      onShowToastRef.current?.('Mất kết nối nên chưa thêm được đồ chung.', 'error');
     } finally {
       setIsAddingGear(false);
     }
@@ -1293,21 +1547,22 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
 
   const handleAddMatrixGearItem = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isAddingGear) return;
+    if (isAnyGearMutating) return;
     const cleanName = newGearName.trim();
     const weightNum = Math.round(Number(newGearWeightG));
     if (!cleanName) {
-      onShowToastRef.current?.('Vui lòng nhập tên trang bị chung.', 'error');
+      onShowToastRef.current?.('Bạn nhập tên món đồ chung trước nhé.', 'error');
       return;
     }
     if (!Number.isFinite(weightNum) || weightNum < 10 || weightNum > 50000) {
-      onShowToastRef.current?.('Nhập trọng lượng hợp lệ từ 10g đến 50.000g.', 'error');
+      onShowToastRef.current?.('Trọng lượng cần nằm trong khoảng 10g đến 50.000g nhé.', 'error');
       return;
     }
 
     const chosenMember = effectiveNewGearCarrierId
       ? squadRoster.find((m) => m.id === effectiveNewGearCarrierId) || null
       : null;
+    const rawChosenUid = chosenMember ? extractRawMemberId(chosenMember.id) : '';
 
     setIsAddingGear(true);
     try {
@@ -1318,8 +1573,8 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
           itemName: cleanName,
           category: newGearCategory,
           weightG: weightNum,
-          assignedUserId: chosenMember ? extractRawMemberId(chosenMember.id) || undefined : undefined,
-          assignedUserName: chosenMember ? chosenMember.name : undefined,
+          ...(rawChosenUid ? { assignedUserId: rawChosenUid } : {}),
+          ...(chosenMember ? { assignedUserName: chosenMember.name } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -1329,48 +1584,45 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
         setNewGearName('');
         setNewGearWeightG('500');
         onShowToastRef.current?.(
-          `Đã đồng bộ "${cleanName}" (${weightNum.toLocaleString('vi-VN')} g) lên đám mây!`,
+          `Đã lưu "${cleanName}" (${weightNum.toLocaleString('vi-VN')} g) cho cả đoàn.`,
           'success'
         );
       } else {
-        onShowToastRef.current?.(data.message || 'Không thể thêm vật dụng chung.', 'error');
+        onShowToastRef.current?.(data.message || 'Chưa thêm được món đồ này.', 'error');
       }
     } catch {
-      onShowToastRef.current?.('Lỗi kết nối máy chủ khi thêm vật dụng.', 'error');
+      onShowToastRef.current?.('Mất kết nối nên chưa lưu được món đồ này.', 'error');
     } finally {
       setIsAddingGear(false);
     }
   };
 
   const handleAssignMatrixGearCarrier = async (itemId: string, nextCarrierId: string) => {
-    if (togglingGearId === itemId) return;
+    if (isAnyGearMutating) return;
     const member = squadRoster.find((m) => m.id === nextCarrierId) || null;
     setTogglingGearId(itemId);
     try {
       const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/gear/${encodeURIComponent(itemId)}`, {
         method: 'PATCH',
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          assignedUserId: member ? extractRawMemberId(member.id) : '',
-          assignedUserName: member ? member.name : 'Chưa nhận',
-        }),
+        body: JSON.stringify(buildGearAssigneePayload(member)),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
         const nextGear = Array.isArray(data.data) ? data.data : [];
         setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, sharedGear: nextGear } : prev));
       } else {
-        onShowToastRef.current?.(data.message || 'Không thể phân công người mang.', 'error');
+        onShowToastRef.current?.(data.message || 'Chưa đổi được người mang món này.', 'error');
       }
     } catch {
-      onShowToastRef.current?.('Lỗi kết nối khi cập nhật phân công đồ chung.', 'error');
+      onShowToastRef.current?.('Mất kết nối nên chưa đổi được người mang.', 'error');
     } finally {
       setTogglingGearId(null);
     }
   };
 
   const handleToggleMatrixGearPacked = async (item: SquadGearMatrixItem) => {
-    if (togglingGearId === item.id) return;
+    if (isAnyGearMutating) return;
     setTogglingGearId(item.id);
     try {
       const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/gear/${encodeURIComponent(item.id)}`, {
@@ -1383,17 +1635,73 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
         const nextGear = Array.isArray(data.data) ? data.data : [];
         setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, sharedGear: nextGear } : prev));
       } else {
-        onShowToastRef.current?.(data.message || 'Không thể cập nhật trạng thái vật dụng.', 'error');
+        onShowToastRef.current?.(data.message || 'Chưa đánh dấu được món đồ này, bạn thử lại nhé.', 'error');
       }
     } catch {
-      onShowToastRef.current?.('Không thể cập nhật trạng thái vật dụng.', 'error');
+      onShowToastRef.current?.('Chưa đánh dấu được món đồ này, bạn thử lại nhé.', 'error');
     } finally {
       setTogglingGearId(null);
     }
   };
 
+  const handleStartEditGear = (item: SquadGearMatrixItem) => {
+    if (isAnyGearMutating) return;
+    setEditingGearId(item.id);
+    setEditGearName(item.name);
+    setEditGearWeightG(String(item.weightG));
+    setEditGearCategory(item.category || 'Dùng chung');
+    setEditGearCarrierId(item.carrierId || '');
+    setEditGearPacked(Boolean(item.packed));
+  };
+
+  const handleSaveEditGear = async (e: React.FormEvent, gearId: string) => {
+    e.preventDefault();
+    if (isAnyGearMutating) return;
+    const cleanName = editGearName.trim();
+    const parsedWeight = Math.round(Number(editGearWeightG));
+    if (!cleanName) {
+      onShowToastRef.current?.('Tên món đồ chung không được để trống.', 'error');
+      return;
+    }
+    if (!Number.isFinite(parsedWeight) || parsedWeight < 0 || parsedWeight > 100_000) {
+      onShowToastRef.current?.('Trọng lượng cần nằm trong khoảng 0g đến 100.000g.', 'error');
+      return;
+    }
+    const chosenMember = editGearCarrierId
+      ? squadRoster.find((m) => m.id === editGearCarrierId) || null
+      : null;
+
+    setIsSavingGearEdit(true);
+    try {
+      const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/gear/${encodeURIComponent(gearId)}`, {
+        method: 'PATCH',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          itemName: cleanName.slice(0, 140),
+          weightG: parsedWeight,
+          category: editGearCategory,
+          packed: editGearPacked,
+          ...buildGearAssigneePayload(chosenMember),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        const nextGear = Array.isArray(data.data) ? data.data : [];
+        setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, sharedGear: nextGear } : prev));
+        setEditingGearId(null);
+        onShowToastRef.current?.('Đã cập nhật món đồ chung.', 'success');
+      } else {
+        onShowToastRef.current?.(data.message || 'Chưa lưu được thay đổi cho món đồ này.', 'error');
+      }
+    } catch {
+      onShowToastRef.current?.('Mất kết nối nên chưa lưu được món đồ này.', 'error');
+    } finally {
+      setIsSavingGearEdit(false);
+    }
+  };
+
   const handleDeleteMatrixGearItem = async (gearId: string) => {
-    if (deletingGearId === gearId) return;
+    if (!effectiveIsCreator || isAnyGearMutating) return;
     setDeletingGearId(gearId);
     try {
       const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/gear/${encodeURIComponent(gearId)}`, {
@@ -1404,11 +1712,12 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       if (res.ok && data.success) {
         const nextGear = Array.isArray(data.data) ? data.data : [];
         setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, sharedGear: nextGear } : prev));
+        if (editingGearId === gearId) setEditingGearId(null);
       } else {
-        onShowToastRef.current?.(data.message || 'Không thể xóa vật dụng này.', 'error');
+        onShowToastRef.current?.(data.message || 'Chưa xóa được món đồ này.', 'error');
       }
     } catch {
-      onShowToastRef.current?.('Không thể xóa vật dụng.', 'error');
+      onShowToastRef.current?.('Chưa xóa được món đồ này.', 'error');
     } finally {
       setDeletingGearId(null);
     }
@@ -1416,7 +1725,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
 
   const handleCopyZaloGearAssignment = async () => {
     if (totalSquadGearCount === 0) {
-      onShowToastRef.current?.('Chưa có trang bị chung nào để sao chép phân công.', 'info');
+      onShowToastRef.current?.('Chưa có món đồ chung nào để sao chép.', 'info');
       return;
     }
     const reportText = buildZaloGearAssignmentReport(
@@ -1446,14 +1755,11 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       copiedGearTimerRef.current = window.setTimeout(() => {
         setCopiedGear(false);
       }, 2400);
-      onShowToastRef.current?.('Đã sao chép bảng phân công trang bị chung để chia sẻ nhóm!', 'success');
+      onShowToastRef.current?.('Đã sao chép bảng chia đồ — dán vào nhóm chat là xong!', 'success');
     } else {
-      onShowToastRef.current?.('Trình duyệt không cho phép sao chép tự động. Vui lòng thử lại.', 'error');
+      onShowToastRef.current?.('Trình duyệt chưa cho sao chép tự động, bạn thử lại nhé.', 'error');
     }
   };
-
-  const effectiveIsCreator = activeViewerRole ? activeViewerRole === 'creator' : isCreatorProp;
-  const effectiveIsMember = activeViewerRole ? activeViewerRole === 'creator' || activeViewerRole === 'member' : isMemberProp;
 
   const creatorUserId = useMemo(() => {
     if (!activeTripDetail?.creatorId) return '';
@@ -1465,11 +1771,11 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
   const handleOpenEditTrip = () => {
     if (!activeTripDetail) return;
     setEditTitle(activeTripDetail.title || tripTitle);
-    const sDate = activeTripDetail.startDate ? new Date(activeTripDetail.startDate) : null;
-    const eDate = activeTripDetail.endDate ? new Date(activeTripDetail.endDate) : null;
-    setEditStartDate(sDate && !Number.isNaN(sDate.getTime()) ? sDate.toISOString().split('T')[0] : '');
-    setEditEndDate(eDate && !Number.isNaN(eDate.getTime()) ? eDate.toISOString().split('T')[0] : '');
-    setEditMaxMembers(String(activeTripDetail.maxMembers || Math.max(2, liveMemberCount)));
+    setEditStartDate(toVietnamDateInputValue(activeTripDetail.startDate));
+    setEditEndDate(toVietnamDateInputValue(activeTripDetail.endDate));
+    setEditMaxMembers(
+      String(clampTripMaxMembers(activeTripDetail.maxMembers || Math.max(2, liveMemberCount), liveMemberCount))
+    );
     setEditDifficulty(String(activeTripDetail.difficultyLevel || 3));
     setEditEstimatedCost(activeTripDetail.estimatedCost || '');
     setEditMeetingPoint(activeTripDetail.meetingPoint || '');
@@ -1482,6 +1788,25 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
   const handleSaveTripEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSavingTrip || !editTitle.trim()) return;
+    if (editStartDate && editEndDate) {
+      if (editEndDate < editStartDate) {
+        onShowToast?.('Ngày kết thúc phải lớn hơn hoặc bằng ngày khởi hành.', 'error');
+        return;
+      }
+      const durationDays = Math.round(
+        (new Date(`${editEndDate}T00:00:00Z`).getTime() -
+          new Date(`${editStartDate}T00:00:00Z`).getTime()) /
+          (24 * 60 * 60 * 1000)
+      );
+      if (durationDays > 30) {
+        onShowToast?.('Thời lượng chuyến đi tối đa 30 ngày.', 'error');
+        return;
+      }
+    }
+
+    const clampedMaxMembers = clampTripMaxMembers(editMaxMembers, liveMemberCount);
+    setEditMaxMembers(String(clampedMaxMembers));
+
     setIsSavingTrip(true);
     try {
       const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}`, {
@@ -1491,7 +1816,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
           title: editTitle.trim(),
           startDate: editStartDate || undefined,
           endDate: editEndDate || undefined,
-          maxMembers: Math.max(liveMemberCount, Number(editMaxMembers) || liveMemberCount),
+          maxMembers: clampedMaxMembers,
           difficultyLevel: Number(editDifficulty) || 3,
           estimatedCost: editEstimatedCost.trim(),
           meetingPoint: editMeetingPoint.trim(),
@@ -1503,19 +1828,19 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       if (res.ok && data.success && data.data) {
         setTripDetail(data.data);
         setIsEditingTrip(false);
-        onShowToast?.(data.message || 'Đã cập nhật kế hoạch chuyến đi!', 'success');
+        onShowToast?.(data.message || 'Đã lưu lịch trình mới của đoàn!', 'success');
         onTripUpdated?.();
       } else {
-        onShowToast?.(data.message || 'Không thể cập nhật thông tin chuyến đi.', 'error');
+        onShowToast?.(data.message || 'Chưa lưu được thay đổi của chuyến đi.', 'error');
       }
     } catch {
-      onShowToast?.('Lỗi kết nối máy chủ khi cập nhật chuyến đi.', 'error');
+      onShowToast?.('Mất kết nối nên chưa lưu được thay đổi.', 'error');
     } finally {
       setIsSavingTrip(false);
     }
   };
 
-  const handleUpdateTripStatus = async (nextStatus: string) => {
+  const executeUpdateTripStatus = async (nextStatus: string) => {
     if (isUpdatingStatus || !nextStatus) return;
     setIsUpdatingStatus(true);
     try {
@@ -1526,17 +1851,32 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
+        setPendingInProgressConfirm(false);
         setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, status: nextStatus } : prev));
-        onShowToast?.(data.message || 'Đã cập nhật trạng thái chuyến đi!', 'success');
+        onShowToast?.(data.message || 'Đã đổi trạng thái chuyến đi!', 'success');
         onTripUpdated?.();
       } else {
-        onShowToast?.(data.message || 'Không thể cập nhật trạng thái chuyến đi.', 'error');
+        onShowToast?.(data.message || 'Chưa đổi được trạng thái chuyến đi.', 'error');
       }
     } catch {
-      onShowToast?.('Lỗi kết nối khi đổi trạng thái chuyến đi.', 'error');
+      onShowToast?.('Mất kết nối nên chưa đổi được trạng thái.', 'error');
     } finally {
       setIsUpdatingStatus(false);
     }
+  };
+
+  const handleRequestUpdateTripStatus = (nextStatus: string) => {
+    if (isUpdatingStatus || !nextStatus) return;
+    if (
+      nextStatus === 'in_progress' &&
+      activeTripDetail?.status !== 'in_progress' &&
+      !isSafetyGateReady
+    ) {
+      setPendingInProgressConfirm(true);
+      return;
+    }
+    setPendingInProgressConfirm(false);
+    void executeUpdateTripStatus(nextStatus);
   };
 
   const handleDeleteTrip = async () => {
@@ -1549,14 +1889,14 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
-        onShowToast?.(data.message || 'Đã xóa chuyến ghép đoàn.', 'success');
+        onShowToast?.(data.message || 'Đã xóa chuyến đi này.', 'success');
         onTripUpdated?.();
         onClose();
       } else {
-        onShowToast?.(data.message || 'Không thể xóa chuyến đi này.', 'error');
+        onShowToast?.(data.message || 'Chưa xóa được chuyến đi này.', 'error');
       }
     } catch {
-      onShowToast?.('Lỗi kết nối máy chủ khi xóa chuyến đi.', 'error');
+      onShowToast?.('Mất kết nối nên chưa xóa được chuyến đi.', 'error');
     } finally {
       setIsDeletingTrip(false);
       setConfirmDeleteTrip(false);
@@ -1578,13 +1918,47 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       if (res.ok && data.success) {
         setConfirmKickMemberId(null);
         onShowToast?.(data.message || 'Đã xóa thành viên khỏi đoàn.', 'info');
-        reloadWorkspace();
+        if (data.data && Array.isArray(data.data.currentMembers)) {
+          // Apply returned member list & status directly without re-fetching GET /api/trips/:id (avoids viewsCount inflation)
+          setTripDetail((prev) => {
+            if (!prev || prev._id !== tripId) return prev;
+            const nextMembers = data.data.currentMembers;
+            const nextStatus = data.data.status || prev.status;
+            const nextGear = Array.isArray(prev.sharedGear)
+              ? prev.sharedGear.map((g) =>
+                  g.assignedUserId && String(g.assignedUserId) === memberRawId
+                    ? { ...g, assignedUserId: undefined, assignedUserName: 'Chưa nhận' }
+                    : g
+                )
+              : prev.sharedGear;
+            const nextDoc: TripDetailPayload = {
+              ...prev,
+              currentMembers: nextMembers,
+              status: nextStatus,
+              sharedGear: nextGear,
+            };
+            const recomputed = computeGreedyDebtSettlement(
+              Array.isArray(nextDoc.expenses) ? nextDoc.expenses : [],
+              nextDoc,
+              Math.max(1, nextMembers.length)
+            );
+            const activeTransferKeys = new Set(recomputed.transfers.map((t) => t.key));
+            return {
+              ...nextDoc,
+              settledTransfers: Array.isArray(prev.settledTransfers)
+                ? prev.settledTransfers.filter((k) => activeTransferKeys.has(k))
+                : [],
+            };
+          });
+        } else {
+          reloadWorkspace();
+        }
         onTripUpdated?.();
       } else {
-        onShowToast?.(data.message || 'Không thể xóa thành viên này.', 'error');
+        onShowToast?.(data.message || 'Chưa xóa được thành viên này.', 'error');
       }
     } catch {
-      onShowToast?.('Lỗi kết nối máy chủ khi cập nhật thành viên.', 'error');
+      onShowToast?.('Mất kết nối nên chưa cập nhật được danh sách đoàn.', 'error');
     } finally {
       setKickingMemberId(null);
     }
@@ -1612,9 +1986,9 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       copiedTimerRef.current = window.setTimeout(() => {
         setCopiedSettlement(false);
       }, 2400);
-      onShowToastRef.current?.('Đã sao chép bảng quyết toán chi phí để chia sẻ nhóm!', 'success');
+      onShowToastRef.current?.('Đã sao chép bảng chia tiền — dán vào nhóm chat là xong!', 'success');
     } else {
-      onShowToastRef.current?.('Trình duyệt không cho phép sao chép tự động. Vui lòng thử lại.', 'error');
+      onShowToastRef.current?.('Trình duyệt chưa cho sao chép tự động, bạn thử lại nhé.', 'error');
     }
   };
 
@@ -1622,7 +1996,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
     if (isLoading) return;
     if (!activeTripDetail) {
       onShowToastRef.current?.(
-        'Chưa tải xong dữ liệu đoàn từ máy chủ để xuất bảng khai báo Kiểm lâm.',
+        'Chưa tải xong danh sách đoàn để xuất bản khai báo Kiểm lâm.',
         'error'
       );
       return;
@@ -1665,7 +2039,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       csvRevokeEntriesRef.current.push(entry);
       scheduledRevoke = true;
 
-      onShowToastRef.current?.(`Đã xuất bảng khai báo Kiểm lâm (${filename})!`, 'success');
+      onShowToastRef.current?.(`Đã tải xuống bản khai báo Kiểm lâm (${filename}).`, 'success');
     } catch {
       if (anchor && anchor.parentNode) {
         anchor.parentNode.removeChild(anchor);
@@ -1673,7 +2047,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       if (createdUrl && !scheduledRevoke) {
         URL.revokeObjectURL(createdUrl);
       }
-      onShowToastRef.current?.('Không thể xuất file CSV khai báo Kiểm lâm lúc này.', 'error');
+      onShowToastRef.current?.('Chưa xuất được tệp khai báo Kiểm lâm, bạn thử lại nhé.', 'error');
     }
   };
 
@@ -1687,9 +2061,9 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
-        throw new Error(data.message || 'Không thể mở phòng chat đoàn.');
+        throw new Error(data.message || 'Chưa mở được nhóm chat đoàn.');
       }
-      onShowToast?.('Đã mở phòng chat nhóm đoàn!', 'success');
+      onShowToast?.('Đang vào nhóm chat đoàn!', 'success');
       const convId = data.data?.conversationId;
       if (convId) {
         localStorage.setItem('lost_target_group_conv', convId);
@@ -1709,12 +2083,36 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
     }
   };
 
+  const applyUpdatedExpenses = useCallback(
+    (nextExpenses: ExpenseItem[], serverSettled?: unknown) => {
+      setTripDetail((prev) => {
+        if (!prev || prev._id !== tripId) return prev;
+        const nextDoc: TripDetailPayload = { ...prev, expenses: nextExpenses };
+        if (Array.isArray(serverSettled)) {
+          return { ...nextDoc, settledTransfers: serverSettled as string[] };
+        }
+        const recomputed = computeGreedyDebtSettlement(nextExpenses, nextDoc, liveMemberCount);
+        const activeKeys = new Set(recomputed.transfers.map((t) => t.key));
+        const prunedSettled = Array.isArray(prev.settledTransfers)
+          ? prev.settledTransfers.filter((k) => activeKeys.has(k))
+          : [];
+        return { ...nextDoc, settledTransfers: prunedSettled };
+      });
+    },
+    [tripId, liveMemberCount]
+  );
+
   const handleAddExpense = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isAddingExpense) return;
-    const amount = Number(newExpAmount);
-    if (!newExpTitle.trim() || !Number.isFinite(amount) || amount < 1000) {
-      onShowToast?.('Nhập tên khoản chi và số tiền từ 1.000đ trở lên.', 'error');
+    const amount = Math.round(Number(newExpAmount));
+    if (
+      !newExpTitle.trim() ||
+      !Number.isFinite(amount) ||
+      amount < MIN_EXPENSE_VND ||
+      amount > MAX_EXPENSE_VND
+    ) {
+      onShowToast?.('Nhập tên khoản chi và số tiền nguyên từ 1.000đ đến 500.000.000đ.', 'error');
       return;
     }
     setIsAddingExpense(true);
@@ -1732,12 +2130,12 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.message);
       const nextExpenses = Array.isArray(data.data) ? data.data : [];
-      setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, expenses: nextExpenses } : prev));
+      applyUpdatedExpenses(nextExpenses, data.settledTransfers);
       setNewExpTitle('');
       setNewExpAmount('');
-      onShowToast?.('Đã ghi nhận khoản chi đoàn!', 'success');
+      onShowToast?.('Đã ghi khoản chi mới cho đoàn.', 'success');
     } catch (err: unknown) {
-      onShowToast?.(extractErrorMessage(err, 'Không thể thêm khoản chi.'), 'error');
+      onShowToast?.(extractErrorMessage(err, 'Chưa ghi được khoản chi này.'), 'error');
     } finally {
       setIsAddingExpense(false);
     }
@@ -1746,16 +2144,21 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
   const handleStartEditExpense = (exp: ExpenseItem) => {
     setEditingExpenseId(exp.id);
     setEditExpTitle(exp.title);
-    setEditExpAmount(String(exp.amountVnd));
+    setEditExpAmount(String(Math.round(Number(exp.amountVnd) || 0)));
     setEditExpPayerId(exp.paidByUserId ? String(exp.paidByUserId) : '');
   };
 
   const handleSaveEditExpense = async (e: React.FormEvent, expenseId: string) => {
     e.preventDefault();
     if (isSavingExpense) return;
-    const amount = Number(editExpAmount);
-    if (!editExpTitle.trim() || !Number.isFinite(amount) || amount < 1000) {
-      onShowToast?.('Tên khoản chi và số tiền (từ 1.000đ) không hợp lệ.', 'error');
+    const amount = Math.round(Number(editExpAmount));
+    if (
+      !editExpTitle.trim() ||
+      !Number.isFinite(amount) ||
+      amount < MIN_EXPENSE_VND ||
+      amount > MAX_EXPENSE_VND
+    ) {
+      onShowToast?.('Bạn nhập lại tên khoản chi và số tiền nguyên từ 1.000đ đến 500.000.000đ nhé.', 'error');
       return;
     }
     setIsSavingExpense(true);
@@ -1768,6 +2171,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
           body: JSON.stringify({
             title: editExpTitle.trim(),
             amountVnd: amount,
+            splitCount: Math.max(1, liveMemberCount),
             paidByUserId: effectiveIsCreator && editExpPayerId ? editExpPayerId : undefined,
           }),
         }
@@ -1775,14 +2179,14 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
         const nextExpenses = Array.isArray(data.data) ? data.data : [];
-        setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, expenses: nextExpenses } : prev));
+        applyUpdatedExpenses(nextExpenses, data.settledTransfers);
         setEditingExpenseId(null);
-        onShowToast?.(data.message || 'Đã cập nhật khoản chi!', 'success');
+        onShowToast?.(data.message || 'Đã sửa khoản chi.', 'success');
       } else {
-        onShowToast?.(data.message || 'Không thể sửa khoản chi này.', 'error');
+        onShowToast?.(data.message || 'Chưa lưu được thay đổi khoản chi.', 'error');
       }
     } catch {
-      onShowToast?.('Lỗi kết nối máy chủ khi sửa khoản chi.', 'error');
+      onShowToast?.('Mất kết nối nên chưa sửa được khoản chi.', 'error');
     } finally {
       setIsSavingExpense(false);
     }
@@ -1802,14 +2206,14 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
         const nextSettled = Array.isArray(data.data) ? data.data : [];
         setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, settledTransfers: nextSettled } : prev));
         onShowToast?.(
-          data.settled ? 'Đã đánh dấu giao dịch hoàn tất!' : 'Đã bỏ đánh dấu thanh toán.',
+          data.settled ? 'Đã đánh dấu chuyển xong!' : 'Đã bỏ đánh dấu chuyển tiền.',
           data.settled ? 'success' : 'info'
         );
       } else {
-        onShowToast?.(data.message || 'Không thể cập nhật trạng thái quyết toán.', 'error');
+        onShowToast?.(data.message || 'Chưa lưu được trạng thái chuyển tiền.', 'error');
       }
     } catch {
-      onShowToast?.('Lỗi kết nối khi cập nhật quyết toán.', 'error');
+      onShowToast?.('Mất kết nối nên chưa lưu được trạng thái chuyển tiền.', 'error');
     } finally {
       setTogglingSettlementKey(null);
     }
@@ -1826,19 +2230,43 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       const data = await res.json();
       if (res.ok && data.success) {
         const nextExpenses = Array.isArray(data.data) ? data.data : [];
-        setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, expenses: nextExpenses } : prev));
+        applyUpdatedExpenses(nextExpenses, data.settledTransfers);
       } else {
-        onShowToast?.(data.message || 'Không thể xóa khoản chi.', 'error');
+        onShowToast?.(data.message || 'Chưa xóa được khoản chi này.', 'error');
       }
     } catch {
-      onShowToast?.('Không thể xóa khoản chi.', 'error');
+      onShowToast?.('Chưa xóa được khoản chi này.', 'error');
     } finally {
       setDeletingExpenseId(null);
     }
   };
 
+  const maxMembers = Math.max(1, Number(activeTripDetail?.maxMembers) || liveMemberCount);
+  const remainingSeats = Math.max(0, maxMembers - liveMemberCount);
+  const tripStatus = activeTripDetail?.status || 'recruiting';
+  const isRecruiting = tripStatus === 'recruiting';
+  const isFull = tripStatus === 'full' || remainingSeats === 0;
+  const isClosedForJoin = !isRecruiting || isFull;
+  const closedJoinLabel =
+    tripStatus === 'in_progress'
+      ? 'Đoàn đang trên cung'
+      : tripStatus === 'completed'
+        ? 'Chuyến đi đã kết thúc'
+        : tripStatus === 'cancelled'
+          ? 'Chuyến đi đã hủy'
+          : 'Đã đủ người';
+
   const handleReviewApplicant = async (applicantUserId: string, decision: 'approve' | 'reject') => {
     if (processingApplicantId || !applicantUserId) return;
+    if (decision === 'approve' && (!isRecruiting || isFull)) {
+      onShowToast?.(
+        !isRecruiting
+          ? 'Chỉ có thể duyệt thành viên khi chuyến đi đang mở ghép đoàn.'
+          : 'Đoàn đã đủ số lượng thành viên tối đa.',
+        'info'
+      );
+      return;
+    }
     setProcessingApplicantId(applicantUserId);
     try {
       const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/${decision}`, {
@@ -1849,17 +2277,62 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.success) {
         throw new Error(
-          data.message || (decision === 'approve' ? 'Không thể duyệt thành viên.' : 'Không thể từ chối yêu cầu.')
+          data.message || (decision === 'approve' ? 'Chưa duyệt được bạn này vào đoàn.' : 'Chưa từ chối được yêu cầu.')
         );
       }
       onShowToast?.(
-        data.message || (decision === 'approve' ? 'Đã duyệt thành viên vào đoàn!' : 'Đã từ chối yêu cầu tham gia.'),
+        data.message || (decision === 'approve' ? 'Đã nhận thêm bạn vào đoàn!' : 'Đã từ chối lời xin ghép đoàn.'),
         decision === 'approve' ? 'success' : 'info'
       );
-      reloadWorkspace();
+      // Update local state directly from the existing pending applicant record to avoid inflating viewsCount via GET
+      setTripDetail((prev) => {
+        if (!prev || prev._id !== tripId) return prev;
+        const prevPending = Array.isArray(prev.pendingRequests) ? prev.pendingRequests : [];
+        const matchedReq = prevPending.find((r) => {
+          const id = typeof r.userId === 'object' && r.userId ? String(r.userId._id) : String(r.userId);
+          return id === applicantUserId;
+        });
+        const nextPending = prevPending.filter((r) => {
+          const id = typeof r.userId === 'object' && r.userId ? String(r.userId._id) : String(r.userId);
+          return id !== applicantUserId;
+        });
+        if (decision === 'reject') {
+          return { ...prev, pendingRequests: nextPending };
+        }
+        const prevMembers = Array.isArray(prev.currentMembers) ? prev.currentMembers : [];
+        const alreadyMember = prevMembers.some(
+          (m) => String(typeof m === 'object' && m ? m._id : m) === applicantUserId
+        );
+        const applicantMemberObj =
+          matchedReq && typeof matchedReq.userId === 'object' && matchedReq.userId
+            ? matchedReq.userId
+            : { _id: applicantUserId, fullName: 'Thành viên mới' };
+        const nextMembers = alreadyMember ? prevMembers : [...prevMembers, applicantMemberObj];
+        const nextMax = Math.max(1, Number(prev.maxMembers) || nextMembers.length);
+        const nextStatus =
+          prev.status === 'recruiting' && nextMembers.length >= nextMax ? 'full' : prev.status;
+        const nextDoc: TripDetailPayload = {
+          ...prev,
+          pendingRequests: nextPending,
+          currentMembers: nextMembers,
+          status: nextStatus,
+        };
+        const recomputed = computeGreedyDebtSettlement(
+          Array.isArray(nextDoc.expenses) ? nextDoc.expenses : [],
+          nextDoc,
+          Math.max(1, nextMembers.length)
+        );
+        const activeKeys = new Set(recomputed.transfers.map((t) => t.key));
+        return {
+          ...nextDoc,
+          settledTransfers: Array.isArray(prev.settledTransfers)
+            ? prev.settledTransfers.filter((k) => activeKeys.has(k))
+            : [],
+        };
+      });
       onTripUpdated?.();
     } catch (err: unknown) {
-      onShowToast?.(extractErrorMessage(err, 'Thao tác duyệt thành viên thất bại.'), 'error');
+      onShowToast?.(extractErrorMessage(err, 'Chưa xử lý được yêu cầu này, bạn thử lại nhé.'), 'error');
     } finally {
       setProcessingApplicantId(null);
     }
@@ -1867,10 +2340,10 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
 
   const handleRequestJoinFromModal = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isSubmittingJoin) return;
-    const token = localStorage.getItem('lost_token');
+    if (isSubmittingJoin || isClosedForJoin) return;
+    const token = safeLocalStorageGet('lost_token');
     if (!token) {
-      onShowToast?.('Vui lòng đăng nhập để gửi yêu cầu ghép đoàn.', 'info');
+      onShowToast?.('Đăng nhập để xin đi cùng đoàn nhé.', 'info');
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
       return;
     }
@@ -1883,25 +2356,46 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
-        setJoinRequestedTripId(tripId);
+        setJoinRequestOverride({ tripId, pending: true });
+        setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, hasPendingRequest: true } : prev));
         setJoinNote('');
-        onShowToast?.(data.message || 'Đã gửi yêu cầu tham gia tới trưởng đoàn!', 'success');
+        onShowToast?.(data.message || 'Đã gửi lời xin đi cùng — chờ trưởng đoàn phản hồi nhé!', 'success');
         onTripUpdated?.();
       } else {
-        onShowToast?.(data.message || 'Không thể gửi yêu cầu tham gia.', 'error');
+        onShowToast?.(data.message || 'Chưa gửi được lời xin ghép đoàn.', 'error');
       }
     } catch {
-      onShowToast?.('Lỗi kết nối máy chủ.', 'error');
+      onShowToast?.('Mất kết nối rồi, bạn kiểm tra lại mạng nhé.', 'error');
     } finally {
       setIsSubmittingJoin(false);
     }
   };
 
-  if (!isOpen) return null;
+  const handleWithdrawRequestFromModal = async () => {
+    if (isWithdrawingJoin) return;
+    setIsWithdrawingJoin(true);
+    try {
+      const res = await fetch(`/api/trips/${encodeURIComponent(tripId)}/leave`, {
+        method: 'POST',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setJoinRequestOverride({ tripId, pending: false });
+        setTripDetail((prev) => (prev && prev._id === tripId ? { ...prev, hasPendingRequest: false } : prev));
+        onShowToast?.(data.message || 'Đã rút lời xin đi cùng đoàn.', 'info');
+        onTripUpdated?.();
+      } else {
+        onShowToast?.(data.message || 'Chưa rút được yêu cầu, bạn thử lại sau nhé.', 'error');
+      }
+    } catch {
+      onShowToast?.('Mất kết nối nên chưa rút được yêu cầu.', 'error');
+    } finally {
+      setIsWithdrawingJoin(false);
+    }
+  };
 
-  const maxMembers = Math.max(1, Number(activeTripDetail?.maxMembers) || liveMemberCount);
-  const remainingSeats = Math.max(0, maxMembers - liveMemberCount);
-  const isFull = activeTripDetail?.status === 'full' || remainingSeats === 0;
+  if (!isOpen) return null;
 
   return createPortal(
     <div
@@ -1926,7 +2420,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
         className="modal-content"
         role="dialog"
         aria-modal="true"
-        aria-label={`Không gian đoàn ${tripTitle}`}
+        aria-label={`Sổ đoàn ${tripTitle}`}
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         style={{
@@ -1957,14 +2451,14 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
         >
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: '0.68rem', letterSpacing: '0.1em', fontWeight: 700, color: 'var(--color-primary)', textTransform: 'uppercase' }}>
-              Không Gian Đoàn Thám Hiểm ({liveMemberCount} thành viên)
+              Nhóm đồng hành ({liveMemberCount} thành viên)
             </div>
             <h3 className="font-editorial" style={{ margin: '3px 0 0 0', fontSize: '1.3rem', fontWeight: 600, color: 'var(--color-text-main)' }}>
               {displayTripTitle}
             </h3>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            {effectiveIsMember && (
+            {(!isLoading || Boolean(activeTripDetail)) && effectiveIsMember && (
               <>
                 <button
                   type="button"
@@ -1973,8 +2467,8 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                   disabled={isLoading || !activeTripDetail}
                   title={
                     !activeTripDetail && !isLoading
-                      ? 'Chưa tải được dữ liệu đoàn từ máy chủ để xuất bảng khai báo Kiểm lâm'
-                      : 'Tải danh sách thành viên, tải đồ chung và trạng thái 6 bước an toàn chuẩn khai báo Kiểm lâm'
+                      ? 'Chưa tải xong danh sách đoàn để xuất bản khai báo Kiểm lâm'
+                      : 'Tải danh sách đoàn, đồ chung và 6 bước an toàn theo mẫu khai báo Kiểm lâm'
                   }
                   style={{
                     padding: '7px 11px',
@@ -1987,7 +2481,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                   }}
                 >
                   <IconDownload size={14} color="var(--color-primary)" />
-                  <span>Xuất Bảng Khai Báo Kiểm Lâm (CSV)</span>
+                  <span>Xuất bản khai báo Kiểm lâm (CSV)</span>
                 </button>
                 <button
                   type="button"
@@ -1997,7 +2491,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                   style={{ padding: '7px 14px', fontSize: '0.78rem', borderRadius: 4 }}
                 >
                   <IconMessageSquare size={14} />
-                  <span>{isOpeningChat ? 'Đang mở...' : 'Mở Group Chat Đoàn'}</span>
+                  <span>{isOpeningChat ? 'Đang mở...' : 'Vào nhóm chat đoàn'}</span>
                 </button>
               </>
             )}
@@ -2045,14 +2539,14 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: '0.7rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                  Quản trị Trưởng đoàn:
+                  Tùy chỉnh của trưởng đoàn:
                 </span>
                 <select
                   aria-label="Trạng thái chuyến đi"
                   className="form-input"
                   value={activeTripDetail.status || 'recruiting'}
                   disabled={isUpdatingStatus || isDeletingTrip}
-                  onChange={(e) => handleUpdateTripStatus(e.target.value)}
+                  onChange={(e) => handleRequestUpdateTripStatus(e.target.value)}
                   style={{
                     padding: '4px 8px',
                     fontSize: '0.75rem',
@@ -2087,7 +2581,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                   }}
                 >
                   <IconEdit size={13} />
-                  <span>{isEditingTrip ? 'Đóng form sửa' : 'Chỉnh sửa chuyến'}</span>
+                  <span>{isEditingTrip ? 'Đóng chỉnh sửa' : 'Sửa lịch trình'}</span>
                 </button>
 
                 {confirmDeleteTrip ? (
@@ -2099,7 +2593,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                       onClick={handleDeleteTrip}
                       style={{ padding: '4px 10px', fontSize: '0.74rem', fontWeight: 800, borderRadius: 4 }}
                     >
-                      {isDeletingTrip ? 'Đang xóa...' : 'Xác nhận xóa đoàn'}
+                      {isDeletingTrip ? 'Đang xóa...' : 'Chắc chắn xóa'}
                     </button>
                     <button
                       type="button"
@@ -2136,6 +2630,78 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
               </div>
             </div>
 
+            {pendingInProgressConfirm && (
+              <div
+                role="alert"
+                style={{
+                  borderTop: '1px solid var(--banner-danger-border)',
+                  padding: '10px 12px',
+                  borderRadius: 4,
+                  background: 'var(--banner-danger-bg)',
+                  border: '1px solid var(--banner-danger-border)',
+                  color: 'var(--banner-danger-text)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: '0.78rem', lineHeight: 1.45 }}>
+                  <IconAlertTriangle
+                    size={16}
+                    color="var(--color-error-text, var(--banner-danger-text))"
+                    style={{ flexShrink: 0, marginTop: 1 }}
+                  />
+                  <span>
+                    Đoàn mới xác nhận{' '}
+                    <strong>
+                      {safetyGateCompletedCount}/{SQUAD_SAFETY_GATE_STEPS.length} bước kiểm tra an toàn
+                    </strong>{' '}
+                    trước khi vào rừng. Bạn nên rà soát đủ 6/6 bước trước khi chuyển sang &ldquo;Đang trên cung&rdquo;.
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={isUpdatingStatus}
+                    onClick={() => {
+                      setPendingInProgressConfirm(false);
+                      setIsSafetyGateOpen(true);
+                    }}
+                    style={{ padding: '4px 10px', fontSize: '0.74rem', fontWeight: 700, borderRadius: 4 }}
+                  >
+                    Mở 6 bước an toàn
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    disabled={isUpdatingStatus}
+                    onClick={() => void executeUpdateTripStatus('in_progress')}
+                    style={{
+                      padding: '4px 10px',
+                      fontSize: '0.74rem',
+                      fontWeight: 800,
+                      borderRadius: 4,
+                      background: 'var(--color-error)',
+                      color: 'var(--color-on-danger)',
+                      border: '1px solid var(--color-error)',
+                    }}
+                  >
+                    {isUpdatingStatus ? 'Đang cập nhật...' : 'Vẫn xác nhận lên đường'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    disabled={isUpdatingStatus}
+                    onClick={() => setPendingInProgressConfirm(false)}
+                    style={{ padding: '4px 8px', fontSize: '0.74rem', borderRadius: 4 }}
+                  >
+                    Hủy
+                  </button>
+                </div>
+              </div>
+            )}
+
             {isEditingTrip && (
               <form
                 onSubmit={handleSaveTripEdit}
@@ -2153,7 +2719,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                   required
                   value={editTitle}
                   onChange={(e) => setEditTitle(e.target.value)}
-                  placeholder="Tiêu đề chuyến đi *"
+                  placeholder="Tên chuyến đi *"
                   style={{ width: '100%', padding: '7px 10px', fontSize: '0.82rem', borderRadius: 4 }}
                 />
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8 }}>
@@ -2163,7 +2729,13 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                       type="date"
                       className="form-input"
                       value={editStartDate}
-                      onChange={(e) => setEditStartDate(e.target.value)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setEditStartDate(val);
+                        if (editEndDate && val && editEndDate < val) {
+                          setEditEndDate(val);
+                        }
+                      }}
                       style={{ width: '100%', padding: '6px 8px', fontSize: '0.78rem', borderRadius: 4 }}
                     />
                   </div>
@@ -2179,14 +2751,17 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     />
                   </div>
                   <div>
-                    <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-text-dim)', marginBottom: 3 }}>Số chỗ tối đa</label>
+                    <label style={{ display: 'block', fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-text-dim)', marginBottom: 3 }}>Số chỗ tối đa (tối đa 30)</label>
                     <input
                       type="number"
                       className="form-input"
-                      min={liveMemberCount}
-                      max={50}
+                      min={Math.max(2, liveMemberCount)}
+                      max={MAX_TRIP_MEMBERS_CAP}
                       value={editMaxMembers}
                       onChange={(e) => setEditMaxMembers(e.target.value)}
+                      onBlur={() =>
+                        setEditMaxMembers(String(clampTripMaxMembers(editMaxMembers, liveMemberCount)))
+                      }
                       style={{ width: '100%', padding: '6px 8px', fontSize: '0.78rem', borderRadius: 4 }}
                     />
                   </div>
@@ -2213,7 +2788,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     className="form-input"
                     value={editMeetingPoint}
                     onChange={(e) => setEditMeetingPoint(e.target.value)}
-                    placeholder="Điểm hẹn tập trung"
+                    placeholder="Điểm tập trung xuất phát"
                     style={{ width: '100%', padding: '7px 10px', fontSize: '0.78rem', borderRadius: 4 }}
                   />
                   <input
@@ -2221,7 +2796,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     className="form-input"
                     value={editEstimatedCost}
                     onChange={(e) => setEditEstimatedCost(e.target.value)}
-                    placeholder="Dự toán chi phí"
+                    placeholder="Chi phí dự kiến (VD: 1,8 triệu/người)"
                     style={{ width: '100%', padding: '7px 10px', fontSize: '0.78rem', borderRadius: 4 }}
                   />
                 </div>
@@ -2231,7 +2806,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                   className="form-input"
                   value={editRequirements}
                   onChange={(e) => setEditRequirements(e.target.value)}
-                  placeholder="Yêu cầu thể lực & chuẩn bị"
+                  placeholder="Yêu cầu thể lực & đồ cần mang"
                   style={{ width: '100%', padding: '7px 10px', fontSize: '0.78rem', borderRadius: 4 }}
                 />
 
@@ -2240,7 +2815,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                   className="form-input"
                   value={editDescription}
                   onChange={(e) => setEditDescription(e.target.value)}
-                  placeholder="Mô tả kế hoạch chi tiết..."
+                  placeholder="Lịch trình sơ bộ, nhịp đi, điểm nghỉ..."
                   style={{ width: '100%', padding: '7px 10px', fontSize: '0.78rem', borderRadius: 4, resize: 'vertical' }}
                 />
 
@@ -2260,7 +2835,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     disabled={isSavingTrip || !editTitle.trim()}
                     style={{ padding: '5px 14px', fontSize: '0.76rem', fontWeight: 800, borderRadius: 4 }}
                   >
-                    {isSavingTrip ? 'Đang lưu...' : 'Lưu kế hoạch'}
+                    {isSavingTrip ? 'Đang lưu...' : 'Lưu thay đổi'}
                   </button>
                 </div>
               </form>
@@ -2268,8 +2843,39 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
           </div>
         )}
 
-        {/* Non-member overview & join card when opened from Calendar */}
-        {!effectiveIsMember ? (
+        {/* Initial Loading & Error-Retry Gate (prevents flashing guest UI before role resolves) */}
+        {isLoading && !activeTripDetail ? (
+          <div style={{ textAlign: 'center', padding: '36px 18px', color: 'var(--color-text-muted)', fontSize: '0.86rem' }}>
+            Đang mở sổ đoàn...
+          </div>
+        ) : loadError && !activeTripDetail ? (
+          <div
+            role="alert"
+            style={{
+              padding: '22px 18px',
+              borderRadius: 4,
+              background: 'var(--banner-danger-bg)',
+              border: '1px solid var(--banner-danger-border)',
+              color: 'var(--banner-danger-text)',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 12,
+              textAlign: 'center',
+            }}
+          >
+            <IconAlertTriangle size={24} color="var(--color-error-text, var(--banner-danger-text))" />
+            <div style={{ fontSize: '0.86rem', fontWeight: 700 }}>{loadError}</div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={reloadWorkspace}
+              style={{ padding: '7px 16px', fontSize: '0.8rem', fontWeight: 800, borderRadius: 4 }}
+            >
+              Thử lại
+            </button>
+          </div>
+        ) : !effectiveIsMember ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <div
               style={{
@@ -2283,21 +2889,24 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
               }}
             >
               <div style={{ fontSize: '0.84rem', color: 'var(--color-text-main)', lineHeight: 1.55 }}>
-                {activeTripDetail?.description || 'Kế hoạch ghép đoàn thám hiểm thực địa trên hệ thống LOST.'}
+                {activeTripDetail?.description || 'Chuyến đi ghép đoàn cùng anh em trên LOST.'}
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
                 {activeTripDetail?.startDate && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <IconCalendar size={14} color="var(--color-primary)" />
                     <span>
-                      Khởi hành: <strong style={{ color: 'var(--color-text-main)' }}>{new Date(activeTripDetail.startDate).toLocaleDateString('vi-VN')}</strong>
+                      Khởi hành: <strong style={{ color: 'var(--color-text-main)' }}>{formatDateViOptional(activeTripDetail.startDate)}</strong>
                     </span>
                   </div>
                 )}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <IconUsers size={14} color="var(--color-sky)" />
                   <span>
-                    Chỗ trống: <strong style={{ color: isFull ? 'var(--color-error-text, var(--color-error))' : 'var(--color-primary)' }}>{isFull ? 'Hết chỗ' : `${remainingSeats}/${maxMembers} chỗ`}</strong>
+                    Trạng thái:{' '}
+                    <strong style={{ color: isClosedForJoin ? 'var(--color-error-text, var(--color-error))' : 'var(--color-primary)' }}>
+                      {isClosedForJoin ? closedJoinLabel : `Còn ${remainingSeats}/${maxMembers} chỗ`}
+                    </strong>
                   </span>
                 </div>
                 {activeTripDetail?.meetingPoint && (
@@ -2319,7 +2928,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                 color: 'var(--color-text-main)',
               }}
             >
-              Phòng chat nhóm, danh sách đồ dùng chung và bảng chia chi phí chỉ hiển thị sau khi Trưởng đoàn duyệt bạn vào đoàn.
+              Nhóm chat đoàn, bảng chia đồ chung và chia tiền sẽ mở ra ngay khi trưởng đoàn duyệt bạn vào nhóm.
             </div>
 
             {joinRequested ? (
@@ -2334,12 +2943,46 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                   fontSize: '0.84rem',
                   display: 'flex',
                   alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 6,
+                  justifyContent: 'space-between',
+                  gap: 10,
+                  flexWrap: 'wrap',
                 }}
               >
-                <IconCheckCircle size={16} color="var(--color-primary)" />
-                <span>Đã gửi yêu cầu tham gia tới Trưởng đoàn!</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <IconCheckCircle size={16} color="var(--color-primary)" />
+                  <span>Đã gửi lời xin đi cùng — chờ trưởng đoàn duyệt nhé!</span>
+                </span>
+                <button
+                  type="button"
+                  disabled={isWithdrawingJoin}
+                  onClick={handleWithdrawRequestFromModal}
+                  className="btn btn-outline"
+                  style={{
+                    padding: '5px 10px',
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    borderRadius: 4,
+                    color: 'var(--color-error-text, var(--color-error))',
+                    borderColor: 'color-mix(in srgb, var(--color-error) 40%, transparent)',
+                  }}
+                >
+                  {isWithdrawingJoin ? 'Đang rút...' : 'Rút yêu cầu'}
+                </button>
+              </div>
+            ) : isClosedForJoin ? (
+              <div
+                style={{
+                  padding: '11px 14px',
+                  borderRadius: 4,
+                  background: 'var(--color-bg-main)',
+                  border: '1px solid var(--color-border-strong)',
+                  color: 'var(--color-text-muted)',
+                  fontSize: '0.82rem',
+                  fontWeight: 700,
+                  textAlign: 'center',
+                }}
+              >
+                {closedJoinLabel} — chuyến đi hiện không nhận thêm thành viên.
               </div>
             ) : (
               <form onSubmit={handleRequestJoinFromModal} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -2348,18 +2991,18 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                   className="form-input"
                   value={joinNote}
                   onChange={(e) => setJoinNote(e.target.value)}
-                  placeholder="Giới thiệu nhanh thể lực, kinh nghiệm leo núi của bạn..."
-                  disabled={isFull || isSubmittingJoin}
+                  placeholder="Nhắn vài dòng về kinh nghiệm đi rừng, thể lực của bạn..."
+                  disabled={isSubmittingJoin}
                   style={{ flex: 1, minWidth: 220, fontSize: '0.84rem', borderRadius: 4 }}
                 />
                 <button
                   type="submit"
                   className="btn btn-primary"
-                  disabled={isFull || isSubmittingJoin}
+                  disabled={isSubmittingJoin}
                   style={{ borderRadius: 4, padding: '8px 16px', fontSize: '0.82rem', fontWeight: 800 }}
                 >
                   <IconUserPlus size={15} />
-                  <span>{isFull ? 'Hết chỗ' : isSubmittingJoin ? 'Đang gửi...' : 'Xin Ghép Đoàn'}</span>
+                  <span>{isSubmittingJoin ? 'Đang gửi...' : 'Xin đi cùng đoàn'}</span>
                 </button>
               </form>
             )}
@@ -2420,7 +3063,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                       size={15}
                       color={isSafetyGateReady ? 'var(--color-primary)' : 'var(--color-sky)'}
                     />
-                    <span>Cổng Kiểm Tra An Toàn Trước Giờ G (6 Bước)</span>
+                    <span>6 bước kiểm tra an toàn trước khi lên đường</span>
                   </span>
 
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -2449,8 +3092,8 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                       }}
                     >
                       {isSafetyGateReady
-                        ? `${safetyGateCompletedCount}/${SQUAD_SAFETY_GATE_STEPS.length} Sẵn Sàng`
-                        : `${safetyGateCompletedCount}/${SQUAD_SAFETY_GATE_STEPS.length} Bước`}
+                        ? `${safetyGateCompletedCount}/${SQUAD_SAFETY_GATE_STEPS.length} sẵn sàng`
+                        : `${safetyGateCompletedCount}/${SQUAD_SAFETY_GATE_STEPS.length} bước`}
                     </span>
                     <IconChevronRight
                       size={15}
@@ -2467,7 +3110,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                 {/* Pure-SVG 6-Segment Readiness Progress Bar */}
                 <div
                   role="progressbar"
-                  aria-label="Tiến độ Cổng Kiểm Tra An Toàn Trước Giờ G"
+                  aria-label="Tiến độ 6 bước kiểm tra an toàn trước khi lên đường"
                   aria-valuenow={safetyGateCompletedCount}
                   aria-valuemin={0}
                   aria-valuemax={SQUAD_SAFETY_GATE_STEPS.length}
@@ -2538,9 +3181,11 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                         color: 'var(--color-primary)',
                       }}
                     >
-                      Đồng bộ đám mây cả đoàn
+                      {effectiveIsCreator
+                        ? 'Trưởng đoàn xác nhận — cả đoàn cùng theo dõi'
+                        : 'Chỉ trưởng đoàn có quyền xác nhận & đặt lại'}
                     </span>
-                    {safetyGateCompletedCount > 0 && (
+                    {effectiveIsCreator && safetyGateCompletedCount > 0 && (
                       <button
                         type="button"
                         disabled={Boolean(savingSafetyStep)}
@@ -2548,22 +3193,24 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                         className="btn btn-outline"
                         style={{ padding: '3px 8px', fontSize: '0.7rem', borderRadius: 4, fontWeight: 700 }}
                       >
-                        {savingSafetyStep === 'reset' ? 'Đang đặt lại...' : 'Đặt lại 6 bước'}
+                        {savingSafetyStep === 'reset' ? 'Đang bỏ chọn...' : 'Rà soát lại từ đầu'}
                       </button>
                     )}
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {SQUAD_SAFETY_GATE_STEPS.map((step, idx) => {
-                      const checked = safetyGateChecks[step.id];
+                      const stepInfo = safetyGateDetails[step.id];
+                      const checked = stepInfo.checked;
                       const isSavingThis = savingSafetyStep === step.id;
+                      const canToggleStep = effectiveIsCreator && !savingSafetyStep;
                       return (
                         <button
                           key={step.id}
                           type="button"
                           role="checkbox"
                           aria-checked={checked}
-                          disabled={Boolean(savingSafetyStep)}
+                          disabled={!canToggleStep}
                           onClick={() => handleToggleSafetyGateStep(step.id)}
                           style={{
                             width: '100%',
@@ -2573,7 +3220,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                             padding: '8px 10px',
                             borderRadius: 4,
                             textAlign: 'left',
-                            cursor: isSavingThis ? 'wait' : 'pointer',
+                            cursor: !effectiveIsCreator ? 'default' : isSavingThis ? 'wait' : 'pointer',
                             opacity: isSavingThis ? 0.7 : 1,
                             fontFamily: 'var(--font-family)',
                             background: checked
@@ -2610,6 +3257,21 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                             >
                               {step.detail}
                             </div>
+                            {checked && (stepInfo.checkedByName || stepInfo.checkedAt) && (
+                              <div
+                                style={{
+                                  fontSize: '0.67rem',
+                                  color: 'var(--color-primary)',
+                                  fontWeight: 700,
+                                  marginTop: 3,
+                                  fontVariantNumeric: 'tabular-nums',
+                                }}
+                              >
+                                Đã xác nhận
+                                {stepInfo.checkedByName ? ` bởi ${stepInfo.checkedByName}` : ''}
+                                {stepInfo.checkedAt ? ` • ${stepInfo.checkedAt}` : ''}
+                              </div>
+                            )}
                           </div>
                         </button>
                       );
@@ -2632,7 +3294,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                       }}
                     >
                       <IconCheck size={14} color="var(--color-primary)" style={{ flexShrink: 0 }} />
-                      <span>Đoàn đã hoàn tất 6/6 bước an toàn trước giờ G — Sẵn sàng xuất phát!</span>
+                      <span>Đoàn đã kiểm đủ 6/6 bước an toàn — yên tâm lên đường thôi!</span>
                     </div>
                   )}
                 </div>
@@ -2655,7 +3317,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                 style={{ justifyContent: 'center', fontSize: '0.8rem', padding: '8px 10px', borderRadius: 4 }}
               >
                 <IconBackpack size={14} />
-                <span>Trang Bị Chung ({totalSquadGearCount})</span>
+                <span>Đồ chung ({totalSquadGearCount})</span>
               </button>
               <button
                 type="button"
@@ -2663,7 +3325,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                 onClick={() => setActiveTab('expenses')}
                 style={{ justifyContent: 'center', fontSize: '0.8rem', padding: '8px 10px', borderRadius: 4 }}
               >
-                <span>Chia Chi Phí ({expenses.length})</span>
+                <span>Chia tiền ({expenses.length})</span>
               </button>
               <button
                 type="button"
@@ -2673,7 +3335,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
               >
                 <IconUsers size={14} />
                 <span>
-                  Thành Viên ({liveMemberCount}
+                  Thành viên ({liveMemberCount}
                   {effectiveIsCreator && pendingRequests.length > 0 ? ` • +${pendingRequests.length}` : ''})
                 </span>
               </button>
@@ -2681,7 +3343,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
 
             {isLoading ? (
               <div style={{ textAlign: 'center', padding: 28, color: 'var(--color-text-dim)', fontSize: '0.84rem' }}>
-                Đang tải dữ liệu đoàn...
+                Đang mở sổ đoàn...
               </div>
             ) : activeTab === 'requests' ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -2689,7 +3351,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                 {effectiveIsCreator && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                      Yêu Cầu Chờ Duyệt ({pendingRequests.length})
+                      Người đang xin ghép đoàn ({pendingRequests.length})
                     </div>
                     {pendingRequests.length === 0 ? (
                       <div
@@ -2702,13 +3364,13 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                           fontSize: '0.8rem',
                         }}
                       >
-                        Hiện không có yêu cầu xin ghép đoàn nào đang chờ duyệt.
+                        Chưa có ai gửi lời xin đi cùng đoàn.
                       </div>
                     ) : (
                       pendingRequests.map((reqItem, idx) => {
                         const userObj = typeof reqItem.userId === 'object' && reqItem.userId ? reqItem.userId : null;
                         const applicantId = userObj?._id || (typeof reqItem.userId === 'string' ? reqItem.userId : '');
-                        const applicantName = userObj?.fullName || 'Thành viên LOST';
+                        const applicantName = userObj?.fullName || 'Bạn đồng hành';
                         const isBusy = processingApplicantId === applicantId;
                         const reqDate = reqItem.requestedAt
                           ? new Date(reqItem.requestedAt).toLocaleString('vi-VN', {
@@ -2734,11 +3396,16 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                           >
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                                {userObj?.avatarUrl ? (
+                                {userObj?.avatarUrl && !failedAvatarKeys.includes(`req:${applicantId}`) ? (
                                   <img
                                     src={userObj.avatarUrl}
                                     alt={applicantName}
                                     referrerPolicy="no-referrer"
+                                    onError={() =>
+                                      setFailedAvatarKeys((prev) =>
+                                        prev.includes(`req:${applicantId}`) ? prev : [...prev, `req:${applicantId}`]
+                                      )
+                                    }
                                     style={{ width: 34, height: 34, borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--color-primary)' }}
                                   />
                                 ) : (
@@ -2761,14 +3428,33 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                                   </div>
                                 )}
                                 <div>
-                                  <div style={{ fontSize: '0.86rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      openMemberProfile({
+                                        name: applicantName,
+                                        avatar: userObj?.avatarUrl || '',
+                                        userId: applicantId || undefined,
+                                      })
+                                    }
+                                    style={{
+                                      background: 'none',
+                                      border: 'none',
+                                      padding: 0,
+                                      cursor: 'pointer',
+                                      fontSize: '0.86rem',
+                                      fontWeight: 800,
+                                      color: 'var(--color-text-main)',
+                                      textAlign: 'left',
+                                    }}
+                                  >
                                     {applicantName}
-                                  </div>
+                                  </button>
                                   <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', display: 'flex', alignItems: 'center', gap: 6 }}>
                                     {userObj?.reputationScore !== undefined && (
                                       <span style={{ color: 'var(--color-primary)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                                         <IconStar size={11} color="var(--color-primary)" fill="var(--color-primary)" />
-                                        {userObj.reputationScore} Uy tín
+                                        {userObj.reputationScore} điểm uy tín
                                       </span>
                                     )}
                                     {reqDate && <span>• {reqDate}</span>}
@@ -2779,12 +3465,19 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                                 <button
                                   type="button"
-                                  disabled={Boolean(processingApplicantId) || isFull}
+                                  disabled={Boolean(processingApplicantId) || !isRecruiting || isFull}
+                                  title={
+                                    !isRecruiting
+                                      ? 'Chỉ có thể duyệt thành viên khi chuyến đi đang mở ghép đoàn'
+                                      : isFull
+                                        ? 'Đoàn đã đủ số lượng thành viên tối đa'
+                                        : undefined
+                                  }
                                   onClick={() => handleReviewApplicant(applicantId, 'approve')}
                                   className="btn btn-primary"
                                   style={{ padding: '6px 12px', fontSize: '0.76rem', borderRadius: 4, fontWeight: 700 }}
                                 >
-                                  {isBusy ? 'Đang xử lý...' : 'Duyệt vào đoàn'}
+                                  {isBusy ? 'Đang duyệt...' : 'Nhận vào đoàn'}
                                 </button>
                                 <button
                                   type="button"
@@ -2830,7 +3523,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                 {/* Approved Squad Roster with Creator Kick Member */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                    Danh Sách Thành Viên Chính Thức ({confirmedRosterMembers.length}/{maxMembers})
+                    Thành viên trong đoàn ({confirmedRosterMembers.length}/{maxMembers})
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
                     {confirmedRosterMembers.map((member) => {
@@ -2855,11 +3548,16 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                           }}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            {member.avatarUrl ? (
+                            {member.avatarUrl && !failedAvatarKeys.includes(`mem:${member.id}`) ? (
                               <img
                                 src={member.avatarUrl}
                                 alt={member.name}
                                 referrerPolicy="no-referrer"
+                                onError={() =>
+                                  setFailedAvatarKeys((prev) =>
+                                    prev.includes(`mem:${member.id}`) ? prev : [...prev, `mem:${member.id}`]
+                                  )
+                                }
                                 style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--color-primary)' }}
                               />
                             ) : (
@@ -2883,9 +3581,28 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                             )}
                             <div>
                               <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                                <span style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    openMemberProfile({
+                                      name: member.name,
+                                      avatar: member.avatarUrl || '',
+                                      userId: member.rawId,
+                                    })
+                                  }
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    padding: 0,
+                                    cursor: 'pointer',
+                                    fontSize: '0.84rem',
+                                    fontWeight: 800,
+                                    color: 'var(--color-text-main)',
+                                    textAlign: 'left',
+                                  }}
+                                >
                                   {member.name}
-                                </span>
+                                </button>
                                 {isLeader && (
                                   <span className="badge badge-success" style={{ fontSize: '0.64rem', padding: '1px 6px' }}>
                                     Trưởng đoàn
@@ -2895,7 +3612,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                               {member.reputationScore !== undefined && (
                                 <div style={{ fontSize: '0.7rem', color: 'var(--color-primary)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                                   <IconStar size={10} color="var(--color-primary)" fill="var(--color-primary)" />
-                                  <span>{member.reputationScore} Uy tín</span>
+                                  <span>{member.reputationScore} điểm uy tín</span>
                                 </div>
                               )}
                             </div>
@@ -2911,7 +3628,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                                   className="btn btn-danger"
                                   style={{ padding: '4px 10px', fontSize: '0.72rem', fontWeight: 800, borderRadius: 4 }}
                                 >
-                                  {isKickingThis ? 'Đang xóa...' : 'Xác nhận xóa'}
+                                  {isKickingThis ? 'Đang xóa...' : 'Chắc chắn xóa'}
                                 </button>
                                 <button
                                   type="button"
@@ -2980,7 +3697,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                         textTransform: 'uppercase',
                       }}
                     >
-                      Ma Trận Cân Tải Đồ Chung
+                      Chia đều đồ chung của đoàn
                     </span>
                     <span
                       style={{
@@ -2993,7 +3710,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                         color: 'var(--color-primary)',
                       }}
                     >
-                      Đồng bộ đám mây cả đoàn
+                      Cả đoàn cùng cập nhật
                     </span>
                   </div>
 
@@ -3009,7 +3726,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
                       <div>
                         <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>
-                          Tổng Tải Đồ Chung
+                          Tổng trọng lượng
                         </div>
                         <div style={{ fontSize: '1.05rem', fontWeight: 900, color: 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
                           {formatWeightKg(gearLoadSummary.totalG)} kg{' '}
@@ -3020,7 +3737,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                       </div>
                       <div>
                         <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>
-                          Bình Quân ({squadRoster.length} người)
+                          Chia đều ({squadRoster.length} người)
                         </div>
                         <div style={{ fontSize: '0.94rem', fontWeight: 800, color: 'var(--color-sky)', fontVariantNumeric: 'tabular-nums' }}>
                           ~{formatWeightKg(gearLoadSummary.fairShareG)} kg / người
@@ -3028,7 +3745,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                       </div>
                       <div>
                         <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>
-                          Tiến Độ Chuẩn Bị
+                          Đã chuẩn bị
                         </div>
                         <div style={{ fontSize: '0.94rem', fontWeight: 800, color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
                           {totalSquadGearPackedCount}/{totalSquadGearCount} món
@@ -3054,7 +3771,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                       }}
                     >
                       {copiedGear ? <IconCheck size={13} color="var(--color-primary)" /> : <IconCopy size={13} />}
-                      <span>{copiedGear ? 'Đã sao chép!' : 'Sao Chép Chia Sẻ Nhóm'}</span>
+                      <span>{copiedGear ? 'Đã chép xong!' : 'Chép gửi nhóm chat'}</span>
                     </button>
                   </div>
                 </div>
@@ -3078,13 +3795,13 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                   >
                     <IconAlertTriangle size={15} color="var(--color-error-text, var(--banner-danger-text))" style={{ flexShrink: 0 }} />
                     <span>
-                      Cảnh báo lệch tải (&gt;{gearLoadSummary.fairLoadThresholdPct}%):{' '}
+                      Hơi nặng vai cho một người (&gt;{gearLoadSummary.fairLoadThresholdPct}%):{' '}
                       <strong>
                         {gearLoadSummary.overloadedMembers
                           .map((m) => `${m.name} (${m.pct.toFixed(0)}%)`)
                           .join(', ')}
                       </strong>{' '}
-                      đang mang quá tỷ lệ cân bằng. Hãy phân bổ bớt trang bị cho đồng đội!
+                      đang gánh nhiều đồ chung quá — chia bớt sang ba lô anh em khác nhé!
                     </span>
                   </div>
                 )}
@@ -3101,14 +3818,14 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                       marginBottom: 6,
                     }}
                   >
-                    Gợi Ý Đồ Chung Thực Địa Việt Nam (Bấm để thêm &amp; tự cân bằng tải)
+                    Đồ chung hay mang đi rừng (bấm để thêm &amp; tự chia cho người nhẹ vai nhất)
                   </div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     {VIETNAM_SQUAD_GEAR_PRESETS.map((preset) => (
                       <button
                         key={preset.key}
                         type="button"
-                        disabled={isAddingGear}
+                        disabled={isAnyGearMutating}
                         onClick={() => handleAddPresetGearItem(preset)}
                         className="btn btn-outline"
                         style={{
@@ -3148,9 +3865,9 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     className="form-input"
                     value={newGearName}
                     onChange={(e) => setNewGearName(e.target.value)}
-                    placeholder="Tên món (VD: Nồi dã ngoại...)"
+                    placeholder="Tên món đồ (VD: Nồi nấu nước, đèn lều...)"
                     aria-label="Tên trang bị chung của đoàn"
-                    disabled={isAddingGear}
+                    disabled={isAnyGearMutating}
                     style={{ gridColumn: '1 / -1', minWidth: 0, fontSize: '0.82rem', borderRadius: 4 }}
                     required
                   />
@@ -3162,9 +3879,9 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     className="form-input"
                     value={newGearWeightG}
                     onChange={(e) => setNewGearWeightG(e.target.value)}
-                    placeholder="Gram (g)"
+                    placeholder="Nặng (gram)"
                     aria-label="Trọng lượng trang bị chung tính theo gram"
-                    disabled={isAddingGear}
+                    disabled={isAnyGearMutating}
                     style={{ minWidth: 0, fontSize: '0.82rem', borderRadius: 4, fontVariantNumeric: 'tabular-nums' }}
                     required
                   />
@@ -3173,12 +3890,12 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     value={newGearCategory}
                     onChange={(e) => setNewGearCategory(e.target.value)}
                     aria-label="Danh mục trang bị chung"
-                    disabled={isAddingGear}
+                    disabled={isAnyGearMutating}
                     style={{ minWidth: 0, fontSize: '0.78rem', borderRadius: 4 }}
                   >
-                    <option value="Lán trại & Nấu ăn">Lán trại &amp; Nấu ăn</option>
-                    <option value="Y tế & An toàn">Y tế &amp; An toàn</option>
-                    <option value="Nước & Thực phẩm">Nước &amp; Thực phẩm</option>
+                    <option value="Lán trại & Nấu ăn">Lán trại &amp; nấu ăn</option>
+                    <option value="Y tế & An toàn">Y tế &amp; an toàn</option>
+                    <option value="Nước & Thực phẩm">Nước &amp; thực phẩm</option>
                     <option value="Dùng chung">Dùng chung</option>
                   </select>
                   <select
@@ -3186,10 +3903,10 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     value={effectiveNewGearCarrierId}
                     onChange={(e) => setNewGearCarrierId(e.target.value)}
                     aria-label="Người mang trang bị chung"
-                    disabled={isAddingGear}
+                    disabled={isAnyGearMutating}
                     style={{ minWidth: 0, fontSize: '0.78rem', borderRadius: 4 }}
                   >
-                    <option value="">-- Chưa phân công --</option>
+                    <option value="">-- Chưa ai nhận --</option>
                     {squadRoster.map((member) => (
                       <option key={member.id} value={member.id}>
                         {member.name}
@@ -3198,109 +3915,250 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                   </select>
                   <button
                     type="submit"
-                    disabled={isAddingGear || !newGearName.trim()}
+                    disabled={isAnyGearMutating || !newGearName.trim()}
                     className="btn btn-primary"
                     style={{ fontSize: '0.78rem', fontWeight: 800, padding: '7px 12px', borderRadius: 4 }}
                   >
-                    {isAddingGear ? 'Đang lưu...' : '+ Thêm Đồ Chung'}
+                    {isAddingGear ? 'Đang lưu...' : '+ Thêm món đồ'}
                   </button>
                 </form>
 
                 {/* Unified Cloud-Synced Shared Gear Matrix Items */}
                 {gearLoadSummary.items.length === 0 ? (
                   <div style={{ textAlign: 'center', padding: 20, borderRadius: 4, border: '1px dashed var(--color-border)', color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
-                    Chưa có trang bị chung nào. Chọn nhanh các món gợi ý ở trên hoặc thêm vật dụng tùy chỉnh để chia đều tải cho cả đoàn!
+                    Chưa có món đồ chung nào — bấm chọn nhanh các món gợi ý phía trên hoặc tự nhập để chia đều vào ba lô cả đoàn nhé.
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 7, maxHeight: 260, overflowY: 'auto' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 7, maxHeight: 300, overflowY: 'auto' }}>
                     {gearLoadSummary.items.map((item) => {
-                      const isMutatingItem = togglingGearId === item.id || deletingGearId === item.id;
+                      const isMutatingThisItem =
+                        togglingGearId === item.id ||
+                        deletingGearId === item.id ||
+                        (isSavingGearEdit && editingGearId === item.id);
+                      const isEditingThisGear = editingGearId === item.id;
                       return (
                         <div
                           key={item.id}
                           style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            gap: 8,
-                            flexWrap: 'wrap',
                             padding: '9px 12px',
                             borderRadius: 4,
-                            background: item.packed ? 'color-mix(in srgb, var(--color-primary) 10%, transparent)' : 'var(--color-bg-main)',
-                            border: item.packed ? '1px solid var(--color-primary)' : '1px solid var(--color-border)',
-                            opacity: isMutatingItem ? 0.7 : 1,
+                            background: item.packed
+                              ? 'color-mix(in srgb, var(--color-primary) 10%, transparent)'
+                              : 'var(--color-bg-main)',
+                            border: item.packed
+                              ? '1px solid var(--color-primary)'
+                              : '1px solid var(--color-border)',
+                            opacity: isMutatingThisItem ? 0.7 : 1,
                           }}
                         >
-                          <button
-                            type="button"
-                            disabled={isMutatingItem}
-                            onClick={() => handleToggleMatrixGearPacked(item)}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 9,
-                              cursor: isMutatingItem ? 'wait' : 'pointer',
-                              flex: '1 1 180px',
-                              minWidth: 0,
-                              textAlign: 'left',
-                              background: 'none',
-                              border: 'none',
-                              padding: 0,
-                            }}
-                          >
-                            <IconCheckCircle size={17} color={item.packed ? 'var(--color-primary)' : 'var(--color-text-dim)'} />
-                            <div style={{ minWidth: 0 }}>
-                              <div
-                                style={{
-                                  fontSize: '0.84rem',
-                                  fontWeight: 700,
-                                  color: 'var(--color-text-main)',
-                                  textDecoration: item.packed ? 'line-through' : 'none',
-                                }}
-                              >
-                                {item.name}
+                          {isEditingThisGear ? (
+                            <form
+                              onSubmit={(e) => handleSaveEditGear(e, item.id)}
+                              style={{ display: 'flex', flexDirection: 'column', gap: 7 }}
+                            >
+                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 6 }}>
+                                <input
+                                  className="form-input"
+                                  value={editGearName}
+                                  onChange={(e) => setEditGearName(e.target.value)}
+                                  placeholder="Tên món đồ *"
+                                  aria-label="Sửa tên món đồ chung"
+                                  maxLength={140}
+                                  disabled={isAnyGearMutating}
+                                  required
+                                  style={{ gridColumn: '1 / -1', padding: '6px 9px', fontSize: '0.8rem', borderRadius: 4 }}
+                                />
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100000"
+                                  step="10"
+                                  className="form-input"
+                                  value={editGearWeightG}
+                                  onChange={(e) => setEditGearWeightG(e.target.value)}
+                                  placeholder="Trọng lượng (g)"
+                                  aria-label="Sửa trọng lượng món đồ (gram)"
+                                  disabled={isAnyGearMutating}
+                                  required
+                                  style={{ padding: '6px 8px', fontSize: '0.78rem', borderRadius: 4, fontVariantNumeric: 'tabular-nums' }}
+                                />
+                                <select
+                                  className="form-input"
+                                  value={editGearCategory}
+                                  onChange={(e) => setEditGearCategory(e.target.value)}
+                                  aria-label="Sửa danh mục món đồ"
+                                  disabled={isAnyGearMutating}
+                                  style={{ padding: '6px 8px', fontSize: '0.76rem', borderRadius: 4 }}
+                                >
+                                  <option value="Lán trại & Nấu ăn">Lán trại &amp; nấu ăn</option>
+                                  <option value="Y tế & An toàn">Y tế &amp; an toàn</option>
+                                  <option value="Nước & Thực phẩm">Nước &amp; thực phẩm</option>
+                                  <option value="Dùng chung">Dùng chung</option>
+                                </select>
+                                <select
+                                  className="form-input"
+                                  value={editGearCarrierId}
+                                  onChange={(e) => setEditGearCarrierId(e.target.value)}
+                                  aria-label="Sửa người mang món đồ"
+                                  disabled={isAnyGearMutating}
+                                  style={{ padding: '6px 8px', fontSize: '0.76rem', borderRadius: 4 }}
+                                >
+                                  <option value="">Chưa ai nhận</option>
+                                  {squadRoster.map((member) => (
+                                    <option key={member.id} value={member.id}>
+                                      {member.name}
+                                    </option>
+                                  ))}
+                                </select>
                               </div>
-                              <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                                {item.category} •{' '}
-                                <strong style={{ color: 'var(--color-earth)' }}>
-                                  {item.weightG.toLocaleString('vi-VN')} g
-                                </strong>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                                <label
+                                  style={{
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: 6,
+                                    fontSize: '0.76rem',
+                                    fontWeight: 700,
+                                    color: 'var(--color-text-main)',
+                                    cursor: isAnyGearMutating ? 'not-allowed' : 'pointer',
+                                  }}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={editGearPacked}
+                                    onChange={(e) => setEditGearPacked(e.target.checked)}
+                                    disabled={isAnyGearMutating}
+                                  />
+                                  <span>Đã chuẩn bị sẵn sàng</span>
+                                </label>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <button
+                                    type="button"
+                                    disabled={isAnyGearMutating}
+                                    onClick={() => setEditingGearId(null)}
+                                    className="btn btn-outline"
+                                    style={{ padding: '4px 9px', fontSize: '0.74rem', borderRadius: 4 }}
+                                  >
+                                    Hủy
+                                  </button>
+                                  <button
+                                    type="submit"
+                                    disabled={isAnyGearMutating || !editGearName.trim()}
+                                    className="btn btn-primary"
+                                    style={{ padding: '4px 11px', fontSize: '0.74rem', fontWeight: 800, borderRadius: 4 }}
+                                  >
+                                    {isSavingGearEdit ? 'Đang lưu...' : 'Lưu'}
+                                  </button>
+                                </div>
                               </div>
-                            </div>
-                          </button>
-
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                            <select
-                              className="form-input"
-                              aria-label={`Chọn người mang ${item.name}`}
-                              value={item.carrierId}
-                              disabled={isMutatingItem}
-                              onChange={(e) => handleAssignMatrixGearCarrier(item.id, e.target.value)}
+                            </form>
+                          ) : (
+                            <div
                               style={{
-                                padding: '4px 8px',
-                                fontSize: '0.74rem',
-                                borderRadius: 4,
-                                maxWidth: 155,
-                                background: 'var(--color-bg-card)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                gap: 8,
+                                flexWrap: 'wrap',
                               }}
                             >
-                              <option value="">Chưa phân công</option>
-                              {squadRoster.map((member) => (
-                                <option key={member.id} value={member.id}>
-                                  {member.name}
-                                </option>
-                              ))}
-                            </select>
-                            <button
-                              type="button"
-                              disabled={isMutatingItem}
-                              onClick={() => handleDeleteMatrixGearItem(item.id)}
-                              aria-label={`Xóa ${item.name}`}
-                              style={{ background: 'none', border: 'none', color: 'var(--color-error-text, var(--banner-danger-text))', cursor: isMutatingItem ? 'wait' : 'pointer', padding: 4 }}
-                            >
-                              <IconTrash size={14} />
-                            </button>
-                          </div>
+                              <button
+                                type="button"
+                                disabled={isAnyGearMutating}
+                                onClick={() => handleToggleMatrixGearPacked(item)}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 9,
+                                  cursor: isAnyGearMutating ? 'wait' : 'pointer',
+                                  flex: '1 1 180px',
+                                  minWidth: 0,
+                                  textAlign: 'left',
+                                  background: 'none',
+                                  border: 'none',
+                                  padding: 0,
+                                }}
+                              >
+                                <IconCheckCircle size={17} color={item.packed ? 'var(--color-primary)' : 'var(--color-text-dim)'} />
+                                <div style={{ minWidth: 0 }}>
+                                  <div
+                                    style={{
+                                      fontSize: '0.84rem',
+                                      fontWeight: 700,
+                                      color: 'var(--color-text-main)',
+                                      textDecoration: item.packed ? 'line-through' : 'none',
+                                    }}
+                                  >
+                                    {item.name}
+                                  </div>
+                                  <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                                    {item.category} •{' '}
+                                    <strong style={{ color: 'var(--color-earth)' }}>
+                                      {item.weightG.toLocaleString('vi-VN')} g
+                                    </strong>
+                                  </div>
+                                </div>
+                              </button>
+
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                                <select
+                                  className="form-input"
+                                  aria-label={`Chọn người mang ${item.name}`}
+                                  value={item.carrierId}
+                                  disabled={isAnyGearMutating}
+                                  onChange={(e) => handleAssignMatrixGearCarrier(item.id, e.target.value)}
+                                  style={{
+                                    padding: '4px 8px',
+                                    fontSize: '0.74rem',
+                                    borderRadius: 4,
+                                    maxWidth: 155,
+                                    background: 'var(--color-bg-card)',
+                                  }}
+                                >
+                                  <option value="">Chưa ai nhận</option>
+                                  {squadRoster.map((member) => (
+                                    <option key={member.id} value={member.id}>
+                                      {member.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  disabled={isAnyGearMutating}
+                                  onClick={() => handleStartEditGear(item)}
+                                  aria-label={`Chỉnh sửa ${item.name}`}
+                                  title="Chỉnh sửa món đồ"
+                                  style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    color: 'var(--color-text-muted)',
+                                    cursor: isAnyGearMutating ? 'wait' : 'pointer',
+                                    padding: 4,
+                                  }}
+                                >
+                                  <IconEdit size={14} />
+                                </button>
+                                {effectiveIsCreator && (
+                                  <button
+                                    type="button"
+                                    disabled={isAnyGearMutating}
+                                    onClick={() => handleDeleteMatrixGearItem(item.id)}
+                                    aria-label={`Xóa ${item.name}`}
+                                    title="Xóa món đồ"
+                                    style={{
+                                      background: 'none',
+                                      border: 'none',
+                                      color: 'var(--color-error-text, var(--banner-danger-text))',
+                                      cursor: isAnyGearMutating ? 'wait' : 'pointer',
+                                      padding: 4,
+                                    }}
+                                  >
+                                    <IconTrash size={14} />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -3330,11 +4188,11 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                           textTransform: 'uppercase',
                         }}
                       >
-                        Phân Bổ Tải Trọng Đồ Chung Theo Thành Viên
+                        Tải đồ chung trên vai từng người
                       </span>
                       {gearLoadSummary.unassignedG > 0 && (
                         <span style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--color-sun)', fontVariantNumeric: 'tabular-nums' }}>
-                          Chưa giao: {formatWeightKg(gearLoadSummary.unassignedG)} kg ({gearLoadSummary.unassignedItems.length} món)
+                          Chưa có người nhận: {formatWeightKg(gearLoadSummary.unassignedG)} kg ({gearLoadSummary.unassignedItems.length} món)
                         </span>
                       )}
                     </div>
@@ -3362,7 +4220,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                                       color: 'var(--color-error-text, var(--banner-danger-text))',
                                     }}
                                   >
-                                    Quá tải (&gt;{gearLoadSummary.fairLoadThresholdPct}%)
+                                    Hơi nặng vai (&gt;{gearLoadSummary.fairLoadThresholdPct}%)
                                   </span>
                                 )}
                               </span>
@@ -3411,14 +4269,14 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                 {/* Summary KPIs */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
                   <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: 12 }}>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Tổng Chi Phí Đoàn</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Tổng chi cả chuyến</div>
                     <div style={{ fontSize: '1.15rem', fontWeight: 900, color: 'var(--color-primary)', marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>
                       {settlement.totalVnd.toLocaleString('vi-VN')} đ
                     </div>
                   </div>
                   <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: 12 }}>
                     <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>
-                      Bình Quân / Người ({settlement.participantCount} người)
+                      Chia đều mỗi người ({settlement.participantCount} người)
                     </div>
                     <div style={{ fontSize: '1.15rem', fontWeight: 900, color: 'var(--color-sky)', marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>
                       {settlement.perPersonAverageVnd.toLocaleString('vi-VN')} đ
@@ -3431,15 +4289,16 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     className="form-input"
                     value={newExpTitle}
                     onChange={(e) => setNewExpTitle(e.target.value)}
-                    placeholder="VD: Thuê Porter, Vé VQG, Xe khách..."
+                    placeholder="VD: Thuê porter, vé vào rừng, xe khách..."
                     disabled={isAddingExpense}
                     style={{ flex: 2, minWidth: 180, fontSize: '0.84rem', borderRadius: 4 }}
                     required
                   />
                   <input
                     type="number"
-                    min="1000"
-                    step="1000"
+                    min={MIN_EXPENSE_VND}
+                    max={MAX_EXPENSE_VND}
+                    step="1"
                     className="form-input"
                     value={newExpAmount}
                     onChange={(e) => setNewExpAmount(e.target.value)}
@@ -3457,10 +4316,10 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                       disabled={isAddingExpense}
                       style={{ flex: 1, minWidth: 135, fontSize: '0.78rem', borderRadius: 4 }}
                     >
-                      <option value="">Người ứng: Tôi</option>
+                      <option value="">Tôi đã ứng trước</option>
                       {confirmedRosterMembers.map((member) => (
                         <option key={member.id} value={member.rawId || ''}>
-                          Ứng: {member.name}
+                          {member.name} đã ứng
                         </option>
                       ))}
                     </select>
@@ -3471,13 +4330,13 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                     className="btn btn-primary"
                     style={{ fontSize: '0.8rem', padding: '8px 14px', borderRadius: 4 }}
                   >
-                    {isAddingExpense ? 'Đang lưu...' : '+ Ghi Khoản Chi'}
+                    {isAddingExpense ? 'Đang lưu...' : '+ Thêm khoản chi'}
                   </button>
                 </form>
 
                 {expenses.length === 0 ? (
                   <div style={{ textAlign: 'center', padding: 24, borderRadius: 4, border: '1px dashed var(--color-border)', color: 'var(--color-text-muted)', fontSize: '0.82rem' }}>
-                    Chưa có khoản chi nào. Ghi nhận tiền xe, porter, vé vào rừng để hệ thống chia đều tự động!
+                    Chưa ghi khoản chi nào — cứ nhập tiền xe, porter, đồ ăn vào đây rồi cuối chuyến chia gọn gàng nhé.
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 260, overflowY: 'auto' }}>
@@ -3513,8 +4372,9 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                               />
                               <input
                                 type="number"
-                                min="1000"
-                                step="1000"
+                                min={MIN_EXPENSE_VND}
+                                max={MAX_EXPENSE_VND}
+                                step="1"
                                 className="form-input"
                                 value={editExpAmount}
                                 onChange={(e) => setEditExpAmount(e.target.value)}
@@ -3560,7 +4420,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                               <div>
                                 <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--color-text-main)' }}>{exp.title}</div>
                                 <div style={{ fontSize: '0.73rem', color: 'var(--color-text-muted)' }}>
-                                  Người ứng: <strong>{exp.paidByName}</strong>
+                                  Đã ứng: <strong>{exp.paidByName}</strong>
                                 </div>
                               </div>
                               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -3634,7 +4494,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                             textTransform: 'uppercase',
                           }}
                         >
-                          Ai Trả Ai — Tối Ưu Giao Dịch
+                          Ai chuyển ai cho gọn
                         </span>
                         <span
                           style={{
@@ -3653,8 +4513,8 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                           }}
                         >
                           {settlement.isSettled
-                            ? 'Đã cân bằng'
-                            : `${settlement.transfers.length} giao dịch tối thiểu`}
+                            ? 'Đã chia đều'
+                            : `Gọn ${settlement.transfers.length} lượt chuyển`}
                         </span>
                       </div>
 
@@ -3679,7 +4539,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                         ) : (
                           <IconCopy size={13} />
                         )}
-                        <span>{copiedSettlement ? 'Đã sao chép!' : 'Sao Chép Chia Sẻ Nhóm'}</span>
+                        <span>{copiedSettlement ? 'Đã chép xong!' : 'Chép gửi nhóm chat'}</span>
                       </button>
                     </div>
 
@@ -3700,7 +4560,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                         }}
                       >
                         <IconCheckCircle size={16} color="var(--color-primary)" />
-                        <span>Tất cả thành viên đã cân bằng chi phí — không cần chuyển khoản thêm!</span>
+                        <span>Cả đoàn đã chia đều xong xuôi — không ai cần chuyển thêm nữa!</span>
                       </div>
                     ) : (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -3789,7 +4649,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                                   }}
                                 >
                                   {isTransferSettled && <IconCheck size={12} color="var(--color-primary)" />}
-                                  <span>{isTransferSettled ? 'Đã thanh toán' : 'Đánh dấu đã trả'}</span>
+                                  <span>{isTransferSettled ? 'Đã chuyển' : 'Đánh dấu đã chuyển'}</span>
                                 </button>
                               </div>
                             </div>
@@ -3810,7 +4670,7 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                           marginBottom: 6,
                         }}
                       >
-                        Số Dư Ròng Theo Thành Viên ({settlement.participantCount} người)
+                        Tổng kết từng người ({settlement.participantCount} thành viên chia tiền)
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: '0.78rem' }}>
                         {settlement.balances.map((member) => {
@@ -3834,7 +4694,8 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                               <span style={{ color: 'var(--color-text-main)' }}>
                                 <strong>{member.name}</strong>{' '}
                                 <span style={{ color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                                  (đã ứng {member.paidVnd.toLocaleString('vi-VN')} đ)
+                                  (đã ứng {member.paidVnd.toLocaleString('vi-VN')} đ
+                                  {member.isDeparted ? ' • hoàn lại 100%' : ''})
                                 </span>
                               </span>
                               <span
@@ -3859,8 +4720,8 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
                                 {isCreditor
                                   ? `Nhận lại +${member.balanceVnd.toLocaleString('vi-VN')} đ`
                                   : isDebtor
-                                    ? `Cần bù ${Math.abs(member.balanceVnd).toLocaleString('vi-VN')} đ`
-                                    : 'Đã cân bằng'}
+                                    ? `Chuyển thêm ${Math.abs(member.balanceVnd).toLocaleString('vi-VN')} đ`
+                                    : 'Vừa đủ'}
                               </span>
                             </div>
                           );
@@ -3874,6 +4735,20 @@ export const SquadWorkspaceModal: React.FC<SquadWorkspaceModalProps> = ({
           </>
         )}
       </div>
+
+      {inspectedAuthor && (
+        <AuthorProfileModal
+          author={inspectedAuthor}
+          currentUser={currentUser}
+          onClose={() => setInspectedAuthor(null)}
+          onStartChat={() => {
+            setInspectedAuthor(null);
+            onClose();
+            window.history.pushState({ view: 'messages' }, '', '/messages');
+            window.dispatchEvent(new PopStateEvent('popstate'));
+          }}
+        />
+      )}
     </div>,
     document.body
   );

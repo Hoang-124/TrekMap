@@ -17,6 +17,15 @@ import {
 } from '../../services/api.js';
 import { mockTrails } from '../../data/seedData.js';
 import { haversineMeters } from '../../utils/geoMath.js';
+import { encodePlusCode } from '../../utils/mountainSafetyMath.js';
+import {
+  getOfflineTrailPack,
+  downloadOfflineTrailPack,
+  deleteOfflineTrailPack,
+  type OfflineTrailPackRecord,
+} from '../../utils/offlinePack.js';
+import { loadIceCardProfile, renderIceLockscreenPng } from '../../utils/iceLockscreenCard.js';
+import { getActiveStorageUid, safeLocalStorageGet } from '../../utils/storageScope.js';
 import { OptimizedImage } from '../common/OptimizedImage.js';
 import { ElevationProfileSVG } from './ElevationProfileSVG.js';
 import { WeatherTab } from './WeatherTab.js';
@@ -58,6 +67,12 @@ import {
   IconEdit,
   IconCamera,
   IconCheck,
+  IconBackpack,
+  IconShieldCheck,
+  IconDownload,
+  IconCopy,
+  IconLock,
+  IconRotateCw,
 } from '../common/SvgIcons.js';
 
 type DetailIncident = Incident & { _id?: string; active?: boolean };
@@ -71,6 +86,119 @@ type DetailReview = Review & {
 };
 type DetailTabId = 'overview' | 'map' | 'weather' | 'checklist' | 'itinerary' | 'guides' | 'reviews' | 'conditions' | 'pois';
 
+const VALID_DETAIL_TABS = new Set<DetailTabId>([
+  'overview',
+  'map',
+  'weather',
+  'checklist',
+  'itinerary',
+  'guides',
+  'reviews',
+  'conditions',
+  'pois',
+]);
+
+function resolveDetailTabFromUrl(): DetailTabId {
+  if (typeof window === 'undefined') return 'overview';
+  try {
+    const raw = new URLSearchParams(window.location.search).get('tab')?.trim().toLowerCase() || '';
+    if (VALID_DETAIL_TABS.has(raw as DetailTabId)) {
+      return raw as DetailTabId;
+    }
+  } catch {
+    // ignore malformed search query
+  }
+  return 'overview';
+}
+
+function getVietnamTodayIso(): string {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+  } catch {
+    return new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
+  }
+}
+
+const CENTRALLY_GOVERNED_CITIES = new Set([
+  'hà nội',
+  'tp. hồ chí minh',
+  'tp.hcm',
+  'hồ chí minh',
+  'đà nẵng',
+  'hải phòng',
+  'cần thơ',
+  'huế',
+  'thành phố huế',
+]);
+
+function formatVietnamProvinceCenter(province?: string): string {
+  const clean = String(province || '').trim();
+  if (!clean) return 'trung tâm địa phương';
+  const lower = clean.toLowerCase();
+  if (lower.startsWith('tp.') || lower.startsWith('thành phố') || lower.startsWith('tỉnh ')) {
+    return clean;
+  }
+  if (CENTRALLY_GOVERNED_CITIES.has(lower)) {
+    return `TP. ${clean}`;
+  }
+  return `tỉnh ${clean}`;
+}
+
+interface TrailMapElevationSyncProps {
+  trail: Trail;
+  singleTrailList: Trail[];
+  incidents: DetailIncident[];
+  mapFieldPois: Array<{
+    id: string;
+    title: string;
+    category: TrailPoiItem['category'];
+    lat: number;
+    lng: number;
+    status: TrailPoiItem['status'];
+    notes?: string;
+  }>;
+}
+
+const TrailMapElevationSync: React.FC<TrailMapElevationSyncProps> = React.memo(
+  ({ trail, singleTrailList, incidents, mapFieldPois }) => {
+    const [hoveredElevationCoord, setHoveredElevationCoord] = useState<[number, number] | null>(null);
+    const [hoveredTrackIndex, setHoveredTrackIndex] = useState<number | null>(null);
+
+    return (
+      <>
+        <MapView
+          trails={singleTrailList}
+          selectedTrail={trail}
+          incidents={incidents}
+          height="550px"
+          highlightedPoint={hoveredElevationCoord}
+          trailPois={mapFieldPois}
+          onHoverTrackIndex={setHoveredTrackIndex}
+        />
+
+        <div style={{ marginTop: 18 }}>
+          <ElevationProfileSVG
+            trailId={trail.id}
+            gpxTrack={trail.gpxTrack}
+            elevationGainM={trail.elevationGainM}
+            maxAltitudeM={trail.maxAltitudeM}
+            distanceKm={trail.distanceKm}
+            waypoints={trail.waypoints}
+            height={155}
+            onHoverCoordinate={setHoveredElevationCoord}
+            externalHoverIndex={hoveredTrackIndex}
+          />
+        </div>
+      </>
+    );
+  }
+);
+
 interface TrailDetailViewProps {
   trail: Trail;
   onBack: () => void;
@@ -80,6 +208,7 @@ interface TrailDetailViewProps {
   onRequireLogin?: (actionName: string) => void;
   allTrails?: Trail[];
   onSelectTrail?: (trail: Trail) => void;
+  initialTab?: DetailTabId;
 }
 
 const VERIFIED_AVATAR_FALLBACK = '/covers/avatar-default.svg';
@@ -111,6 +240,102 @@ function extractPrimaryDialNumber(phone?: string, fallback = '112'): string {
   return cleaned || fallback;
 }
 
+const POI_CATEGORY_LABELS_VI: Record<string, string> = {
+  water_source: 'Nguồn nước',
+  shelter_camp: 'Lán nghỉ / Bãi trại',
+  cell_signal: 'Điểm có sóng 4G',
+  hazard: 'Điểm nguy hiểm',
+  viewpoint: 'Điểm ngắm cảnh',
+  landmark: 'Mốc thực địa',
+};
+
+interface PendingOfflineCheckin {
+  clientQueueId: string;
+  trailId: string;
+  trailName: string;
+  checkinDate: string;
+  completionTimeHours: number;
+  weatherObserved?: string;
+  notes?: string;
+  isPublic: boolean;
+  lat?: number;
+  lng?: number;
+  queuedAt: string;
+}
+
+function getPendingCheckinsStorageKey(uid: string): string {
+  return `lost_pending_checkins_${uid}`;
+}
+
+function readPendingCheckins(uid: string): PendingOfflineCheckin[] {
+  if (!uid || uid === 'guest' || typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(getPendingCheckinsStorageKey(uid));
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is PendingOfflineCheckin =>
+        Boolean(item) &&
+        typeof item === 'object' &&
+        typeof (item as PendingOfflineCheckin).trailId === 'string' &&
+        typeof (item as PendingOfflineCheckin).checkinDate === 'string'
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writePendingCheckins(uid: string, list: PendingOfflineCheckin[]): void {
+  if (!uid || uid === 'guest' || typeof window === 'undefined') return;
+  try {
+    const key = getPendingCheckinsStorageKey(uid);
+    if (list.length === 0) {
+      window.localStorage.removeItem(key);
+    } else {
+      window.localStorage.setItem(key, JSON.stringify(list.slice(0, 30)));
+    }
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function enqueuePendingCheckin(uid: string, item: PendingOfflineCheckin): PendingOfflineCheckin[] {
+  const existing = readPendingCheckins(uid);
+  const filtered = existing.filter(
+    (entry) => !(entry.trailId === item.trailId && entry.checkinDate === item.checkinDate)
+  );
+  const next = [...filtered, item].slice(-30);
+  writePendingCheckins(uid, next);
+  return next;
+}
+
+async function copyTextOfflineSafe(text: string): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // fall through
+    }
+  }
+  if (typeof document === 'undefined' || !document.body) return false;
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', 'true');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
   trail,
   onBack,
@@ -120,9 +345,10 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
   onRequireLogin,
   allTrails,
   onSelectTrail,
+  initialTab,
 }) => {
   const [trackedTrailId, setTrackedTrailId] = useState<string>(trail.id);
-  const [activeTab, setActiveTab] = useState<DetailTabId>('overview');
+  const [activeTab, setActiveTab] = useState<DetailTabId>(() => initialTab || resolveDetailTabFromUrl());
   const { trackRef: detailTabTrackRef, indicatorStyle: detailTabIndicatorStyle } =
     useSlidingIndicator<DetailTabId>(activeTab);
   const [reviewsList, setReviewsList] = useState<DetailReview[]>(trail.reviews || []);
@@ -146,17 +372,15 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
   const [busyHelpfulIds, setBusyHelpfulIds] = useState<Record<string, boolean>>({});
   const [ratingOverride, setRatingOverride] = useState<{ rating: number; reviewCount: number } | null>(null);
   const [selectedEvidencePhoto, setSelectedEvidencePhoto] = useState<string | null>(null);
-  const [hoveredElevationCoord, setHoveredElevationCoord] = useState<[number, number] | null>(null);
-  const [hoveredTrackIndex, setHoveredTrackIndex] = useState<number | null>(null);
   const singleTrailList = useMemo(() => [trail], [trail]);
   const [trailPoisState, setTrailPoisState] = useState<{ trailId: string; items: TrailPoiItem[] }>({
     trailId: '',
     items: [],
   });
 
-  // Direct "Check-in Đỉnh" modal state
+  // Direct "Check-in Đỉnh" modal state (strict Vietnam local timezone date)
   const [isCheckinModalOpen, setIsCheckinModalOpen] = useState(false);
-  const [checkinDate, setCheckinDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [checkinDate, setCheckinDate] = useState(() => getVietnamTodayIso());
   const [checkinHours, setCheckinHours] = useState<number>(() => Math.max(2, (trail.durationDays || 1) * 6));
   const [checkinWeather, setCheckinWeather] = useState('');
   const [checkinNotes, setCheckinNotes] = useState('');
@@ -165,7 +389,245 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
   const [checkinLocating, setCheckinLocating] = useState(false);
   const [checkinSubmitting, setCheckinSubmitting] = useState(false);
   const checkinDialogRef = useRef<HTMLDivElement | null>(null);
+  const checkinGpsReqIdRef = useRef<number>(0);
+  const isMountedRef = useRef<boolean>(true);
+  const activeTrailIdRef = useRef<string>(trail.id);
   useFocusTrap(isCheckinModalOpen, checkinDialogRef);
+
+  // Offline "Chuẩn bị lên núi (Offline)" Quick-Prep Modal state (GPX + Offline Pack + ICE Lockscreen)
+  const [isOfflinePrepOpen, setIsOfflinePrepOpen] = useState(false);
+  const [prepOfflinePack, setPrepOfflinePack] = useState<OfflineTrailPackRecord | null>(null);
+  const [prepOfflineProgress, setPrepOfflineProgress] = useState<number | null>(null);
+  const [prepIceGenerating, setPrepIceGenerating] = useState(false);
+  const [prepCopiedPlusCode, setPrepCopiedPlusCode] = useState(false);
+  const offlinePrepDialogRef = useRef<HTMLDivElement | null>(null);
+  const prepDownloadAbortRef = useRef<AbortController | null>(null);
+  const prepCopiedTimerRef = useRef<number | null>(null);
+  useFocusTrap(isOfflinePrepOpen, offlinePrepDialogRef);
+
+  // Offline Check-in Pending-Sync Queue (`lost_pending_checkins_<uid>`)
+  const activeCheckinUid = useMemo(() => {
+    const explicitId = currentUser?.id || currentUser?._id;
+    return getActiveStorageUid(explicitId);
+  }, [currentUser?.id, currentUser?._id]);
+
+  const [pendingCheckinsCount, setPendingCheckinsCount] = useState<number>(() =>
+    readPendingCheckins(activeCheckinUid).length
+  );
+  const [trackedPendingUid, setTrackedPendingUid] = useState<string>(activeCheckinUid);
+  if (trackedPendingUid !== activeCheckinUid) {
+    setTrackedPendingUid(activeCheckinUid);
+    setPendingCheckinsCount(readPendingCheckins(activeCheckinUid).length);
+  }
+  const [isSyncingCheckins, setIsSyncingCheckins] = useState<boolean>(false);
+  const isFlushingCheckinsRef = useRef<boolean>(false);
+
+  const summitPlusCode = useMemo(() => {
+    const lat = Number.isFinite(trail.endLat) ? trail.endLat : trail.startLat;
+    const lng = Number.isFinite(trail.endLng) ? trail.endLng : trail.startLng;
+    return Number.isFinite(lat) && Number.isFinite(lng) ? encodePlusCode(lat, lng) : '';
+  }, [trail.endLat, trail.endLng, trail.startLat, trail.startLng]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    activeTrailIdRef.current = trail.id;
+    return () => {
+      isMountedRef.current = false;
+      checkinGpsReqIdRef.current += 1;
+      prepDownloadAbortRef.current?.abort();
+      prepDownloadAbortRef.current = null;
+      if (prepCopiedTimerRef.current !== null) {
+        window.clearTimeout(prepCopiedTimerRef.current);
+        prepCopiedTimerRef.current = null;
+      }
+    };
+  }, [trail.id]);
+
+  const flushPendingCheckins = React.useCallback(
+    async (silentIfEmpty = true) => {
+      if (isFlushingCheckinsRef.current) return;
+      if (typeof window === 'undefined') return;
+      const token = safeLocalStorageGet('lost_token');
+      const uid = getActiveStorageUid(currentUser?.id || currentUser?._id);
+      if (!token || !uid || uid === 'guest') return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        if (!silentIfEmpty) {
+          window.dispatchEvent(
+            new CustomEvent('lost:show-toast', {
+              detail: {
+                message: 'Thiết bị đang ngoại tuyến — các lượt check-in trong hàng chờ sẽ tự đồng bộ khi có mạng.',
+                type: 'info',
+              },
+            })
+          );
+        }
+        return;
+      }
+
+      const queue = readPendingCheckins(uid);
+      if (queue.length === 0) {
+        if (!silentIfEmpty) {
+          window.dispatchEvent(
+            new CustomEvent('lost:show-toast', {
+              detail: { message: 'Không còn lượt check-in ngoại tuyến nào chờ đồng bộ.', type: 'info' },
+            })
+          );
+        }
+        return;
+      }
+
+      isFlushingCheckinsRef.current = true;
+      if (isMountedRef.current) setIsSyncingCheckins(true);
+
+      // Track only processed/discarded queue IDs so any new check-in enqueued mid-flush is never overwritten
+      const processedIds = new Set<string>();
+      let syncedCount = 0;
+      const unlockedBadges: string[] = [];
+
+      try {
+        for (let i = 0; i < queue.length; i++) {
+          const item = queue[i];
+          try {
+            const res = await fetch('/api/checkins', {
+              method: 'POST',
+              headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+              body: JSON.stringify({
+                trailId: item.trailId,
+                checkinDate: item.checkinDate,
+                completionTimeHours: item.completionTimeHours,
+                weatherObserved: item.weatherObserved,
+                notes: item.notes,
+                isPublic: item.isPublic,
+                ...(typeof item.lat === 'number' && typeof item.lng === 'number'
+                  ? { lat: item.lat, lng: item.lng }
+                  : {}),
+              }),
+            });
+            const json = await res.json().catch(() => ({}));
+            if (res.ok && json?.success) {
+              processedIds.add(item.clientQueueId);
+              syncedCount += 1;
+              if (Array.isArray(json.unlockedBadges)) {
+                unlockedBadges.push(...(json.unlockedBadges as string[]));
+              }
+            } else if (res.status === 409) {
+              // Already checked in on server within 12h cooldown — drop cleanly so queue does not loop
+              processedIds.add(item.clientQueueId);
+              syncedCount += 1;
+            } else if (res.status === 401) {
+              // Auth expired — preserve remaining items until re-login
+              break;
+            } else if (res.status >= 400 && res.status < 500) {
+              // Permanent client validation error — discard malformed entry so queue never jams
+              processedIds.add(item.clientQueueId);
+            } else {
+              // 5xx transient server failure — keep remaining queue for next retry
+              break;
+            }
+          } catch {
+            // Network dropped mid-sync — keep remaining items safely in queue
+            break;
+          }
+        }
+
+        const latestQueue = readPendingCheckins(uid);
+        const nextQueue = latestQueue.filter((entry) => !processedIds.has(entry.clientQueueId));
+        writePendingCheckins(uid, nextQueue);
+        if (isMountedRef.current) {
+          setPendingCheckinsCount(nextQueue.length);
+        }
+        if (syncedCount > 0) {
+          const badgeNote =
+            unlockedBadges.length > 0
+              ? ` · Mở khóa huy hiệu: ${Array.from(new Set(unlockedBadges)).join(', ')}`
+              : '';
+          window.dispatchEvent(
+            new CustomEvent('lost:show-toast', {
+              detail: {
+                message: `Đã tự động đồng bộ ${syncedCount} lượt check-in ngoại tuyến lên nhật ký leo núi!${badgeNote}`,
+                type: 'success',
+              },
+            })
+          );
+        } else if (!silentIfEmpty && nextQueue.length > 0) {
+          window.dispatchEvent(
+            new CustomEvent('lost:show-toast', {
+              detail: {
+                message: `Chưa thể đồng bộ lúc này — vẫn giữ an toàn ${nextQueue.length} lượt check-in trong hàng chờ.`,
+                type: 'info',
+              },
+            })
+          );
+        }
+      } finally {
+        isFlushingCheckinsRef.current = false;
+        if (isMountedRef.current) setIsSyncingCheckins(false);
+      }
+    },
+    [currentUser?.id, currentUser?._id]
+  );
+
+  // Auto-flush offline check-in queue on mount / auth change & when device reconnects (`online` event)
+  useEffect(() => {
+    void flushPendingCheckins(true);
+    const onOnline = () => {
+      void flushPendingCheckins(true);
+    };
+    const onAuthChanged = () => {
+      const nextUid = getActiveStorageUid(currentUser?.id || currentUser?._id);
+      if (isMountedRef.current) {
+        setPendingCheckinsCount(readPendingCheckins(nextUid).length);
+      }
+      void flushPendingCheckins(true);
+    };
+    window.addEventListener('online', onOnline);
+    window.addEventListener('lost:auth-changed', onAuthChanged);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('lost:auth-changed', onAuthChanged);
+    };
+  }, [activeCheckinUid, currentUser?.id, currentUser?._id, flushPendingCheckins]);
+
+  // Refresh saved offline trail pack info whenever the Offline Prep modal opens
+  useEffect(() => {
+    if (!isOfflinePrepOpen) return;
+    let active = true;
+    void getOfflineTrailPack(trail.id).then((pack) => {
+      if (active && isMountedRef.current) {
+        setPrepOfflinePack(pack);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [isOfflinePrepOpen, trail.id]);
+
+  // Sync activeTab with URL ?tab=... on popstate navigation
+  useEffect(() => {
+    const syncTabFromUrl = () => {
+      const next = resolveDetailTabFromUrl();
+      setActiveTab(next);
+    };
+    window.addEventListener('popstate', syncTabFromUrl);
+    return () => window.removeEventListener('popstate', syncTabFromUrl);
+  }, []);
+
+  const handleSelectDetailTab = (nextTab: DetailTabId) => {
+    setActiveTab(nextTab);
+    if (typeof window !== 'undefined') {
+      try {
+        const url = new URL(window.location.href);
+        if (nextTab === 'overview') {
+          url.searchParams.delete('tab');
+        } else {
+          url.searchParams.set('tab', nextTab);
+        }
+        window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+      } catch {
+        // ignore history error
+      }
+    }
+  };
   const [reviewingGuideId, setReviewingGuideId] = useState<string | null>(null);
   const [guideRating, setGuideRating] = useState(5);
   const [guideComment, setGuideComment] = useState('');
@@ -176,10 +638,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
   const [showOverviewClimateChart, setShowOverviewClimateChart] = useState<boolean>(false);
   const [weatherAlertSub, setWeatherAlertSub] = useState<WeatherAlertSubItem | null>(null);
   const [weatherAlertSyncTick, setWeatherAlertSyncTick] = useState<number>(0);
-  const [hasAlertAuthToken, setHasAlertAuthToken] = useState<boolean>(() => {
-    if (typeof localStorage === 'undefined') return false;
-    return Boolean(localStorage.getItem('lost_token'));
-  });
+  const [hasAlertAuthToken, setHasAlertAuthToken] = useState<boolean>(() => Boolean(safeLocalStorageGet('lost_token')));
   const isAuthedForWeatherAlert = Boolean(currentUser) || hasAlertAuthToken;
   const [trackedAlertAuth, setTrackedAlertAuth] = useState<boolean>(isAuthedForWeatherAlert);
 
@@ -244,8 +703,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
   // Sync weather alert watchlist status for this trail when authenticated (same-tab & cross-tab)
   useEffect(() => {
     const syncAuth = () => {
-      if (typeof localStorage === 'undefined') return;
-      setHasAlertAuthToken(Boolean(localStorage.getItem('lost_token')));
+      setHasAlertAuthToken(Boolean(safeLocalStorageGet('lost_token')));
     };
     const onAlertsUpdated = (ev: Event) => {
       const detail = (ev as CustomEvent<{ source?: string }>).detail;
@@ -286,7 +744,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
   // Reset activeTab, forms, and base lists cleanly during render whenever trail.id changes
   if (trackedTrailId !== trail.id) {
     setTrackedTrailId(trail.id);
-    setActiveTab('overview');
+    setActiveTab(initialTab || resolveDetailTabFromUrl());
     setReviewsList(trail.reviews || []);
     setGuidesList(trail.guides || []);
     setNewRating(5);
@@ -302,8 +760,6 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
     setBusyHelpfulIds({});
     setRatingOverride(null);
     setSelectedEvidencePhoto(null);
-    setHoveredElevationCoord(null);
-    setHoveredTrackIndex(null);
     setReviewingGuideId(null);
     setGuideRating(5);
     setGuideComment('');
@@ -313,32 +769,43 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
     setShowOverviewClimateChart(false);
     setWeatherAlertSub(null);
     setIsCheckinModalOpen(false);
+    setIsOfflinePrepOpen(false);
+    setPrepOfflinePack(null);
+    setPrepOfflineProgress(null);
+    setPrepIceGenerating(false);
+    setPrepCopiedPlusCode(false);
     setCheckinGps(null);
+    setCheckinLocating(false);
     setCheckinHours(Math.max(2, (trail.durationDays || 1) * 6));
   }
 
-  // Escape key closes Check-in Đỉnh modal cleanly (LIFO topmost + IME safe)
+  // Escape key closes Check-in Đỉnh / Offline Prep modal cleanly (LIFO topmost + IME safe)
   useEffect(() => {
-    if (!isCheckinModalOpen) return;
+    if (!isCheckinModalOpen && !isOfflinePrepOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.isComposing) return;
       if (e.key === 'Escape') {
-        if (!isTopmostFocusTrap(checkinDialogRef.current)) return;
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        setIsCheckinModalOpen(false);
+        if (isOfflinePrepOpen && isTopmostFocusTrap(offlinePrepDialogRef.current)) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          setIsOfflinePrepOpen(false);
+        } else if (isCheckinModalOpen && isTopmostFocusTrap(checkinDialogRef.current)) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          setIsCheckinModalOpen(false);
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isCheckinModalOpen]);
+  }, [isCheckinModalOpen, isOfflinePrepOpen]);
 
   const handleUploadReviewPhotos = async (
     files: FileList | null,
     target: 'create' | 'edit'
   ) => {
     if (!files || files.length === 0) return;
-    if (!currentUser && !localStorage.getItem('lost_token')) {
+    if (!currentUser && !safeLocalStorageGet('lost_token')) {
       onRequireLogin?.('tải ảnh đánh giá');
       return;
     }
@@ -347,7 +814,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
     if (slots === 0) {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: 'Tối đa 6 ảnh đính kèm cho mỗi đánh giá.', type: 'info' },
+          detail: { message: 'Mỗi nhận xét chỉ đính kèm tối đa 6 ảnh thôi bạn nhé.', type: 'info' },
         })
       );
       return;
@@ -362,7 +829,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
         const base64 = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve(String(reader.result || ''));
-          reader.onerror = () => reject(new Error('Không thể đọc tệp ảnh.'));
+          reader.onerror = () => reject(new Error('Không đọc được tệp ảnh này.'));
           reader.readAsDataURL(file);
         });
         const uploadedUrl = await uploadImageToCloudinary(base64, file.name, 'reviews');
@@ -377,7 +844,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
           detail: {
-            message: err instanceof Error ? err.message : 'Không thể tải ảnh lên máy chủ.',
+            message: err instanceof Error ? err.message : 'Chưa tải ảnh lên được, bạn thử lại nhé.',
             type: 'error',
           },
         })
@@ -403,7 +870,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
     if (editReviewContent.trim().length < 5) {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: 'Nội dung đánh giá phải có ít nhất 5 ký tự.', type: 'error' },
+          detail: { message: 'Viết thêm vài chữ nữa nhé (ít nhất 5 ký tự).', type: 'error' },
         })
       );
       return;
@@ -426,7 +893,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       );
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json.success || !json.data) {
-        throw new Error(json.message || 'Không thể cập nhật đánh giá.');
+        throw new Error(json.message || 'Chưa lưu được phần sửa nhận xét.');
       }
       setReviewsList((prev) =>
         prev.map((r) => {
@@ -443,14 +910,14 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       setEditingReviewId(null);
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: json.message || 'Đã cập nhật đánh giá thành công!', type: 'success' },
+          detail: { message: json.message || 'Đã lưu phần sửa nhận xét!', type: 'success' },
         })
       );
     } catch (err) {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
           detail: {
-            message: err instanceof Error ? err.message : 'Không thể cập nhật đánh giá lúc này.',
+            message: err instanceof Error ? err.message : 'Chưa cập nhật được nhận xét lúc này.',
             type: 'error',
           },
         })
@@ -462,8 +929,8 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
 
   const handleToggleReviewHelpful = async (revId: string) => {
     if (!revId || busyHelpfulIds[revId]) return;
-    if (!currentUser && !localStorage.getItem('lost_token')) {
-      onRequireLogin?.('bình chọn đánh giá hữu ích');
+    if (!currentUser && !safeLocalStorageGet('lost_token')) {
+      onRequireLogin?.('bấm hữu ích cho nhận xét');
       return;
     }
     setBusyHelpfulIds((prev) => ({ ...prev, [revId]: true }));
@@ -478,7 +945,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       );
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json.success) {
-        throw new Error(json.message || 'Không thể cập nhật bình chọn hữu ích.');
+        throw new Error(json.message || 'Chưa ghi nhận được lượt hữu ích, thử lại nhé.');
       }
       setReviewsList((prev) =>
         prev.map((r) => {
@@ -496,7 +963,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
           detail: {
-            message: err instanceof Error ? err.message : 'Không thể cập nhật bình chọn hữu ích.',
+            message: err instanceof Error ? err.message : 'Chưa ghi nhận được lượt hữu ích, thử lại nhé.',
             type: 'error',
           },
         })
@@ -514,14 +981,19 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: 'Thiết bị không hỗ trợ định vị GPS.', type: 'error' },
+          detail: { message: 'Máy bạn không hỗ trợ định vị GPS.', type: 'error' },
         })
       );
       return;
     }
+    const reqId = ++checkinGpsReqIdRef.current;
+    const reqTrailId = trail.id;
     setCheckinLocating(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        if (!isMountedRef.current || checkinGpsReqIdRef.current !== reqId || activeTrailIdRef.current !== reqTrailId) {
+          return;
+        }
         const lat = Number(pos.coords.latitude.toFixed(6));
         const lng = Number(pos.coords.longitude.toFixed(6));
         const refs: [number, number][] = [
@@ -529,8 +1001,28 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
           ...(Number.isFinite(trail.endLat) && Number.isFinite(trail.endLng)
             ? [[trail.endLat, trail.endLng] as [number, number]]
             : []),
-          ...(Array.isArray(trail.gpxTrack) ? trail.gpxTrack.slice(0, 60) : []),
         ];
+        if (Array.isArray(trail.waypoints)) {
+          for (const wp of trail.waypoints) {
+            if (Number.isFinite(wp.lat) && Number.isFinite(wp.lng)) {
+              refs.push([wp.lat, wp.lng]);
+            }
+          }
+        }
+        if (Array.isArray(trail.gpxTrack) && trail.gpxTrack.length > 0) {
+          const track = trail.gpxTrack;
+          const stride = track.length > 1500 ? Math.ceil(track.length / 1500) : 1;
+          for (let i = 0; i < track.length; i += stride) {
+            const pt = track[i];
+            if (Array.isArray(pt) && Number.isFinite(pt[0]) && Number.isFinite(pt[1])) {
+              refs.push([pt[0], pt[1]]);
+            }
+          }
+          const lastPt = track[track.length - 1];
+          if (Array.isArray(lastPt) && Number.isFinite(lastPt[0]) && Number.isFinite(lastPt[1])) {
+            refs.push([lastPt[0], lastPt[1]]);
+          }
+        }
         let minM = Infinity;
         for (const [rLat, rLng] of refs) {
           if (Number.isFinite(rLat) && Number.isFinite(rLng)) {
@@ -543,10 +1035,11 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
         setCheckinLocating(false);
       },
       () => {
+        if (!isMountedRef.current || checkinGpsReqIdRef.current !== reqId) return;
         setCheckinLocating(false);
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
-            detail: { message: 'Không thể lấy tọa độ GPS lúc này. Bạn vẫn có thể check-in nhật ký bình thường.', type: 'info' },
+            detail: { message: 'Chưa bắt được sóng GPS lúc này — bạn vẫn ghi nhật ký check-in bình thường nhé.', type: 'info' },
           })
         );
       },
@@ -557,29 +1050,80 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
   const handleSubmitCheckin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (checkinSubmitting) return;
-    if (!currentUser && !localStorage.getItem('lost_token')) {
+    if (!currentUser && !safeLocalStorageGet('lost_token')) {
       setIsCheckinModalOpen(false);
-      onRequireLogin?.('check-in chinh phục đỉnh');
+      onRequireLogin?.('check-in đỉnh này');
       return;
     }
+
+    const uid = getActiveStorageUid(currentUser?.id || currentUser?._id);
+    const checkinBody = {
+      trailId: trail.id,
+      checkinDate,
+      completionTimeHours: Math.max(0.5, Number(checkinHours) || 6),
+      weatherObserved: checkinWeather.trim() || undefined,
+      notes: checkinNotes.trim() || undefined,
+      isPublic: checkinIsPublic,
+      ...(checkinGps ? { lat: checkinGps.lat, lng: checkinGps.lng } : {}),
+    };
+
+    const queueCheckinOffline = () => {
+      if (!uid || uid === 'guest') return false;
+      const queuedList = enqueuePendingCheckin(uid, {
+        clientQueueId: `chk-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        trailId: checkinBody.trailId,
+        trailName: trail.name,
+        checkinDate: checkinBody.checkinDate,
+        completionTimeHours: checkinBody.completionTimeHours,
+        weatherObserved: checkinBody.weatherObserved,
+        notes: checkinBody.notes,
+        isPublic: checkinBody.isPublic,
+        lat: checkinGps?.lat,
+        lng: checkinGps?.lng,
+        queuedAt: new Date().toISOString(),
+      });
+      setPendingCheckinsCount(queuedList.length);
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: {
+            message: `Đang mất sóng mạng — đã lưu check-in ${trail.name} vào hàng chờ ngoại tuyến và sẽ tự đồng bộ khi về vùng có sóng!`,
+            type: 'info',
+          },
+        })
+      );
+      setIsCheckinModalOpen(false);
+      setCheckinNotes('');
+      setCheckinWeather('');
+      return true;
+    };
+
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      if (!queueCheckinOffline()) {
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: {
+              message: 'Đang ngoại tuyến và chưa xác định được tài khoản để lưu hàng chờ — vui lòng thử lại khi có mạng.',
+              type: 'error',
+            },
+          })
+        );
+      }
+      return;
+    }
+
     setCheckinSubmitting(true);
     try {
       const res = await fetch('/api/checkins', {
         method: 'POST',
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          trailId: trail.id,
-          checkinDate,
-          completionTimeHours: Math.max(0.5, Number(checkinHours) || 6),
-          weatherObserved: checkinWeather.trim() || undefined,
-          notes: checkinNotes.trim() || undefined,
-          isPublic: checkinIsPublic,
-          ...(checkinGps ? { lat: checkinGps.lat, lng: checkinGps.lng } : {}),
-        }),
+        body: JSON.stringify(checkinBody),
       });
+      if (res.status === 502 || res.status === 503 || res.status === 504) {
+        if (queueCheckinOffline()) return;
+      }
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json.success) {
-        throw new Error(json.message || 'Không thể lưu check-in đỉnh lúc này.');
+        throw new Error(json.message || 'Chưa lưu được check-in lúc này, bạn thử lại nhé.');
       }
       const badgeList = Array.isArray(json.unlockedBadges) && json.unlockedBadges.length > 0
         ? ` · Mở khóa huy hiệu: ${json.unlockedBadges.join(', ')}`
@@ -587,7 +1131,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
           detail: {
-            message: `${json.message || `Check-in đỉnh ${trail.name} thành công!`}${badgeList}`,
+            message: `${json.message || `Đã lưu dấu chân tại ${trail.name}!`}${badgeList}`,
             type: 'success',
           },
         })
@@ -596,10 +1140,17 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       setCheckinNotes('');
       setCheckinWeather('');
     } catch (err) {
+      // Queue offline on genuine network fetch failures (e.g. summit with zero 4G)
+      const isNetworkError =
+        err instanceof TypeError ||
+        (typeof navigator !== 'undefined' && navigator.onLine === false);
+      if (isNetworkError && queueCheckinOffline()) {
+        return;
+      }
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
           detail: {
-            message: err instanceof Error ? err.message : 'Lỗi khi ghi nhận check-in đỉnh.',
+            message: err instanceof Error ? err.message : 'Chưa lưu được check-in, thử lại sau chút nhé.',
             type: 'error',
           },
         })
@@ -626,14 +1177,14 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       setConfirmDeleteReviewId(null);
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: res.message || 'Đã xóa đánh giá thành công!', type: 'success' },
+          detail: { message: res.message || 'Đã xóa nhận xét.', type: 'success' },
         })
       );
     } catch (err) {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
           detail: {
-            message: err instanceof Error ? err.message : 'Không thể xóa đánh giá lúc này.',
+            message: err instanceof Error ? err.message : 'Chưa xóa được nhận xét lúc này.',
             type: 'error',
           },
         })
@@ -665,7 +1216,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
   const navigateToFieldTool = (path: string) => {
     window.history.pushState({}, '', path);
     window.dispatchEvent(new PopStateEvent('popstate'));
-    window.dispatchEvent(new CustomEvent('lost:navigate', { detail: { path, trailId: trail.id } }));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleOpenLostAiForTrail = () => {
@@ -686,8 +1237,8 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
 
   const handleSubmitGuideReview = async (guideId: string) => {
     if (isSubmittingGuideReview) return;
-    if (!currentUser && !localStorage.getItem('lost_token')) {
-      onRequireLogin?.('đánh giá Hướng dẫn viên / Porter');
+    if (!currentUser && !safeLocalStorageGet('lost_token')) {
+      onRequireLogin?.('nhận xét porter');
       return;
     }
     setIsSubmittingGuideReview(true);
@@ -697,8 +1248,8 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ rating: guideRating, comment: guideComment }),
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.message);
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.success) throw new Error(data?.message || 'Chưa gửi được nhận xét porter, thử lại nhé.');
       setGuidesList((prev) => prev.map((g) => (String(g._id || g.id) === String(guideId) ? { ...g, ...data.data } : g)));
       setReviewingGuideId(null);
       setGuideComment('');
@@ -707,7 +1258,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
           detail: {
-            message: err instanceof Error ? err.message : 'Không thể gửi đánh giá Porter.',
+            message: err instanceof Error ? err.message : 'Chưa gửi được nhận xét porter, thử lại nhé.',
             type: 'error',
           },
         })
@@ -721,45 +1272,45 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
     switch (type) {
       case 'landslide':
         return {
-          label: 'Sạt lở đất đá & Đứt gãy đường mòn',
-          tag: 'Sạt lở địa hình',
+          label: 'Sạt lở đất đá, đứt đường mòn',
+          tag: 'Sạt lở',
           Icon: IconMountain,
           color: 'var(--color-error-text, var(--color-error))',
         };
       case 'flood':
       case 'flash_flood':
         return {
-          label: 'Mưa to ngập lũ & Nước suối dâng xiết',
-          tag: 'Lũ quét suối dâng',
+          label: 'Mưa lớn, nước suối dâng xiết',
+          tag: 'Lũ quét / suối dâng',
           Icon: IconDroplet,
           color: 'var(--color-sky)',
         };
       case 'weather':
       case 'bad_weather':
         return {
-          label: 'Thời tiết cực đoan, giông lốc & sương mù dày',
-          tag: 'Thiên tai thời tiết',
+          label: 'Giông lốc, sương mù dày đặc',
+          tag: 'Thời tiết xấu',
           Icon: IconCloudFog,
           color: 'var(--color-sun)',
         };
       case 'wildlife':
         return {
-          label: 'Động vật rừng hoang dã & Rắn/Ong độc',
-          tag: 'Sinh vật hoang dã',
+          label: 'Động vật hoang dã, rắn hoặc ong rừng',
+          tag: 'Động vật rừng',
           Icon: IconTrees,
           color: 'var(--color-primary)',
         };
       case 'lost':
         return {
-          label: 'Mất dấu mòn định hướng & Nguy cơ lạc đường',
-          tag: 'Cảnh báo lạc đường',
+          label: 'Mờ lối mòn, dễ lạc đường',
+          tag: 'Dễ lạc đường',
           Icon: IconCompass,
           color: 'var(--color-earth)',
         };
       default:
         return {
-          label: 'Sự cố an toàn địa hình thực địa',
-          tag: 'Cảnh báo thực địa',
+          label: 'Cảnh báo an toàn trên đường',
+          tag: 'Cảnh báo tuyến',
           Icon: IconAlertTriangle,
           color: 'var(--color-error-text, var(--color-error))',
         };
@@ -771,7 +1322,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       case 'critical':
         return {
           levelCode: 'CẤP 1 · KHẨN CẤP',
-          directive: 'Nguy hiểm tính mạng - Tạm dừng & Đình chỉ hành trình',
+          directive: 'Nguy hiểm trực tiếp — dừng chuyến, không đi tiếp',
           bg: 'var(--color-error)',
           border: 'var(--color-error)',
           textColor: 'var(--color-on-danger)',
@@ -779,7 +1330,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       case 'high':
         return {
           levelCode: 'CẤP 2 · NGUY CẤP',
-          directive: 'Rủi ro cao - Cân nhắc quay lại hoặc dừng chân tại trạm',
+          directive: 'Rủi ro cao — cân nhắc quay đầu hoặc trú lại trạm',
           bg: 'var(--color-earth)',
           border: 'var(--color-earth)',
           textColor: 'var(--color-on-primary)',
@@ -787,7 +1338,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       case 'medium':
         return {
           levelCode: 'CẤP 3 · TRUNG BÌNH',
-          directive: 'Cần quan sát địa hình kỹ & Chuẩn bị phương án dự phòng',
+          directive: 'Đi cẩn trọng, quan sát kỹ và có đường rút',
           bg: 'var(--color-sun)',
           border: 'var(--color-sun)',
           textColor: 'var(--color-on-primary)',
@@ -795,7 +1346,7 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       default:
         return {
           levelCode: 'CẤP 4 · LƯU Ý',
-          directive: 'Địa hình trơn trượt - Chú ý an toàn khi di chuyển',
+          directive: 'Đường trơn, giữ chắc bước chân',
           bg: 'var(--color-sky)',
           border: 'var(--color-sky)',
           textColor: 'var(--color-on-primary)',
@@ -838,8 +1389,8 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
           headers: getApiHeaders(),
           signal: controller.signal,
         });
-        const data = await res.json();
-        if (!controller.signal.aborted && data.success && Array.isArray(data.data)) {
+        const data = await res.json().catch(() => null);
+        if (!controller.signal.aborted && res.ok && data?.success && Array.isArray(data.data)) {
           setReviewsList(data.data);
         }
       } catch {
@@ -851,8 +1402,8 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
         const res = await fetch(`/api/trails/${encodeURIComponent(trail.id)}/guides`, {
           signal: controller.signal,
         });
-        const data = await res.json();
-        if (!controller.signal.aborted && data.success && Array.isArray(data.data)) {
+        const data = await res.json().catch(() => null);
+        if (!controller.signal.aborted && res.ok && data?.success && Array.isArray(data.data)) {
           setGuidesList(data.data);
         }
       } catch {
@@ -909,30 +1460,43 @@ export const TrailDetailView: React.FC<TrailDetailViewProps> = ({
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&apos;');
 
-  // GPX 1.1 Download Generator (Open to guests + includes <wpt> waypoint markers)
+  // GPX 1.1 Download Generator (Open to guests + embeds official waypoints & community POIs as <wpt>)
   const handleDownloadGpx = () => {
     if (!trail.gpxTrack || trail.gpxTrack.length === 0) {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: 'Tuyến đường này chưa có dữ liệu GPS Tracklog chi tiết để xuất file.', type: 'info' },
+          detail: { message: 'Cung này chưa có file GPX chi tiết để tải về.', type: 'info' },
         })
       );
       return;
     }
 
-    const waypointsXml = (trail.waypoints || [])
-      .filter((wp) => Number.isFinite(Number(wp.lat)) && Number.isFinite(Number(wp.lng)))
-      .map((wp) => {
-        const eleTag =
-          typeof wp.elevationM === 'number' && Number.isFinite(wp.elevationM)
-            ? `<ele>${Math.round(wp.elevationM)}</ele>`
-            : '';
-        const nameTag = `<name>${escapeXml(wp.name || 'Mốc tọa độ')}</name>`;
-        const descTag = wp.description ? `<desc>${escapeXml(wp.description)}</desc>` : '';
-        const typeTag = wp.type ? `<type>${escapeXml(wp.type)}</type>` : '';
-        return `  <wpt lat="${Number(wp.lat)}" lon="${Number(wp.lng)}">${eleTag}${nameTag}${descTag}${typeTag}</wpt>`;
-      })
-      .join('\n');
+    const officialWaypoints = (trail.waypoints || []).filter(
+      (wp) => Number.isFinite(Number(wp.lat)) && Number.isFinite(Number(wp.lng))
+    );
+    const officialWptXml = officialWaypoints.map((wp) => {
+      const eleTag =
+        typeof wp.elevationM === 'number' && Number.isFinite(wp.elevationM)
+          ? `<ele>${Math.round(wp.elevationM)}</ele>`
+          : '';
+      const nameTag = `<name>${escapeXml(wp.name || 'Mốc tọa độ')}</name>`;
+      const descTag = wp.description ? `<desc>${escapeXml(wp.description)}</desc>` : '';
+      const typeTag = wp.type ? `<type>${escapeXml(wp.type)}</type>` : '';
+      return `  <wpt lat="${Number(wp.lat)}" lon="${Number(wp.lng)}">${eleTag}${nameTag}${descTag}${typeTag}</wpt>`;
+    });
+
+    const communityPoiWptXml = mapFieldPois
+      .filter((poi) => Number.isFinite(Number(poi.lat)) && Number.isFinite(Number(poi.lng)))
+      .map((poi) => {
+        const catLabel = POI_CATEGORY_LABELS_VI[poi.category] || poi.category;
+        const nameTag = `<name>${escapeXml(`[POI] ${poi.title}`)}</name>`;
+        const descParts = [catLabel, poi.status ? `Trạng thái: ${poi.status}` : '', poi.notes || ''].filter(Boolean);
+        const descTag = descParts.length > 0 ? `<desc>${escapeXml(descParts.join(' · '))}</desc>` : '';
+        const typeTag = `<type>${escapeXml(poi.category)}</type>`;
+        return `  <wpt lat="${Number(poi.lat)}" lon="${Number(poi.lng)}">${nameTag}${descTag}${typeTag}</wpt>`;
+      });
+
+    const waypointsXml = [...officialWptXml, ...communityPoiWptXml].join('\n');
 
     const trackPointsXml = (trail.gpxTrack || [])
       .map((pt: [number, number] | [number, number, number] | { lat?: number; lng?: number; elevationM?: number }) => {
@@ -971,13 +1535,150 @@ ${trackPointsXml}
     link.click();
     document.body.removeChild(link);
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    window.dispatchEvent(
+      new CustomEvent('lost:show-toast', {
+        detail: {
+          message: `Đã tải file GPX 1.1 (${officialWptXml.length} mốc tuyến + ${communityPoiWptXml.length} POI cộng đồng).`,
+          type: 'success',
+        },
+      })
+    );
+  };
+
+  const handlePrepDownloadOfflinePack = async (forceRefresh = false) => {
+    if (prepOfflineProgress !== null) return;
+    prepDownloadAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    prepDownloadAbortRef.current = ctrl;
+    setPrepOfflineProgress(5);
+    try {
+      const pack = await downloadOfflineTrailPack(
+        trail,
+        (pct) => {
+          if (isMountedRef.current && !ctrl.signal.aborted) {
+            setPrepOfflineProgress(pct);
+          }
+        },
+        { forceRefresh, signal: ctrl.signal }
+      );
+      if (!isMountedRef.current || ctrl.signal.aborted) return;
+      setPrepOfflinePack(pack);
+      setPrepOfflineProgress(null);
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: {
+            message: `Đã lưu gói Offline ${trail.name} (${pack.tileCount} ô địa hình · ~${pack.estimatedSizeMb} MB).`,
+            type: 'success',
+          },
+        })
+      );
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return;
+      if (isMountedRef.current) {
+        setPrepOfflineProgress(null);
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: {
+              message: err instanceof Error ? err.message : 'Chưa tải được gói bản đồ ngoại tuyến lúc này.',
+              type: 'error',
+            },
+          })
+        );
+      }
+    } finally {
+      if (prepDownloadAbortRef.current === ctrl) {
+        prepDownloadAbortRef.current = null;
+      }
+    }
+  };
+
+  const handlePrepCancelOfflinePack = () => {
+    if (!prepDownloadAbortRef.current) return;
+    prepDownloadAbortRef.current.abort();
+    prepDownloadAbortRef.current = null;
+    setPrepOfflineProgress(null);
+    window.dispatchEvent(
+      new CustomEvent('lost:show-toast', {
+        detail: { message: 'Đã hủy tải gói bản đồ ngoại tuyến.', type: 'info' },
+      })
+    );
+  };
+
+  const handlePrepDeleteOfflinePack = async () => {
+    try {
+      await deleteOfflineTrailPack(trail.id);
+      if (isMountedRef.current) setPrepOfflinePack(null);
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: { message: 'Đã xóa gói bản đồ ngoại tuyến của cung này.', type: 'info' },
+        })
+      );
+    } catch {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: { message: 'Không thể xóa gói ngoại tuyến lúc này.', type: 'error' },
+        })
+      );
+    }
+  };
+
+  const handlePrepDownloadIceCard = async () => {
+    if (prepIceGenerating) return;
+    setPrepIceGenerating(true);
+    try {
+      const uid = getActiveStorageUid(currentUser?.id || currentUser?._id);
+      const savedProfile = loadIceCardProfile(uid);
+      const themeAttr = document.documentElement.getAttribute('data-theme');
+      const theme = themeAttr === 'light' ? 'light' : 'dark';
+      const mergedProfile = {
+        ...savedProfile,
+        fullName: savedProfile.fullName || currentUser?.fullName || currentUser?.username || '',
+        plannedPeak: `${trail.name} (${trail.maxAltitudeM.toLocaleString('vi-VN')}m)`,
+        rangerStationName:
+          trail.rescueContact?.rangerContact ||
+          savedProfile.rangerStationName ||
+          `Trạm Kiểm lâm ${trail.province}`,
+        rangerHotline: trail.rescueContact?.phone || savedProfile.rangerHotline || '112 / 114',
+      };
+      const rendered = await renderIceLockscreenPng({
+        profile: mergedProfile,
+        theme,
+      });
+      const url = URL.createObjectURL(rendered.blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = rendered.fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: {
+            message: `Đã xuất thẻ khóa màn hình ICE (1080×1920 PNG) gắn sẵn hotline ${trail.name}!`,
+            type: 'success',
+          },
+        })
+      );
+    } catch (err) {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: {
+            message: err instanceof Error ? err.message : 'Không thể xuất thẻ khóa màn hình ICE lúc này.',
+            type: 'error',
+          },
+        })
+      );
+    } finally {
+      if (isMountedRef.current) setPrepIceGenerating(false);
+    }
   };
 
   const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmittingReview) return;
-    if (!currentUser && !localStorage.getItem('lost_token')) {
-      if (onRequireLogin) onRequireLogin('gửi đánh giá chuyến đi');
+    if (!currentUser && !safeLocalStorageGet('lost_token')) {
+      if (onRequireLogin) onRequireLogin('viết nhận xét về cung này');
       return;
     }
     if (!newContent.trim()) return;
@@ -1001,14 +1702,14 @@ ${trackPointsXml}
       setNewReviewPhotos([]);
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: 'Đã gửi đánh giá thực địa thành công!', type: 'success' },
+          detail: { message: 'Đã đăng nhận xét! Cảm ơn bạn đã chia sẻ lại cho người đi sau.', type: 'success' },
         })
       );
     } catch (err: unknown) {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
           detail: {
-            message: err instanceof Error ? err.message : 'Không thể gửi đánh giá. Vui lòng thử lại.',
+            message: err instanceof Error ? err.message : 'Chưa đăng được nhận xét, bạn thử lại nhé.',
             type: 'error',
           },
         })
@@ -1024,9 +1725,9 @@ ${trackPointsXml}
   const transportSteps = trail.transportationInfo
     ? trail.transportationInfo.split(/\.\s+/).filter(Boolean)
     : [
-      `Di chuyển từ trung tâm TP. ${trail.province} bằng xe khách/xe máy đến điểm hẹn.`,
-      'Bắt đầu chặng đi bộ từ cổng Vườn Quốc Gia / Cửa rừng.',
-      'Làm thủ tục đăng ký với Trạm Kiểm Lâm địa phương.',
+      `Di chuyển từ trung tâm ${formatVietnamProvinceCenter(trail.province)} bằng xe khách hoặc xe máy đến điểm hẹn.`,
+      'Bắt đầu đi bộ từ cổng Vườn quốc gia hoặc cửa rừng.',
+      'Đăng ký thông tin với trạm kiểm lâm địa phương trước khi vào rừng.',
     ];
 
   const isOver3000m = trail.maxAltitudeM >= 3000;
@@ -1051,7 +1752,7 @@ ${trackPointsXml}
             <line x1="19" y1="12" x2="5" y2="12" />
             <polyline points="12 19 5 12 12 5" />
           </svg>
-          <span>Quay lại danh sách</span>
+          <span>Quay lại</span>
         </button>
 
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -1059,8 +1760,8 @@ ${trackPointsXml}
             type="button"
             className="btn btn-primary"
             onClick={() => {
-              if (!currentUser && !localStorage.getItem('lost_token')) {
-                onRequireLogin?.('check-in chinh phục đỉnh');
+              if (!currentUser && !safeLocalStorageGet('lost_token')) {
+                onRequireLogin?.('check-in đỉnh này');
                 return;
               }
               setIsCheckinModalOpen(true);
@@ -1068,7 +1769,27 @@ ${trackPointsXml}
             style={{ gap: 7, display: 'inline-flex', alignItems: 'center' }}
           >
             <IconCheckCircle size={15} color="var(--color-on-primary)" />
-            <span>Check-in Đỉnh</span>
+            <span>
+              Check-in đỉnh
+              {pendingCheckinsCount > 0 ? ` (${pendingCheckinsCount} chờ đồng bộ)` : ''}
+            </span>
+          </button>
+          <button
+            type="button"
+            className="btn btn-outline"
+            onClick={() => setIsOfflinePrepOpen(true)}
+            style={{
+              gap: 7,
+              display: 'inline-flex',
+              alignItems: 'center',
+              borderColor: 'color-mix(in srgb, var(--color-primary) 45%, var(--color-border))',
+              background: 'color-mix(in srgb, var(--color-primary) 10%, var(--color-bg-card))',
+              color: 'var(--color-primary)',
+              fontWeight: 700,
+            }}
+          >
+            <IconBackpack size={15} color="var(--color-primary)" />
+            <span>Chuẩn bị lên núi (Offline)</span>
           </button>
           <button
             type="button"
@@ -1088,7 +1809,7 @@ ${trackPointsXml}
             }}
           >
             <IconBell size={15} color={weatherAlertSub?.isActive ? 'var(--color-sky)' : 'currentColor'} />
-            <span>{weatherAlertSub?.isActive ? 'Đang Cảnh Báo Thời Tiết' : 'Cảnh Báo Thời Tiết'}</span>
+            <span>{weatherAlertSub?.isActive ? 'Đang bật báo thời tiết' : 'Nhận báo thời tiết'}</span>
           </button>
           <button type="button" className="btn btn-outline" onClick={handleDownloadGpx} style={{ gap: 8, display: 'inline-flex', alignItems: 'center' }}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1096,11 +1817,11 @@ ${trackPointsXml}
               <polyline points="7 10 12 15 17 10" />
               <line x1="12" y1="15" x2="12" y2="3" />
             </svg>
-            <span>Tải GPX Offline</span>
+            <span>Tải GPX về máy</span>
           </button>
           <button type="button" className="btn btn-danger" onClick={onOpenIncidentModal} style={{ gap: 8, display: 'inline-flex', alignItems: 'center' }}>
             <IconAlertTriangle size={15} color="var(--color-on-danger)" />
-            <span>Báo cáo nguy hiểm</span>
+            <span>Báo nguy hiểm</span>
           </button>
         </div>
       </div>
@@ -1111,8 +1832,8 @@ ${trackPointsXml}
         const sevMeta = getIncidentSeverityMeta(matchingIncident.severity);
         const IncidentIcon = typeMeta.Icon;
         const confirmationsCount = matchingIncident.confirmations || 1;
-        const reporterDisplayName = matchingIncident.reporterName || matchingIncident.userName || matchingIncident.reportedBy || 'Trekker thực địa';
-        const reporterDisplayRole = matchingIncident.reporterRole || 'Thành viên cộng đồng LOST';
+        const reporterDisplayName = matchingIncident.reporterName || matchingIncident.userName || matchingIncident.reportedBy || 'Người đi trước';
+        const reporterDisplayRole = matchingIncident.reporterRole || 'Thành viên LOST';
         const locationDisplayName = matchingIncident.locationNote || `${trail.name} (${trail.province})`;
         const elevationDisplay = matchingIncident.elevationM || trail.maxAltitudeM;
         const hotlinePhone = trail.rescueContact?.phone || '112 / 114';
@@ -1157,7 +1878,7 @@ ${trackPointsXml}
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span className="font-editorial" style={{ fontSize: '1.22rem', fontWeight: 500, color: 'var(--color-error-text, var(--color-error))' }}>
-                      Cảnh Báo An Toàn Thực Địa
+                      Cảnh báo trên tuyến
                     </span>
                     <span
                       style={{
@@ -1175,11 +1896,11 @@ ${trackPointsXml}
                     </span>
                     <span className="badge badge-success">
                       <IconCheckCircle size={12} color="var(--color-primary)" />
-                      <span>{confirmationsCount} Xác thực</span>
+                      <span>{confirmationsCount} người xác nhận</span>
                     </span>
                   </div>
                   <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginTop: 3 }}>
-                    Hồ sơ cảnh báo khẩn cấp dành cho người leo núi &amp; đơn vị cứu hộ · {sevMeta.directive}
+                    Tin báo từ trên tuyến · {sevMeta.directive}
                   </div>
                 </div>
               </div>
@@ -1197,7 +1918,7 @@ ${trackPointsXml}
                   }}
                 >
                   <IconPhone size={14} color="var(--color-error-text, var(--color-error))" />
-                  <span>Gọi cứu nạn: {hotlinePhone}</span>
+                  <span>Gọi cứu hộ: {hotlinePhone}</span>
                 </a>
 
                 <button
@@ -1207,7 +1928,7 @@ ${trackPointsXml}
                   style={{ padding: '7px 14px', fontSize: '0.78rem' }}
                 >
                   <IconAlertTriangle size={14} color="var(--color-on-danger)" />
-                  <span>Cập nhật tình hình mới</span>
+                  <span>Cập nhật thêm</span>
                 </button>
               </div>
             </div>
@@ -1233,7 +1954,7 @@ ${trackPointsXml}
                 </div>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: '0.66rem', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700, letterSpacing: '0.08em' }}>
-                    Phân loại hiểm họa
+                    Loại sự cố
                   </div>
                   <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--color-text-main)', marginTop: 2, lineHeight: 1.35 }}>
                     {typeMeta.label}
@@ -1260,12 +1981,12 @@ ${trackPointsXml}
                 </div>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: '0.66rem', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700, letterSpacing: '0.08em' }}>
-                    Khu vực &amp; Cao độ
+                    Vị trí &amp; cao độ
                   </div>
                   <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--color-text-main)', marginTop: 2, lineHeight: 1.35 }}>
                     {locationDisplayName}
                   </div>
-                  {elevationDisplay && (
+                  {typeof elevationDisplay === 'number' && elevationDisplay > 0 && (
                     <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>
                       Cao độ: ~{elevationDisplay}m
                     </div>
@@ -1292,7 +2013,7 @@ ${trackPointsXml}
                 </div>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: '0.66rem', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700, letterSpacing: '0.08em' }}>
-                    Nguồn báo cáo
+                    Người báo tin
                   </div>
                   <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--color-text-main)', marginTop: 2, lineHeight: 1.35 }}>
                     {reporterDisplayName}
@@ -1322,13 +2043,13 @@ ${trackPointsXml}
                 </div>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: '0.66rem', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700, letterSpacing: '0.08em' }}>
-                    Thời gian &amp; Hiệu lực
+                    Thời điểm báo
                   </div>
                   <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--color-text-main)', marginTop: 2 }}>
                     {formattedReportedAt}
                   </div>
                   <div style={{ fontSize: '0.7rem', color: 'var(--color-error-text, var(--color-error))', fontWeight: 600 }}>
-                    Đang có hiệu lực khẩn
+                    Đang có hiệu lực
                   </div>
                 </div>
               </div>
@@ -1348,7 +2069,7 @@ ${trackPointsXml}
               }}
             >
               <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', color: 'var(--color-error-text, var(--color-error))', fontWeight: 700, letterSpacing: '0.08em' }}>
-                Diễn biến chi tiết tại hiện trường
+                Tình hình tại hiện trường
               </div>
               <div style={{ fontSize: '0.92rem', color: 'var(--color-text-main)', lineHeight: 1.65 }}>
                 {matchingIncident.description}
@@ -1359,7 +2080,7 @@ ${trackPointsXml}
             {matchingIncident.images && matchingIncident.images.length > 0 && (
               <div>
                 <div style={{ fontSize: '0.74rem', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 800, letterSpacing: '0.04em', marginBottom: 8 }}>
-                  Ảnh bằng chứng ghi nhận tại hiện trường ({matchingIncident.images.length} ảnh):
+                  Ảnh chụp thực tế ({matchingIncident.images.length} ảnh):
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   {matchingIncident.images.map((img: string, idx: number) => (
@@ -1401,7 +2122,7 @@ ${trackPointsXml}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--color-error-text, var(--color-error))', fontWeight: 700, fontSize: '0.72rem', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
                 <IconAlertTriangle size={14} color="var(--color-error-text, var(--color-error))" />
-                <span>Chỉ dẫn an toàn bắt buộc trên tuyến</span>
+                <span>Lưu ý an toàn khi qua đoạn này</span>
               </div>
               <div
                 style={{
@@ -1414,13 +2135,13 @@ ${trackPointsXml}
                 }}
               >
                 <div>
-                  <strong style={{ color: 'var(--color-text-main)' }}>01 · Vượt suối &amp; sạt lở:</strong> Tuyệt đối không mạo hiểm vượt suối khi nước cao ngang đùi hoặc chảy đục xiết. Tránh xa các vách taluy đất yếu.
+                  <strong style={{ color: 'var(--color-text-main)' }}>01 · Suối dâng &amp; sạt lở:</strong> Không lội suối khi nước lên ngang đùi hoặc chảy đục xiết; tránh đứng sát vách taluy đất nhão.
                 </div>
                 <div>
-                  <strong style={{ color: 'var(--color-text-main)' }}>02 · Tracklog &amp; Đội hình:</strong> Bám sát đường mòn GPX đã tải Offline, luôn đi theo đoàn tối thiểu 3 người, không tự ý tách nhóm mở lối tắt.
+                  <strong style={{ color: 'var(--color-text-main)' }}>02 · Bám track &amp; giữ đội hình:</strong> Bám sát đường GPX đã lưu offline, đi tối thiểu 3 người và tuyệt đối không tách đoàn tự mở lối tắt.
                 </div>
                 <div>
-                  <strong style={{ color: 'var(--color-text-main)' }}>03 · Liên lạc &amp; Cứu hộ:</strong> Tiết kiệm pin thiết bị, giữ ấm cơ thể và chuẩn bị còi cứu sinh SOS khi thời tiết xấu hoặc mất định hướng.
+                  <strong style={{ color: 'var(--color-text-main)' }}>03 · Pin, giữ ấm &amp; còi:</strong> Giữ pin điện thoại, mặc đủ ấm và đeo sẵn còi cứu sinh khi trời mù sương hoặc mất dấu lối mòn.
                 </div>
               </div>
             </div>
@@ -1442,10 +2163,27 @@ ${trackPointsXml}
               <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--color-error-text, var(--color-error))', fontWeight: 700 }}>
                   <IconPhone size={14} color="var(--color-error-text, var(--color-error))" />
-                  <span>Cứu Nạn Quốc Gia: <strong>112 / 114 / 115 (24/7)</strong></span>
+                  <span>
+                    Cứu nạn quốc gia:{' '}
+                    <a href="tel:112" style={{ color: 'inherit', fontWeight: 800, textDecoration: 'underline' }}>112</a>
+                    {' / '}
+                    <a href="tel:114" style={{ color: 'inherit', fontWeight: 800, textDecoration: 'underline' }}>114</a>
+                    {' / '}
+                    <a href="tel:115" style={{ color: 'inherit', fontWeight: 800, textDecoration: 'underline' }}>115</a>
+                    {' (24/7)'}
+                  </span>
                 </span>
                 <span style={{ color: 'var(--color-text-muted)' }}>
-                  {rangerUnit}: <strong style={{ color: 'var(--color-text-main)' }}>{hotlinePhone}</strong>
+                  {rangerUnit}:{' '}
+                  <a
+                    href={`tel:${dialableHotline}`}
+                    style={{ color: 'var(--color-primary)', fontWeight: 800, textDecoration: 'underline' }}
+                  >
+                    {hotlinePhone}
+                  </a>
+                </span>
+                <span style={{ fontSize: '0.73rem', color: 'var(--color-text-dim)' }}>
+                  112/114/115 gọi thoại — gửi SMS tọa độ tới SĐT người thân/porter.
                 </span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: '0.74rem', color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
@@ -1508,7 +2246,7 @@ ${trackPointsXml}
                 {trail.startLat ? ` · ${trail.startLat.toFixed(2)}°N` : ''}
               </span>
               {trail.permitRequired && (
-                <span className="badge badge-error">Yêu cầu Giấy phép Kiểm Lâm</span>
+                <span className="badge badge-error">Cần giấy phép kiểm lâm</span>
               )}
             </div>
 
@@ -1545,7 +2283,7 @@ ${trackPointsXml}
           >
             <div>
               <div style={{ fontSize: '0.68rem', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'color-mix(in srgb, var(--color-on-media) 68%, transparent)', marginBottom: 3 }}>
-                Đánh giá cộng đồng
+                Người đi trước chấm
               </div>
               <div style={{ fontSize: '1.18rem', fontWeight: 700, color: 'var(--color-sun)', display: 'flex', alignItems: 'center', gap: 5, fontVariantNumeric: 'tabular-nums' }}>
                 {ratingOverride !== null ? (
@@ -1554,12 +2292,12 @@ ${trackPointsXml}
                       <IconStar size={16} color="var(--color-sun)" fill="var(--color-sun)" />{' '}
                       {ratingOverride.rating.toFixed(1)}{' '}
                       <span style={{ fontSize: '0.8rem', color: 'color-mix(in srgb, var(--color-on-media) 72%, transparent)', fontWeight: 500 }}>
-                        ({ratingOverride.reviewCount} bài)
+                        ({ratingOverride.reviewCount} lượt)
                       </span>
                     </>
                   ) : (
                     <span style={{ fontSize: '0.84rem', color: 'color-mix(in srgb, var(--color-on-media) 78%, transparent)', fontWeight: 500 }}>
-                      Chưa có đánh giá
+                      Chưa có nhận xét
                     </span>
                   )
                 ) : reviewsList.length > 0 ? (
@@ -1567,7 +2305,7 @@ ${trackPointsXml}
                     <IconStar size={16} color="var(--color-sun)" fill="var(--color-sun)" />{' '}
                     {(reviewsList.reduce((acc, r) => acc + (r.rating || 5), 0) / reviewsList.length).toFixed(1)}{' '}
                     <span style={{ fontSize: '0.8rem', color: 'color-mix(in srgb, var(--color-on-media) 72%, transparent)', fontWeight: 500 }}>
-                      ({reviewsList.length} bài)
+                      ({reviewsList.length} lượt)
                     </span>
                   </>
                 ) : Number(trail.reviewCount) > 0 || Number(trail.rating) > 0 ? (
@@ -1576,20 +2314,20 @@ ${trackPointsXml}
                     {Number(trail.rating || 0).toFixed(1)}{' '}
                     {Number(trail.reviewCount) > 0 && (
                       <span style={{ fontSize: '0.8rem', color: 'color-mix(in srgb, var(--color-on-media) 72%, transparent)', fontWeight: 500 }}>
-                        ({trail.reviewCount} bài)
+                        ({trail.reviewCount} lượt)
                       </span>
                     )}
                   </>
                 ) : (
                   <span style={{ fontSize: '0.84rem', color: 'color-mix(in srgb, var(--color-on-media) 78%, transparent)', fontWeight: 500 }}>
-                    Chưa có đánh giá
+                    Chưa có nhận xét
                   </span>
                 )}
               </div>
             </div>
             <div style={{ borderLeft: '1px solid color-mix(in srgb, var(--color-on-media) 18%, transparent)', paddingLeft: 18 }}>
               <div style={{ fontSize: '0.68rem', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'color-mix(in srgb, var(--color-on-media) 68%, transparent)', marginBottom: 3 }}>
-                Mức độ khó
+                Độ khó
               </div>
               <div className="font-editorial" style={{ fontSize: '1.25rem', fontWeight: 500, color: trail.difficultyLevel >= 4 ? 'var(--color-error-text, var(--color-error))' : 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
                 Cấp {trail.difficultyLevel}/5
@@ -1605,13 +2343,13 @@ ${trackPointsXml}
           <span style={{ color: 'var(--color-text-dim)', fontSize: '0.68rem', letterSpacing: '0.12em', textTransform: 'uppercase', fontWeight: 700 }}>Chiều dài</span>
           <span className="font-editorial" style={{ fontSize: '1.65rem', fontWeight: 500, color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.1 }}>{trail.distanceKm} km</span>
           <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-            {trail.durationDays > 1 ? `Hành trình ${trail.durationDays} ngày` : 'Đi về trong ngày'}
+            {trail.durationDays > 1 ? `Đi ${trail.durationDays} ngày` : 'Đi về trong ngày'}
           </span>
         </div>
         <div className="editorial-stat-cell">
-          <span style={{ color: 'var(--color-text-dim)', fontSize: '0.68rem', letterSpacing: '0.12em', textTransform: 'uppercase', fontWeight: 700 }}>Độ cao tích lũy</span>
+          <span style={{ color: 'var(--color-text-dim)', fontSize: '0.68rem', letterSpacing: '0.12em', textTransform: 'uppercase', fontWeight: 700 }}>Tổng độ dốc leo</span>
           <span className="font-editorial" style={{ fontSize: '1.65rem', fontWeight: 500, color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.1 }}>+{trail.elevationGainM} m</span>
-          <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>Độ dốc ~{steepnessPercent}%</span>
+          <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>Dốc trung bình ~{steepnessPercent}%</span>
         </div>
         <div className="editorial-stat-cell">
           <span style={{ color: 'var(--color-text-dim)', fontSize: '0.68rem', letterSpacing: '0.12em', textTransform: 'uppercase', fontWeight: 700 }}>Cao độ đỉnh</span>
@@ -1619,14 +2357,14 @@ ${trackPointsXml}
           <span style={{ fontSize: '0.75rem', color: isOver3000m ? 'var(--color-sun)' : 'var(--color-text-muted)' }}>{isOver3000m ? 'Đỉnh trên 3.000m' : trail.province}</span>
         </div>
         <div className="editorial-stat-cell">
-          <span style={{ color: 'var(--color-text-dim)', fontSize: '0.68rem', letterSpacing: '0.12em', textTransform: 'uppercase', fontWeight: 700 }}>Thời gian di chuyển</span>
+          <span style={{ color: 'var(--color-text-dim)', fontSize: '0.68rem', letterSpacing: '0.12em', textTransform: 'uppercase', fontWeight: 700 }}>Thời gian đi</span>
           <span className="font-editorial" style={{ fontSize: '1.65rem', fontWeight: 500, color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.1 }}>{trail.durationHoursNote}</span>
           <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
             {trail.durationDays > 1 ? `${trail.durationDays} ngày ${trail.durationDays - 1} đêm` : 'Trong ngày (1N0Đ)'}
           </span>
         </div>
         <div className="editorial-stat-cell">
-          <span style={{ color: 'var(--color-text-dim)', fontSize: '0.68rem', letterSpacing: '0.12em', textTransform: 'uppercase', fontWeight: 700 }}>Tiện ích thực địa</span>
+          <span style={{ color: 'var(--color-text-dim)', fontSize: '0.68rem', letterSpacing: '0.12em', textTransform: 'uppercase', fontWeight: 700 }}>Trên tuyến có</span>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
             {trail.hasCampsite && <span className="badge badge-stream" title="Có bãi cắm trại">Bãi trại</span>}
             {trail.hasWaterSource && <span className="badge badge-cloud" title="Có nguồn nước">Nguồn nước</span>}
@@ -1638,7 +2376,7 @@ ${trackPointsXml}
       {/* Trail Intelligence Bar: Wishlist, Offline Pack, Real 3D Terrain, AI Go/No-Go, Permit & Safety Timer */}
       <TrailIntelligenceBar trail={trail} currentUser={currentUser} onRequireLogin={onRequireLogin} />
 
-      {/* Field-Atlas Quick-Launch Bar: Công Cụ Thực Địa Cho Cung Này */}
+      {/* Field-Atlas Quick-Launch Bar */}
       <div
         className="card"
         style={{
@@ -1672,7 +2410,7 @@ ${trackPointsXml}
             <IconCompass size={14} color="var(--color-primary)" />
           </span>
           <span style={{ fontSize: '0.76rem', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--color-text-muted)' }}>
-            Công Cụ Thực Địa Cho Cung Này
+            Chuẩn bị cho cung này
           </span>
         </div>
 
@@ -1684,7 +2422,7 @@ ${trackPointsXml}
             style={{ padding: '6px 11px', fontSize: '0.78rem', borderRadius: 4 }}
           >
             <IconHiking size={14} color="var(--color-primary)" />
-            <span>Giáo án Thể lực</span>
+            <span>Tập thể lực</span>
           </button>
 
           <button
@@ -1694,7 +2432,7 @@ ${trackPointsXml}
             style={{ padding: '6px 11px', fontSize: '0.78rem', borderRadius: 4 }}
           >
             <IconUsers size={14} color="var(--color-sky)" />
-            <span>Ước tính Chi phí &amp; Kiểm lâm</span>
+            <span>Chi phí &amp; kiểm lâm</span>
           </button>
 
           <button
@@ -1704,7 +2442,7 @@ ${trackPointsXml}
             style={{ padding: '6px 11px', fontSize: '0.78rem', borderRadius: 4 }}
           >
             <IconMountain size={14} color="var(--color-earth)" />
-            <span>Phân tích GPX</span>
+            <span>Soi độ dốc GPX</span>
           </button>
 
           <button
@@ -1714,7 +2452,7 @@ ${trackPointsXml}
             style={{ padding: '6px 11px', fontSize: '0.78rem', borderRadius: 4 }}
           >
             <IconSun size={14} color="var(--color-sun)" />
-            <span>Tính Giờ Săn mây</span>
+            <span>Giờ săn mây</span>
           </button>
 
           <button
@@ -1732,7 +2470,7 @@ ${trackPointsXml}
             }}
           >
             <IconCompass size={14} color="var(--color-primary)" />
-            <span>Leo Núi Trực Tiếp (Live GPS)</span>
+            <span>Bật Live GPS</span>
           </button>
 
           <button
@@ -1765,7 +2503,7 @@ ${trackPointsXml}
           },
           {
             id: 'map',
-            label: 'Bản đồ GPX 3D',
+            label: 'Bản đồ 3D & GPX',
             icon: (
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6" />
@@ -1776,12 +2514,12 @@ ${trackPointsXml}
           },
           {
             id: 'weather',
-            label: 'Thời tiết 7 ngày & Săn mây',
+            label: 'Thời tiết & săn mây',
             icon: <IconCloudFog size={14} />,
           },
           {
             id: 'checklist',
-            label: 'Danh mục đồ đạc',
+            label: 'Đồ cần mang',
             icon: (
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M9 11l3 3L22 4" />
@@ -1791,12 +2529,12 @@ ${trackPointsXml}
           },
           {
             id: 'itinerary',
-            label: 'Lịch trình & Chia sẻ',
+            label: 'Lịch trình',
             icon: <IconCalendar size={14} />,
           },
           {
             id: 'guides',
-            label: 'Hướng dẫn viên & Porter',
+            label: 'Porter & dẫn đường',
             icon: <IconUsers size={14} />,
           },
           {
@@ -1806,12 +2544,12 @@ ${trackPointsXml}
           },
           {
             id: 'conditions',
-            label: 'Tình trạng thực địa',
+            label: 'Tình trạng đường',
             icon: <IconAlertTriangle size={14} />,
           },
           {
             id: 'pois',
-            label: 'Thực Địa & Nước',
+            label: 'Nước & lán trại',
             icon: <IconDroplet size={14} />,
           },
         ].map((tab) => {
@@ -1821,7 +2559,7 @@ ${trackPointsXml}
               key={tab.id}
               type="button"
               data-glider-active={isActive ? 'true' : undefined}
-              onClick={() => setActiveTab(tab.id as DetailTabId)}
+              onClick={() => handleSelectDetailTab(tab.id as DetailTabId)}
               className={`editorial-tab-btn${isActive ? ' active' : ''}`}
             >
               {tab.icon}
@@ -1838,9 +2576,9 @@ ${trackPointsXml}
           <div className="detail-split-grid">
             <div>
               <div className="card" style={{ marginBottom: 24 }}>
-                <div className="section-eyebrow" style={{ marginBottom: 6 }}>Biểu đồ địa hình</div>
+                <div className="section-eyebrow" style={{ marginBottom: 6 }}>Biểu đồ độ cao</div>
                 <h3 className="font-editorial" style={{ fontSize: '1.45rem', fontWeight: 500, color: 'var(--color-text-main)', marginBottom: 14 }}>
-                  Đồ Thị Trắc Diện Cao Độ
+                  Đường dốc của cung
                 </h3>
                 <ElevationProfileSVG
                   trailId={trail.id}
@@ -1849,13 +2587,12 @@ ${trackPointsXml}
                   maxAltitudeM={trail.maxAltitudeM}
                   distanceKm={trail.distanceKm}
                   waypoints={trail.waypoints}
-                  onHoverCoordinate={setHoveredElevationCoord}
                 />
               </div>
 
               <div className="card" style={{ marginBottom: 24 }}>
                 <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 12 }}>
-                  Giới thiệu cung đường
+                  Đôi nét về cung đường
                 </h3>
                 <p style={{ color: 'var(--color-text-muted)', lineHeight: 1.7, fontSize: '0.95rem' }}>
                   {trail.description}
@@ -1866,7 +2603,7 @@ ${trackPointsXml}
               <div className="card" style={{ marginBottom: 24 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
                   <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--color-text-main)', margin: 0 }}>
-                    Hướng Dẫn Di Chuyển Đến Điểm Xuất Phát
+                    Cách đi đến chân núi
                   </h3>
 
                   <a
@@ -1876,7 +2613,7 @@ ${trackPointsXml}
                     className="btn btn-outline"
                     style={{ fontSize: '0.8rem', padding: '6px 12px', borderRadius: 4 }}
                   >
-                    Mở Google Maps chỉ đường
+                    Mở chỉ đường trên Google Maps
                   </a>
                 </div>
 
@@ -1897,10 +2634,10 @@ ${trackPointsXml}
               {/* Responsive 12-Month Season Calendar */}
               <div className="card" style={{ marginBottom: 24 }}>
                 <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 6 }}>
-                  Lịch Mùa Trekking Trong Năm
+                  Nên đi vào tháng mấy?
                 </h3>
                 <p style={{ fontSize: '0.82rem', color: 'var(--color-text-dim)', marginBottom: 16 }}>
-                  Xanh lá = Mùa đẹp nhất · Viền vàng = Tháng hiện tại (T{currentMonth}) · Đỏ = Tránh đi do mưa lũ
+                  Xanh lá: mùa đẹp · Viền vàng: tháng hiện tại (T{currentMonth}) · Đỏ: mưa lớn, nên tránh
                 </p>
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(58px, 1fr))', gap: 6, textAlign: 'center' }}>
@@ -1911,17 +2648,17 @@ ${trackPointsXml}
 
                     let bg = 'var(--color-bg-main)';
                     let color = 'var(--color-text-muted)';
-                    let tooltip = `Tháng ${m}: Thời tiết bình thường`;
+                    let tooltip = `Tháng ${m}: Trời ổn định`;
 
                     if (isBest) {
                       bg = 'var(--color-primary)';
                       color = 'var(--color-on-primary)';
-                      tooltip = `Tháng ${m}: Mùa vàng lý tưởng, nắng đẹp, ít mưa`;
+                      tooltip = `Tháng ${m}: Mùa đẹp, ít mưa, dễ săn mây`;
                     }
                     if (isAvoid) {
                       bg = 'var(--color-error)';
                       color = 'var(--color-on-danger)';
-                      tooltip = `Tháng ${m}: Mưa lớn, nguy cơ sạt lở & trơn trượt`;
+                      tooltip = `Tháng ${m}: Mưa lớn, đường trơn và dễ sạt lở`;
                     }
 
                     return (
@@ -1945,11 +2682,11 @@ ${trackPointsXml}
                   })}
                 </div>
 
-                {/* Expandable 12-Month ERA5 Summit Climate Chart inside Overview */}
+                {/* Expandable 12-Month Summit Climate Chart inside Overview */}
                 <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--color-border)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
                     <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
-                      Xem nhiệt độ đỉnh &amp; lượng mưa thực đo 3 năm (Open-Meteo ERA5) theo từng tháng
+                      Xem nhiệt độ đỉnh &amp; lượng mưa trung bình 12 tháng (dữ liệu khí hậu NASA POWER)
                     </span>
                     <button
                       type="button"
@@ -1959,7 +2696,7 @@ ${trackPointsXml}
                       style={{ padding: '5px 11px', fontSize: '0.76rem', borderRadius: 4 }}
                     >
                       <IconCloudFog size={13} color="var(--color-sky)" />
-                      <span>{showOverviewClimateChart ? 'Thu gọn biểu đồ ERA5' : 'Mở biểu đồ khí hậu ERA5'}</span>
+                      <span>{showOverviewClimateChart ? 'Thu gọn biểu đồ khí hậu' : 'Xem biểu đồ khí hậu 12 tháng'}</span>
                     </button>
                   </div>
                   {showOverviewClimateChart && (
@@ -1992,20 +2729,20 @@ ${trackPointsXml}
                     marginBottom: 12,
                   }}
                 >
-                  {trail.permitRequired ? 'Yêu cầu Giấy phép VQG' : 'Tự do trekking'}
+                  {trail.permitRequired ? 'Cần giấy phép VQG' : 'Đi tự do'}
                 </h4>
 
                 <p style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)', lineHeight: 1.6, marginBottom: 14 }}>
                   {trail.permitRequired
-                    ? trail.permitInfo || 'Cần đăng ký danh sách thông tin đoàn và nộp phí bảo tồn với Trạm Kiểm Lâm trước khi trekking.'
-                    : 'Cung đường mở tự do, không yêu cầu giấy phép xin trước.'}
+                    ? trail.permitInfo || 'Cần đăng ký danh sách đoàn và đóng phí bảo tồn tại trạm kiểm lâm trước khi vào rừng.'
+                    : 'Cung mở tự do, không cần xin giấy phép trước.'}
                 </p>
 
                 {trail.permitRequired && (
                   <div style={{ background: 'var(--color-bg-main)', padding: 10, borderRadius: 4, border: '1px solid var(--color-border)', fontSize: '0.8rem', color: 'var(--color-text-muted)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    <div>- Đăng ký CCCD/CMND các thành viên</div>
-                    <div>- Nộp phí vé tham quan Vườn Quốc Gia</div>
-                    <div>- Bắt buộc có Porter/HDV địa phương dẫn đường</div>
+                    <div>- Đăng ký CCCD các thành viên trong đoàn</div>
+                    <div>- Đóng phí vé tham quan Vườn quốc gia</div>
+                    <div>- Bắt buộc có porter/người dẫn đường địa phương</div>
                   </div>
                 )}
               </div>
@@ -2013,13 +2750,13 @@ ${trackPointsXml}
               {/* Local Rescue & Ranger Contact */}
               <div className="card" style={{ border: '1px solid color-mix(in srgb, var(--color-error) 40%, transparent)' }}>
                 <h4 style={{ color: 'var(--color-error-text, var(--color-error))', fontSize: '1.05rem', fontWeight: 700, marginBottom: 12 }}>
-                  Hotline Cứu hộ địa phương
+                  Số cứu hộ gần tuyến
                 </h4>
                 <div style={{ fontSize: '0.88rem', display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <div>
                     <div style={{ color: 'var(--color-text-dim)', fontSize: '0.75rem' }}>Đội cứu hộ khu vực:</div>
                     <strong style={{ color: 'var(--color-text-main)' }}>
-                      {trail.rescueContact?.name || 'Tổng đài Cứu nạn Quốc gia 112 / 114'}
+                      {trail.rescueContact?.name || 'Tổng đài cứu nạn quốc gia 112 / 114'}
                     </strong>
                     <div>
                       <a
@@ -2037,6 +2774,16 @@ ${trackPointsXml}
                       {trail.rescueContact?.rangerContact || `Trạm Kiểm Lâm ${trail.province}`}
                     </div>
                   </div>
+
+                  <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 8, fontSize: '0.74rem', color: 'var(--color-text-dim)', lineHeight: 1.5 }}>
+                    Đầu số quốc gia:{' '}
+                    <a href="tel:112" style={{ color: 'var(--color-error-text, var(--color-error))', fontWeight: 700, textDecoration: 'underline' }}>112</a>
+                    {' / '}
+                    <a href="tel:114" style={{ color: 'var(--color-error-text, var(--color-error))', fontWeight: 700, textDecoration: 'underline' }}>114</a>
+                    {' / '}
+                    <a href="tel:115" style={{ color: 'var(--color-error-text, var(--color-error))', fontWeight: 700, textDecoration: 'underline' }}>115</a>
+                    {' '}gọi thoại — gửi SMS tọa độ tới SĐT người thân/porter.
+                  </div>
                 </div>
               </div>
             </div>
@@ -2048,37 +2795,20 @@ ${trackPointsXml}
           <div>
             <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h3 style={{ fontSize: '1.2rem', color: 'var(--color-text-main)', fontWeight: 700 }}>
-                Bản đồ GPS Tuyến đường &amp; Live GPS Tracking
+                Bản đồ GPX &amp; các mốc trên đường
               </h3>
             </div>
 
-            <MapView
-              trails={singleTrailList}
-              selectedTrail={trail}
+            <TrailMapElevationSync
+              trail={trail}
+              singleTrailList={singleTrailList}
               incidents={incidents}
-              height="550px"
-              highlightedPoint={hoveredElevationCoord}
-              trailPois={mapFieldPois}
-              onHoverTrackIndex={setHoveredTrackIndex}
+              mapFieldPois={mapFieldPois}
             />
-
-            <div style={{ marginTop: 18 }}>
-              <ElevationProfileSVG
-                trailId={trail.id}
-                gpxTrack={trail.gpxTrack}
-                elevationGainM={trail.elevationGainM}
-                maxAltitudeM={trail.maxAltitudeM}
-                distanceKm={trail.distanceKm}
-                waypoints={trail.waypoints}
-                height={155}
-                onHoverCoordinate={setHoveredElevationCoord}
-                externalHoverIndex={hoveredTrackIndex}
-              />
-            </div>
 
             <div style={{ marginTop: 24 }}>
               <h4 style={{ fontSize: '1.1rem', color: 'var(--color-text-main)', marginBottom: 12 }}>
-                Danh sách điểm mốc (Waypoints)
+                Các điểm mốc chính
               </h4>
               {!trail.waypoints || trail.waypoints.length === 0 ? (
                 <div
@@ -2091,7 +2821,7 @@ ${trackPointsXml}
                     borderStyle: 'dashed',
                   }}
                 >
-                  Chưa có điểm mốc tọa độ (Waypoint) được ghim cho cung đường này. Bạn có thể xem tuyến tracklog trực tiếp trên bản đồ GPX phía trên.
+                  Cung này chưa ghim điểm mốc riêng — bạn xem thẳng đường tracklog trên bản đồ phía trên nhé.
                 </div>
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(260px, 100%), 1fr))', gap: 16 }}>
@@ -2104,7 +2834,7 @@ ${trackPointsXml}
                         </span>
                       </div>
                       <p style={{ fontSize: '0.85rem', color: 'var(--color-text-muted)' }}>{wp.description}</p>
-                      {wp.elevationM && (
+                      {typeof wp.elevationM === 'number' && wp.elevationM > 0 && (
                         <div style={{ fontSize: '0.75rem', color: 'var(--color-text-dim)', marginTop: 6 }}>
                           Cao độ: {wp.elevationM.toLocaleString('vi-VN')}m
                         </div>
@@ -2117,7 +2847,7 @@ ${trackPointsXml}
           </div>
         )}
 
-        {/* TAB 3: WEATHER & CLOUD HUNTING + ERA5 12-MONTH SUMMIT CLIMATE */}
+        {/* TAB 3: WEATHER & CLOUD HUNTING + 12-MONTH SUMMIT CLIMATE */}
         {activeTab === 'weather' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
             <WeatherTab trail={trail} />
@@ -2135,12 +2865,12 @@ ${trackPointsXml}
         {activeTab === 'guides' && (
           <div>
             <h3 style={{ fontSize: '1.2rem', color: 'var(--color-text-main)', fontWeight: 700, marginBottom: 16 }}>
-              Hướng dẫn viên &amp; Porter địa phương uy tín
+              Porter &amp; người dẫn đường bản địa
             </h3>
 
             {(guidesList.length > 0 ? guidesList : trail.guides || []).length === 0 ? (
               <div className="card" style={{ textAlign: 'center', padding: 36, color: 'var(--color-text-muted)' }}>
-                Chưa có danh sách Porter / HDV đăng ký cho cung đường này. Bạn có thể liên hệ trực tiếp Trạm Kiểm Lâm / Ban Quản Lý địa phương để được giới thiệu HDV bản địa có giấy phép.
+                Chưa có porter nào đăng ký trên LOST cho cung này. Bạn có thể gọi thẳng trạm kiểm lâm hoặc Ban quản lý địa phương để nhờ giới thiệu người bản địa thông thạo đường rừng.
               </div>
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 20 }}>
@@ -2150,20 +2880,20 @@ ${trackPointsXml}
                       <h4 style={{ fontSize: '1rem', color: 'var(--color-text-main)', fontWeight: 700, margin: 0 }}>{guide.name}</h4>
                       {guide.verified ? (
                         <span className="badge badge-success" style={{ background: 'var(--color-primary)', color: 'var(--color-on-primary)', fontSize: '0.72rem', padding: '3px 8px', borderRadius: 4, flexShrink: 0 }}>
-                          Đã Xác Minh
+                          Đã xác minh
                         </span>
                       ) : (
-                        <span className="badge badge-cloud" style={{ fontSize: '0.72rem', flexShrink: 0 }}>Porter Địa Phương</span>
+                        <span className="badge badge-cloud" style={{ fontSize: '0.72rem', flexShrink: 0 }}>Porter bản địa</span>
                       )}
                     </div>
 
                     <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginBottom: 12 }}>
-                      Khu vực phụ trách: {guide.region}{guide.rating ? ` · Đánh giá: ${Number(guide.rating).toFixed(1)}/5` : ''}
+                      Khu vực: {guide.region}{guide.rating ? ` · Chấm điểm: ${Number(guide.rating).toFixed(1)}/5` : ''}
                     </div>
 
                     {guide.priceNote && (
                       <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 10, borderRadius: 4, fontSize: '0.8rem', color: 'var(--color-primary)', marginBottom: 14, fontWeight: 600 }}>
-                        Chi phí / Giá dịch vụ: {guide.priceNote}
+                        Chi phí tham khảo: {guide.priceNote}
                       </div>
                     )}
 
@@ -2174,11 +2904,11 @@ ${trackPointsXml}
                         style={{ width: '100%', justifyContent: 'center', borderRadius: 4, fontSize: '0.84rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
                       >
                         <IconPhone size={14} color="var(--color-primary)" />
-                        Liên hệ trực tiếp ({guide.phone})
+                        Gọi trực tiếp ({guide.phone})
                       </a>
                     ) : (
                       <div style={{ fontSize: '0.8rem', color: 'var(--color-text-dim)', textAlign: 'center', padding: 8, borderRadius: 4, background: 'var(--color-bg-main)' }}>
-                        Liên hệ qua Ban Quản Lý VQG / Hạt Kiểm Lâm địa phương
+                        Liên hệ qua Ban quản lý VQG / Hạt kiểm lâm địa phương
                       </div>
                     )}
 
@@ -2188,23 +2918,23 @@ ${trackPointsXml}
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                             <select
                               className="form-select"
-                              aria-label="Đánh giá số sao cho Porter hoặc Hướng dẫn viên"
+                              aria-label="Chọn số sao cho porter hoặc người dẫn đường"
                               value={guideRating}
                               onChange={(e) => setGuideRating(Number(e.target.value))}
                               style={{ fontSize: '0.8rem', padding: '6px 10px' }}
                             >
-                              <option value={5}>5 sao - Rất tận tâm &amp; thông thạo địa hình</option>
+                              <option value={5}>5 sao - Tận tâm, thuộc đường</option>
                               <option value={4}>4 sao - Tốt</option>
                               <option value={3}>3 sao - Bình thường</option>
                               <option value={2}>2 sao - Cần cải thiện</option>
-                              <option value={1}>1 sao - Không khuyến nghị</option>
+                              <option value={1}>1 sao - Không nên chọn</option>
                             </select>
                             <input
                               className="form-input"
-                              aria-label="Nhận xét thực tế về chuyến đi cùng Porter"
+                              aria-label="Nhận xét về chuyến đi cùng porter"
                               value={guideComment}
                               onChange={(e) => setGuideComment(e.target.value)}
-                              placeholder="Nhận xét thực tế về chuyến đi cùng Porter..."
+                              placeholder="Đi cùng anh/chị ấy thấy sao? Nấu ăn, dẫn đường ổn không..."
                               style={{ fontSize: '0.8rem', padding: '7px 10px' }}
                             />
                             <div style={{ display: 'flex', gap: 6 }}>
@@ -2215,7 +2945,7 @@ ${trackPointsXml}
                                 onClick={() => handleSubmitGuideReview(String(guide._id))}
                                 style={{ flex: 1, padding: '6px 10px', fontSize: '0.78rem', borderRadius: 4 }}
                               >
-                                {isSubmittingGuideReview ? 'Đang gửi...' : 'Gửi Đánh Giá'}
+                                {isSubmittingGuideReview ? 'Đang gửi...' : 'Gửi nhận xét'}
                               </button>
                               <button
                                 type="button"
@@ -2234,7 +2964,7 @@ ${trackPointsXml}
                             onClick={() => setReviewingGuideId(String(guide._id))}
                             style={{ width: '100%', justifyContent: 'center', fontSize: '0.78rem', padding: '6px 10px', borderRadius: 4 }}
                           >
-                            <IconStar size={13} color="var(--color-sun)" /> Đánh Giá Porter / HDV ({guide.reviewCount || 0})
+                            <IconStar size={13} color="var(--color-sun)" /> Nhận xét porter ({guide.reviewCount || 0})
                           </button>
                         )}
                       </div>
@@ -2258,7 +2988,7 @@ ${trackPointsXml}
           <div className="detail-split-grid">
             <div>
               <h3 style={{ fontSize: '1.2rem', color: 'var(--color-text-main)', fontWeight: 700, marginBottom: 16 }}>
-                Cộng đồng Đánh giá ({reviewsList.length})
+                Người đi trước nói gì ({reviewsList.length})
               </h3>
 
               {reviewsList.length === 0 ? (
@@ -2272,7 +3002,7 @@ ${trackPointsXml}
                     borderStyle: 'dashed',
                   }}
                 >
-                  Chưa có đánh giá thực địa nào cho cung đường này. Nếu bạn đã chinh phục {trail.name}, hãy chia sẻ kinh nghiệm ở khung bên phải!
+                  Chưa có ai để lại nhận xét cho cung này — bạn đi {trail.name} rồi thì mở bát vài dòng ở khung bên phải nhé?
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -2286,8 +3016,12 @@ ${trackPointsXml}
                     const viewerId = String(currentUser?.id || currentUser?._id || '');
                     const isSelfReview = Boolean(
                       currentUser &&
-                      ((revOwnerId && viewerId && revOwnerId === viewerId) ||
-                        (currentUser.fullName && rev.userName.toLowerCase() === currentUser.fullName.toLowerCase()))
+                        (revOwnerId
+                          ? Boolean(viewerId && revOwnerId === viewerId)
+                          : Boolean(
+                              currentUser.fullName &&
+                                rev.userName.toLowerCase() === currentUser.fullName.toLowerCase()
+                            ))
                     );
                     const isPrivileged = currentUser?.role === 'admin' || currentUser?.role === 'moderator';
                     const isDbObjectId = /^[0-9a-fA-F]{24}$/.test(revId);
@@ -2311,13 +3045,14 @@ ${trackPointsXml}
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                               <strong style={{ fontSize: '0.9rem', color: 'var(--color-primary)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                                 <IconEdit size={15} color="var(--color-primary)" />
-                                <span>Chỉnh sửa đánh giá của bạn</span>
+                                <span>Sửa nhận xét của bạn</span>
                               </strong>
                             </div>
 
                             <div className="form-group" style={{ marginBottom: 0 }}>
-                              <label className="form-label" style={{ fontSize: '0.78rem' }}>Đánh giá (1 - 5 sao)</label>
+                              <label htmlFor={`edit-review-rating-${revId}`} className="form-label" style={{ fontSize: '0.78rem' }}>Đánh giá (1 - 5 sao)</label>
                               <select
+                                id={`edit-review-rating-${revId}`}
                                 className="form-select"
                                 value={editReviewRating}
                                 onChange={(e) => setEditReviewRating(Number(e.target.value))}
@@ -2332,8 +3067,9 @@ ${trackPointsXml}
                             </div>
 
                             <div className="form-group" style={{ marginBottom: 0 }}>
-                              <label className="form-label" style={{ fontSize: '0.78rem' }}>Nội dung đánh giá</label>
+                              <label htmlFor={`edit-review-content-${revId}`} className="form-label" style={{ fontSize: '0.78rem' }}>Nội dung đánh giá</label>
                               <textarea
+                                id={`edit-review-content-${revId}`}
                                 className="form-textarea"
                                 rows={3}
                                 required
@@ -2344,8 +3080,9 @@ ${trackPointsXml}
                             </div>
 
                             <div className="form-group" style={{ marginBottom: 0 }}>
-                              <label className="form-label" style={{ fontSize: '0.78rem' }}>Cảnh báo an toàn (tùy chọn)</label>
+                              <label htmlFor={`edit-review-safety-${revId}`} className="form-label" style={{ fontSize: '0.78rem' }}>Cảnh báo an toàn (tùy chọn)</label>
                               <input
+                                id={`edit-review-safety-${revId}`}
                                 type="text"
                                 className="form-input"
                                 value={editReviewSafetyNote}
@@ -2449,7 +3186,7 @@ ${trackPointsXml}
                                 disabled={savingEditReviewId === revId || uploadingEditReviewPhoto}
                                 style={{ padding: '6px 16px', fontSize: '0.78rem', borderRadius: 4 }}
                               >
-                                {savingEditReviewId === revId ? 'Đang lưu...' : 'Lưu Thay Đổi'}
+                                {savingEditReviewId === revId ? 'Đang lưu...' : 'Lưu thay đổi'}
                               </button>
                             </div>
                           </form>
@@ -2462,6 +3199,12 @@ ${trackPointsXml}
                                   decoding="async"
                                   src={effectiveRevAvatar}
                                   alt={rev.userName}
+                                  onError={(e) => {
+                                    const img = e.currentTarget;
+                                    if (img.dataset.fallbackApplied) return;
+                                    img.dataset.fallbackApplied = '1';
+                                    img.src = VERIFIED_AVATAR_FALLBACK;
+                                  }}
                                   style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--color-border)' }}
                                 />
                                 <div>
@@ -2516,7 +3259,7 @@ ${trackPointsXml}
                                       }}
                                     >
                                       <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-error-text, var(--color-error))' }}>
-                                        Xóa đánh giá?
+                                        Xóa nhận xét này?
                                       </span>
                                       <button
                                         type="button"
@@ -2574,7 +3317,7 @@ ${trackPointsXml}
                                       }}
                                     >
                                       <IconTrash size={12} color="var(--color-error)" />
-                                      <span>Xóa đánh giá</span>
+                                      <span>Xóa</span>
                                     </button>
                                   )
                                 )}
@@ -2627,7 +3370,7 @@ ${trackPointsXml}
                               <div style={{ background: 'var(--banner-danger-bg)', borderLeft: '3px solid var(--color-error)', border: '1px solid var(--banner-danger-border)', padding: '10px 14px', fontSize: '0.85rem', color: 'var(--banner-danger-text)', borderRadius: 4, marginTop: 8, marginBottom: 8 }}>
                                 <strong style={{ color: 'var(--color-error-text, var(--color-error))', display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
                                   <IconAlertTriangle size={15} color="var(--color-error-text, var(--color-error))" />
-                                  CẢNH BÁO AN TOÀN TỪ TREKKER:
+                                  Lưu ý an toàn từ người đi trước:
                                 </strong>
                                 {rev.safetyNote}
                               </div>
@@ -2683,39 +3426,40 @@ ${trackPointsXml}
 
             <div className="card" style={{ height: 'fit-content' }}>
               <h4 style={{ fontSize: '1.1rem', color: 'var(--color-text-main)', fontWeight: 700, marginBottom: 14 }}>
-                Gửi đánh giá chuyến đi
+                Chia sẻ sau chuyến đi
               </h4>
 
               <form onSubmit={handleReviewSubmit}>
                 <div className="form-group">
-                  <label className="form-label">Đánh giá chung (1 - 5 sao)</label>
-                  <select className="form-select" aria-label="Đánh giá chung từ 1 đến 5 sao" value={newRating} onChange={(e) => setNewRating(Number(e.target.value))}>
-                    <option value={5}>5 sao - Tuyệt vời</option>
-                    <option value={4}>4 sao - Rất tốt</option>
-                    <option value={3}>3 sao - Trung bình</option>
-                    <option value={2}>2 sao - Khó</option>
-                    <option value={1}>1 sao - Nguy hiểm</option>
+                  <label htmlFor="trail-review-rating" className="form-label">Chấm điểm chung (1 - 5 sao)</label>
+                  <select id="trail-review-rating" className="form-select" aria-label="Chấm điểm chung từ 1 đến 5 sao" value={newRating} onChange={(e) => setNewRating(Number(e.target.value))}>
+                    <option value={5}>5 sao - Rất đáng đi</option>
+                    <option value={4}>4 sao - Đẹp, ổn áp</option>
+                    <option value={3}>3 sao - Bình thường</option>
+                    <option value={2}>2 sao - Khá vất vả</option>
+                    <option value={1}>1 sao - Nên cân nhắc kỹ</option>
                   </select>
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">Đánh giá độ khó thực tế (1 - 5)</label>
-                  <select className="form-select" aria-label="Đánh giá độ khó thực tế từ 1 đến 5" value={newDiffRating} onChange={(e) => setNewDiffRating(Number(e.target.value))}>
+                  <label htmlFor="trail-review-difficulty" className="form-label">Độ khó thực tế (1 - 5)</label>
+                  <select id="trail-review-difficulty" className="form-select" aria-label="Độ khó thực tế từ 1 đến 5" value={newDiffRating} onChange={(e) => setNewDiffRating(Number(e.target.value))}>
                     <option value={1}>1/5 - Rất dễ</option>
                     <option value={2}>2/5 - Dễ</option>
                     <option value={3}>3/5 - Trung bình</option>
                     <option value={4}>4/5 - Khó</option>
-                    <option value={5}>5/5 - Cực khó</option>
+                    <option value={5}>5/5 - Rất khó</option>
                   </select>
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">Cảm nhận chi tiết chuyến đi</label>
+                  <label htmlFor="trail-review-content" className="form-label">Đường đi, cảnh đẹp, lán trại thế nào?</label>
                   <textarea
+                    id="trail-review-content"
                     className="form-textarea"
                     aria-label="Cảm nhận chi tiết chuyến đi"
                     rows={4}
-                    placeholder="Chia sẻ về tình trạng đường xá, cảnh đẹp, lán nghỉ..."
+                    placeholder="Đường có trơn không, nước suối còn nhiều không, lán ngủ có gió lùa không..."
                     value={newContent}
                     onChange={(e) => setNewContent(e.target.value)}
                     required
@@ -2723,12 +3467,13 @@ ${trackPointsXml}
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">Cảnh báo an toàn (nếu có)</label>
+                  <label htmlFor="trail-review-safety" className="form-label">Điều cần dặn người đi sau (nếu có)</label>
                   <input
+                    id="trail-review-safety"
                     type="text"
                     className="form-input"
-                    aria-label="Cảnh báo an toàn nếu có"
-                    placeholder="Ví dụ: Đoạn qua suối trơn, trạm 2800m hết nước..."
+                    aria-label="Điều cần dặn người đi sau nếu có"
+                    placeholder="VD: Đoạn suối lớn đang trơn, trạm 2.800m cạn nước..."
                     value={newSafetyNote}
                     onChange={(e) => setNewSafetyNote(e.target.value)}
                   />
@@ -2819,7 +3564,7 @@ ${trackPointsXml}
                   disabled={isSubmittingReview || uploadingReviewPhoto}
                   style={{ width: '100%', justifyContent: 'center', borderRadius: 4, opacity: isSubmittingReview || uploadingReviewPhoto ? 0.7 : 1 }}
                 >
-                  {isSubmittingReview ? 'Đang gửi đánh giá...' : 'Gửi đánh giá cho cộng đồng'}
+                  {isSubmittingReview ? 'Đang đăng...' : 'Đăng nhận xét'}
                 </button>
               </form>
             </div>
@@ -2866,7 +3611,7 @@ ${trackPointsXml}
                   marginBottom: 4,
                 }}
               >
-                Lộ Trình Liên Tuyến · Khoảng Cách Thực Địa
+                Gần cung này
               </div>
               <h3
                 className="font-editorial"
@@ -2878,11 +3623,11 @@ ${trackPointsXml}
                   lineHeight: 1.2,
                 }}
               >
-                Các Cung Đường Lân Cận Kết Hợp
+                Cung lân cận có thể đi nối tuyến
               </h3>
             </div>
             <span style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)' }}>
-              Gợi ý 4 tuyến gần {trail.name} nhất để ghép hành trình hoặc đối chiếu phương án dự phòng
+              4 cung gần {trail.name} nhất nếu bạn muốn đi nối chuyến hoặc đổi tuyến dự phòng
             </span>
           </div>
 
@@ -3039,7 +3784,7 @@ ${trackPointsXml}
                           borderRadius: 4,
                         }}
                       >
-                        Mở Cung
+                        Xem cung
                       </button>
                       <button
                         type="button"
@@ -3054,7 +3799,7 @@ ${trackPointsXml}
                           borderRadius: 4,
                         }}
                       >
-                        So Sánh
+                        So sánh
                       </button>
                     </div>
                   </div>
@@ -3067,7 +3812,23 @@ ${trackPointsXml}
 
       {/* Inline Trail Comparison Modal triggered from Nearby Trails "So Sánh" */}
       {isWeatherAlertOpen && (
-        <Suspense fallback={null}>
+        <Suspense
+          fallback={
+            createPortal(
+              <div
+                className="modal-overlay"
+                role="status"
+                aria-live="polite"
+                style={{ position: 'fixed', inset: 0, background: 'var(--overlay-bg)', zIndex: 'var(--z-modal, 3000)' as unknown as number, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                <div className="modal-content" style={{ padding: '14px 20px', borderRadius: 6, background: 'var(--color-bg-card)', border: '1px solid var(--color-border-strong)', color: 'var(--color-text-main)', fontSize: '0.84rem', fontWeight: 600 }}>
+                  Đang mở cảnh báo thời tiết...
+                </div>
+              </div>,
+              document.body
+            )
+          }
+        >
           <WeatherAlertModal
             isOpen={isWeatherAlertOpen}
             onClose={() => setIsWeatherAlertOpen(false)}
@@ -3093,7 +3854,23 @@ ${trackPointsXml}
       )}
 
       {inlineCompareTrail && (
-        <Suspense fallback={null}>
+        <Suspense
+          fallback={
+            createPortal(
+              <div
+                className="modal-overlay"
+                role="status"
+                aria-live="polite"
+                style={{ position: 'fixed', inset: 0, background: 'var(--overlay-bg)', zIndex: 'var(--z-modal, 3000)' as unknown as number, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                <div className="modal-content" style={{ padding: '14px 20px', borderRadius: 6, background: 'var(--color-bg-card)', border: '1px solid var(--color-border-strong)', color: 'var(--color-text-main)', fontSize: '0.84rem', fontWeight: 600 }}>
+                  Đang mở bảng so sánh cung đường...
+                </div>
+              </div>,
+              document.body
+            )
+          }
+        >
           <TrailComparisonModal
             trails={[trail, inlineCompareTrail]}
             isOpen={true}
@@ -3160,7 +3937,7 @@ ${trackPointsXml}
                   gap: 12,
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
                   <div
                     style={{
                       width: 36,
@@ -3176,12 +3953,12 @@ ${trackPointsXml}
                   >
                     <IconMountain size={18} color="var(--color-primary)" />
                   </div>
-                  <div>
+                  <div style={{ minWidth: 0 }}>
                     <div style={{ fontSize: '0.68rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--color-primary)' }}>
-                      Ghi Nhận Chinh Phục Thực Địa
+                      Lưu dấu chân lên đỉnh
                     </div>
                     <h3 style={{ margin: '2px 0 0 0', fontSize: '1.05rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                      Check-in Đỉnh · {trail.name}
+                      Check-in · {trail.name}
                     </h3>
                   </div>
                 </div>
@@ -3207,6 +3984,37 @@ ${trackPointsXml}
               </div>
 
               <form onSubmit={(e) => void handleSubmitCheckin(e)} style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {pendingCheckinsCount > 0 && (
+                  <div
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 4,
+                      background: 'color-mix(in srgb, var(--color-sun) 12%, var(--color-bg-main))',
+                      border: '1px solid color-mix(in srgb, var(--color-sun) 36%, var(--color-border))',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 10,
+                      flexWrap: 'wrap',
+                      fontSize: '0.76rem',
+                    }}
+                  >
+                    <span style={{ color: 'var(--color-text-main)', fontWeight: 600 }}>
+                      Có {pendingCheckinsCount} lượt check-in ngoại tuyến đang chờ đồng bộ lên máy chủ.
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      disabled={isSyncingCheckins}
+                      onClick={() => void flushPendingCheckins(false)}
+                      style={{ padding: '4px 10px', fontSize: '0.73rem', borderRadius: 4 }}
+                    >
+                      <IconRotateCw size={12} />
+                      <span>{isSyncingCheckins ? 'Đang đồng bộ...' : 'Đồng bộ ngay'}</span>
+                    </button>
+                  </div>
+                )}
+
                 {/* Optional GPS Proximity Verification Block */}
                 <div
                   style={{
@@ -3226,7 +4034,7 @@ ${trackPointsXml}
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
                     <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--color-text-main)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                       <IconCompass size={15} color="var(--color-primary)" />
-                      <span>Xác thực GPS thực địa (tùy chọn)</span>
+                      <span>Xác thực tọa độ GPS (không bắt buộc)</span>
                     </span>
                     <button
                       type="button"
@@ -3235,7 +4043,7 @@ ${trackPointsXml}
                       onClick={handleLocateCheckinGps}
                       style={{ padding: '5px 10px', fontSize: '0.74rem', borderRadius: 4 }}
                     >
-                      {checkinLocating ? 'Đang lấy GPS...' : checkinGps ? 'Cập nhật GPS' : 'Lấy tọa độ GPS hiện tại'}
+                      {checkinLocating ? 'Đang lấy GPS...' : checkinGps ? 'Cập nhật GPS' : 'Lấy tọa độ hiện tại'}
                     </button>
                   </div>
 
@@ -3245,37 +4053,39 @@ ${trackPointsXml}
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                           <IconCheck size={13} color="var(--color-primary)" />
                           <span>
-                            Đủ điều kiện Huy hiệu Xác Thực GPS (cách tuyến ~{checkinGps.distKm} km · +30 điểm uy tín)!
+                            Đủ điều kiện gắn dấu xác thực GPS (cách tuyến ~{checkinGps.distKm} km · +30 điểm)!
                           </span>
                         </span>
                       ) : (
                         <span>
-                          GPS hiện tại ({checkinGps.lat.toFixed(4)}, {checkinGps.lng.toFixed(4)}) cách cung ~{checkinGps.distKm} km (&gt; 1.5 km) — sẽ lưu dạng nhật ký check-in tiêu chuẩn (+15 điểm uy tín).
+                          Tọa độ hiện tại ({checkinGps.lat.toFixed(4)}, {checkinGps.lng.toFixed(4)}) cách cung ~{checkinGps.distKm} km (&gt; 1,5 km) — vẫn lưu nhật ký bình thường (+15 điểm).
                         </span>
                       )}
                     </div>
                   ) : (
                     <div style={{ fontSize: '0.74rem', color: 'var(--color-text-dim)' }}>
-                      Nếu bạn đang đứng trong bán kính 1.5 km quanh đỉnh hoặc tuyến GPX, hệ thống sẽ tự động gắn Huy hiệu Xác Thực GPS (+30 điểm uy tín).
+                      Nếu bạn đang đứng trong bán kính 1,5 km quanh đỉnh hoặc đường GPX, chuyến này sẽ được gắn dấu xác thực GPS (+30 điểm).
                     </div>
                   )}
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
                   <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label" style={{ fontSize: '0.78rem' }}>Ngày chinh phục</label>
+                    <label htmlFor="trail-checkin-date" className="form-label" style={{ fontSize: '0.78rem' }}>Ngày đi</label>
                     <input
+                      id="trail-checkin-date"
                       type="date"
                       className="form-input"
-                      max={new Date().toISOString().split('T')[0]}
+                      max={getVietnamTodayIso()}
                       value={checkinDate}
                       onChange={(e) => setCheckinDate(e.target.value)}
                       required
                     />
                   </div>
                   <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label" style={{ fontSize: '0.78rem' }}>Thời gian hoàn thành (giờ)</label>
+                    <label htmlFor="trail-checkin-hours" className="form-label" style={{ fontSize: '0.78rem' }}>Tổng thời gian đi (giờ)</label>
                     <input
+                      id="trail-checkin-hours"
                       type="number"
                       step="0.5"
                       min={0.5}
@@ -3289,8 +4099,9 @@ ${trackPointsXml}
                 </div>
 
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label" style={{ fontSize: '0.78rem' }}>Thời tiết ghi nhận (tùy chọn)</label>
+                  <label htmlFor="trail-checkin-weather" className="form-label" style={{ fontSize: '0.78rem' }}>Thời tiết hôm đó (không bắt buộc)</label>
                   <input
+                    id="trail-checkin-weather"
                     type="text"
                     className="form-input"
                     placeholder="VD: Biển mây dày buổi sáng, 11°C, nắng nhẹ"
@@ -3300,11 +4111,12 @@ ${trackPointsXml}
                 </div>
 
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label" style={{ fontSize: '0.78rem' }}>Ghi chú hành trình (tùy chọn)</label>
+                  <label htmlFor="trail-checkin-notes" className="form-label" style={{ fontSize: '0.78rem' }}>Ghi chú chuyến đi (không bắt buộc)</label>
                   <textarea
+                    id="trail-checkin-notes"
                     rows={3}
                     className="form-textarea"
-                    placeholder="Cảm xúc chạm đỉnh, thể trạng, đồng đội..."
+                    placeholder="Gió đỉnh hôm đó thế nào, đi cùng ai, có gì đáng nhớ..."
                     value={checkinNotes}
                     onChange={(e) => setCheckinNotes(e.target.value)}
                   />
@@ -3317,7 +4129,7 @@ ${trackPointsXml}
                     onChange={(e) => setCheckinIsPublic(e.target.checked)}
                     style={{ accentColor: 'var(--color-primary)' }}
                   />
-                  <span>Chia sẻ cột mốc chinh phục lên bảng tin cộng đồng</span>
+                  <span>Hiện dấu chân này trên bảng tin cộng đồng</span>
                 </label>
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, paddingTop: 6, borderTop: '1px solid var(--color-border)' }}>
@@ -3336,10 +4148,337 @@ ${trackPointsXml}
                     disabled={checkinSubmitting}
                     style={{ padding: '8px 20px', fontSize: '0.82rem', fontWeight: 800, borderRadius: 4 }}
                   >
-                    {checkinSubmitting ? 'Đang ghi nhận...' : 'Xác Nhận Check-in Đỉnh'}
+                    {checkinSubmitting ? 'Đang lưu...' : 'Lưu check-in'}
                   </button>
                 </div>
               </form>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* Quick-Prep "Chuẩn bị lên núi (Offline)" Modal: GPX+POIs + Offline Trail Pack + ICE Lockscreen */}
+      {isOfflinePrepOpen &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            onClick={() => setIsOfflinePrepOpen(false)}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'var(--overlay-bg)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 'var(--z-modal, 3000)' as unknown as number,
+              padding: 16,
+              fontFamily: 'var(--font-family)',
+            }}
+          >
+            <div
+              ref={offlinePrepDialogRef}
+              role="dialog"
+              aria-modal="true"
+              aria-label={`Chuẩn bị lên núi ngoại tuyến — ${trail.name}`}
+              tabIndex={-1}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: '100%',
+                maxWidth: 560,
+                maxHeight: '90dvh',
+                overflowY: 'auto',
+                background: 'var(--color-bg-card)',
+                border: '1px solid var(--color-border-strong)',
+                borderTop: '3px solid var(--color-primary)',
+                borderRadius: 6,
+                boxShadow: 'var(--shadow-3d)',
+                outline: 'none',
+              }}
+            >
+              <div
+                style={{
+                  padding: '16px 20px',
+                  borderBottom: '1px solid var(--color-border)',
+                  background: 'var(--color-bg-main)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                  <div
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: 4,
+                      background: 'color-mix(in srgb, var(--color-primary) 14%, transparent)',
+                      border: '1px solid var(--color-border-glow)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <IconShieldCheck size={18} color="var(--color-primary)" />
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: '0.68rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--color-primary)' }}>
+                      Bộ hành trang trước khi vào rừng mất sóng
+                    </div>
+                    <h3 style={{ margin: '2px 0 0 0', fontSize: '1.04rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                      Chuẩn bị lên núi (Offline) · {trail.name}
+                    </h3>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsOfflinePrepOpen(false)}
+                  aria-label="Đóng bảng chuẩn bị lên núi (Esc)"
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 4,
+                    background: 'var(--color-surface-elevated)',
+                    border: '1px solid var(--color-border)',
+                    color: 'var(--color-text-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    flexShrink: 0,
+                  }}
+                >
+                  <IconX size={16} />
+                </button>
+              </div>
+
+              <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {/* Summit Plus Code Reference */}
+                {summitPlusCode && (
+                  <div
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: 4,
+                      background: 'var(--color-bg-main)',
+                      border: '1px solid var(--color-border)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 10,
+                      flexWrap: 'wrap',
+                      fontSize: '0.78rem',
+                      fontVariantNumeric: 'tabular-nums',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <IconMapPin size={14} color="var(--color-sky)" />
+                      <span style={{ color: 'var(--color-text-muted)' }}>Mã tọa độ đỉnh (Plus Code):</span>
+                      <strong style={{ color: 'var(--color-sky)' }}>{summitPlusCode}</strong>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      onClick={async () => {
+                        const ok = await copyTextOfflineSafe(summitPlusCode);
+                        if (ok) {
+                          setPrepCopiedPlusCode(true);
+                          if (prepCopiedTimerRef.current !== null) window.clearTimeout(prepCopiedTimerRef.current);
+                          prepCopiedTimerRef.current = window.setTimeout(() => setPrepCopiedPlusCode(false), 1800);
+                        }
+                      }}
+                      style={{ padding: '4px 9px', fontSize: '0.72rem', borderRadius: 4 }}
+                    >
+                      {prepCopiedPlusCode ? <IconCheck size={12} color="var(--color-primary)" /> : <IconCopy size={12} />}
+                      <span>{prepCopiedPlusCode ? 'Đã chép' : 'Chép mã'}</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* 1. GPX 1.1 Export with Community POIs */}
+                <div
+                  style={{
+                    padding: 14,
+                    borderRadius: 6,
+                    background: 'var(--color-bg-main)',
+                    border: '1px solid var(--color-border)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <strong style={{ fontSize: '0.88rem', color: 'var(--color-text-main)' }}>
+                      1. Xuất tệp GPX 1.1 kèm POI cộng đồng (&lt;wpt&gt;)
+                    </strong>
+                    <span
+                      style={{
+                        fontSize: '0.68rem',
+                        fontWeight: 700,
+                        padding: '2px 7px',
+                        borderRadius: 4,
+                        background: 'var(--color-bg-card)',
+                        border: '1px solid var(--color-border)',
+                        color: 'var(--color-primary)',
+                        fontVariantNumeric: 'tabular-nums',
+                      }}
+                    >
+                      {(trail.waypoints || []).length} mốc tuyến · {mapFieldPois.length} POI
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, fontSize: '0.77rem', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
+                    Nhúng toàn bộ đường mòn GPX cùng các điểm nguồn nước, lán nghỉ, sóng 4G và cảnh báo từ cộng đồng để nạp vào đồng hồ GPS, Garmin hoặc bản đồ ngoại tuyến.
+                  </p>
+                  <div>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={handleDownloadGpx}
+                      style={{ padding: '7px 14px', fontSize: '0.78rem', borderRadius: 4 }}
+                    >
+                      <IconDownload size={14} color="var(--color-on-primary)" />
+                      <span>Tải GPX 1.1 kèm POI (.gpx)</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 2. Offline Trail Pack */}
+                <div
+                  style={{
+                    padding: 14,
+                    borderRadius: 6,
+                    background: 'var(--color-bg-main)',
+                    border: '1px solid var(--color-border)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <strong style={{ fontSize: '0.88rem', color: 'var(--color-text-main)' }}>
+                      2. Gói bản đồ địa hình Offline (DEM + Thời tiết)
+                    </strong>
+                    {prepOfflinePack && (
+                      <span
+                        style={{
+                          fontSize: '0.68rem',
+                          fontWeight: 700,
+                          padding: '2px 7px',
+                          borderRadius: 4,
+                          background: 'color-mix(in srgb, var(--color-primary) 14%, transparent)',
+                          color: 'var(--color-primary)',
+                          fontVariantNumeric: 'tabular-nums',
+                        }}
+                      >
+                        Đã lưu · {prepOfflinePack.tileCount} ô (~{prepOfflinePack.estimatedSizeMb} MB)
+                      </span>
+                    )}
+                  </div>
+                  <p style={{ margin: 0, fontSize: '0.77rem', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
+                    Lưu sẵn ô địa hình Terrarium DEM (AWS Open Data), trắc dọc cao độ và dự báo 7 ngày vào bộ nhớ máy để xem mượt ngay cả khi không còn 4G.
+                  </p>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <button
+                      type="button"
+                      className={prepOfflinePack ? 'btn btn-outline' : 'btn btn-primary'}
+                      disabled={prepOfflineProgress !== null}
+                      onClick={() => void handlePrepDownloadOfflinePack(Boolean(prepOfflinePack))}
+                      style={{ padding: '7px 14px', fontSize: '0.78rem', borderRadius: 4 }}
+                    >
+                      <IconDownload size={14} color={prepOfflinePack ? 'var(--color-primary)' : 'var(--color-on-primary)'} />
+                      <span>
+                        {prepOfflineProgress !== null
+                          ? `Đang tải ${prepOfflineProgress}%...`
+                          : prepOfflinePack
+                            ? 'Cập nhật lại gói Offline'
+                            : 'Tải gói bản đồ Offline'}
+                      </span>
+                    </button>
+                    {prepOfflineProgress !== null && (
+                      <button
+                        type="button"
+                        className="btn btn-outline"
+                        onClick={handlePrepCancelOfflinePack}
+                        style={{
+                          padding: '7px 11px',
+                          fontSize: '0.76rem',
+                          borderRadius: 4,
+                          color: 'var(--color-error-text, var(--color-error))',
+                          borderColor: 'color-mix(in srgb, var(--color-error) 38%, transparent)',
+                        }}
+                      >
+                        <IconX size={13} />
+                        <span>Hủy tải</span>
+                      </button>
+                    )}
+                    {prepOfflinePack && prepOfflineProgress === null && (
+                      <button
+                        type="button"
+                        className="btn btn-outline"
+                        onClick={() => void handlePrepDeleteOfflinePack()}
+                        style={{
+                          padding: '7px 11px',
+                          fontSize: '0.76rem',
+                          borderRadius: 4,
+                          color: 'var(--color-error-text, var(--color-error))',
+                          borderColor: 'color-mix(in srgb, var(--color-error) 35%, transparent)',
+                        }}
+                      >
+                        <IconTrash size={13} />
+                        <span>Xóa gói</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* 3. ICE Emergency Lockscreen Card */}
+                <div
+                  style={{
+                    padding: 14,
+                    borderRadius: 6,
+                    background: 'var(--color-bg-main)',
+                    border: '1px solid var(--color-border)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <strong style={{ fontSize: '0.88rem', color: 'var(--color-text-main)' }}>
+                      3. Thẻ khóa màn hình cứu hộ ICE (1080×1920)
+                    </strong>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--color-earth)', fontWeight: 700 }}>
+                      Gắn sẵn hotline {trail.rescueContact?.phone || '112 / 114'}
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, fontSize: '0.77rem', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
+                    Tạo ảnh hình nền khóa màn hình chứa nhóm máu, dị ứng, SĐT người thân và hotline kiểm lâm tuyến {trail.name} để lực lượng cứu hộ đọc được ngay không cần mở khóa máy.
+                  </p>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={prepIceGenerating}
+                      onClick={() => void handlePrepDownloadIceCard()}
+                      style={{ padding: '7px 14px', fontSize: '0.78rem', borderRadius: 4 }}
+                    >
+                      <IconLock size={14} color="var(--color-on-primary)" />
+                      <span>{prepIceGenerating ? 'Đang tạo ảnh PNG...' : 'Tải nhanh thẻ ICE (.png)'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      onClick={() => {
+                        setIsOfflinePrepOpen(false);
+                        navigateToFieldTool(`/toolkit?trailId=${encodedTrailId}&tab=sos`);
+                      }}
+                      style={{ padding: '7px 12px', fontSize: '0.78rem', borderRadius: 4 }}
+                    >
+                      <span>Chỉnh hồ sơ y tế ICE &amp; SOS 2G</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>,
           document.body

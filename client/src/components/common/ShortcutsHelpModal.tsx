@@ -68,7 +68,7 @@ const SHORTCUT_GROUPS: readonly ShortcutGroup[] = [
       {
         keys: ['Alt', 'T'],
         label: 'Chuyển Giao Diện Tối / Sáng',
-        detail: 'Chuyển đổi tức thì giữa Obsidian Slate (Tối) và Field Paper (Sáng)',
+        detail: 'Chuyển đổi tức thì giữa giao diện Nền tối và Nền sáng',
       },
       {
         keys: ['Ctrl', 'Enter'],
@@ -189,7 +189,7 @@ export const ShortcutsHelpModal: React.FC<ShortcutsHelpModalProps> = ({
                   color: 'var(--color-primary)',
                 }}
               >
-                LOST FIELD ATLAS · KEYBOARD NAVIGATION
+                LOST VIỆT NAM · ĐIỀU HƯỚNG BÀN PHÍM
               </div>
               <h2
                 id="lost-shortcuts-modal-title"

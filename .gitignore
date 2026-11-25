@@ -8,10 +8,16 @@ dist/
 client/dist/
 server/dist/
 
-# Environment variables
+# Environment variables & secrets
 .env
+.env.*
 client/.env
 server/.env
+*.local
+*.pem
+*.key
+!.env.example
+!**/.env.example
 
 # Antigravity / IDE artifacts & cache
 .agents/

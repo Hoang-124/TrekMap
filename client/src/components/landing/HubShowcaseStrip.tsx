@@ -150,7 +150,7 @@ export const HubShowcaseStrip: React.FC<HubShowcaseStripProps> = React.memo(
           maxWidth: 1360,
           width: '100%',
           margin: '0 auto',
-          padding: '52px 24px 16px',
+          padding: '52px 0 16px',
           fontFamily: 'var(--font-family)',
         }}
       >

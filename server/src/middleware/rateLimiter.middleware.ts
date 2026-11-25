@@ -6,41 +6,85 @@ interface RateLimitRecord {
 }
 
 const MAX_KEYS_PER_LIMITER = 10_000;
+const activeCleanupTimers = new Set<NodeJS.Timeout>();
 
 /**
- * True Bounded Sliding-Window In-Memory Rate Limiter Middleware.
- * Uses isolated per-limiter storage, fixed bucket prefix (never req.path),
- * and expired-first eviction so rotating IPs cannot evict active abusive buckets.
+ * Clears all rate-limiter background cleanup intervals on graceful server shutdown.
  */
-export const createRateLimiter = (
-  maxRequests: number = 100,
-  windowMs: number = 15 * 60 * 1000,
-  message: string = 'Bạn đã gửi quá nhiều yêu cầu. Vui lòng thử lại sau.',
-  prefix: string = 'rl'
-) => {
+export const stopRateLimiterTimers = (): void => {
+  for (const timer of activeCleanupTimers) {
+    clearInterval(timer);
+  }
+  activeCleanupTimers.clear();
+};
+
+function createKeyedSlidingWindowLimiter(
+  maxRequests: number,
+  windowMs: number,
+  message: string,
+  prefix: string,
+  resolveIdentity: (req: Request) => string
+) {
   const store = new Map<string, RateLimitRecord>();
 
   const cleanupTimer = setInterval(() => {
     const now = Date.now();
+    const windowStart = now - windowMs;
     for (const [key, record] of store.entries()) {
       if (record.expiresAt <= now) {
         store.delete(key);
+        continue;
+      }
+      const recent = record.timestamps.filter((ts) => ts > windowStart);
+      if (recent.length === 0) {
+        store.delete(key);
+      } else if (recent.length !== record.timestamps.length) {
+        record.timestamps = recent;
+        record.expiresAt = recent[recent.length - 1] + windowMs;
       }
     }
   }, 60_000);
   cleanupTimer.unref();
+  activeCleanupTimers.add(cleanupTimer);
 
   return (req: Request, res: Response, next: NextFunction) => {
-    const ip = req.ip || req.socket.remoteAddress || 'unknown-client';
-    const key = `${prefix}:${ip}`;
+    const identity = resolveIdentity(req);
+    const key = `${prefix}:${identity}`;
     const now = Date.now();
     const windowStart = now - windowMs;
 
     let record = store.get(key);
 
-    if (!record) {
+    if (record) {
+      // Prune timestamps outside the active sliding window BEFORE checking quota
+      record.timestamps = record.timestamps.filter((ts) => ts > windowStart);
+
+      if (record.timestamps.length >= maxRequests) {
+        // Reject WITHOUT pushing `now` or extending `expiresAt` (prevents unbounded RAM DoS & permanent lockout)
+        const oldestHit = record.timestamps[0] || now;
+        const resetTime = oldestHit + windowMs;
+        const retryAfterSec = Math.max(1, Math.ceil((resetTime - now) / 1000));
+
+        res.setHeader('X-RateLimit-Limit', maxRequests);
+        res.setHeader('X-RateLimit-Remaining', 0);
+        res.setHeader('X-RateLimit-Reset', Math.ceil(resetTime / 1000));
+        res.setHeader('Retry-After', String(retryAfterSec));
+
+        return res.status(429).json({
+          success: false,
+          message,
+          retryAfterSec,
+        });
+      }
+
+      record.timestamps.push(now);
+      record.expiresAt = now + windowMs;
+      // Refresh LRU ordering
+      store.delete(key);
+      store.set(key, record);
+    } else {
       if (store.size >= MAX_KEYS_PER_LIMITER) {
-        // Purge expired records first so active abusive IPs are not evicted
+        // Purge expired records first so active abusive buckets are not evicted
         for (const [k, rec] of store.entries()) {
           if (rec.expiresAt <= now) store.delete(k);
         }
@@ -54,13 +98,6 @@ export const createRateLimiter = (
         expiresAt: now + windowMs,
       };
       store.set(key, record);
-    } else {
-      // Drop timestamps outside sliding window and refresh LRU position
-      record.timestamps = record.timestamps.filter((ts) => ts > windowStart);
-      record.timestamps.push(now);
-      record.expiresAt = now + windowMs;
-      store.delete(key);
-      store.set(key, record);
     }
 
     const count = record.timestamps.length;
@@ -71,19 +108,42 @@ export const createRateLimiter = (
     res.setHeader('X-RateLimit-Remaining', Math.max(0, maxRequests - count));
     res.setHeader('X-RateLimit-Reset', Math.ceil(resetTime / 1000));
 
-    if (count > maxRequests) {
-      const retryAfterSec = Math.max(1, Math.ceil((resetTime - now) / 1000));
-      res.setHeader('Retry-After', String(retryAfterSec));
-      return res.status(429).json({
-        success: false,
-        message,
-        retryAfterSec,
-      });
-    }
-
     return next();
   };
-};
+}
+
+/**
+ * True Bounded Sliding-Window In-Memory Rate Limiter Middleware (IP-keyed).
+ * Checks quota before recording hits so 429 floods cannot grow RAM or lock out users permanently.
+ */
+export const createRateLimiter = (
+  maxRequests: number = 100,
+  windowMs: number = 15 * 60 * 1000,
+  message: string = 'Bạn đã gửi quá nhiều yêu cầu. Vui lòng thử lại sau.',
+  prefix: string = 'rl'
+) =>
+  createKeyedSlidingWindowLimiter(
+    maxRequests,
+    windowMs,
+    message,
+    prefix,
+    (req) => req.ip || req.socket.remoteAddress || 'unknown-client'
+  );
+
+/**
+ * Bounded Sliding-Window Rate Limiter keyed on authenticated userId (falls back to IP for guests).
+ */
+export const createUserRateLimiter = (
+  maxRequests: number = 60,
+  windowMs: number = 15 * 60 * 1000,
+  message: string = 'Bạn thực hiện thao tác quá nhanh. Vui lòng thử lại sau.',
+  prefix: string = 'url'
+) =>
+  createKeyedSlidingWindowLimiter(maxRequests, windowMs, message, prefix, (req) => {
+    const uid = (req as Request & { user?: { userId?: string } }).user?.userId;
+    if (uid) return `u:${uid}`;
+    return `ip:${req.ip || req.socket.remoteAddress || 'unknown-client'}`;
+  });
 
 export const globalRateLimiter = createRateLimiter(
   500,

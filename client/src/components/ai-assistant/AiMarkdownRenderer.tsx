@@ -6,15 +6,53 @@ interface AiMarkdownRendererProps {
   isUser: boolean;
 }
 
+const GFM_TABLE_SEP_REGEX = /^\|(?:\s*:?-{3,}:?\s*\|)+$/;
+const HEADING_REGEX = /^(#{1,6})\s+(.+)$/;
+
+function isSafeMarkdownHref(rawUrl: string): boolean {
+  const url = rawUrl.trim();
+  if (url.startsWith('https://')) return true;
+  if (url.startsWith('tel:')) {
+    const num = url.slice(4).trim();
+    return /^[+\d][\d\s.-]{2,20}$/.test(num);
+  }
+  return false;
+}
+
 /**
- * Parses **bold**, *italic*, and `inline code` cleanly using strict Dual-Theme CSS tokens.
+ * Parses **bold**, *italic*, `inline code`, and safe [label](https://...|tel:...) links
+ * using strict Dual-Theme CSS tokens.
  */
 function renderInlineTokens(text: string, isUser: boolean): React.ReactNode {
-  const tokenRegex = /(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`)/g;
+  const tokenRegex = /(\[[^\]\n]+\]\((?:https:\/\/[^\s)]+|tel:[+\d][\d\s.-]*)\)|\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`)/g;
   const parts = text.split(tokenRegex);
 
   return parts.map((part, idx) => {
     if (!part) return null;
+
+    if (part.startsWith('[') && part.endsWith(')')) {
+      const linkMatch = part.match(/^\[([^\]\n]+)\]\(([^)\s]+)\)$/);
+      if (linkMatch && isSafeMarkdownHref(linkMatch[2])) {
+        const [, label, href] = linkMatch;
+        const isExternal = href.startsWith('https://');
+        return (
+          <a
+            key={idx}
+            href={href}
+            target={isExternal ? '_blank' : undefined}
+            rel={isExternal ? 'noopener noreferrer' : undefined}
+            style={{
+              color: isUser ? 'var(--color-on-primary)' : 'var(--color-sky)',
+              fontWeight: 700,
+              textDecoration: 'underline',
+              textUnderlineOffset: 2,
+            }}
+          >
+            {label}
+          </a>
+        );
+      }
+    }
 
     if (part.startsWith('**') && part.endsWith('**') && part.length >= 4) {
       return (
@@ -70,19 +108,57 @@ function renderInlineTokens(text: string, isUser: boolean): React.ReactNode {
   });
 }
 
-function normalizeMarkdown(raw: string): string {
+function normalizeProseChunk(raw: string): string {
   if (!raw) return '';
   let text = removeEmojis(raw);
   text = text.replace(/^[–—]\s+/gm, '- ');
-  text = text.replace(/([^\n])\s+(#{1,4}\s+)/g, '$1\n\n$2');
+  // Linear-time heading split (avoids quadratic ReDoS backtracking)
+  text = text.replace(/([^\s])[ \t]+(#{1,4}\s+)/g, '$1\n\n$2');
   // Split clumped numbered list items like "1. **A** 2. **B**" safely without breaking "ngày 1. Sáng..."
-  text = text.replace(/(:)\s+(\d+\.\s+(?:\*\*|[A-ZĐÀ-Ỹ]))/g, '$1\n$2');
+  text = text.replace(/(:)[ \t]+(\d+\.\s+(?:\*\*|[A-ZĐÀ-Ỹ]))/g, '$1\n$2');
   text = text.replace(/\n{3,}/g, '\n\n');
-  return text.trim();
+  return text;
+}
+
+function normalizeMarkdownPreservingFences(raw: string): string {
+  if (!raw) return '';
+  const unified = raw.replace(/\r\n?/g, '\n');
+  const lines = unified.split('\n');
+  const out: string[] = [];
+  let proseBuf: string[] = [];
+  let inFence = false;
+
+  const flushProse = () => {
+    if (proseBuf.length === 0) return;
+    out.push(normalizeProseChunk(proseBuf.join('\n')));
+    proseBuf = [];
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('```')) {
+      if (!inFence) {
+        flushProse();
+        inFence = true;
+        out.push(line);
+      } else {
+        inFence = false;
+        out.push(line);
+      }
+      continue;
+    }
+    if (inFence) {
+      out.push(line);
+    } else {
+      proseBuf.push(line);
+    }
+  }
+  flushProse();
+  return out.join('\n').trim();
 }
 
 export const AiMarkdownRenderer: React.FC<AiMarkdownRendererProps> = ({ content, isUser }) => {
-  const normalized = normalizeMarkdown(content);
+  const normalized = normalizeMarkdownPreservingFences(content);
   const rawLines = normalized.split('\n');
   const blocks: React.ReactNode[] = [];
 
@@ -97,8 +173,77 @@ export const AiMarkdownRenderer: React.FC<AiMarkdownRendererProps> = ({ content,
       continue;
     }
 
+    // Fenced code block (```lang ... ```)
+    if (trimmed.startsWith('```')) {
+      const startIdx = i;
+      const lang = trimmed.slice(3).trim();
+      i++;
+      const codeLines: string[] = [];
+      while (i < rawLines.length && !rawLines[i].trim().startsWith('```')) {
+        codeLines.push(rawLines[i]);
+        i++;
+      }
+      if (i < rawLines.length && rawLines[i].trim().startsWith('```')) {
+        i++;
+      }
+      blocks.push(
+        <div
+          key={`code-${startIdx}`}
+          style={{
+            margin: '4px 0',
+            borderRadius: 4,
+            border: isUser
+              ? '1px solid color-mix(in srgb, var(--color-on-primary) 26%, transparent)'
+              : '1px solid var(--color-border)',
+            background: isUser
+              ? 'color-mix(in srgb, var(--color-on-primary) 12%, transparent)'
+              : 'var(--color-surface-elevated)',
+            overflow: 'hidden',
+          }}
+        >
+          {lang && (
+            <div
+              style={{
+                padding: '3px 9px',
+                fontSize: '0.67rem',
+                fontWeight: 700,
+                color: isUser ? 'var(--color-on-primary)' : 'var(--color-text-dim)',
+                borderBottom: isUser
+                  ? '1px solid color-mix(in srgb, var(--color-on-primary) 18%, transparent)'
+                  : '1px solid var(--color-border)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.03em',
+              }}
+            >
+              {lang}
+            </div>
+          )}
+          <pre
+            style={{
+              margin: 0,
+              padding: '8px 10px',
+              overflowX: 'auto',
+              fontSize: '0.78rem',
+              lineHeight: 1.5,
+              color: isUser ? 'var(--color-on-primary)' : 'var(--color-text-main)',
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+            }}
+          >
+            <code>{codeLines.join('\n')}</code>
+          </pre>
+        </div>
+      );
+      continue;
+    }
+
     // GFM Table block detection (| col | col |)
-    if (trimmed.startsWith('|') && trimmed.endsWith('|') && i + 1 < rawLines.length && /^\|[\s:-]+\|$/.test(rawLines[i + 1].trim().replace(/\|/g, '|'))) {
+    if (
+      trimmed.startsWith('|') &&
+      trimmed.endsWith('|') &&
+      i + 1 < rawLines.length &&
+      GFM_TABLE_SEP_REGEX.test(rawLines[i + 1].trim())
+    ) {
+      const tableStart = i;
       const headerCells = trimmed
         .slice(1, -1)
         .split('|')
@@ -118,7 +263,7 @@ export const AiMarkdownRenderer: React.FC<AiMarkdownRendererProps> = ({ content,
 
       blocks.push(
         <div
-          key={`tbl-${i}`}
+          key={`tbl-${tableStart}`}
           style={{
             overflowX: 'auto',
             margin: '6px 0',
@@ -163,6 +308,48 @@ export const AiMarkdownRenderer: React.FC<AiMarkdownRendererProps> = ({ content,
       continue;
     }
 
+    // Blockquote (> ...)
+    if (trimmed.startsWith('>')) {
+      const bqStart = i;
+      const quoteLines: string[] = [];
+      while (i < rawLines.length && rawLines[i].trim().startsWith('>')) {
+        quoteLines.push(rawLines[i].trim().replace(/^>\s?/, ''));
+        i++;
+      }
+      blocks.push(
+        <blockquote
+          key={`bq-${bqStart}`}
+          style={{
+            margin: '4px 0',
+            padding: '6px 10px',
+            borderRadius: 4,
+            borderLeft: isUser ? '3px solid var(--color-on-primary)' : '3px solid var(--color-primary)',
+            background: isUser
+              ? 'color-mix(in srgb, var(--color-on-primary) 12%, transparent)'
+              : 'color-mix(in srgb, var(--color-primary) 7%, var(--color-bg-card))',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 3,
+          }}
+        >
+          {quoteLines.map((ql, qIdx) => (
+            <p
+              key={qIdx}
+              style={{
+                margin: 0,
+                fontSize: '0.83rem',
+                lineHeight: 1.55,
+                color: isUser ? 'var(--color-on-primary)' : 'var(--color-text-muted)',
+              }}
+            >
+              {renderInlineTokens(ql, isUser)}
+            </p>
+          ))}
+        </blockquote>
+      );
+      continue;
+    }
+
     // Horizontal divider
     if (trimmed === '---' || trimmed === '***') {
       blocks.push(
@@ -180,9 +367,10 @@ export const AiMarkdownRenderer: React.FC<AiMarkdownRendererProps> = ({ content,
       continue;
     }
 
-    // Heading (# / ## / ###)
-    if (trimmed.startsWith('#')) {
-      const headerText = trimmed.replace(/^#{1,4}\s*/, '');
+    // Heading (# / ## / ### — strictly requires space after # so "#1 Fansipan" stays prose)
+    const headingMatch = trimmed.match(HEADING_REGEX);
+    if (headingMatch) {
+      const headerText = headingMatch[2];
       blocks.push(
         <div
           key={`hd-${i}`}

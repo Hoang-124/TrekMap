@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
+import type { CockpitCoordListener, CockpitCoordPoint } from './adminCockpitTypes.js';
 
 export type AdminReadinessLevel = 'critical' | 'attention' | 'stable';
 
 export interface AdminStatusBarProps {
   readiness: AdminReadinessLevel;
   readinessDetail?: string;
-  activeCoords: { lat: number; lng: number } | null;
-  isCoordLocked?: boolean;
+  lockedCoords: CockpitCoordPoint | null;
+  subscribeHoverCoords?: (listener: CockpitCoordListener) => () => void;
   dbStatus: 'checking' | 'online' | 'connecting' | 'degraded' | 'offline';
   dbLabel: string;
   isSocketConnected: boolean;
@@ -59,7 +60,7 @@ const READINESS_META: Record<
   attention: {
     label: 'CẦN XỬ LÝ',
     lampClass: 'admin-readiness-lamp admin-readiness-lamp--warn',
-    colorVar: 'var(--color-sun)',
+    colorVar: 'var(--color-earth)',
   },
   stable: {
     label: 'ỔN ĐỊNH',
@@ -81,9 +82,10 @@ const IctClockReadout: React.FC = React.memo(() => {
   return (
     <span
       className="admin-statusbar-item"
-      title="Đồng hồ tác chiến chuẩn giờ Việt Nam (UTC+7 / ICT)"
+      title="Giờ hệ thống (UTC+7)"
       style={{
-        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        fontFamily: 'var(--font-family)',
+        fontVariantNumeric: 'tabular-nums',
         color: 'var(--color-text-main)',
         fontWeight: 600,
       }}
@@ -102,19 +104,89 @@ const IctClockReadout: React.FC = React.memo(() => {
         <circle cx="12" cy="12" r="10" />
         <polyline points="12 6 12 12 16 14" />
       </svg>
-      <span>{clockText} ICT</span>
+      <span>{clockText} UTC+7</span>
     </span>
   );
 });
 
 IctClockReadout.displayName = 'IctClockReadout';
 
+interface LiveCoordReadoutProps {
+  lockedCoords: CockpitCoordPoint | null;
+  subscribeHoverCoords?: (listener: CockpitCoordListener) => () => void;
+}
+
+const LiveCoordReadout: React.FC<LiveCoordReadoutProps> = React.memo(
+  ({ lockedCoords, subscribeHoverCoords }) => {
+    const [hoverCoords, setHoverCoords] = useState<CockpitCoordPoint | null>(null);
+
+    useEffect(() => {
+      if (!subscribeHoverCoords) return;
+      return subscribeHoverCoords((next) => {
+        setHoverCoords(next);
+      });
+    }, [subscribeHoverCoords]);
+
+    const activeCoords = hoverCoords ?? lockedCoords;
+    const isCoordLocked = !hoverCoords && Boolean(lockedCoords);
+    const hasValidCoords =
+      activeCoords !== null &&
+      Number.isFinite(activeCoords.lat) &&
+      Number.isFinite(activeCoords.lng);
+
+    return (
+      <span
+        className="admin-statusbar-item"
+        title={
+          hasValidCoords
+            ? isCoordLocked
+              ? 'Tọa độ mục tiêu đang chọn trong bảng chi tiết (WGS84)'
+              : 'Tọa độ con trỏ thời gian thực trên bản đồ (WGS84)'
+            : 'Hệ tọa độ WGS84 · Rê chuột lên bản đồ hoặc chọn mục để xem tọa độ'
+        }
+        style={{
+          fontFamily: 'var(--font-family)',
+          fontVariantNumeric: 'tabular-nums',
+          color: hasValidCoords ? 'var(--color-text-main)' : 'var(--color-text-dim)',
+          minWidth: 196,
+          justifyContent: 'center',
+        }}
+      >
+        <svg
+          width="11"
+          height="11"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke={hasValidCoords ? 'var(--color-primary)' : 'var(--color-text-dim)'}
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="7" />
+          <line x1="12" y1="2" x2="12" y2="6" />
+          <line x1="12" y1="18" x2="12" y2="22" />
+          <line x1="2" y1="12" x2="6" y2="12" />
+          <line x1="18" y1="12" x2="22" y2="12" />
+        </svg>
+        <span>
+          {hasValidCoords && activeCoords
+            ? `${isCoordLocked ? 'Đang chọn · ' : ''}${formatGpsReadout(activeCoords.lat, activeCoords.lng)}`
+            : 'WGS84 · Rê chuột lên bản đồ'}
+        </span>
+      </span>
+    );
+  }
+);
+
+LiveCoordReadout.displayName = 'LiveCoordReadout';
+
 export const AdminStatusBar: React.FC<AdminStatusBarProps> = React.memo(
   ({
     readiness,
     readinessDetail,
-    activeCoords,
-    isCoordLocked = false,
+    lockedCoords,
+    subscribeHoverCoords,
     dbStatus,
     dbLabel,
     isSocketConnected,
@@ -129,14 +201,14 @@ export const AdminStatusBar: React.FC<AdminStatusBarProps> = React.memo(
             ? 'admin-dot'
             : 'admin-dot admin-dot--danger';
 
-    const hasValidCoords =
-      activeCoords !== null &&
-      Number.isFinite(activeCoords.lat) &&
-      Number.isFinite(activeCoords.lng);
+    const dbStatusText =
+      dbStatus === 'online'
+        ? 'Cơ sở dữ liệu ổn định'
+        : `Cơ sở dữ liệu: ${dbLabel}`;
 
     return (
-      <footer className="admin-statusbar" aria-label="Thanh công cụ trạng thái điều hành">
-        {/* LEFT: Live ICT Clock + Operational Readiness */}
+      <footer className="admin-statusbar" aria-label="Thanh trạng thái vận hành">
+        {/* LEFT: Live UTC+7 Clock + Operational Readiness */}
         <div className="admin-statusbar-group">
           <IctClockReadout />
           <span aria-hidden="true" style={{ opacity: 0.35 }}>
@@ -160,47 +232,12 @@ export const AdminStatusBar: React.FC<AdminStatusBarProps> = React.memo(
           )}
         </div>
 
-        {/* CENTER: Live Pointer / Locked GPS Readout */}
+        {/* CENTER: Isolated Live Pointer / Locked GPS Readout */}
         <div className="admin-statusbar-group">
-          <span
-            className="admin-statusbar-item"
-            title={
-              hasValidCoords
-                ? isCoordLocked
-                  ? 'Tọa độ mục tiêu đang khóa trong trình thanh tra'
-                  : 'Tọa độ con trỏ thời gian thực trên radar VN-2000'
-                : 'Hệ quy chiếu VN-2000 · Di chuột trên radar hoặc chọn mục để xem tọa độ'
-            }
-            style={{
-              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-              color: hasValidCoords ? 'var(--color-text-main)' : 'var(--color-text-dim)',
-              minWidth: 196,
-              justifyContent: 'center',
-            }}
-          >
-            <svg
-              width="11"
-              height="11"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke={hasValidCoords ? 'var(--color-primary)' : 'var(--color-text-dim)'}
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="7" />
-              <line x1="12" y1="2" x2="12" y2="6" />
-              <line x1="12" y1="18" x2="12" y2="22" />
-              <line x1="2" y1="12" x2="6" y2="12" />
-              <line x1="18" y1="12" x2="22" y2="12" />
-            </svg>
-            <span>
-              {hasValidCoords
-                ? `${isCoordLocked ? 'LOCK ' : ''}${formatGpsReadout(activeCoords.lat, activeCoords.lng)}`
-                : 'VN-2000 · 16.0544° N, 108.2022° E'}
-            </span>
-          </span>
+          <LiveCoordReadout
+            lockedCoords={lockedCoords}
+            subscribeHoverCoords={subscribeHoverCoords}
+          />
         </div>
 
         {/* RIGHT: Telemetry Links + Keyboard Shortcut Chips */}
@@ -210,18 +247,18 @@ export const AdminStatusBar: React.FC<AdminStatusBarProps> = React.memo(
             title={`MongoDB: ${dbLabel}`}
           >
             <span className={dbDotClass} aria-hidden="true" />
-            <span>DB {dbStatus === 'online' ? 'OK' : dbLabel}</span>
+            <span>{dbStatusText}</span>
           </span>
 
           <span
             className="admin-statusbar-item"
-            title={isSocketConnected ? 'Socket.IO trực tuyến' : 'Đang đồng bộ lại Socket.IO'}
+            title={isSocketConnected ? 'Kết nối thời gian thực đang hoạt động' : 'Đang đồng bộ lại kết nối thời gian thực'}
           >
             <span
               className={isSocketConnected ? 'admin-dot admin-dot--ok' : 'admin-dot admin-dot--warn'}
               aria-hidden="true"
             />
-            <span>{isSocketConnected ? 'WS LIVE' : 'WS SYNC'}</span>
+            <span>{isSocketConnected ? 'Kết nối trực tiếp' : 'Đang đồng bộ'}</span>
           </span>
 
           <span

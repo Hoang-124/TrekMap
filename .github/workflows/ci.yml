@@ -8,7 +8,7 @@ on:
 
 jobs:
   server-verify:
-    name: Server TypeScript Build
+    name: Server Build & Test
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -17,10 +17,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: server/package-lock.json
 
@@ -34,7 +34,7 @@ jobs:
         run: npm test
 
   client-verify:
-    name: Client Build & Lint
+    name: Client Build, Lint & Test
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -43,10 +43,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: client/package-lock.json
 
@@ -56,8 +56,11 @@ jobs:
       - name: TypeScript & Vite production build
         run: npm run build
 
-      - name: Run ESLint verification
-        run: npm run lint -- --quiet
+      - name: Run ESLint verification (zero warnings)
+        run: npm run lint -- --max-warnings=0
+
+      - name: Verify Service Worker syntax
+        run: node --check public/sw.js
 
       - name: Run Client automated tests
         run: npm test

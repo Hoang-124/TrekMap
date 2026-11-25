@@ -37,7 +37,8 @@ export const TrekAssistantFab: React.FC<TrekAssistantFabProps> = ({
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
         title={isOpen ? 'Đóng LOST AI (Alt+A)' : 'Mở trợ lý LOST AI (Alt+A)'}
-        aria-label="Mở trợ lý LOST AI"
+        aria-label={isOpen ? 'Đóng trợ lý LOST AI' : 'Mở trợ lý LOST AI'}
+        aria-expanded={isOpen}
         style={{
           display: 'flex',
           alignItems: 'center',

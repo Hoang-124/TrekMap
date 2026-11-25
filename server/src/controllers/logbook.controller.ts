@@ -7,6 +7,12 @@ import { AuthRequest } from '../middleware/auth.middleware.js';
 import { isValidObjectId, resolveTrailObjectId } from '../utils/resolveTrail.js';
 import { sanitizeInput, isSafeHttpUrl } from '../utils/validation.js';
 
+function parseStrictFiniteNumber(val: unknown): number | null {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
+
 function escapeXml(unsafe: string): string {
   return String(unsafe || '').replace(/[<>&'"]/g, (c) => {
     switch (c) {
@@ -37,7 +43,7 @@ export const getMyLogbook = async (req: AuthRequest, res: Response) => {
       return res.json({ success: true, count: 0, data: [], pagination: { total: 0, page: 1, limit: 20 } });
     }
 
-    const page = Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1);
+    const page = Math.min(Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1), 1000);
     const limit = Math.min(Math.max(parseInt(String(req.query.limit || '20'), 10) || 20, 1), 60);
     const skip = (page - 1) * limit;
 
@@ -125,22 +131,22 @@ export const updateLogbookEntry = async (req: AuthRequest, res: Response) => {
     const update: Record<string, any> = {};
 
     if (body.completionTimeHours !== undefined) {
-      const hrs = Number(body.completionTimeHours);
-      if (!Number.isFinite(hrs) || hrs < 0.2 || hrs > 240) {
+      const hrs = parseStrictFiniteNumber(body.completionTimeHours);
+      if (hrs === null || hrs < 0.2 || hrs > 240) {
         return res.status(400).json({ success: false, message: 'Thời gian hoàn thành phải từ 0.2 đến 240 giờ.' });
       }
       update.completionTimeHours = hrs;
     }
     if (body.distanceRecordedKm !== undefined) {
-      const km = Number(body.distanceRecordedKm);
-      if (!Number.isFinite(km) || km < 0 || km > 500) {
+      const km = parseStrictFiniteNumber(body.distanceRecordedKm);
+      if (km === null || km < 0 || km > 500) {
         return res.status(400).json({ success: false, message: 'Quãng đường ghi nhận phải từ 0 đến 500 km.' });
       }
       update.distanceRecordedKm = Math.round(km * 100) / 100;
     }
     if (body.elevationGainRecordedM !== undefined) {
-      const gain = Number(body.elevationGainRecordedM);
-      if (!Number.isFinite(gain) || gain < 0 || gain > 30000) {
+      const gain = parseStrictFiniteNumber(body.elevationGainRecordedM);
+      if (gain === null || gain < 0 || gain > 30000) {
         return res.status(400).json({ success: false, message: 'Tổng độ cao tích lũy phải từ 0 đến 30.000 m.' });
       }
       update.elevationGainRecordedM = Math.round(gain);
@@ -149,8 +155,8 @@ export const updateLogbookEntry = async (req: AuthRequest, res: Response) => {
       update.weatherObserved = sanitizeInput(body.weatherObserved).slice(0, 160);
     }
     if (body.packWeightKg !== undefined) {
-      const kg = Number(body.packWeightKg);
-      if (!Number.isFinite(kg) || kg < 0 || kg > 60) {
+      const kg = parseStrictFiniteNumber(body.packWeightKg);
+      if (kg === null || kg < 0 || kg > 60) {
         return res.status(400).json({ success: false, message: 'Trọng lượng balo phải từ 0 đến 60 kg.' });
       }
       update.packWeightKg = Math.round(kg * 10) / 10;
@@ -159,9 +165,9 @@ export const updateLogbookEntry = async (req: AuthRequest, res: Response) => {
       update.notes = sanitizeInput(body.notes).slice(0, 1500);
     }
     if (body.companionsCount !== undefined) {
-      const rawComp = Number(body.companionsCount);
-      const c = Math.round(rawComp);
-      if (!Number.isFinite(rawComp) || c < 1 || c > 100) {
+      const rawComp = parseStrictFiniteNumber(body.companionsCount);
+      const c = rawComp !== null ? Math.round(rawComp) : NaN;
+      if (!Number.isFinite(c) || c < 1 || c > 100) {
         return res.status(400).json({ success: false, message: 'Số thành viên đồng hành phải từ 1 đến 100 người.' });
       }
       update.companionsCount = c;

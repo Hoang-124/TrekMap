@@ -128,7 +128,10 @@ export const createTrailCondition = async (req: AuthRequest, res: Response) => {
 export const getTrailConditions = async (req: AuthRequest, res: Response) => {
   try {
     const rawTrailId = String(req.params.trailId || '').trim();
-    if (!rawTrailId || mongoose.connection.readyState !== 1) {
+    if (!rawTrailId || rawTrailId.length > 100) {
+      return res.status(400).json({ success: false, message: 'Mã cung đường không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
       return res.json({ success: true, data: [] });
     }
 
@@ -297,7 +300,7 @@ export const deleteTrailCondition = async (req: AuthRequest, res: Response) => {
     const conditionId = String(req.params.conditionId || req.params.id || '').trim();
     const scopedTrailParam = req.params.conditionId && req.params.id ? String(req.params.id).trim() : '';
 
-    if (!userId) {
+    if (!userId || !isValidObjectId(userId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
     }
     if (!isValidObjectId(conditionId)) {

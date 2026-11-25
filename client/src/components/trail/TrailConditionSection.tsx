@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom';
 import { deleteTrailCondition, uploadImageToCloudinary } from '../../services/api.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
+import { decodeAccessTokenPayload, safeLocalStorageGet } from '../../utils/storageScope.js';
 import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
 import {
   IconAlertTriangle,
@@ -45,16 +46,11 @@ interface TrailConditionSectionProps {
 function resolveViewerFromToken(): { id: string; role: string } | null {
   try {
     const token = localStorage.getItem('lost_token');
-    if (!token) return null;
-    const parts = token.split('.');
-    if (parts.length < 2) return null;
-    const payloadPart = parts.length === 2 ? parts[0] : parts[1];
-    const normalized = payloadPart.replace(/-/g, '+').replace(/_/g, '/');
-    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
-    const json = JSON.parse(atob(padded));
+    const json = decodeAccessTokenPayload(token);
+    if (!json) return null;
     return {
-      id: String(json?.userId || json?.id || json?._id || ''),
-      role: String(json?.role || 'user'),
+      id: String(json.userId || json.id || json._id || ''),
+      role: String(json.role || 'user'),
     };
   } catch {
     return null;
@@ -98,8 +94,22 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
 
   // Condition photo lightbox
   const [lightboxPhoto, setLightboxPhoto] = useState<string | null>(null);
+  const [trackedTrailId, setTrackedTrailId] = useState<string>(trailId);
   const lightboxRef = useRef<HTMLDivElement | null>(null);
   useFocusTrap(Boolean(lightboxPhoto), lightboxRef);
+
+  // Immediately clear stale state when switching trails
+  if (trackedTrailId !== trailId) {
+    setTrackedTrailId(trailId);
+    setConditions([]);
+    setIsLoading(true);
+    setIsFormOpen(false);
+    setEditingId(null);
+    setConfirmDeleteId(null);
+    setActiveFilter('all');
+    setFeedback(null);
+    setUpvotedIds({});
+  }
 
   const viewerIdentity = useMemo(() => {
     if (currentUser && (currentUser.id || currentUser._id || currentUser.role)) {
@@ -110,6 +120,7 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
     }
     return resolveViewerFromToken();
   }, [currentUser]);
+  const viewerId = viewerIdentity?.id || '';
 
   // Close lightbox, submission form, inline edit or inline delete confirm with Escape key
   useEffect(() => {
@@ -140,8 +151,8 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
       const res = await fetch(`/api/trail-conditions/trail/${encodeURIComponent(trailId)}`, {
         headers: getApiHeaders(),
       });
-      const data = await res.json();
-      if (data.success && Array.isArray(data.data)) {
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success && Array.isArray(data.data)) {
         setConditions(data.data);
         const upvotedMap: Record<string, boolean> = {};
         for (const item of data.data as ConditionItem[]) {
@@ -164,10 +175,10 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
       headers: getApiHeaders(),
       signal: controller.signal,
     })
-      .then((res) => res.json())
+      .then((res) => (res.ok ? res.json().catch(() => null) : null))
       .then((data) => {
         if (controller.signal.aborted) return;
-        if (data.success && Array.isArray(data.data)) {
+        if (data?.success && Array.isArray(data.data)) {
           setConditions(data.data);
           const upvotedMap: Record<string, boolean> = {};
           for (const item of data.data as ConditionItem[]) {
@@ -186,7 +197,7 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
       });
 
     return () => controller.abort();
-  }, [trailId]);
+  }, [trailId, viewerId]);
 
   const handleDeleteCondition = async (conditionId: string) => {
     if (!conditionId || deletingId) return;
@@ -307,7 +318,7 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
     if (isSubmitting) return;
     setFeedback(null);
 
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!token) {
       setFeedback({ text: 'Vui lòng đăng nhập tài khoản để gửi báo cáo tình trạng thực địa.', type: 'error' });
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal', { detail: { mode: 'login' } }));
@@ -318,10 +329,7 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
     try {
       const res = await fetch('/api/trail-conditions', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           trailId,
           condition,
@@ -332,8 +340,8 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
         }),
       });
 
-      const data = await res.json();
-      if (data.success) {
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success) {
         setFeedback({ text: data.message || 'Cập nhật tình trạng đường thực địa thành công (+10 điểm uy tín)!', type: 'success' });
         setIsFormOpen(false);
         setDescription('');
@@ -341,7 +349,7 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
         setPhotos([]);
         await fetchConditions();
       } else {
-        setFeedback({ text: data.message || 'Không thể gửi báo cáo.', type: 'error' });
+        setFeedback({ text: data?.message || 'Không thể gửi báo cáo lúc này.', type: 'error' });
       }
     } catch {
       setFeedback({ text: 'Lỗi kết nối máy chủ khi gửi báo cáo.', type: 'error' });
@@ -351,7 +359,7 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
   };
 
   const handleUpvote = async (id: string) => {
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!token) {
       setFeedback({ text: 'Vui lòng đăng nhập để xác nhận báo cáo thực địa này.', type: 'error' });
       return;
@@ -361,19 +369,19 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
     try {
       const res = await fetch(`/api/trail-conditions/${encodeURIComponent(id)}/upvote`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        headers: getApiHeaders(),
       });
-      const data = await res.json();
-      if (data.success) {
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success) {
         setUpvotedIds((prev) => ({ ...prev, [id]: true }));
         setConditions((prev) =>
           prev.map((c) => (c._id === id ? { ...c, upvotes: data.upvotes } : c))
         );
-      } else if (data.message) {
-        setFeedback({ text: data.message, type: 'error' });
+      } else {
+        setFeedback({ text: data?.message || 'Chưa thể xác thực báo cáo lúc này.', type: 'error' });
       }
     } catch {
-      // Ignore network hiccup
+      setFeedback({ text: 'Lỗi kết nối máy chủ khi xác thực báo cáo.', type: 'error' });
     }
   };
 
@@ -510,7 +518,7 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
             </div>
             <p style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)', margin: '4px 0 0 0' }}>
               {summaryStatus.isEmpty
-                ? 'Chưa có dữ liệu quan trắc gần đây — hãy kiểm tra thời tiết Open-Meteo và hỏi Trạm Kiểm Lâm trước khi xuất phát.'
+                ? 'Chưa có dữ liệu quan trắc gần đây — hãy kiểm tra thời tiết MET Norway (CC BY 4.0) và hỏi Trạm Kiểm Lâm trước khi xuất phát.'
                 : 'Báo cáo trực tiếp từ Trekker, Porter bản địa & Trạm Kiểm Lâm (Tự động làm mới sau 7 ngày)'}
             </p>
           </div>
@@ -653,10 +661,11 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
             }}
           >
             <div>
-              <label className="form-label" style={{ display: 'block', marginBottom: 6 }}>
+              <label htmlFor="condition-create-level" className="form-label" style={{ display: 'block', marginBottom: 6 }}>
                 Mức độ an toàn hiện tại
               </label>
               <select
+                id="condition-create-level"
                 value={condition}
                 onChange={(e) => setCondition(e.target.value as 'safe' | 'caution' | 'dangerous' | 'closed')}
                 className="form-select"
@@ -670,10 +679,11 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
             </div>
 
             <div>
-              <label className="form-label" style={{ display: 'block', marginBottom: 6 }}>
+              <label htmlFor="condition-create-section" className="form-label" style={{ display: 'block', marginBottom: 6 }}>
                 Phân đoạn ghi nhận
               </label>
               <input
+                id="condition-create-section"
                 type="text"
                 value={section}
                 onChange={(e) => setSection(e.target.value)}
@@ -684,10 +694,11 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
             </div>
 
             <div>
-              <label className="form-label" style={{ display: 'block', marginBottom: 6 }}>
+              <label htmlFor="condition-create-weather" className="form-label" style={{ display: 'block', marginBottom: 6 }}>
                 Ghi chú thời tiết / Nhiệt độ (Tùy chọn)
               </label>
               <input
+                id="condition-create-weather"
                 type="text"
                 value={weatherNote}
                 onChange={(e) => setWeatherNote(e.target.value)}
@@ -723,10 +734,11 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
           </div>
 
           <div style={{ marginBottom: 14 }}>
-            <label className="form-label" style={{ display: 'block', marginBottom: 6 }}>
+            <label htmlFor="condition-create-desc" className="form-label" style={{ display: 'block', marginBottom: 6 }}>
               Chi tiết quan sát thực địa (Mặt đường, nguồn nước, cầu cống, lán nghỉ...)
             </label>
             <textarea
+              id="condition-create-desc"
               rows={3}
               required
               value={description}
@@ -897,10 +909,11 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
                       <div>
-                        <label className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: '0.76rem' }}>
+                        <label htmlFor={`edit-cond-level-${c._id}`} className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: '0.76rem' }}>
                           Mức độ an toàn
                         </label>
                         <select
+                          id={`edit-cond-level-${c._id}`}
                           value={editCondition}
                           onChange={(e) => setEditCondition(e.target.value as 'safe' | 'caution' | 'dangerous' | 'closed')}
                           className="form-select"
@@ -914,10 +927,11 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
                       </div>
 
                       <div>
-                        <label className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: '0.76rem' }}>
+                        <label htmlFor={`edit-cond-section-${c._id}`} className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: '0.76rem' }}>
                           Phân đoạn
                         </label>
                         <input
+                          id={`edit-cond-section-${c._id}`}
                           type="text"
                           value={editSection}
                           onChange={(e) => setEditSection(e.target.value)}
@@ -927,10 +941,11 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
                       </div>
 
                       <div>
-                        <label className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: '0.76rem' }}>
+                        <label htmlFor={`edit-cond-weather-${c._id}`} className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: '0.76rem' }}>
                           Ghi chú thời tiết
                         </label>
                         <input
+                          id={`edit-cond-weather-${c._id}`}
                           type="text"
                           value={editWeatherNote}
                           onChange={(e) => setEditWeatherNote(e.target.value)}
@@ -941,10 +956,11 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
                     </div>
 
                     <div>
-                      <label className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: '0.76rem' }}>
+                      <label htmlFor={`edit-cond-desc-${c._id}`} className="form-label" style={{ display: 'block', marginBottom: 4, fontSize: '0.76rem' }}>
                         Mô tả thực địa
                       </label>
                       <textarea
+                        id={`edit-cond-desc-${c._id}`}
                         rows={3}
                         required
                         value={editDescription}
@@ -1153,18 +1169,20 @@ export const TrailConditionSection: React.FC<TrailConditionSectionProps> = React
                         <span style={{ fontWeight: 700, color: 'var(--color-text-muted)' }}>
                           Ghi nhận bởi: <strong style={{ color: 'var(--color-text-main)' }}>{c.userId?.fullName || 'Trekker Thực Địa'}</strong>
                         </span>
-                        {c.userId?.reputationScore && (
+                        {typeof c.userId?.reputationScore === 'number' && c.userId.reputationScore > 0 && (
                           <span style={{ color: 'var(--color-sun)', fontWeight: 700 }}>
                             · {c.userId.reputationScore} Điểm Uy Tín
                           </span>
                         )}
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                           <IconClock size={11} color="var(--color-text-dim)" />
-                          {new Date(c.createdAt).toLocaleDateString('vi-VN', {
-                            day: '2-digit',
-                            month: '2-digit',
-                            year: 'numeric',
-                          })}
+                          {c.createdAt && Number.isFinite(new Date(c.createdAt).getTime())
+                            ? new Date(c.createdAt).toLocaleDateString('vi-VN', {
+                                day: '2-digit',
+                                month: '2-digit',
+                                year: 'numeric',
+                              })
+                            : 'Gần đây'}
                         </span>
                       </div>
                     </div>

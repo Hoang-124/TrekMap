@@ -53,6 +53,9 @@ const trailPoiSchema = new Schema<ITrailPoi>(
 
 trailPoiSchema.index({ trailId: 1, upvoteCount: -1, updatedAt: -1 });
 trailPoiSchema.index({ trailId: 1, category: 1, upvoteCount: -1 });
+trailPoiSchema.index({ trailId: 1, createdAt: 1, _id: 1 });
 trailPoiSchema.index({ status: 1, upvoteCount: -1 });
+trailPoiSchema.index({ status: 1, createdAt: -1 });
+trailPoiSchema.index({ createdAt: -1 });
 
 export const TrailPoiModel = model<ITrailPoi>('TrailPoi', trailPoiSchema);

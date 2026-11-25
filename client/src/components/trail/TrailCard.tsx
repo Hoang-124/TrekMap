@@ -24,26 +24,33 @@ export const TrailCard: React.FC<TrailCardProps> = React.memo(({
     trail.reviewCount &&
       trail.reviewCount > 0 &&
       trail.rating &&
-      trail.rating > 0 &&
-      !(String(trail.id).startsWith('contrib-') && trail.reviewCount === 1)
+      trail.rating > 0
   );
 
   return (
     <article
-      role="button"
-      tabIndex={0}
       className="trail-editorial-card"
       data-selected={isSelectedForCompare ? 'true' : undefined}
-      onClick={() => onSelect(trail)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onSelect(trail);
-        }
-      }}
     >
+      {/* Full-card accessible sibling trigger (eliminates invalid nested interactive elements) */}
+      <button
+        type="button"
+        aria-label={`Xem chi tiết cung ${trail.name}`}
+        onClick={() => onSelect(trail)}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 1,
+          background: 'transparent',
+          border: 'none',
+          padding: 0,
+          margin: 0,
+          cursor: 'pointer',
+        }}
+      />
+
       {/* Full-Bleed Editorial Mountain Photograph (Pure-CSS GPU Zoom) */}
-      <div className="trail-editorial-media">
+      <div className="trail-editorial-media" style={{ pointerEvents: 'none' }}>
         <OptimizedImage
           src={trail.coverImage}
           alt={trail.name}
@@ -66,6 +73,7 @@ export const TrailCard: React.FC<TrailCardProps> = React.memo(({
           alignItems: 'center',
           justifyContent: 'space-between',
           gap: 8,
+          pointerEvents: 'none',
         }}
       >
         <span
@@ -89,8 +97,11 @@ export const TrailCard: React.FC<TrailCardProps> = React.memo(({
               e.stopPropagation();
               onToggleCompare(trail);
             }}
-            title={isSelectedForCompare ? 'Bỏ chọn so sánh' : 'So sánh cung đường'}
+            title={isSelectedForCompare ? 'Bỏ khỏi so sánh' : 'Thêm vào so sánh'}
             style={{
+              position: 'relative',
+              zIndex: 3,
+              pointerEvents: 'auto',
               background: isSelectedForCompare
                 ? 'var(--color-primary)'
                 : 'var(--overlay-bg)',
@@ -122,6 +133,7 @@ export const TrailCard: React.FC<TrailCardProps> = React.memo(({
           zIndex: 2,
           padding: '18px 18px 16px 18px',
           color: 'var(--color-on-media)',
+          pointerEvents: 'none',
         }}
       >
         <div
@@ -188,7 +200,7 @@ export const TrailCard: React.FC<TrailCardProps> = React.memo(({
             )}
           </span>
           <span className="trail-editorial-cta">
-            <span>Hồ sơ</span>
+            <span>Xem cung</span>
             <IconArrowRight size={13} />
           </span>
         </div>

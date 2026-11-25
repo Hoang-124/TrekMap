@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { Trail, UserProfile } from '../../types.js';
+import { safeLocalStorageGet, safeLocalStorageRemove } from '../../utils/storageScope.js';
 import {
   fetchTrailPois,
   createTrailPoi,
@@ -164,10 +165,7 @@ export const TrailPoiSection: React.FC<TrailPoiSectionProps> = React.memo(({
   onShowToast,
 }) => {
   const [trackedTrailId, setTrackedTrailId] = useState<string>(trail.id);
-  const [hasAuthToken, setHasAuthToken] = useState<boolean>(() => {
-    if (typeof localStorage === 'undefined') return false;
-    return Boolean(localStorage.getItem('lost_token'));
-  });
+  const [hasAuthToken, setHasAuthToken] = useState<boolean>(() => Boolean(safeLocalStorageGet('lost_token')));
   const isAuthed = Boolean(currentUser) || hasAuthToken;
   const currentUserId = String(currentUser?.id || currentUser?._id || '');
   const isModOrAdmin = currentUser?.role === 'admin' || currentUser?.role === 'moderator';
@@ -257,8 +255,7 @@ export const TrailPoiSection: React.FC<TrailPoiSectionProps> = React.memo(({
     isMountedRef.current = true;
     const controllers = actionControllersRef.current;
     const syncAuth = () => {
-      if (typeof localStorage === 'undefined') return;
-      setHasAuthToken(Boolean(localStorage.getItem('lost_token')));
+      setHasAuthToken(Boolean(safeLocalStorageGet('lost_token')));
     };
     window.addEventListener('lost:auth-changed', syncAuth);
     window.addEventListener('storage', syncAuth);
@@ -400,9 +397,7 @@ export const TrailPoiSection: React.FC<TrailPoiSectionProps> = React.memo(({
         ? Number((err as { status?: unknown }).status)
         : NaN;
     if (status !== 401) return false;
-    if (typeof localStorage !== 'undefined') {
-      localStorage.removeItem('lost_token');
-    }
+    safeLocalStorageRemove('lost_token');
     setHasAuthToken(false);
     window.dispatchEvent(new CustomEvent('lost:auth-changed'));
     emitToast(
@@ -1451,7 +1446,7 @@ export const TrailPoiSection: React.FC<TrailPoiSectionProps> = React.memo(({
           <div style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
             {activeCategory === 'all'
               ? `Chưa có điểm thực địa cộng đồng nào được báo trên ${trail.name}`
-              : `Chưa có điểm thuộc mục "${CATEGORY_META_MAP[activeCategory].label}"`}
+              : `Chưa có điểm thuộc mục "${CATEGORY_META_MAP[activeCategory]?.label || activeCategory}"`}
           </div>
           <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', maxWidth: 460 }}>
             Nếu bạn vừa hoàn thành cung này, hãy chia sẻ vị trí suối lọc nước, lán trại, điểm sóng 4G hoặc đoạn sạt trượt để các đoàn đi sau chuẩn bị an toàn hơn.
@@ -1478,7 +1473,7 @@ export const TrailPoiSection: React.FC<TrailPoiSectionProps> = React.memo(({
           }}
         >
           {filteredPois.map((poi) => {
-            const meta = CATEGORY_META_MAP[poi.category];
+            const meta = CATEGORY_META_MAP[poi.category] || Object.values(CATEGORY_META_MAP)[0];
             const CatIcon = meta.Icon;
             const isClosed = poi.status === 'dry_or_closed';
             const canManage =

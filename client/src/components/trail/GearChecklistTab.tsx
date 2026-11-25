@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type { Trail } from '../../types.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
-import { scopedStorageKey } from '../../utils/storageScope.js';
+import { safeLocalStorageGet, scopedStorageKey } from '../../utils/storageScope.js';
 import { IconPlus, IconTrash } from '../common/SvgIcons.js';
 
 type GearCategory =
@@ -94,7 +94,7 @@ export const GearChecklistTab: React.FC<GearChecklistTabProps> = ({ trail }) => 
 
   const loadLocalItemsForKey = useCallback(
     (key: string): GearItem[] => {
-      const saved = localStorage.getItem(key);
+      const saved = safeLocalStorageGet(key);
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
@@ -132,8 +132,35 @@ export const GearChecklistTab: React.FC<GearChecklistTabProps> = ({ trail }) => 
   const [customEssential, setCustomEssential] = useState(false);
 
   const [syncStatus, setSyncStatus] = useState<'local' | 'syncing' | 'synced'>('local');
+  const [authTick, setAuthTick] = useState(0);
+  const [isDesktopSticky, setIsDesktopSticky] = useState<boolean>(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(min-width: 901px)').matches
+      : true
+  );
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hasLoadedCloudRef = useRef(false);
+  const cloudLoadedKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(min-width: 901px)');
+    const onChange = (e: MediaQueryListEvent) => setIsDesktopSticky(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  useEffect(() => {
+    const handleAuthChanged = () => {
+      cloudLoadedKeyRef.current = null;
+      if (syncTimerRef.current) {
+        clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = null;
+      }
+      setAuthTick((n) => n + 1);
+    };
+    window.addEventListener('lost:auth-changed', handleAuthChanged);
+    return () => window.removeEventListener('lost:auth-changed', handleAuthChanged);
+  }, []);
 
   // Reset checklist items cleanly during render when trail.id changes
   if (trackedTrailId !== trail.id) {
@@ -154,19 +181,28 @@ export const GearChecklistTab: React.FC<GearChecklistTabProps> = ({ trail }) => 
   }, [userBodyWeightKg]);
 
   useEffect(() => {
-    hasLoadedCloudRef.current = false;
+    cloudLoadedKeyRef.current = null;
+    if (syncTimerRef.current) {
+      clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
+    }
 
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!token) {
-      hasLoadedCloudRef.current = true;
+      Promise.resolve().then(() => setSyncStatus('local'));
       return;
     }
 
+    const expectedKey = `${trail.id}|${token}`;
+    const controller = new AbortController();
     let cancelled = false;
-    fetch(`/api/gear-checklists/${encodeURIComponent(trail.id)}`, { headers: getApiHeaders() })
-      .then((res) => (res.ok ? res.json() : null))
+    fetch(`/api/gear-checklists/${encodeURIComponent(trail.id)}`, {
+      headers: getApiHeaders(),
+      signal: controller.signal,
+    })
+      .then((res) => (res.ok ? res.json().catch(() => null) : null))
       .then((json) => {
-        if (cancelled) return;
+        if (cancelled || controller.signal.aborted) return;
         if (json?.success && json.data && Array.isArray(json.data.items)) {
           if (json.data.items.length > 0 || json.data.updatedAt) {
             setItems(json.data.items);
@@ -182,13 +218,16 @@ export const GearChecklistTab: React.FC<GearChecklistTabProps> = ({ trail }) => 
         // Offline -> keep localStorage smoothly
       })
       .finally(() => {
-        if (!cancelled) hasLoadedCloudRef.current = true;
+        if (!cancelled && !controller.signal.aborted) {
+          cloudLoadedKeyRef.current = expectedKey;
+        }
       });
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [trail.id]);
+  }, [trail.id, authTick]);
 
   // Listen for AI 1-click Apply live sync event (`lost:gear-checklist-updated`)
   useEffect(() => {
@@ -285,8 +324,8 @@ export const GearChecklistTab: React.FC<GearChecklistTabProps> = ({ trail }) => 
     } catch {
       // ignore quota errors
     }
-    const token = localStorage.getItem('lost_token');
-    if (!token || !hasLoadedCloudRef.current) return;
+    const token = safeLocalStorageGet('lost_token');
+    if (!token || cloudLoadedKeyRef.current !== `${trail.id}|${token}`) return;
 
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     setSyncStatus('syncing');
@@ -554,7 +593,7 @@ export const GearChecklistTab: React.FC<GearChecklistTabProps> = ({ trail }) => 
 
       {/* Right Column: Backpack Weight Calculator & Overweight Warning */}
       <div>
-        <div className="card" style={{ position: 'sticky', top: 84 }}>
+        <div className="card" style={isDesktopSticky ? { position: 'sticky', top: 84 } : undefined}>
           <div className="section-eyebrow" style={{ marginBottom: 6 }}>Tải trọng</div>
           <h3 className="font-editorial" style={{ fontSize: '1.35rem', fontWeight: 500, color: 'var(--color-text-main)', marginBottom: 14 }}>
             Tính Trọng Lượng Balo

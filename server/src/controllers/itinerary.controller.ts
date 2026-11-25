@@ -4,8 +4,12 @@ import mongoose from 'mongoose';
 import { ItineraryModel } from '../models/Itinerary.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { sanitizeInput } from '../utils/validation.js';
-import { isValidObjectId, resolveTrailObjectId } from '../utils/resolveTrail.js';
+import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
+import { isValidObjectId, resolveTrailByIdOrSlug } from '../utils/resolveTrail.js';
 import { recordAuditLog } from '../utils/audit.js';
+import { getClientBaseUrl } from '../utils/clientUrl.js';
+
+const MAX_ITINERARIES_PER_USER = 30;
 
 function sanitizeTimelineSteps(steps: unknown) {
   if (!Array.isArray(steps)) return [];
@@ -19,6 +23,12 @@ function sanitizeTimelineSteps(steps: unknown) {
       const resolvedDesc = sanitizeInput(rawDesc).slice(0, 800);
       const rawLocation = String(s.location || s.locationNote || '').trim();
       const resolvedLocation = sanitizeInput(rawLocation).slice(0, 200);
+      const hasValidAlt =
+        s.altitudeM !== undefined &&
+        s.altitudeM !== null &&
+        s.altitudeM !== '' &&
+        typeof s.altitudeM !== 'boolean' &&
+        Number.isFinite(Number(s.altitudeM));
       return {
         day: Math.max(1, Math.min(30, Math.round(Number(s.day) || 1))),
         time: sanitizeInput(String(s.time || '08:00')).slice(0, 30),
@@ -28,7 +38,7 @@ function sanitizeTimelineSteps(steps: unknown) {
         notes: resolvedDesc,
         location: resolvedLocation,
         locationNote: resolvedLocation,
-        ...(Number.isFinite(Number(s.altitudeM)) ? { altitudeM: Math.round(Number(s.altitudeM)) } : {}),
+        ...(hasValidAlt ? { altitudeM: Math.max(0, Math.min(9000, Math.round(Number(s.altitudeM)))) } : {}),
       };
     });
 }
@@ -62,17 +72,44 @@ export const createItinerary = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, message: 'Vui lòng điền đầy đủ thông tin chuyến đi.' });
     }
 
+    const existingCount = await ItineraryModel.countDocuments({
+      creatorId: new mongoose.Types.ObjectId(userId),
+    });
+    if (existingCount >= MAX_ITINERARIES_PER_USER) {
+      return res.status(400).json({
+        success: false,
+        message: `Bạn đã đạt giới hạn tối đa ${MAX_ITINERARIES_PER_USER} lịch trình. Vui lòng xóa bớt lịch trình cũ trước khi tạo mới.`,
+      });
+    }
+
     const parsedStart = new Date(startDate);
     if (isNaN(parsedStart.getTime())) {
       return res.status(400).json({ success: false, message: 'Ngày khởi hành không hợp lệ.' });
     }
 
+    const cleanTitle = sanitizeInput(title).slice(0, 180);
+    if (!cleanTitle) {
+      return res.status(400).json({ success: false, message: 'Tiêu đề lịch trình không hợp lệ.' });
+    }
+
     const safeSteps = sanitizeTimelineSteps(timelineSteps);
+    const safeNotes = typeof notes === 'string' ? sanitizeInput(notes).slice(0, 1000) : '';
+    const stepTextForCheck = safeSteps.map((st) => `${st.title} ${st.description} ${st.location}`).join(' ');
+    if (containsProfanity(`${cleanTitle} ${safeNotes} ${stepTextForCheck}`)) {
+      const matched = getProfanityMatch(`${cleanTitle} ${safeNotes} ${stepTextForCheck}`);
+      return res.status(400).json({
+        success: false,
+        message: `Lịch trình chứa từ ngữ không phù hợp ("${matched}").`,
+      });
+    }
+
     const inferredDays = safeSteps.reduce((maxD, st) => Math.max(maxD, st.day || 1), 1);
+    const rawTotalDays =
+      totalDays !== undefined && totalDays !== null && totalDays !== '' && typeof totalDays !== 'boolean'
+        ? Number(totalDays)
+        : NaN;
     const parsedTotalDays =
-      Number.isFinite(Number(totalDays)) && Number(totalDays) >= 1
-        ? Math.min(30, Math.round(Number(totalDays)))
-        : inferredDays;
+      Number.isFinite(rawTotalDays) && rawTotalDays >= 1 ? Math.min(30, Math.round(rawTotalDays)) : inferredDays;
 
     const parsedEnd = endDate
       ? new Date(endDate)
@@ -84,19 +121,18 @@ export const createItinerary = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, message: 'Ngày kết thúc không thể trước ngày khởi hành.' });
     }
 
-    const resolvedTrailObjId = await resolveTrailObjectId(trailId);
-    if (!resolvedTrailObjId) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường tương ứng.' });
+    const resolvedTrail = await resolveTrailByIdOrSlug(trailId);
+    if (!resolvedTrail || (resolvedTrail.status && resolvedTrail.status !== 'approved')) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường đã duyệt tương ứng.' });
     }
 
     const safeMemberCount = Math.min(Math.max(Math.round(Number(memberCount) || 1), 1), 100);
     const shareToken = `lost-${crypto.randomBytes(12).toString('hex')}`;
-    const safeNotes = typeof notes === 'string' ? sanitizeInput(notes).slice(0, 1000) : '';
 
     const created = await ItineraryModel.create({
       creatorId: new mongoose.Types.ObjectId(userId),
-      trailId: resolvedTrailObjId,
-      title: sanitizeInput(title).slice(0, 180),
+      trailId: resolvedTrail._id,
+      title: cleanTitle,
       startDate: parsedStart,
       endDate: parsedEnd,
       totalDays: parsedTotalDays,
@@ -111,7 +147,7 @@ export const createItinerary = async (req: AuthRequest, res: Response) => {
       .populate('trailId', 'id name province region coverImage maxAltitudeM distanceKm')
       .lean();
 
-    const clientUrl = (process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const clientUrl = getClientBaseUrl();
 
     return res.status(201).json({
       success: true,
@@ -134,7 +170,13 @@ export const getItineraryByShareToken = async (req: Request, res: Response) => {
       return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
     }
 
-    const itinerary = await ItineraryModel.findOne({ shareToken }).populate('trailId').lean().exec();
+    const itinerary = await ItineraryModel.findOne({ shareToken })
+      .populate(
+        'trailId',
+        'id name province district region coverImage maxAltitudeM distanceKm elevationGainM difficultyLevel durationDays durationHoursNote permitRequired permitInfo rescueContact'
+      )
+      .lean()
+      .exec();
     if (!itinerary) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy lịch trình.' });
     }
@@ -226,7 +268,9 @@ export const updateItinerary = async (req: AuthRequest, res: Response) => {
 
     let nextTotalDays = existing.totalDays;
     if (totalDays !== undefined) {
-      const numDays = Math.round(Number(totalDays));
+      const rawDays =
+        totalDays !== null && totalDays !== '' && typeof totalDays !== 'boolean' ? Number(totalDays) : NaN;
+      const numDays = Math.round(rawDays);
       if (!Number.isFinite(numDays) || numDays < 1 || numDays > 30) {
         return res.status(400).json({ success: false, message: 'Số ngày hành trình phải từ 1 đến 30.' });
       }
@@ -260,6 +304,21 @@ export const updateItinerary = async (req: AuthRequest, res: Response) => {
       updateFields.notes = typeof notes === 'string' ? sanitizeInput(notes).slice(0, 1000) : '';
     }
 
+    const titleToCheck = typeof updateFields.title === 'string' ? updateFields.title : '';
+    const notesToCheck = typeof updateFields.notes === 'string' ? updateFields.notes : '';
+    const stepsToCheck =
+      timelineSteps !== undefined && Array.isArray(nextSteps)
+        ? nextSteps.map((st: any) => `${st.title || ''} ${st.description || ''} ${st.location || ''}`).join(' ')
+        : '';
+    const combinedModText = `${titleToCheck} ${notesToCheck} ${stepsToCheck}`.trim();
+    if (combinedModText && containsProfanity(combinedModText)) {
+      const matched = getProfanityMatch(combinedModText);
+      return res.status(400).json({
+        success: false,
+        message: `Lịch trình chứa từ ngữ không phù hợp ("${matched}").`,
+      });
+    }
+
     const updated = await ItineraryModel.findByIdAndUpdate(
       existing._id,
       { $set: updateFields },
@@ -272,7 +331,7 @@ export const updateItinerary = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ success: false, message: 'Không tìm thấy lịch trình.' });
     }
 
-    const clientUrl = (process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const clientUrl = getClientBaseUrl();
     return res.json({
       success: true,
       message: 'Đã cập nhật lịch trình thành công!',

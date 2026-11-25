@@ -134,6 +134,9 @@ function serializePoi(doc: Partial<ITrailPoi> & { _id: any }, viewerUserId?: str
 export const getTrailPoisByTrail = async (req: AuthRequest, res: Response) => {
   try {
     const rawTrailId = String(req.params.trailId || '').trim();
+    if (!rawTrailId || !TRAIL_ID_REGEX.test(rawTrailId)) {
+      return res.status(400).json({ success: false, message: 'Mã cung đường không hợp lệ.' });
+    }
     const trail = await resolveApprovedTrail(rawTrailId);
     if (!trail) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường đã duyệt.' });
@@ -220,6 +223,9 @@ export const createTrailPoi = async (req: AuthRequest, res: Response) => {
 
     const body = req.body || {};
     const rawTrailId = typeof body.trailId === 'string' ? body.trailId.trim() : '';
+    if (!rawTrailId || !TRAIL_ID_REGEX.test(rawTrailId)) {
+      return res.status(400).json({ success: false, message: 'Vui lòng cung cấp mã cung đường hợp lệ.' });
+    }
     const trail = await resolveApprovedTrail(rawTrailId);
     if (!trail) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường đã duyệt để gắn điểm thực địa.' });

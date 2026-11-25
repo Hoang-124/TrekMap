@@ -5,6 +5,7 @@ import { VIETNAM_RANGER_STATIONS } from '../../data/vietnamDirectory.js';
 import { fetchPlatformStatsSummary, type PlatformStatsSummary } from '../../services/api.js';
 import { IconSearch, IconX, IconCheck, IconArrowRight } from '../common/SvgIcons.js';
 import { isLitePerfMode } from '../../utils/perfTier.js';
+import { searchMatchVietnamese } from '../../utils/textUtils.js';
 
 const INITIAL_CATALOG_BASELINE = {
   totalTrails: mockTrails.length,
@@ -350,16 +351,17 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
   }, [peakTrailMap, activePeak, onSelectTrail, onSearchChange, onScrollToMap]);
 
   const searchAutocompleteMatches = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+    const q = searchQuery.trim();
     if (!isSearchFocused || !q) return [];
     const list = Array.isArray(trails) ? trails : [];
     return list
       .filter(
         (t) =>
-          (t?.name || '').toLowerCase().includes(q) ||
-          (t?.province || '').toLowerCase().includes(q) ||
-          (t?.district || '').toLowerCase().includes(q) ||
-          (t?.region || '').toLowerCase().includes(q)
+          searchMatchVietnamese(t?.name || '', q) ||
+          searchMatchVietnamese(t?.province || '', q) ||
+          searchMatchVietnamese(t?.district || '', q) ||
+          searchMatchVietnamese(t?.region || '', q) ||
+          (Array.isArray(t?.altNames) && t.altNames.some((a) => searchMatchVietnamese(a, q)))
       )
       .slice(0, 4);
   }, [isSearchFocused, searchQuery, trails]);
@@ -368,12 +370,12 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
     if (e.key === 'Enter') {
       e.preventDefault();
       const list = Array.isArray(trails) ? trails : [];
-      const q = searchQuery.trim().toLowerCase();
+      const q = searchQuery.trim();
       if (q) {
         const directMatch = list.find(
           (t) =>
-            t.name.toLowerCase().includes(q) ||
-            (t.altNames && t.altNames.some((a) => a.toLowerCase().includes(q)))
+            searchMatchVietnamese(t.name, q) ||
+            (Array.isArray(t.altNames) && t.altNames.some((a) => searchMatchVietnamese(a, q)))
         );
         if (directMatch && onSelectTrail) onSelectTrail(directMatch);
         else onScrollToMap();
@@ -449,13 +451,10 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
         const shouldMountImage = loadedSlides.has(idx);
         if (!shouldMountImage) return null;
         const isVisibleSlide = idx === activeIndex || idx === fadingOutIndex;
-        const adaptiveHeroSrc = litePerf
-          ? peak.image.replace('f_auto,q_auto,w_1800', 'f_auto,q_auto:eco,w_1200')
-          : peak.image.replace('w_1800', 'w_1600');
         return (
           <img
             key={peak.key}
-            src={adaptiveHeroSrc}
+            src={peak.image}
             alt={peak.name}
             loading={idx === 0 ? 'eager' : 'lazy'}
             decoding="async"
@@ -562,12 +561,12 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={{ color: 'var(--color-sun)' }}>+</span>
-          <span>ATLAS ĐỊA HÌNH VIỆT NAM · EDITION 2026</span>
+          <span>Bản đồ địa hình Việt Nam · 2026</span>
         </div>
         <div key={activePeak.key} className="hero-peak-drop-in" style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
           <span>{activePeak.coords}</span>
           <span style={{ color: 'var(--color-primary)' }}>
-            {activePeakElevationM.toLocaleString('vi-VN')} M ASL
+            {activePeakElevationM.toLocaleString('vi-VN')} m
           </span>
         </div>
       </div>
@@ -613,7 +612,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
                 maxWidth: 740,
               }}
             >
-              Nơi bản đồ phổ thông{' '}
+              Nơi đường nhựa{' '}
               <span
                 style={{
                   fontWeight: 700,
@@ -638,9 +637,9 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
             >
               <strong style={{ color: 'var(--color-on-media)', fontWeight: 600 }}>{activePeak.name}</strong> ({activePeak.subtitle}) —{' '}
               {stats.totalTrails > 1
-                ? `và ${stats.totalTrails - 1} cung đường hoang sơ khác`
-                : 'cùng hệ thống cung đường hoang sơ'}{' '}
-              trên dải đất Việt Nam, với tracklog GPX thực địa, địa hình 3D DEM và tải gói offline khi mất sóng.
+                ? `và ${stats.totalTrails - 1} cung rừng núi khác`
+                : 'cùng những cung rừng núi hoang sơ'}{' '}
+              dọc dải đất Việt Nam, với tracklog GPX đi thật, địa hình 3D và gói tải về máy phòng khi mất sóng.
             </p>
 
             {/* Primary Editorial CTA Pair */}
@@ -664,7 +663,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
                   gap: 8,
                 }}
               >
-                <span>Khám phá {activePeak.name}</span>
+                <span>Xem cung {activePeak.name}</span>
                 <IconArrowRight size={15} color="var(--color-on-primary)" />
               </button>
 
@@ -720,23 +719,23 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
             >
               <div>
                 <div style={{ fontSize: '0.64rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'color-mix(in srgb, var(--color-on-media) 55%, transparent)' }}>
-                  Cung thực địa DEM
+                  Cung đã đi thật
                 </div>
                 <div style={{ fontSize: '1.22rem', fontWeight: 800, color: 'var(--color-on-media)', marginTop: 2 }}>
-                  {stats.totalTrails > 0 ? `${stats.totalTrails} tuyến` : 'Đang đồng bộ...'}
+                  {stats.totalTrails > 0 ? `${stats.totalTrails} cung` : 'Đang tải...'}
                 </div>
               </div>
               <div>
                 <div style={{ fontSize: '0.64rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'color-mix(in srgb, var(--color-on-media) 55%, transparent)' }}>
-                  Tổng tuyến GPX
+                  Chiều dài GPX
                 </div>
                 <div style={{ fontSize: '1.22rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: 2 }}>
-                  {stats.totalKm > 0 ? `${stats.totalKm.toLocaleString('vi-VN')} km` : 'Đang đồng bộ...'}
+                  {stats.totalKm > 0 ? `${stats.totalKm.toLocaleString('vi-VN')} km` : 'Đang tải...'}
                 </div>
               </div>
               <div>
                 <div style={{ fontSize: '0.64rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'color-mix(in srgb, var(--color-on-media) 55%, transparent)' }}>
-                  Đỉnh cao nhất
+                  Nóc nhà cao nhất
                 </div>
                 <div style={{ fontSize: '1.22rem', fontWeight: 800, color: 'var(--color-sun)', marginTop: 2 }}>
                   {stats.maxAltitude.toLocaleString('vi-VN')} m
@@ -744,12 +743,12 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
               </div>
               <div>
                 <div style={{ fontSize: '0.64rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'color-mix(in srgb, var(--color-on-media) 55%, transparent)' }}>
-                  {stats.verifiedCheckins > 0 ? 'Check-in GPS thật' : 'Trạm VQG / Kiểm lâm'}
+                  {stats.verifiedCheckins > 0 ? 'Chạm đỉnh GPS' : 'Trạm VQG & Kiểm lâm'}
                 </div>
                 <div style={{ fontSize: '1.22rem', fontWeight: 800, color: 'var(--color-on-media)', marginTop: 2 }}>
                   {stats.verifiedCheckins > 0
                     ? `${stats.verifiedCheckins.toLocaleString('vi-VN')} lượt`
-                    : `${stats.totalRangers} cơ sở`}
+                    : `${stats.totalRangers} trạm`}
                 </div>
               </div>
             </div>
@@ -808,7 +807,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
                     flexShrink: 0,
                   }}
                 />
-                <span>Chọn đỉnh để xem địa hình</span>
+                <span>Chọn một đỉnh để xem trước</span>
               </div>
               <div
                 style={{
@@ -882,8 +881,8 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
                     }}
                     title={
                       isSelected
-                        ? `Nhấn để mở hồ sơ chi tiết ${peak.name}`
-                        : `Nhấn để chuyển cảnh sang ${peak.name}`
+                        ? `Bấm để mở chi tiết cung ${peak.name}`
+                        : `Bấm để xem trước ${peak.name}`
                     }
                     style={{
                       display: 'flex',
@@ -1026,7 +1025,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
               placeholder={
                 stats.totalTrails > 0
                   ? `Tìm trong ${stats.totalTrails} cung đường (${stats.totalKm} km GPX)...`
-                  : 'Tìm cung đường trekking, đỉnh núi, tỉnh thành Việt Nam...'
+                  : 'Tìm tên đỉnh, cung đường hoặc tỉnh thành...'
               }
               style={{
                 flex: 1,
@@ -1080,21 +1079,29 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
                 }}
               >
                 {searchAutocompleteMatches.map((m, idx) => (
-                  <div
+                  <button
                     key={m.id || (m as Trail & { _id?: string })._id || `match-${idx}`}
+                    type="button"
                     onMouseDown={(e) => {
                       e.preventDefault();
+                    }}
+                    onClick={() => {
                       setIsSearchFocused(false);
                       if (onSelectTrail) onSelectTrail(m);
                       else onSearchChange(m.name);
                     }}
                     style={{
+                      width: '100%',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
                       padding: '8px 10px',
                       borderRadius: 4,
                       cursor: 'pointer',
+                      border: 'none',
+                      background: 'transparent',
+                      textAlign: 'left',
+                      fontFamily: 'inherit',
                     }}
                   >
                     <div>
@@ -1108,7 +1115,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
                     <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
                       {m.maxAltitudeM.toLocaleString('vi-VN')} m
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             )}
@@ -1226,7 +1233,7 @@ export const HeroExpeditionSection: React.FC<HeroExpeditionSectionProps> = React
                 fontWeight: 700,
               }}
             >
-              Xem {stats.visibleTrails} tuyến
+              Xem {stats.visibleTrails} cung
             </button>
           </div>
         </div>

@@ -61,26 +61,26 @@ function buildPlanningHubItems(trailsCount: number, challengesCount: number): re
   return [
     {
       id: 'passport',
-      label: 'Hộ Chiếu Đỉnh Núi',
-      desc: `${trailsCount} cung đường & ${challengesCount} bộ thử thách`,
+      label: 'Hộ chiếu đỉnh núi',
+      desc: `Dấu chân qua ${trailsCount} cung đường & ${challengesCount} thử thách`,
       renderIcon: (color) => <IconMountain size={16} color={color} />,
     },
     {
       id: 'almanac',
-      label: 'Lịch Mùa 12 Tháng',
-      desc: 'Săn mây, mùa hoa & tránh bão lũ',
+      label: 'Lịch mùa 12 tháng',
+      desc: 'Canh biển mây, mùa hoa rừng & tránh mùa lũ',
       renderIcon: (color) => <IconCalendar size={16} color={color} />,
     },
     {
       id: 'planner',
-      label: 'Thiết Kế GPX & Độ Dốc',
-      desc: 'Vẽ cung đường, DEM 90m & Naismith',
+      label: 'Vẽ GPX & đo độ dốc',
+      desc: 'Chấm cung trên địa hình DEM & ước lượng giờ đi',
       renderIcon: (color) => <IconCompass size={16} color={color} />,
     },
     {
       id: 'training',
-      label: 'Giáo Án Thể Lực',
-      desc: 'Lộ trình 4–8 tuần chuẩn bị đỉnh cao',
+      label: 'Rèn sức trước chuyến đi',
+      desc: 'Lộ trình 4–8 tuần tập sức bền cho từng đỉnh',
       renderIcon: (color) => <IconHiking size={16} color={color} />,
     },
   ];
@@ -90,26 +90,26 @@ function buildFieldSafetyHubItems(rangersCount: number): readonly HubMenuItem[] 
   return [
     {
       id: 'toolkit',
-      label: 'Công Cụ Sinh Tồn Offline',
-      desc: 'La bàn, giờ mặt trời, tính nước & SOS',
+      label: 'Đồ nghề đi rừng offline',
+      desc: 'La bàn, giờ mặt trời, ước tính nước & SOS',
       renderIcon: (color) => <IconSatellite size={16} color={color} />,
     },
     {
       id: 'gear',
-      label: 'Tủ Đồ & Tối Ưu Balo',
-      desc: 'Kiểm soát tải trọng Base / Worn / Tiêu hao',
+      label: 'Cân balo & tủ đồ',
+      desc: 'Cân lại đồ mang theo để đôi vai nhẹ hơn',
       renderIcon: (color) => <IconBackpack size={16} color={color} />,
     },
     {
       id: 'directory',
-      label: 'Kiểm Lâm, Porter & Chi Phí',
-      desc: `${rangersCount} VQG xác thực & dự toán ngân sách VNĐ`,
+      label: 'Kiểm lâm, porter & chi phí',
+      desc: `${rangersCount} trạm VQG thực tế & bảng dự trù VNĐ`,
       renderIcon: (color) => <IconShieldCheck size={16} color={color} />,
     },
     {
       id: 'radar',
-      label: 'Radar An Toàn',
-      desc: 'Cảnh báo hiện trường & tình trạng tuyến',
+      label: 'Tin cảnh báo trên tuyến',
+      desc: 'Sạt lở, suối dâng & tình trạng đường đi',
       renderIcon: (color) => <IconRadar size={16} color={color} />,
     },
   ];
@@ -143,6 +143,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
   const [internalSearch, setInternalSearch] = useState(searchQuery || '');
   const [unreadMessageCount, setUnreadMessageCount] = useState<number>(0);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [failedAvatarSrc, setFailedAvatarSrc] = useState<string | null>(null);
   const [isHubMenuOpen, setIsHubMenuOpen] = useState(false);
   const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState(false);
   const mobileDrawerRef = useRef<HTMLElement>(null);
@@ -365,7 +366,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
               border: 'none',
               padding: 0,
             }}
-            title={isConnected ? 'LOST — Trang Chủ (Kết nối thời gian thực)' : 'LOST — Trang Chủ'}
+            title={isConnected ? 'LOST — Về trang chủ (Đang kết nối)' : 'LOST — Về trang chủ'}
           >
             <svg
               width="22"
@@ -428,7 +429,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                   whiteSpace: 'nowrap',
                 }}
               >
-                Khám Phá
+                Khám phá
               </button>
 
               <button
@@ -449,7 +450,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                   whiteSpace: 'nowrap',
                 }}
               >
-                Diễn Đàn
+                Diễn đàn
               </button>
 
               {/* 8-Hub Field-Atlas Dropdown */}
@@ -476,7 +477,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  <span>Công Cụ &amp; Hộ Chiếu</span>
+                  <span>Công cụ &amp; Hộ chiếu</span>
                   <svg
                     width="13"
                     height="13"
@@ -530,7 +531,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                           marginBottom: 8,
                         }}
                       >
-                        Lập Kế Hoạch &amp; Khám Phá
+                        Chuẩn bị chuyến đi
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                         {PLANNING_HUB_ITEMS.map((hub) => {
@@ -626,7 +627,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                           marginBottom: 8,
                         }}
                       >
-                        Thực Địa &amp; An Toàn
+                        An toàn trên rừng
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                         {FIELD_SAFETY_HUB_ITEMS.map((hub) => {
@@ -764,7 +765,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                                   color: 'var(--color-text-main)',
                                 }}
                               >
-                                Chế Độ Leo Núi Trực Tiếp (Live GPS)
+                                Ghi hành trình trực tiếp (Live GPS)
                               </span>
                               <span
                                 style={{
@@ -773,7 +774,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                                   color: 'var(--color-text-muted)',
                                 }}
                               >
-                                Ghi tracklog GPS thực địa, cảnh báo lệch tuyến &gt;100m, đánh dấu điểm &amp; xuất GPX
+                                Ghi lại đường đi thật, báo lệch cung &gt;100m, đánh dấu mốc &amp; xuất GPX
                               </span>
                             </span>
                           </span>
@@ -814,7 +815,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                   whiteSpace: 'nowrap',
                 }}
               >
-                Đóng Góp
+                Đóng góp
               </button>
             </nav>
           )}
@@ -881,8 +882,8 @@ const NavbarBase: React.FC<NavbarProps> = ({
               <button
                 type="button"
                 onClick={onOpenCommandPalette}
-                title="Mở bảng lệnh nhanh toàn hệ thống (Ctrl+K)"
-                aria-label="Mở bảng lệnh nhanh Ctrl+K"
+                title="Mở tìm kiếm nhanh (Ctrl+K)"
+                aria-label="Mở tìm kiếm nhanh Ctrl+K"
                 style={{
                   height: 34,
                   padding: '0 9px',
@@ -1036,8 +1037,8 @@ const NavbarBase: React.FC<NavbarProps> = ({
                 <button
                   type="button"
                   onClick={onOpenShortcuts}
-                  title="Bảng phím tắt hệ thống (?)"
-                  aria-label="Mở bảng phím tắt hệ thống"
+                  title="Xem bảng phím tắt (?)"
+                  aria-label="Mở bảng phím tắt"
                   style={{
                     width: 34,
                     height: 36,
@@ -1094,11 +1095,13 @@ const NavbarBase: React.FC<NavbarProps> = ({
                   <line x1="3" y1="18" x2="21" y2="18" />
                 </svg>
                 {currentUser ? (
-                  currentUser.avatarUrl || currentUser.avatar ? (
+                  (currentUser.avatarUrl || currentUser.avatar) &&
+                  failedAvatarSrc !== (currentUser.avatarUrl || currentUser.avatar) ? (
                     <img
                       src={currentUser.avatarUrl || currentUser.avatar}
                       alt={currentUser.fullName}
                       decoding="async"
+                      onError={() => setFailedAvatarSrc(currentUser.avatarUrl || currentUser.avatar || null)}
                       style={{
                         width: 28,
                         height: 28,
@@ -1161,11 +1164,13 @@ const NavbarBase: React.FC<NavbarProps> = ({
                           gap: 12,
                         }}
                       >
-                        {currentUser.avatarUrl || currentUser.avatar ? (
+                        {(currentUser.avatarUrl || currentUser.avatar) &&
+                        failedAvatarSrc !== (currentUser.avatarUrl || currentUser.avatar) ? (
                           <img
                             src={currentUser.avatarUrl || currentUser.avatar}
                             alt={currentUser.fullName}
                             decoding="async"
+                            onError={() => setFailedAvatarSrc(currentUser.avatarUrl || currentUser.avatar || null)}
                             style={{
                               width: 42,
                               height: 42,
@@ -1240,7 +1245,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                             >
                               {isAdmin ? (
                                 <>
-                                  <IconShieldCheck size={12} color="var(--color-sun)" /> Quản Trị Viên
+                                  <IconShieldCheck size={12} color="var(--color-sun)" /> Quản trị viên
                                 </>
                               ) : (
                                 <>
@@ -1264,7 +1269,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                               }}
                             >
                               <IconStar size={11} color="var(--color-sun)" fill="var(--color-sun)" />{' '}
-                              {currentUser.reputationScore || 100} Điểm
+                              {currentUser.reputationScore ?? 0} điểm
                             </span>
                           </div>
                         </div>
@@ -1280,14 +1285,14 @@ const NavbarBase: React.FC<NavbarProps> = ({
                           letterSpacing: '0.06em',
                         }}
                       >
-                        Tài Khoản Của Tôi
+                        Tài khoản của tôi
                       </div>
 
                       {[
-                        { id: 'profile', label: 'Hồ sơ & Phân tích hành trình', icon: <IconUser size={15} /> },
-                        { id: 'passport', label: `Hộ chiếu ${effectiveTrailsCount} cung đường Việt Nam`, icon: <IconMountain size={15} /> },
-                        { id: 'contribute', label: 'Đóng góp cung đường mới', icon: <IconPlus size={15} /> },
-                        { id: 'forum', label: 'Diễn đàn & Ghép đoàn', icon: <IconMessageSquare size={15} /> },
+                        { id: 'profile', label: 'Hồ sơ & nhật ký leo núi', icon: <IconUser size={15} /> },
+                        { id: 'passport', label: `Hộ chiếu ${effectiveTrailsCount} cung đường`, icon: <IconMountain size={15} /> },
+                        { id: 'contribute', label: 'Gửi cung đường mới', icon: <IconPlus size={15} /> },
+                        { id: 'forum', label: 'Diễn đàn & tìm bạn đồng hành', icon: <IconMessageSquare size={15} /> },
                       ].map((item) => {
                         const active = currentView === item.id;
                         return (
@@ -1343,7 +1348,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                               letterSpacing: '0.06em',
                             }}
                           >
-                            Quản Trị Hệ Thống
+                            Quản trị
                           </div>
                           <button
                             type="button"
@@ -1370,7 +1375,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                             }}
                           >
                             <IconShieldCheck size={15} color="var(--color-sun)" />
-                            <span>Bảng Điều Khiển Admin</span>
+                            <span>Trang quản trị</span>
                           </button>
                         </>
                       )}
@@ -1439,7 +1444,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                             marginBottom: 4,
                           }}
                         >
-                          Chào mừng đến với LOST!
+                          Lên núi cùng LOST
                         </div>
                         <div
                           style={{
@@ -1448,7 +1453,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                             lineHeight: 1.45,
                           }}
                         >
-                          Đăng nhập để đồng bộ Hộ Chiếu {effectiveTrailsCount} Cung Đường, Nhật Ký GPX, Tủ Đồ Balo và tham gia diễn đàn.
+                          Đăng nhập để lưu dấu {effectiveTrailsCount} cung đường, giữ lịch trình GPX, cân balo và rủ thêm bạn cùng nhịp chân.
                         </div>
                       </div>
 
@@ -1486,7 +1491,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                           <polyline points="10 17 15 12 10 7" />
                           <line x1="15" y1="12" x2="3" y2="12" />
                         </svg>
-                        <span>Đăng Nhập / Đăng Ký</span>
+                        <span>Đăng nhập / Đăng ký</span>
                       </button>
                     </div>
                   )}
@@ -1647,7 +1652,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                   >
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                       <IconSearch size={13} color="var(--color-primary)" />
-                      <span>Tìm nhanh cung, Hub, Kiểm lâm &amp; AI</span>
+                      <span>Tìm cung, công cụ, kiểm lâm &amp; AI</span>
                     </span>
                     <span className="kbd-shortcut">Ctrl+K</span>
                   </button>
@@ -1676,7 +1681,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                     }}
                   >
                     <IconRadio size={15} color="var(--color-primary)" />
-                    <span>Chế Độ Leo Núi Trực Tiếp (Live GPS)</span>
+                    <span>Ghi hành trình trực tiếp (Live GPS)</span>
                   </button>
                 )}
               </div>
@@ -1693,24 +1698,24 @@ const NavbarBase: React.FC<NavbarProps> = ({
                     marginBottom: 6,
                   }}
                 >
-                  Điều Hướng Chính
+                  Điều hướng chính
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {[
-                    { id: 'home', label: 'Khám Phá Bản Đồ' },
-                    { id: 'forum', label: 'Diễn Đàn & Ghép Đoàn' },
-                    { id: 'contribute', label: 'Đóng Góp Cung Đường' },
+                    { id: 'home', label: 'Khám phá bản đồ' },
+                    { id: 'forum', label: 'Diễn đàn & tìm bạn' },
+                    { id: 'contribute', label: 'Gửi cung đường mới' },
                     ...(currentUser
                       ? [
                         {
                           id: 'messages',
                           label:
                             unreadMessageCount > 0
-                              ? `Tin Nhắn (${unreadMessageCount > 99 ? '99+' : unreadMessageCount})`
-                              : 'Tin Nhắn',
+                              ? `Tin nhắn (${unreadMessageCount > 99 ? '99+' : unreadMessageCount})`
+                              : 'Tin nhắn',
                         },
-                        { id: 'profile', label: 'Hồ Sơ & Phân Tích Cá Nhân' },
-                        ...(isAdmin ? [{ id: 'admin', label: 'Bảng Điều Khiển Quản Trị' }] : []),
+                        { id: 'profile', label: 'Hồ sơ của tôi' },
+                        ...(isAdmin ? [{ id: 'admin', label: 'Trang quản trị' }] : []),
                       ]
                       : []),
                   ].map((item) => {
@@ -1757,7 +1762,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                     marginBottom: 6,
                   }}
                 >
-                  Lập Kế Hoạch &amp; Khám Phá
+                  Chuẩn bị chuyến đi
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {PLANNING_HUB_ITEMS.map((hub) => {
@@ -1806,7 +1811,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                     marginBottom: 6,
                   }}
                 >
-                  Thực Địa &amp; An Toàn
+                  An toàn trên rừng
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {FIELD_SAFETY_HUB_ITEMS.map((hub) => {
@@ -1878,7 +1883,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                   }}
                 >
                   <IconAlertTriangle size={15} color="var(--color-error-text, var(--color-error))" />
-                  <span>Báo Sự Cố Thực Địa</span>
+                  <span>Báo sự cố trên tuyến</span>
                 </button>
 
                 {currentUser ? (
@@ -1905,7 +1910,7 @@ const NavbarBase: React.FC<NavbarProps> = ({
                     }}
                     style={{ width: '100%', borderRadius: 4 }}
                   >
-                    Đăng Nhập / Đăng Ký LOST
+                    Đăng nhập / Đăng ký
                   </button>
                 )}
               </div>

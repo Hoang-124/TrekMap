@@ -4,7 +4,13 @@ import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Trail } from '../../types.js';
 import { haversineMeters } from '../../utils/geoMath.js';
-import { resolveTerrain3DStyle, type Terrain3DBasemapMode } from '../../utils/mapTiles.js';
+import {
+  getMapPerformanceConfig,
+  resolveMapWebGLPalette,
+  resolveTerrain3DStyle,
+  type MapWebGLPalette,
+  type Terrain3DBasemapMode,
+} from '../../utils/mapTiles.js';
 import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
 import { IconX, IconMountain, IconCompass, IconAlertTriangle } from '../common/SvgIcons.js';
 
@@ -20,42 +26,45 @@ interface FlyTrackData {
   totalDistM: number;
 }
 
-function getWaypoint3DMeta(type?: string): { color: string; label: string; svg: string } {
+function getWaypoint3DMeta(
+  type: string | undefined,
+  palette: MapWebGLPalette
+): { color: string; label: string; svg: string } {
   switch (type) {
     case 'campsite':
       return {
-        color: '#10b981',
-        label: 'Bãi cắm trại / Lán nghỉ',
+        color: palette.waypointCampsite,
+        label: 'Bãi trại / lán nghỉ',
         svg: '<path d="M19 20 10 4"/><path d="m5 20 9-16"/><path d="M3 20h18"/>',
       };
     case 'water':
       return {
-        color: '#0284c7',
-        label: 'Nguồn nước',
+        color: palette.waypointWater,
+        label: 'Nguồn nước suối',
         svg: '<path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/>',
       };
     case 'danger':
       return {
-        color: '#dc2626',
-        label: 'Cảnh báo nguy hiểm',
+        color: palette.waypointDanger,
+        label: 'Đoạn cần lưu ý',
         svg: '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
       };
     case 'viewpoint':
       return {
-        color: '#d97706',
+        color: palette.waypointViewpoint,
         label: 'Điểm ngắm cảnh',
         svg: '<path d="m8 3 4 8 5-5 5 15H2L8 3z"/>',
       };
     case 'summit':
       return {
-        color: '#eab308',
-        label: 'Đỉnh / Cột mốc',
+        color: palette.waypointSummit,
+        label: 'Đỉnh / cột mốc',
         svg: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
       };
     default:
       return {
-        color: '#0d9488',
-        label: 'Trạm dừng chân',
+        color: palette.waypointRest,
+        label: 'Điểm dừng chân',
         svg: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>',
       };
   }
@@ -69,10 +78,7 @@ function escapePopupHtml(text: string): string {
     .replace(/"/g, '&quot;');
 }
 
-function computeForwardBearingDeg(
-  fromLngLat: [number, number],
-  toLngLat: [number, number]
-): number {
+function computeForwardBearingDeg(fromLngLat: [number, number], toLngLat: [number, number]): number {
   const lat1 = (fromLngLat[1] * Math.PI) / 180;
   const lat2 = (toLngLat[1] * Math.PI) / 180;
   const dLng = ((toLngLat[0] - fromLngLat[0]) * Math.PI) / 180;
@@ -104,6 +110,97 @@ function sampleLngLatAtDistance(track: FlyTrackData, distM: number): [number, nu
   return coords[coords.length - 1];
 }
 
+function attach3DTrackLayers(
+  map: maplibregl.Map,
+  trailName: string,
+  trackCoords: [number, number][],
+  cursorPos: [number, number],
+  palette: MapWebGLPalette
+): void {
+  if (!map.getSource('trail-gpx-3d')) {
+    map.addSource('trail-gpx-3d', {
+      type: 'geojson',
+      data: {
+        type: 'Feature',
+        properties: { name: trailName },
+        geometry: {
+          type: 'LineString',
+          coordinates: trackCoords,
+        },
+      },
+    });
+  }
+
+  if (!map.getLayer('trail-gpx-3d-glow')) {
+    map.addLayer({
+      id: 'trail-gpx-3d-glow',
+      type: 'line',
+      source: 'trail-gpx-3d',
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: {
+        'line-color': palette.easy,
+        'line-width': 8,
+        'line-opacity': 0.48,
+        'line-blur': 3,
+      },
+    });
+  }
+
+  if (!map.getLayer('trail-gpx-3d-core')) {
+    map.addLayer({
+      id: 'trail-gpx-3d-core',
+      type: 'line',
+      source: 'trail-gpx-3d',
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: {
+        'line-color': palette.highlightCore,
+        'line-width': 3,
+      },
+    });
+  }
+
+  if (!map.getSource('trail-fly-cursor')) {
+    map.addSource('trail-fly-cursor', {
+      type: 'geojson',
+      data: {
+        type: 'Feature',
+        properties: {},
+        geometry: {
+          type: 'Point',
+          coordinates: cursorPos,
+        },
+      },
+    });
+  }
+
+  if (!map.getLayer('trail-fly-cursor-halo')) {
+    map.addLayer({
+      id: 'trail-fly-cursor-halo',
+      type: 'circle',
+      source: 'trail-fly-cursor',
+      paint: {
+        'circle-radius': 11,
+        'circle-color': palette.warn,
+        'circle-opacity': 0.34,
+      },
+    });
+  }
+
+  if (!map.getLayer('trail-fly-cursor-dot')) {
+    map.addLayer({
+      id: 'trail-fly-cursor-dot',
+      type: 'circle',
+      source: 'trail-fly-cursor',
+      paint: {
+        'circle-radius': 5.5,
+        'circle-color': palette.warn,
+        'circle-stroke-color': palette.strokeLight,
+        'circle-stroke-width': 2,
+      },
+    });
+  }
+}
+
 export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, onClose }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -117,6 +214,9 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
   const pitchRef = useRef<number>(64);
   const flySpeedRef = useRef<1 | 2>(1);
   const isFlyingRef = useRef<boolean>(false);
+  const desiredBasemapRef = useRef<Terrain3DBasemapMode>('outdoor');
+  const appliedBasemapRef = useRef<Terrain3DBasemapMode | null>(null);
+  const styleReqIdRef = useRef<number>(0);
 
   useEffect(() => {
     trailRef.current = trail;
@@ -162,7 +262,6 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
     const distM = (clampedPct / 100) * track.totalDistM;
     const currentPos = sampleLngLatAtDistance(track, distM);
 
-    // Clamp look-ahead strictly <= totalDistM * 0.5 so short tracks never collapse onto identical points
     const maxOffset = track.totalDistM * 0.5;
     const desiredOffset = Math.min(450, Math.max(Math.min(120, track.totalDistM * 0.25), track.totalDistM * 0.07));
     const lookAheadOffsetM = Math.max(1, Math.min(maxOffset, desiredOffset));
@@ -181,7 +280,6 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
       : rawBearing;
     flyBearingRef.current = nextBearing;
 
-    // Update pulsing fly-through cursor point on the 3D track
     const cursorSource = map.getSource('trail-fly-cursor') as maplibregl.GeoJSONSource | undefined;
     if (cursorSource) {
       cursorSource.setData({
@@ -195,16 +293,15 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
     }
 
     const currentZoom = map.getZoom();
-    const targetZoom = Number.isFinite(currentZoom) ? Math.max(13.4, Math.min(14.8, currentZoom)) : 14;
+    const targetZoom = Number.isFinite(currentZoom) ? Math.max(13.2, Math.min(14.6, currentZoom)) : 13.8;
     map.jumpTo({
       center: currentPos,
       bearing: nextBearing,
-      pitch: Math.max(pitchRef.current, 60),
+      pitch: pitchRef.current,
       zoom: targetZoom,
     });
   }, []);
 
-  // Reset terrain & fly-through controls cleanly during render when switching trails
   if (trackedTrailId !== trail.id) {
     setTrackedTrailId(trail.id);
     setExaggeration(1.6);
@@ -228,7 +325,6 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
     flySpeedRef.current = flySpeed;
   }, [flySpeed]);
 
-  // Cancel RAF cleanly whenever modal closes or trail changes
   useEffect(() => {
     if (!isOpen) {
       cancelFlyRaf();
@@ -243,7 +339,6 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
   const dialogRef = useRef<HTMLDivElement | null>(null);
   useFocusTrap(isOpen, dialogRef);
 
-  // Escape key close (LIFO topmost + IME safe)
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -260,11 +355,13 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose, stopFlyThrough]);
 
-  // Stabilized WebGL lifecycle keyed on trail.id (not trail object identity)
+  // Stabilized single WebGL lifecycle per modal open / trail.id (basemap switches use setStyle without teardown)
   useEffect(() => {
     if (!isOpen || !containerRef.current) return;
 
     const currentTrail = trailRef.current;
+    const perf = getMapPerformanceConfig();
+    const palette = resolveMapWebGLPalette();
 
     const rawCoords: [number, number][] =
       Array.isArray(currentTrail.gpxTrack) && currentTrail.gpxTrack.length >= 2
@@ -289,7 +386,6 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
             [fallbackEndLng, fallbackEndLat],
           ];
 
-    // Precompute cumulative arc-length table for smooth uniform-speed 3D fly-through
     const cumDistM: number[] = [0];
     for (let i = 1; i < trackCoords.length; i++) {
       const segM = haversineMeters(
@@ -311,39 +407,86 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
     const centerLat = Number.isFinite(avgLat) ? avgLat : 22.3033;
 
     let map: maplibregl.Map | null = null;
+    let boundCanvasEl: HTMLCanvasElement | null = null;
+    let boundContextLostHandler: ((e: Event) => void) | null = null;
     let loaded = false;
     let disposed = false;
     let errorCount = 0;
     const styleAbort = new AbortController();
+    const initialBasemap = desiredBasemapRef.current;
+    appliedBasemapRef.current = null;
 
-    // Prevent infinite spinner when offline or tile CDN is unreachable
+    const destroyMapInstance = () => {
+      if (boundCanvasEl && boundContextLostHandler) {
+        boundCanvasEl.removeEventListener('webglcontextlost', boundContextLostHandler, false);
+        boundCanvasEl = null;
+        boundContextLostHandler = null;
+      }
+      if (map) {
+        try {
+          map.remove();
+        } catch {
+          // Ignore remove failure on lost WebGL context
+        }
+        map = null;
+      }
+      mapRef.current = null;
+      appliedBasemapRef.current = null;
+    };
+
     const loadTimeout = window.setTimeout(() => {
       if (!loaded && !disposed) {
+        destroyMapInstance();
+        setIsLoaded(false);
         setMapError(
-          'Không thể tải dữ liệu địa hình 3D DEM (AWS Terrarium / OpenFreeMap). Vui lòng kiểm tra kết nối mạng hoặc thử tải lại.'
+          'Chưa tải được dữ liệu địa hình 3D từ AWS DEM / OpenFreeMap. Bạn kiểm tra lại mạng rồi thử lại nhé.'
         );
       }
     }, 12000);
 
-    void resolveTerrain3DStyle(basemap3D, exaggerationRef.current, styleAbort.signal)
-      .then((resolvedStyle) => {
+    void resolveTerrain3DStyle(initialBasemap, exaggerationRef.current, styleAbort.signal).then(
+      (resolvedStyle) => {
         if (disposed || !containerRef.current) return;
         try {
+          const isNarrowViewport = typeof window !== 'undefined' && window.innerWidth < 640;
           map = new maplibregl.Map({
             container: containerRef.current,
             center: [centerLng, centerLat],
-            zoom: 12.8,
+            zoom: 12.6,
             pitch: pitchRef.current,
             bearing: -28,
             maxPitch: 85,
+            pixelRatio: perf.pixelRatio,
+            maxTileCacheSize: perf.maxTileCacheSize,
+            fadeDuration: perf.fadeDuration,
+            cooperativeGestures: false,
             attributionControl: false,
+            cancelPendingTileRequestsWhileZooming: true,
+            canvasContextAttributes: {
+              antialias: perf.antialias,
+              preserveDrawingBuffer: false,
+              powerPreference: 'high-performance',
+            },
             style: resolvedStyle,
           });
 
           map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
-          map.addControl(new maplibregl.AttributionControl({ compact: false }), 'bottom-right');
+          map.addControl(new maplibregl.AttributionControl({ compact: isNarrowViewport }), 'bottom-right');
 
-          // Pause 3D Fly-Through automatically whenever the user manually grabs, drags, or zooms the map
+          const canvasEl = map.getCanvas();
+          const handleContextLost = (e: Event) => {
+            e.preventDefault();
+            if (disposed) return;
+            stopFlyThrough();
+            window.clearTimeout(loadTimeout);
+            destroyMapInstance();
+            setIsLoaded(false);
+            setMapError('Ngữ cảnh đồ họa WebGL 3D tạm bị gián đoạn. Nhấn "Thử tải lại" để khôi phục bản đồ 3D.');
+          };
+          boundCanvasEl = canvasEl;
+          boundContextLostHandler = handleContextLost;
+          canvasEl.addEventListener('webglcontextlost', handleContextLost, false);
+
           const handleUserMapInteraction = () => {
             stopFlyThrough();
           };
@@ -351,6 +494,19 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
           map.on('mousedown', handleUserMapInteraction);
           map.on('touchstart', handleUserMapInteraction);
           map.on('wheel', handleUserMapInteraction);
+
+          // Re-attach 3D GPX & cursor layers automatically whenever style switches (outdoor <-> satellite)
+          map.on('style.load', () => {
+            if (!map || disposed) return;
+            const currentPos = sampleLngLatAtDistance(
+              flyTrackRef.current,
+              (flyProgressRef.current / 100) * flyTrackRef.current.totalDistM
+            );
+            attach3DTrackLayers(map, currentTrail.name, trackCoords, currentPos, resolveMapWebGLPalette());
+            if (map.getSource('awsTerrainDem')) {
+              map.setTerrain({ source: 'awsTerrainDem', exaggeration: exaggerationRef.current });
+            }
+          });
 
           map.on('load', () => {
             if (!map || disposed) return;
@@ -361,81 +517,8 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
             setIsLoaded(true);
             setMapError(null);
 
-            map.addSource('trail-gpx-3d', {
-              type: 'geojson',
-              data: {
-                type: 'Feature',
-                properties: { name: currentTrail.name },
-                geometry: {
-                  type: 'LineString',
-                  coordinates: trackCoords,
-                },
-              },
-            });
+            attach3DTrackLayers(map, currentTrail.name, trackCoords, trackCoords[0], palette);
 
-            // Draped track halo for contrast on real 3D terrain
-            map.addLayer({
-              id: 'trail-gpx-3d-glow',
-              type: 'line',
-              source: 'trail-gpx-3d',
-              layout: { 'line-join': 'round', 'line-cap': 'round' },
-              paint: {
-                'line-color': '#4ade80',
-                'line-width': 8,
-                'line-opacity': 0.45,
-                'line-blur': 4,
-              },
-            });
-
-            // Crisp core GPX polyline
-            map.addLayer({
-              id: 'trail-gpx-3d-core',
-              type: 'line',
-              source: 'trail-gpx-3d',
-              layout: { 'line-join': 'round', 'line-cap': 'round' },
-              paint: {
-                'line-color': '#ffffff',
-                'line-width': 3,
-              },
-            });
-
-            // Live 3D Fly-Through camera position beacon on the trail
-            map.addSource('trail-fly-cursor', {
-              type: 'geojson',
-              data: {
-                type: 'Feature',
-                properties: {},
-                geometry: {
-                  type: 'Point',
-                  coordinates: trackCoords[0],
-                },
-              },
-            });
-
-            map.addLayer({
-              id: 'trail-fly-cursor-halo',
-              type: 'circle',
-              source: 'trail-fly-cursor',
-              paint: {
-                'circle-radius': 11,
-                'circle-color': '#d4a348',
-                'circle-opacity': 0.32,
-              },
-            });
-
-            map.addLayer({
-              id: 'trail-fly-cursor-dot',
-              type: 'circle',
-              source: 'trail-fly-cursor',
-              paint: {
-                'circle-radius': 5.5,
-                'circle-color': '#d4a348',
-                'circle-stroke-color': '#ffffff',
-                'circle-stroke-width': 2,
-              },
-            });
-
-            // Auto-frame full track bounds so long 30-55km traverses (Ta Nang, Ky Quan San) never get cropped
             try {
               const bounds = new maplibregl.LngLatBounds();
               for (const pt of trackCoords) {
@@ -455,35 +538,33 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
             }
 
             const safeName = escapePopupHtml(currentTrail.name);
-            const altLabel = `${(currentTrail.maxAltitudeM || 0).toLocaleString('vi-VN')}m`;
+            const altLabel = `${(Number(currentTrail.maxAltitudeM) || 0).toLocaleString('vi-VN')}m`;
 
-            // High-contrast popup HTML safe in both Dark & Light modes (MapLibre popup surface is light)
-            new maplibregl.Marker({ color: '#10b981' })
+            new maplibregl.Marker({ color: palette.easy })
               .setLngLat(trackCoords[0])
               .setPopup(
                 new maplibregl.Popup({ offset: 20 }).setHTML(
-                  `<div style="color:#171c19;font-family:var(--font-family);font-size:12px;font-weight:700;padding:2px 4px;">Điểm xuất phát: ${safeName}</div>`
+                  `<div style="color:var(--color-text-main);font-family:var(--font-family);font-size:12px;font-weight:700;padding:2px 4px;">Điểm xuất phát: ${safeName}</div>`
                 )
               )
               .addTo(map);
 
-            new maplibregl.Marker({ color: '#ef4444' })
+            new maplibregl.Marker({ color: palette.hard })
               .setLngLat(trackCoords[trackCoords.length - 1])
               .setPopup(
                 new maplibregl.Popup({ offset: 20 }).setHTML(
-                  `<div style="color:#171c19;font-family:var(--font-family);font-size:12px;font-weight:700;padding:2px 4px;">Đích / Đỉnh (${altLabel})</div>`
+                  `<div style="color:var(--color-text-main);font-family:var(--font-family);font-size:12px;font-weight:700;padding:2px 4px;">Đỉnh / điểm cuối (${altLabel})</div>`
                 )
               )
               .addTo(map);
 
-            // Render trail.waypoints as crisp custom HTML/SVG markers with MapLibre popups on 3D terrain
             if (Array.isArray(currentTrail.waypoints) && currentTrail.waypoints.length > 0) {
               for (const wp of currentTrail.waypoints) {
                 const wpLat = Number(wp.lat);
                 const wpLng = Number(wp.lng);
                 if (!Number.isFinite(wpLat) || !Number.isFinite(wpLng)) continue;
 
-                const wpMeta = getWaypoint3DMeta(wp.type);
+                const wpMeta = getWaypoint3DMeta(wp.type, palette);
                 const markerEl = document.createElement('div');
                 markerEl.setAttribute('role', 'button');
                 markerEl.setAttribute('aria-label', wp.name || wpMeta.label);
@@ -491,30 +572,30 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
                 markerEl.style.height = '28px';
                 markerEl.style.borderRadius = '50%';
                 markerEl.style.background = wpMeta.color;
-                markerEl.style.border = '2px solid #ffffff';
-                markerEl.style.boxShadow = '0 3px 8px rgba(0, 0, 0, 0.48)';
+                markerEl.style.border = `2px solid ${palette.strokeLight}`;
+                markerEl.style.boxShadow = 'var(--shadow-card)';
                 markerEl.style.display = 'flex';
                 markerEl.style.alignItems = 'center';
                 markerEl.style.justifyContent = 'center';
                 markerEl.style.cursor = 'pointer';
-                markerEl.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${wpMeta.svg}</svg>`;
+                markerEl.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${palette.strokeLight}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${wpMeta.svg}</svg>`;
 
-                const safeWpName = escapePopupHtml(wp.name || 'Mốc tọa độ');
+                const safeWpName = escapePopupHtml(wp.name || 'Điểm mốc');
                 const safeWpDesc = escapePopupHtml(wp.description || '');
                 const wpEleHtml =
                   typeof wp.elevationM === 'number' && Number.isFinite(wp.elevationM)
-                    ? `<div style="color:#0284c7;font-size:11px;font-weight:700;margin-top:2px;">Cao độ: ${Math.round(wp.elevationM).toLocaleString('vi-VN')}m</div>`
+                    ? `<div style="color:var(--color-sky);font-size:11px;font-weight:700;margin-top:2px;">Độ cao: ${Math.round(wp.elevationM).toLocaleString('vi-VN')}m</div>`
                     : '';
                 const wpDescHtml = safeWpDesc
-                  ? `<div style="color:#374151;font-size:11px;line-height:1.4;margin-top:4px;">${safeWpDesc}</div>`
+                  ? `<div style="color:var(--color-text-muted);font-size:11px;line-height:1.4;margin-top:4px;">${safeWpDesc}</div>`
                   : '';
 
                 const popupHtml = `
-                  <div style="color:#171c19;font-family:var(--font-family);min-width:160px;max-width:230px;padding:3px 4px;">
-                    <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;color:${wpMeta.color};margin-bottom:2px;">
+                  <div style="color:var(--color-text-main);font-family:var(--font-family);min-width:160px;max-width:230px;padding:3px 4px;">
+                    <div style="font-size:10px;font-weight:800;color:${wpMeta.color};margin-bottom:2px;">
                       ${escapePopupHtml(wpMeta.label)}
                     </div>
-                    <div style="font-size:12.5px;font-weight:800;color:#111827;">${safeWpName}</div>
+                    <div style="font-size:12.5px;font-weight:800;color:var(--color-text-main);">${safeWpName}</div>
                     ${wpEleHtml}
                     ${wpDescHtml}
                   </div>
@@ -537,29 +618,51 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
               /webgl|context|shader|not supported/i.test(String(evt.error.message));
             if (isFatalWebGl) {
               window.clearTimeout(loadTimeout);
+              destroyMapInstance();
+              setIsLoaded(false);
               setMapError(
-                'Thiết bị hoặc trình duyệt hiện không hỗ trợ WebGL 3D. Vui lòng thử trên trình duyệt Chrome/Edge/Safari mới nhất.'
+                'Trình duyệt hoặc thiết bị này chưa bật WebGL 3D. Bạn thử mở bằng Chrome, Edge hoặc Safari bản mới nhất nhé.'
               );
-            } else if (isOffline || (!loaded && errorCount >= 3)) {
+            } else if (!loaded && (isOffline || errorCount >= 3)) {
               window.clearTimeout(loadTimeout);
+              destroyMapInstance();
+              setIsLoaded(false);
               setMapError(
                 isOffline
-                  ? 'Bạn đang ngoại tuyến — chế độ địa hình 3D DEM yêu cầu kết nối mạng để tải khối bản đồ và cao độ.'
-                  : 'Không thể kết nối máy chủ bản đồ địa hình 3D lúc này. Vui lòng thử tải lại.'
+                  ? 'Bạn đang không có mạng — chế độ xem địa hình 3D cần dữ liệu DEM đã tải sẵn hoặc kết nối mạng.'
+                  : 'Chưa kết nối được máy chủ bản đồ 3D lúc này. Bạn thử tải lại sau vài giây nhé.'
               );
             }
           });
 
           mapRef.current = map;
+          appliedBasemapRef.current = initialBasemap;
+
+          // If user switched basemap while initial async style was still resolving, apply latest selection cleanly
+          if (desiredBasemapRef.current !== initialBasemap) {
+            const pendingMode = desiredBasemapRef.current;
+            const reqId = ++styleReqIdRef.current;
+            const liveMap = map;
+            void resolveTerrain3DStyle(pendingMode, exaggerationRef.current, styleAbort.signal).then((nextStyle) => {
+              if (disposed || styleAbort.signal.aborted || mapRef.current !== liveMap || styleReqIdRef.current !== reqId) {
+                return;
+              }
+              appliedBasemapRef.current = pendingMode;
+              liveMap.setStyle(nextStyle, { diff: false });
+            });
+          }
         } catch {
           window.clearTimeout(loadTimeout);
+          destroyMapInstance();
           if (!disposed) {
+            setIsLoaded(false);
             setMapError(
-              'Thiết bị hoặc trình duyệt hiện không hỗ trợ WebGL 3D. Vui lòng thử trên trình duyệt Chrome/Edge/Safari mới nhất.'
+              'Trình duyệt hoặc thiết bị này chưa bật WebGL 3D. Bạn thử mở bằng Chrome, Edge hoặc Safari bản mới nhất nhé.'
             );
           }
         }
-      });
+      }
+    );
 
     return () => {
       disposed = true;
@@ -567,11 +670,33 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
       cancelFlyRaf();
       isFlyingRef.current = false;
       window.clearTimeout(loadTimeout);
-      if (map) map.remove();
-      mapRef.current = null;
+      destroyMapInstance();
       setIsLoaded(false);
     };
-  }, [isOpen, trail.id, basemap3D, retryTick, cancelFlyRaf, stopFlyThrough]);
+  }, [isOpen, trail.id, retryTick, cancelFlyRaf, stopFlyThrough]);
+
+  // Swap 3D basemap cleanly via cached style + setStyle without recreating the WebGL context
+  useEffect(() => {
+    desiredBasemapRef.current = basemap3D;
+    const map = mapRef.current;
+    if (!isOpen || !map || appliedBasemapRef.current === basemap3D) {
+      return;
+    }
+
+    const targetBasemap = basemap3D;
+    const reqId = ++styleReqIdRef.current;
+    const controller = new AbortController();
+
+    void resolveTerrain3DStyle(targetBasemap, exaggerationRef.current, controller.signal).then((nextStyle) => {
+      if (controller.signal.aborted || mapRef.current !== map || styleReqIdRef.current !== reqId) return;
+      appliedBasemapRef.current = targetBasemap;
+      map.setStyle(nextStyle, { diff: false });
+    });
+
+    return () => {
+      controller.abort();
+    };
+  }, [basemap3D, isOpen]);
 
   // Smooth requestAnimationFrame Fly-Through playback loop
   useEffect(() => {
@@ -592,7 +717,6 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
       const dtMs = Math.min(100, Math.max(0, nowMs - flyLastFrameMsRef.current));
       flyLastFrameMsRef.current = nowMs;
 
-      // Full route fly-through duration: 24s at 1x, 12s at 2x
       const totalDurationMs = flySpeedRef.current === 2 ? 12000 : 24000;
       const nextPct = Math.min(100, flyProgressRef.current + (dtMs / totalDurationMs) * 100);
       flyProgressRef.current = nextPct;
@@ -632,7 +756,6 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
       lastReportedFlyPctRef.current = 0;
       setFlyProgress(0);
     }
-    // Snap initial bearing cleanly toward forward ridge before starting RAF
     applyCameraAtProgress(flyProgressRef.current, false);
     setIsFlying(true);
   };
@@ -651,6 +774,7 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
     const map = mapRef.current;
     const coords = flyTrackRef.current.coords;
     if (!map || coords.length < 2) return;
+    const perf = getMapPerformanceConfig();
     try {
       const bounds = new maplibregl.LngLatBounds();
       for (const pt of coords) bounds.extend(pt);
@@ -660,7 +784,7 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
           pitch: pitchRef.current,
           bearing: -28,
           maxZoom: 13.8,
-          duration: 750,
+          duration: perf.isLiteMode ? 0 : 700,
         });
       }
     } catch {
@@ -670,7 +794,7 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
 
   const handleExaggerationChange = (val: number) => {
     setExaggeration(val);
-    if (mapRef.current && isLoaded) {
+    if (mapRef.current && isLoaded && mapRef.current.getSource('awsTerrainDem')) {
       mapRef.current.setTerrain({ source: 'awsTerrainDem', exaggeration: val });
     }
   };
@@ -678,15 +802,17 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
   const handlePitchChange = (val: number) => {
     setPitch(val);
     if (mapRef.current) {
-      mapRef.current.easeTo({ pitch: val, duration: 350 });
+      const perf = getMapPerformanceConfig();
+      mapRef.current.easeTo({ pitch: val, duration: perf.isLiteMode ? 0 : 320 });
     }
   };
 
   const handleOrbit = () => {
     stopFlyThrough();
     if (!mapRef.current) return;
+    const perf = getMapPerformanceConfig();
     const currentBearing = mapRef.current.getBearing();
-    mapRef.current.easeTo({ bearing: currentBearing + 90, duration: 900 });
+    mapRef.current.easeTo({ bearing: currentBearing + 90, duration: perf.isLiteMode ? 0 : 820 });
   };
 
   if (!isOpen) return null;
@@ -716,7 +842,7 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-label={`Địa hình 3D DEM ${trail.name}`}
+        aria-label={`Địa hình 3D ${trail.name}`}
         tabIndex={-1}
         className="modal-content"
         onClick={(e) => e.stopPropagation()}
@@ -768,10 +894,10 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
             </div>
             <div>
               <div style={{ fontSize: '0.96rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                Địa Hình 3D DEM Thực Tế — {trail.name}
+                Địa hình 3D — {trail.name}
               </div>
               <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-                MapLibre WebGL + AWS Terrarium DEM · Đỉnh {trail.maxAltitudeM.toLocaleString('vi-VN')}m · Giữ chuột phải / 2 ngón tay để xoay 360°
+                Đỉnh {(Number(trail.maxAltitudeM) || 0).toLocaleString('vi-VN')}m · Giữ chuột phải hoặc dùng 2 ngón tay để xoay quanh dãy núi
               </div>
             </div>
           </div>
@@ -792,8 +918,8 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
             >
               {(
                 [
-                  { id: 'outdoor', label: 'OpenFreeMap' },
-                  { id: 'satellite', label: 'NASA GIBS' },
+                  { id: 'outdoor', label: 'Địa hình' },
+                  { id: 'satellite', label: 'Vệ tinh' },
                 ] as const
               ).map((opt) => {
                 const active = basemap3D === opt.id;
@@ -804,11 +930,17 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
                     aria-pressed={active}
                     onClick={() => {
                       stopFlyThrough();
-                      setMapError(null);
+                      const needsReinit = Boolean(mapError) || !mapRef.current;
+                      desiredBasemapRef.current = opt.id;
                       setBasemap3D(opt.id);
+                      if (needsReinit) {
+                        setMapError(null);
+                        setIsLoaded(false);
+                        setRetryTick((t) => t + 1);
+                      }
                     }}
                     style={{
-                      padding: '4px 8px',
+                      padding: '4px 9px',
                       borderRadius: 3,
                       border: 'none',
                       fontSize: '0.72rem',
@@ -824,11 +956,20 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
               })}
             </div>
 
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.76rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>
-              <span>Độ nổi núi ({exaggeration.toFixed(1)}x)</span>
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: '0.76rem',
+                color: 'var(--color-text-muted)',
+                fontWeight: 700,
+              }}
+            >
+              <span>Độ cao nổi ({exaggeration.toFixed(1)}x)</span>
               <input
                 type="range"
-                aria-label="Độ nổi địa hình 3D"
+                aria-label="Độ cao nổi địa hình 3D"
                 min="1"
                 max="2.5"
                 step="0.1"
@@ -838,11 +979,20 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
               />
             </label>
 
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.76rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>
-              <span>Góc nghiêng ({pitch}°)</span>
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: '0.76rem',
+                color: 'var(--color-text-muted)',
+                fontWeight: 700,
+              }}
+            >
+              <span>Góc nhìn ({pitch}°)</span>
               <input
                 type="range"
-                aria-label="Góc nghiêng camera 3D"
+                aria-label="Góc nghiêng góc nhìn 3D"
                 min="0"
                 max="80"
                 step="4"
@@ -887,13 +1037,18 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
           </div>
         </div>
 
-        {/* 3D WebGL Map Canvas */}
+        {/* 3D WebGL Map Canvas (kept mounted beneath error overlay to prevent WebGL leaks & blank locks) */}
         <div style={{ flex: 1, position: 'relative', minHeight: 240, background: 'var(--color-bg-main)' }}>
-          {mapError ? (
+          <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+
+          {mapError && (
             <div
+              role="alert"
               style={{
                 position: 'absolute',
                 inset: 0,
+                zIndex: 10,
+                background: 'var(--color-bg-main)',
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
@@ -918,7 +1073,15 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
               >
                 <IconAlertTriangle size={24} color="var(--color-error-text, var(--color-error))" />
               </div>
-              <div style={{ maxWidth: 460, fontSize: '0.9rem', fontWeight: 600, color: 'var(--color-text-main)', lineHeight: 1.55 }}>
+              <div
+                style={{
+                  maxWidth: 460,
+                  fontSize: '0.9rem',
+                  fontWeight: 600,
+                  color: 'var(--color-text-main)',
+                  lineHeight: 1.55,
+                }}
+              >
                 {mapError}
               </div>
               <div style={{ display: 'flex', gap: 10 }}>
@@ -927,11 +1090,12 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
                   className="btn btn-primary"
                   onClick={() => {
                     setMapError(null);
+                    setIsLoaded(false);
                     setRetryTick((t) => t + 1);
                   }}
                   style={{ borderRadius: 4, padding: '8px 16px', fontSize: '0.82rem' }}
                 >
-                  Thử tải lại mô hình 3D
+                  Thử tải lại
                 </button>
                 <button
                   type="button"
@@ -943,18 +1107,16 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
                 </button>
               </div>
             </div>
-          ) : (
-            <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
           )}
 
-          {/* Wave 10D: 3D Terrain Fly-Through Floating Control Dock */}
+          {/* 3D Terrain Fly-Through Floating Control Dock (lifted above bottom-right attribution) */}
           {isLoaded && !mapError && (
             <div
               role="region"
-              aria-label="Điều khiển bay dọc tuyến 3D"
+              aria-label="Điều khiển bay dọc sườn núi 3D"
               style={{
                 position: 'absolute',
-                bottom: 26,
+                bottom: 42,
                 left: '50%',
                 transform: 'translateX(-50%)',
                 width: 'min(640px, calc(100% - 24px))',
@@ -976,8 +1138,8 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
                 className={isFlying ? 'btn btn-outline' : 'btn btn-primary'}
                 onClick={handleToggleFlyThrough}
                 disabled={!canFlyThrough}
-                title={!canFlyThrough ? 'Cần tuyến GPX dài trên 10m để bay dọc tuyến 3D' : undefined}
-                aria-label={isFlying ? 'Tạm dừng bay dọc tuyến 3D' : 'Bắt đầu bay dọc tuyến 3D'}
+                title={!canFlyThrough ? 'Cần đường mòn GPX dài hơn 10m để bay dọc sườn núi' : undefined}
+                aria-label={isFlying ? 'Tạm dừng bay dọc sườn núi' : 'Bắt đầu bay dọc sườn núi'}
                 style={{
                   padding: '6px 11px',
                   fontSize: '0.75rem',
@@ -999,14 +1161,14 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
                       <rect x="6" y="4" width="4" height="16" rx="1" />
                       <rect x="14" y="4" width="4" height="16" rx="1" />
                     </svg>
-                    <span>Tạm Dừng</span>
+                    <span>Tạm dừng</span>
                   </>
                 ) : (
                   <>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                       <polygon points="5 3 19 12 5 21 5 3" />
                     </svg>
-                    <span>Bay Dọc Tuyến 3D</span>
+                    <span>Bay dọc sườn núi</span>
                   </>
                 )}
               </button>
@@ -1015,7 +1177,7 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
                 type="button"
                 onClick={() => setFlySpeed((s) => (s === 1 ? 2 : 1))}
                 aria-label={`Tốc độ bay ${flySpeed}x`}
-                title="Đổi tốc độ bay dọc tuyến (1x / 2x)"
+                title="Đổi tốc độ bay (1x / 2x)"
                 style={{
                   padding: '5px 8px',
                   fontSize: '0.72rem',
@@ -1041,7 +1203,11 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
                   disabled={!canFlyThrough}
                   aria-label="Thanh tua tiến độ bay dọc tuyến 3D"
                   onChange={(e) => handleScrubFlyProgress(Number(e.target.value))}
-                  style={{ flex: 1, accentColor: 'var(--color-primary)', cursor: canFlyThrough ? 'pointer' : 'not-allowed' }}
+                  style={{
+                    flex: 1,
+                    accentColor: 'var(--color-primary)',
+                    cursor: canFlyThrough ? 'pointer' : 'not-allowed',
+                  }}
                 />
                 <span style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-text-main)', whiteSpace: 'nowrap' }}>
                   {Math.round(flyProgress)}%
@@ -1052,7 +1218,7 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
               <button
                 type="button"
                 onClick={handleResetOverview}
-                title="Thu góc nhìn toàn bộ cung đường"
+                title="Thu góc nhìn bao quát toàn tuyến"
                 style={{
                   padding: '5px 9px',
                   fontSize: '0.72rem',
@@ -1065,7 +1231,7 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
                   flexShrink: 0,
                 }}
               >
-                Toàn Tuyến
+                Nhìn toàn tuyến
               </button>
             </div>
           )}
@@ -1085,7 +1251,7 @@ export const Terrain3DModal: React.FC<Terrain3DModalProps> = ({ trail, isOpen, o
                 pointerEvents: 'none',
               }}
             >
-              Đang dựng mô hình địa hình 3D DEM...
+              Đang dựng địa hình dãy núi...
             </div>
           )}
         </div>

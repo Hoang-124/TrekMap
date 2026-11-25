@@ -1,15 +1,47 @@
 import { Response } from 'express';
 import mongoose, { Types } from 'mongoose';
-import { SafetyTimerModel } from '../models/SafetyTimer.js';
+import { SafetyTimerModel, type ISafetyTimer } from '../models/SafetyTimer.js';
 import { UserModel } from '../models/User.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { resolveTrailByIdOrSlug, isValidObjectId } from '../utils/resolveTrail.js';
 import { sanitizeInput } from '../utils/validation.js';
 import { sendSafetyOverdueAlertEmail, sendSafetyAllClearEmail } from '../utils/mailer.js';
 import { sendNotification, notifyAdmins } from '../utils/notification.js';
+import { recordAuditLog } from '../utils/audit.js';
 import { emitToUser } from '../config/socket.js';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MAX_EMAIL_RETRIES = 5;
+const EMAIL_RETRY_BACKOFF_MINUTES = [2, 5, 10, 20, 40];
+const EMAIL_CLAIM_LEASE_MS = 2 * 60 * 1000;
+const MAX_TIMER_NOTES_LEN = 500;
+
+function appendAuditNote(existingNotes: string | undefined, stamp: string): string {
+  const cleanStamp = stamp.trim().slice(0, MAX_TIMER_NOTES_LEN);
+  const base = (existingNotes || '').trim();
+  if (!base) return cleanStamp;
+  const combined = `${base}\n${cleanStamp}`;
+  if (combined.length <= MAX_TIMER_NOTES_LEN) return combined;
+  const keepLen = Math.max(0, MAX_TIMER_NOTES_LEN - cleanStamp.length - 4);
+  return keepLen > 0 ? `${base.slice(0, keepLen).trim()}...\n${cleanStamp}` : cleanStamp;
+}
+
+function getRetryBackoffMs(retryCount: number): number {
+  const idx = Math.max(0, Math.min(EMAIL_RETRY_BACKOFF_MINUTES.length - 1, retryCount - 1));
+  return EMAIL_RETRY_BACKOFF_MINUTES[idx] * 60 * 1000;
+}
+
+function parseOptionalCoord(val: unknown): number | undefined {
+  if (val === undefined || val === null) return undefined;
+  if (typeof val === 'number') return Number.isFinite(val) ? val : NaN;
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (!trimmed) return undefined;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : NaN;
+  }
+  return NaN;
+}
 
 // GET /api/safety-timers/me - Get user's active & recent safety timers
 export const getMySafetyTimers = async (req: AuthRequest, res: Response) => {
@@ -86,14 +118,24 @@ export const createSafetyTimer = async (req: AuthRequest, res: Response) => {
 
     let resolvedLat: number | undefined;
     let resolvedLng: number | undefined;
-    if (lastKnownLat !== undefined && lastKnownLng !== undefined) {
-      const nLat = Number(lastKnownLat);
-      const nLng = Number(lastKnownLng);
-      if (!Number.isFinite(nLat) || !Number.isFinite(nLng) || nLat < -90 || nLat > 90 || nLng < -180 || nLng > 180) {
+    const parsedLat = parseOptionalCoord(lastKnownLat);
+    const parsedLng = parseOptionalCoord(lastKnownLng);
+    if (parsedLat !== undefined || parsedLng !== undefined) {
+      if (
+        parsedLat === undefined ||
+        parsedLng === undefined ||
+        !Number.isFinite(parsedLat) ||
+        !Number.isFinite(parsedLng) ||
+        parsedLat < -90 ||
+        parsedLat > 90 ||
+        parsedLng < -180 ||
+        parsedLng > 180 ||
+        (parsedLat === 0 && parsedLng === 0)
+      ) {
         return res.status(400).json({ success: false, message: 'Tọa độ GPS không hợp lệ.' });
       }
-      resolvedLat = nLat;
-      resolvedLng = nLng;
+      resolvedLat = parsedLat;
+      resolvedLng = parsedLng;
     }
 
     if (mongoose.connection.readyState !== 1) {
@@ -120,8 +162,7 @@ export const createSafetyTimer = async (req: AuthRequest, res: Response) => {
     }
 
     const uid = new Types.ObjectId(userId);
-    await SafetyTimerModel.updateMany({ userId: uid, status: 'active' }, { $set: { status: 'cancelled' } });
-
+    // Create replacement timer FIRST so if creation fails, the trekker's existing active timer stays armed!
     const timer = await SafetyTimerModel.create({
       userId: uid,
       trailId: resolvedTrailId,
@@ -135,7 +176,14 @@ export const createSafetyTimer = async (req: AuthRequest, res: Response) => {
       lastKnownLng: resolvedLng,
       notes: sanitizeInput(String(notes || '')).slice(0, 500),
       status: 'active',
+      emailAlertStatus: safeContactEmail ? 'pending' : 'none',
+      emailRetryCount: 0,
     });
+
+    await SafetyTimerModel.updateMany(
+      { userId: uid, status: 'active', _id: { $ne: timer._id } },
+      { $set: { status: 'cancelled' } }
+    );
 
     return res.status(201).json({
       success: true,
@@ -176,10 +224,19 @@ export const markSafetyTimerSafe = async (req: AuthRequest, res: Response) => {
     }
 
     const wasOverdueAlerted = existing.status === 'overdue_alerted';
+    const overdueEmailWasSent = existing.emailAlertStatus === 'sent' || existing.emailAlertStatus === undefined;
     const safeAt = new Date();
     const timer = await SafetyTimerModel.findOneAndUpdate(
       { _id: id, userId: uid, status: { $in: ['active', 'overdue_alerted'] } },
-      { $set: { status: 'checked_in_safe', checkedInSafeAt: safeAt } },
+      {
+        $set: {
+          status: 'checked_in_safe',
+          checkedInSafeAt: safeAt,
+          emailNextRetryAt: null,
+          emailClaimedAt: null,
+          ...(existing.emailAlertStatus === 'pending' ? { emailAlertStatus: 'none' } : {}),
+        },
+      },
       { new: true }
     );
 
@@ -187,8 +244,8 @@ export const markSafetyTimerSafe = async (req: AuthRequest, res: Response) => {
       return res.status(409).json({ success: false, message: 'Trạng thái lịch hẹn đã thay đổi.' });
     }
 
-    // If an overdue emergency alert email was already dispatched, notify emergency contact that trekker is now SAFE
-    if (wasOverdueAlerted && timer.emergencyContactEmail) {
+    // If an overdue emergency alert email was actually delivered, notify emergency contact that trekker is now SAFE
+    if (wasOverdueAlerted && overdueEmailWasSent && timer.emergencyContactEmail) {
       const user = await UserModel.findById(uid).select('fullName username').lean().catch(() => null);
       sendSafetyAllClearEmail({
         toEmail: timer.emergencyContactEmail,
@@ -286,7 +343,7 @@ export const extendSafetyTimer = async (req: AuthRequest, res: Response) => {
 
     let nextReturnDate: Date;
     if (extendMinutes !== undefined && extendMinutes !== null && extendMinutes !== '') {
-      const mins = Number(extendMinutes);
+      const mins = typeof extendMinutes === 'boolean' ? NaN : Number(extendMinutes);
       if (!Number.isFinite(mins) || mins < 30 || mins > 1440) {
         return res.status(400).json({
           success: false,
@@ -397,42 +454,337 @@ export const getAdminSafetyTimers = async (req: AuthRequest, res: Response) => {
   }
 };
 
-/**
- * Background sweeper: atomically claims overdue active safety timers one-by-one via findOneAndUpdate
- * so concurrent instances/ticks NEVER send duplicate emergency emails. Processes up to 100 per sweep.
- */
-export async function processOverdueSafetyTimers(): Promise<number> {
-  if (mongoose.connection.readyState !== 1) return 0;
+// PATCH /api/safety-timers/admin/:id/mark-safe - Admin/Moderator SAR resolution marking timer safe
+export const adminMarkSafetyTimerSafe = async (req: AuthRequest, res: Response) => {
+  try {
+    const actorId = req.user?.userId;
+    const { id } = req.params;
+    if (!actorId || !Types.ObjectId.isValid(actorId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: 'Mã lịch hẹn không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
 
-  let alertedCount = 0;
-  const maxPerSweep = 100;
+    const existing = await SafetyTimerModel.findById(id).lean();
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy lịch hẹn báo bình an.' });
+    }
+    if (existing.status !== 'active' && existing.status !== 'overdue_alerted') {
+      return res.status(400).json({
+        success: false,
+        message: 'Lịch hẹn này đã kết thúc hoặc bị hủy trước đó.',
+      });
+    }
 
-  for (let i = 0; i < maxPerSweep; i++) {
-    const now = new Date();
+    const [actorUser, targetUser] = await Promise.all([
+      UserModel.findById(actorId).select('fullName username role').lean().catch(() => null),
+      UserModel.findById(existing.userId).select('fullName username').lean().catch(() => null),
+    ]);
+    const actorLabel = actorUser?.fullName || actorUser?.username || req.user?.email || 'Điều phối viên';
+    const trekkerName = targetUser?.fullName || targetUser?.username || 'Thành viên LOST';
+
+    const rawReason = sanitizeInput(String(req.body?.reason || req.body?.note || '')).trim().slice(0, 180);
+    const safeAt = new Date();
+    const auditStamp = `[SAR ${actorLabel} xác nhận an toàn (${safeAt.toISOString()})${rawReason ? `: ${rawReason}` : ''}]`;
+    const nextNotes = appendAuditNote(existing.notes, auditStamp);
+
+    const wasOverdueAlerted = existing.status === 'overdue_alerted';
+    const overdueEmailWasSent = existing.emailAlertStatus === 'sent' || existing.emailAlertStatus === undefined;
+
     const timer = await SafetyTimerModel.findOneAndUpdate(
-      { status: 'active', expectedReturnAt: { $lte: now } },
-      { $set: { status: 'overdue_alerted', alertedAt: now } },
+      { _id: id, status: { $in: ['active', 'overdue_alerted'] } },
+      {
+        $set: {
+          status: 'checked_in_safe',
+          checkedInSafeAt: safeAt,
+          notes: nextNotes,
+          emailNextRetryAt: null,
+          emailClaimedAt: null,
+          ...(existing.emailAlertStatus === 'pending' ? { emailAlertStatus: 'none' } : {}),
+        },
+      },
       { new: true }
     );
-    if (!timer) break;
 
-    alertedCount++;
+    if (!timer) {
+      return res.status(409).json({ success: false, message: 'Trạng thái lịch hẹn đã thay đổi.' });
+    }
 
-    const user = await UserModel.findById(timer.userId).select('fullName username email').lean().catch(() => null);
-    const trekkerName = user?.fullName || user?.username || 'Thành viên LOST';
+    await recordAuditLog(
+      req,
+      'ADMIN_MARK_TIMER_SAFE',
+      'SafetyTimer',
+      `Xác nhận an toàn lịch hẹn #${timer._id} của ${trekkerName} trên cung ${timer.trailName} (trạng thái cũ: ${existing.status})${rawReason ? ` — Ghi chú: ${rawReason}` : ''}`
+    );
 
-    if (timer.emergencyContactEmail) {
-      await sendSafetyOverdueAlertEmail({
+    if (wasOverdueAlerted && overdueEmailWasSent && timer.emergencyContactEmail) {
+      sendSafetyAllClearEmail({
         toEmail: timer.emergencyContactEmail,
         contactName: timer.emergencyContactName,
         trekkerName,
         trailName: timer.trailName,
-        expectedReturnAt: timer.expectedReturnAt,
-        lastKnownLat: timer.lastKnownLat,
-        lastKnownLng: timer.lastKnownLng,
-        notes: timer.notes,
+        checkedInSafeAt: safeAt,
+      }).catch((err) => console.warn('[Admin Safety All-Clear Email Error]:', err));
+    }
+
+    emitToUser(timer.userId.toString(), 'safetyTimerUpdated', {
+      timerId: timer._id.toString(),
+      status: timer.status,
+      checkedInSafeAt: safeAt.toISOString(),
+      trailName: timer.trailName,
+    });
+
+    await sendNotification({
+      recipientId: timer.userId.toString(),
+      type: 'safety_alert',
+      category: 'safety',
+      title: `Đã xác nhận an toàn: ${timer.trailName}`,
+      message: `Đội điều phối an toàn LOST đã đánh dấu lịch hẹn báo bình an của bạn trên cung ${timer.trailName} ở trạng thái đã an toàn.${rawReason ? ` Ghi chú: ${rawReason}` : ''}`,
+      link: '/safety',
+      relatedId: timer._id.toString(),
+    }).catch((err) => console.warn('[Admin Mark Safe Notification Error]:', (err as Error).message));
+
+    return res.json({
+      success: true,
+      message: 'Đã đánh dấu lịch hẹn báo bình an ở trạng thái an toàn.',
+      data: timer,
+    });
+  } catch (err) {
+    console.error('[Admin Mark Safety Timer Safe Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi xác nhận an toàn lịch hẹn.' });
+  }
+};
+
+// PATCH /api/safety-timers/admin/:id/extend - Admin/Moderator SAR extension (30..720 mins, default 120)
+export const adminExtendSafetyTimer = async (req: AuthRequest, res: Response) => {
+  try {
+    const actorId = req.user?.userId;
+    const { id } = req.params;
+    if (!actorId || !Types.ObjectId.isValid(actorId)) {
+      return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
+    }
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: 'Mã lịch hẹn không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
+
+    const existing = await SafetyTimerModel.findById(id).lean();
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy lịch hẹn báo bình an.' });
+    }
+    if (existing.status !== 'active' && existing.status !== 'overdue_alerted') {
+      return res.status(400).json({
+        success: false,
+        message: 'Chỉ có thể gia hạn lịch hẹn đang hoạt động hoặc quá hạn.',
       });
     }
+
+    const rawExtend = req.body?.extendMinutes;
+    let extendMinutes = 120;
+    if (rawExtend !== undefined && rawExtend !== null && rawExtend !== '') {
+      const parsed = typeof rawExtend === 'boolean' ? NaN : Number(rawExtend);
+      if (!Number.isFinite(parsed)) {
+        return res.status(400).json({ success: false, message: 'Số phút gia hạn không hợp lệ.' });
+      }
+      extendMinutes = Math.min(720, Math.max(30, Math.round(parsed)));
+    }
+
+    const nowMs = Date.now();
+    const baseMs = Math.max(nowMs, new Date(existing.expectedReturnAt).getTime());
+    const nextReturnDate = new Date(baseMs + extendMinutes * 60 * 1000);
+    const maxAllowedMs = nowMs + 30 * 24 * 60 * 60 * 1000;
+    if (nextReturnDate.getTime() > maxAllowedMs) {
+      return res.status(400).json({
+        success: false,
+        message: 'Thời điểm dự kiến trở về sau gia hạn không được vượt quá 30 ngày tính từ hiện tại.',
+      });
+    }
+
+    const [actorUser, targetUser] = await Promise.all([
+      UserModel.findById(actorId).select('fullName username role').lean().catch(() => null),
+      UserModel.findById(existing.userId).select('fullName username').lean().catch(() => null),
+    ]);
+    const actorLabel = actorUser?.fullName || actorUser?.username || req.user?.email || 'Điều phối viên';
+    const trekkerName = targetUser?.fullName || targetUser?.username || 'Thành viên LOST';
+
+    const rawReason = sanitizeInput(String(req.body?.reason || req.body?.note || '')).trim().slice(0, 180);
+    const auditStamp = `[SAR ${actorLabel} gia hạn +${extendMinutes} phút tới ${nextReturnDate.toISOString()}${rawReason ? `: ${rawReason}` : ''}]`;
+    const nextNotes = appendAuditNote(existing.notes, auditStamp);
+
+    const resetFromOverdue = existing.status === 'overdue_alerted' && nextReturnDate.getTime() > nowMs;
+    const setFields: Record<string, unknown> = {
+      expectedReturnAt: nextReturnDate,
+      notes: nextNotes,
+    };
+    if (resetFromOverdue) {
+      setFields.status = 'active';
+      setFields.emailClaimedAt = null;
+      setFields.emailNextRetryAt = null;
+      if (existing.emergencyContactEmail) {
+        setFields.emailAlertStatus = 'pending';
+      }
+    }
+
+    const updated = await SafetyTimerModel.findOneAndUpdate(
+      { _id: id, status: { $in: ['active', 'overdue_alerted'] } },
+      { $set: setFields },
+      { new: true }
+    );
+
+    if (!updated) {
+      return res.status(409).json({
+        success: false,
+        message: 'Lịch hẹn đã chuyển trạng thái trước khi gia hạn.',
+      });
+    }
+
+    await recordAuditLog(
+      req,
+      'ADMIN_EXTEND_SAFETY_TIMER',
+      'SafetyTimer',
+      `Gia hạn +${extendMinutes} phút cho lịch hẹn #${updated._id} của ${trekkerName} trên cung ${updated.trailName} (hạn mới: ${nextReturnDate.toISOString()}${resetFromOverdue ? ', khôi phục từ quá hạn về đang theo dõi' : ''})${rawReason ? ` — Ghi chú: ${rawReason}` : ''}`
+    );
+
+    emitToUser(updated.userId.toString(), 'safetyTimerUpdated', {
+      timerId: updated._id.toString(),
+      status: updated.status,
+      expectedReturnAt: nextReturnDate.toISOString(),
+      trailName: updated.trailName,
+    });
+
+    await sendNotification({
+      recipientId: updated.userId.toString(),
+      type: 'safety_alert',
+      category: 'safety',
+      title: `Đã gia hạn hẹn giờ báo bình an (+${extendMinutes} phút)`,
+      message: `Đội điều phối an toàn LOST đã gia hạn lịch hẹn của bạn trên cung ${updated.trailName} thêm ${extendMinutes} phút.${rawReason ? ` Ghi chú: ${rawReason}` : ''}`,
+      link: '/safety',
+      relatedId: updated._id.toString(),
+    }).catch((err) => console.warn('[Admin Extend Timer Notification Error]:', (err as Error).message));
+
+    return res.json({
+      success: true,
+      message: `Đã gia hạn lịch hẹn báo bình an thêm ${extendMinutes} phút.`,
+      data: updated,
+    });
+  } catch (err) {
+    console.error('[Admin Extend Safety Timer Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi gia hạn lịch hẹn.' });
+  }
+};
+
+async function deliverOverdueEmailWithTracking(timer: ISafetyTimer, trekkerName: string): Promise<boolean> {
+  if (!timer.emergencyContactEmail) {
+    await SafetyTimerModel.updateOne(
+      { _id: timer._id },
+      { $set: { emailAlertStatus: 'none', emailNextRetryAt: null, emailClaimedAt: null } }
+    );
+    return false;
+  }
+
+  const mailResult = await sendSafetyOverdueAlertEmail({
+    toEmail: timer.emergencyContactEmail,
+    contactName: timer.emergencyContactName,
+    trekkerName,
+    trailName: timer.trailName,
+    expectedReturnAt: timer.expectedReturnAt,
+    lastKnownLat: timer.lastKnownLat,
+    lastKnownLng: timer.lastKnownLng,
+    notes: timer.notes,
+  });
+
+  if (mailResult.success) {
+    await SafetyTimerModel.updateOne(
+      { _id: timer._id },
+      {
+        $set: {
+          emailAlertStatus: 'sent',
+          emailAlertSentAt: new Date(),
+          emailLastError: '',
+          emailNextRetryAt: null,
+          emailClaimedAt: null,
+        },
+      }
+    );
+    return true;
+  }
+
+  const nextRetryCount = (timer.emailRetryCount || 0) + 1;
+  const exhausted = nextRetryCount >= MAX_EMAIL_RETRIES;
+  const errMsg = String((mailResult as { error?: { message?: string } })?.error?.message || 'SMTP delivery failed').slice(0, 300);
+
+  await SafetyTimerModel.updateOne(
+    { _id: timer._id },
+    {
+      $set: {
+        emailAlertStatus: exhausted ? 'failed' : 'pending',
+        emailRetryCount: nextRetryCount,
+        emailLastError: errMsg,
+        emailNextRetryAt: exhausted ? null : new Date(Date.now() + getRetryBackoffMs(nextRetryCount)),
+        emailClaimedAt: null,
+      },
+    }
+  );
+
+  if (exhausted) {
+    await notifyAdmins({
+      type: 'safety_alert',
+      category: 'safety',
+      title: `KHẨN: Gửi email cứu hộ thất bại sau ${MAX_EMAIL_RETRIES} lần (${trekkerName})`,
+      message: `Không thể gửi email cảnh báo quá hạn tới ${timer.emergencyContactEmail} cho trekker ${trekkerName} tại ${timer.trailName}. Vui lòng gọi trực tiếp người thân: ${timer.emergencyContactName} (${timer.emergencyContactPhone}).`,
+      link: '/admin?tab=safety',
+      relatedId: timer._id.toString(),
+      includeModerators: true,
+    }).catch(() => {});
+  }
+
+  return false;
+}
+
+/**
+ * Durable Life-Safety Background Sweeper:
+ * - Phase A: Atomically claims newly overdue `active` timers one-by-one via findOneAndUpdate,
+ *   sends real-time + admin notifications, and attempts emergency email delivery with persistent status tracking.
+ * - Phase B: Retries overdue timers whose `emailAlertStatus === 'pending'` up to 5 times with exponential backoff
+ *   and a 2-minute advisory lease so multi-instance deployments never drop OR duplicate SOS rescue emails.
+ */
+export async function processOverdueSafetyTimers(): Promise<number> {
+  if (mongoose.connection.readyState !== 1) return 0;
+
+  let processedCount = 0;
+  const maxPerSweep = 100;
+
+  // Phase A: Newly overdue active timers
+  for (let i = 0; i < maxPerSweep; i++) {
+    const now = new Date();
+    const timer = await SafetyTimerModel.findOneAndUpdate(
+      { status: 'active', expectedReturnAt: { $lte: now } },
+      {
+        $set: {
+          status: 'overdue_alerted',
+          alertedAt: now,
+          emailClaimedAt: now,
+        },
+      },
+      { new: true }
+    );
+    if (!timer) break;
+
+    processedCount++;
+
+    const user = await UserModel.findById(timer.userId).select('fullName username email').lean().catch(() => null);
+    const trekkerName = user?.fullName || user?.username || 'Thành viên LOST';
+
+    // Always deliver email with durable retry tracking (never silently dropped on SMTP failure)
+    await deliverOverdueEmailWithTracking(timer, trekkerName).catch((err) =>
+      console.error('[SafetyTimer Email Escalation Error]:', (err as Error).message)
+    );
 
     emitToUser(timer.userId.toString(), 'safetyTimerOverdue', {
       timerId: timer._id.toString(),
@@ -449,7 +801,7 @@ export async function processOverdueSafetyTimers(): Promise<number> {
       message: `Hẹn giờ báo bình an của bạn trên cung ${timer.trailName} đã quá hạn. Nếu đã an toàn, hãy mở mục An Toàn và bấm "Tôi Đã An Toàn" ngay!`,
       link: '/safety',
       relatedId: timer._id.toString(),
-    });
+    }).catch((err) => console.warn('[SafetyTimer User Notification Error]:', (err as Error).message));
 
     await notifyAdmins({
       type: 'safety_alert',
@@ -459,8 +811,51 @@ export async function processOverdueSafetyTimers(): Promise<number> {
       link: '/admin?tab=safety',
       relatedId: timer._id.toString(),
       includeModerators: true,
-    });
+    }).catch((err) => console.warn('[SafetyTimer Admin Notification Error]:', (err as Error).message));
   }
 
-  return alertedCount;
+  // Phase B: Retry overdue timers whose emergency email is still pending (up to MAX_EMAIL_RETRIES with backoff)
+  const retryBudget = Math.max(10, maxPerSweep - processedCount);
+  for (let i = 0; i < retryBudget; i++) {
+    const now = new Date();
+    const leaseCutoff = new Date(now.getTime() - EMAIL_CLAIM_LEASE_MS);
+
+    const retryTimer = await SafetyTimerModel.findOneAndUpdate(
+      {
+        status: 'overdue_alerted',
+        emailAlertStatus: 'pending',
+        emergencyContactEmail: { $exists: true, $ne: '' },
+        emailRetryCount: { $lt: MAX_EMAIL_RETRIES },
+        $and: [
+          {
+            $or: [
+              { emailNextRetryAt: { $exists: false } },
+              { emailNextRetryAt: null },
+              { emailNextRetryAt: { $lte: now } },
+            ],
+          },
+          {
+            $or: [
+              { emailClaimedAt: { $exists: false } },
+              { emailClaimedAt: null },
+              { emailClaimedAt: { $lte: leaseCutoff } },
+            ],
+          },
+        ],
+      },
+      { $set: { emailClaimedAt: now } },
+      { new: true }
+    );
+    if (!retryTimer) break;
+
+    processedCount++;
+    const user = await UserModel.findById(retryTimer.userId).select('fullName username email').lean().catch(() => null);
+    const trekkerName = user?.fullName || user?.username || 'Thành viên LOST';
+
+    await deliverOverdueEmailWithTracking(retryTimer, trekkerName).catch((err) =>
+      console.error('[SafetyTimer Email Retry Error]:', (err as Error).message)
+    );
+  }
+
+  return processedCount;
 }

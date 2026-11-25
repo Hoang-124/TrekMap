@@ -21,6 +21,7 @@ import {
   IconUsers,
   IconWaveform,
 } from '../common/SvgIcons.js';
+import { safeLocalStorageGet } from '../../utils/storageScope.js';
 
 const API_BASE_URL = '/api';
 const PULSE_FETCH_TIMEOUT_MS = 8_000;
@@ -111,28 +112,53 @@ interface TrailConditionReport {
 
 type IncidentWithMeta = Incident & { _id?: string; isSynthetic?: boolean };
 
+function getIncidentId(inc: Incident): string {
+  return (inc as Incident & { _id?: string })._id || inc.id;
+}
+
 function isSyntheticIncident(inc: IncidentWithMeta): boolean {
   const id = String(inc.id || '');
   return Boolean(inc.isSynthetic || id.startsWith('weather-live-') || id.startsWith('nasa-'));
 }
 
+function isBenignWeatherTelemetry(inc: IncidentWithMeta): boolean {
+  const id = String(inc.id || '');
+  const isWeatherSynthetic = Boolean(
+    id.startsWith('weather-live-') || (inc.isSynthetic && inc.type === 'weather')
+  );
+  return isWeatherSynthetic && inc.severity === 'low';
+}
+
+function extractRescueDialNumber(rawPhone?: string): string {
+  const firstSegment = String(rawPhone || '').split(/[/,;|–—]|\s+-\s+/)[0] || '';
+  const digits = firstSegment.replace(/[^\d+]/g, '');
+  return digits.length >= 3 ? digits : '112';
+}
+
+function formatTelemetrySource(verifiedBy?: string): string {
+  const cleaned = String(verifiedBy || '').trim();
+  if (!cleaned) return 'MET Norway (CC BY 4.0)';
+  if (/met\s*norway|nasa|eonet|kiểm lâm|lost/i.test(cleaned)) return cleaned;
+  return 'MET Norway (CC BY 4.0)';
+}
+
 const REGIONS: Region[] = ['Miền Bắc', 'Miền Trung', 'Miền Nam'];
 
 const SEVERITY_META: Record<'critical' | 'high' | 'medium' | 'low', { label: string; color: string }> = {
-  critical: { label: 'Khẩn Cấp (Cấp 1)', color: 'var(--color-error-text, var(--color-error))' },
-  high: { label: 'Nguy Hiểm Cao (Cấp 2)', color: 'var(--color-earth)' },
-  medium: { label: 'Trung Bình (Cấp 3)', color: 'var(--color-sun)' },
-  low: { label: 'Lưu Ý Nhẹ (Cấp 4)', color: 'var(--color-sky)' },
+  critical: { label: 'Khẩn cấp (Cấp 1)', color: 'var(--color-error-text, var(--color-error))' },
+  high: { label: 'Nguy hiểm cao (Cấp 2)', color: 'var(--color-earth)' },
+  medium: { label: 'Cần chú ý (Cấp 3)', color: 'var(--color-sun)' },
+  low: { label: 'Lưu ý nhẹ (Cấp 4)', color: 'var(--color-sky)' },
 };
 
 const INCIDENT_TYPE_LABELS: Record<string, string> = {
   landslide: 'Sạt lở đất đá',
-  flash_flood: 'Lũ quét / Nước dâng',
-  flood: 'Mưa lớn / Suối xiết',
+  flash_flood: 'Lũ quét / nước dâng',
+  flood: 'Mưa lớn / suối xiết',
   bad_weather: 'Thời tiết khắc nghiệt',
-  weather: 'Thời tiết xấu / Sương mù',
+  weather: 'Thời tiết xấu / sương mù',
   wildlife: 'Động vật nguy hiểm',
-  lost: 'Mất dấu / Lạc đường',
+  lost: 'Mất dấu / lạc đường',
   other: 'Cảnh báo khác',
 };
 
@@ -140,10 +166,10 @@ const CONDITION_META: Record<
   TrailConditionReport['condition'],
   { label: string; color: string }
 > = {
-  safe: { label: 'Đường khô ráo / An toàn', color: 'var(--color-primary)' },
-  caution: { label: 'Cần lưu ý / Trơn trượt', color: 'var(--color-sun)' },
-  dangerous: { label: 'Nguy hiểm / Hạn chế đi', color: 'var(--color-earth)' },
-  closed: { label: 'Tạm đóng tuyến', color: 'var(--color-error-text, var(--color-error))' },
+  safe: { label: 'Đường khô ráo, đi ổn', color: 'var(--color-primary)' },
+  caution: { label: 'Đường trơn, đi cẩn thận', color: 'var(--color-sun)' },
+  dangerous: { label: 'Nguy hiểm, nên tránh', color: 'var(--color-earth)' },
+  closed: { label: 'Tạm đóng cung', color: 'var(--color-error-text, var(--color-error))' },
 };
 
 function formatDateTime(raw?: string): string {
@@ -212,7 +238,11 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
     return Array.from(byId.values());
   }, [incidents, resolvedFeedIncidents]);
 
-  // Optimistic confirmations, disputes & condition upvotes
+  const currentUserId = String(
+    currentUser?.id || (currentUser as (User & { _id?: string }) | null)?._id || ''
+  );
+
+  // Optimistic confirmations, disputes & condition upvotes (scoped by user ID so auth changes never leak stale optimistic state)
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [localConfirmedMap, setLocalConfirmedMap] = useState<Record<string, number>>({});
   const [disputingIncidentId, setDisputingIncidentId] = useState<string | null>(null);
@@ -220,10 +250,34 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
   const [upvotingConditionId, setUpvotingConditionId] = useState<string | null>(null);
 
   // Live Trail Conditions Inspector state
-  const [inspectedTrailId, setInspectedTrailId] = useState<string>(() => trails[0]?.id || 'trail-fansipan');
+  const [inspectedTrailId, setInspectedTrailId] = useState<string>(() => trails[0]?.id || '');
+  const activeInspectedTrailId = useMemo(() => {
+    if (inspectedTrailId && trails.some((t) => t.id === inspectedTrailId)) {
+      return inspectedTrailId;
+    }
+    if (regionFilter !== 'All') {
+      const firstInRegion = trails.find((t) => t.region === regionFilter);
+      if (firstInRegion) return firstInRegion.id;
+    }
+    return trails[0]?.id || '';
+  }, [trails, inspectedTrailId, regionFilter]);
+
   const [conditions, setConditions] = useState<TrailConditionReport[]>([]);
-  const [loadedConditionsTrailId, setLoadedConditionsTrailId] = useState<string | null>(null);
-  const loadingConditions = Boolean(inspectedTrailId) && loadedConditionsTrailId !== inspectedTrailId;
+  const [loadedConditionsKey, setLoadedConditionsKey] = useState<string | null>(null);
+  const targetConditionsKey = activeInspectedTrailId ? `${activeInspectedTrailId}:${currentUserId}` : '';
+  const loadingConditions = Boolean(activeInspectedTrailId) && loadedConditionsKey !== targetConditionsKey;
+
+  const handleToggleRegionFilter = (region: Region) => {
+    const nextRegion: 'All' | Region = regionFilter === region ? 'All' : region;
+    setRegionFilter(nextRegion);
+    if (nextRegion !== 'All') {
+      const currentTrail = trails.find((t) => t.id === activeInspectedTrailId);
+      if (!currentTrail || currentTrail.region !== nextRegion) {
+        const firstInRegion = trails.find((t) => t.region === nextRegion);
+        if (firstInRegion) setInspectedTrailId(firstInRegion.id);
+      }
+    }
+  };
 
   // Live Vietnam Platform Pulse telemetry state (GET /api/analytics/platform-pulse)
   const [pulseRefreshTick, setPulseRefreshTick] = useState<number>(0);
@@ -239,8 +293,6 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
     isLive: false,
   });
   const isLoadingPulse = pulseState.loadedTick !== pulseRefreshTick;
-
-  const getIncidentId = (inc: Incident): string => (inc as Incident & { _id?: string })._id || inc.id;
 
   const notify = (msg: string, type: 'success' | 'error' | 'info' = 'info') => {
     if (onShowToast) onShowToast(msg, type);
@@ -272,9 +324,11 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
     };
   }, [trails]);
 
-  // Global Safety KPIs
+  // Global Safety KPIs (exclude benign low-severity synthetic weather telemetry so KPI matches active alerts)
   const stats = useMemo(() => {
-    const activeList = effectiveIncidents.filter((i) => !i.resolved);
+    const activeList = effectiveIncidents.filter(
+      (i) => !i.resolved && !isBenignWeatherTelemetry(i as IncidentWithMeta)
+    );
     const resolvedList = effectiveIncidents.filter((i) => i.resolved);
     const criticalCount = activeList.filter((i) => i.severity === 'critical').length;
     const highCount = activeList.filter((i) => i.severity === 'high').length;
@@ -302,7 +356,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
       const regionTrails = trails.filter((t) => t.region === region);
       const regionTrailIds = new Set(regionTrails.map((t) => t.id));
       const activeRegionIncidents = effectiveIncidents.filter((inc) => {
-        if (inc.resolved) return false;
+        if (inc.resolved || isBenignWeatherTelemetry(inc as IncidentWithMeta)) return false;
         const matched = matchTrailForIncident(inc);
         if (matched) return matched.region === region;
         return regionTrailIds.has(inc.trailId);
@@ -342,7 +396,10 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
   const filteredIncidents = useMemo(() => {
     return effectiveIncidents
       .filter((inc) => {
-        if (statusFilter === 'active' && inc.resolved) return false;
+        if (statusFilter === 'active') {
+          if (inc.resolved) return false;
+          if (severityFilter !== 'low' && isBenignWeatherTelemetry(inc as IncidentWithMeta)) return false;
+        }
         if (statusFilter === 'resolved' && !inc.resolved) return false;
         if (severityFilter !== 'all' && inc.severity !== severityFilter) return false;
         if (regionFilter !== 'All') {
@@ -370,12 +427,13 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
       });
   }, [effectiveIncidents, statusFilter, severityFilter, regionFilter, searchQuery, matchTrailForIncident]);
 
-  // Fetch live trail conditions when inspectedTrailId changes
+  // Fetch live trail conditions when activeInspectedTrailId or auth identity changes
   useEffect(() => {
-    if (!inspectedTrailId) return;
+    if (!activeInspectedTrailId) return;
     const controller = new AbortController();
+    const requestKey = `${activeInspectedTrailId}:${currentUserId}`;
 
-    fetch(`/api/trail-conditions/trail/${encodeURIComponent(inspectedTrailId)}`, {
+    fetch(`/api/trail-conditions/trail/${encodeURIComponent(activeInspectedTrailId)}`, {
       headers: getApiHeaders(),
       signal: controller.signal,
     })
@@ -392,11 +450,11 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
         if (!controller.signal.aborted) setConditions([]);
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoadedConditionsTrailId(inspectedTrailId);
+        if (!controller.signal.aborted) setLoadedConditionsKey(requestKey);
       });
 
     return () => controller.abort();
-  }, [inspectedTrailId]);
+  }, [activeInspectedTrailId, currentUserId]);
 
   const onShowToastRef = useRef(onShowToast);
   useEffect(() => {
@@ -447,7 +505,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
             isLive: false,
           }));
           emitPulseRefreshWarning(
-            'Không thể làm mới dữ liệu trực tuyến lúc này — đang hiển thị bản ghi gần nhất.'
+            'Chưa làm mới được lúc này — tạm xem lại bản ghi gần nhất nhé.'
           );
         }
       })
@@ -461,8 +519,8 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
         }));
         emitPulseRefreshWarning(
           timedOut
-            ? 'Hết thời gian kết nối máy chủ (8 giây) — đang giữ dữ liệu gần nhất.'
-            : 'Mất kết nối máy chủ — đang hiển thị dữ liệu gần nhất.'
+            ? 'Máy chủ phản hồi chậm (quá 8 giây) — đang giữ lại số liệu gần nhất.'
+            : 'Mất kết nối mạng — đang hiện số liệu gần nhất.'
         );
       })
       .finally(() => {
@@ -530,16 +588,17 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
   };
 
   const inspectedTrail = useMemo(
-    () => trails.find((t) => t.id === inspectedTrailId) || trails[0] || null,
-    [trails, inspectedTrailId]
+    () => trails.find((t) => t.id === activeInspectedTrailId) || trails[0] || null,
+    [trails, activeInspectedTrailId]
   );
 
   const handleConfirmIncident = async (inc: Incident) => {
     const incId = getIncidentId(inc);
+    const confirmKey = `${currentUserId}:${incId}`;
     if (!incId || confirmingId === incId || isSyntheticIncident(inc as IncidentWithMeta)) return;
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!currentUser && !token) {
-      notify('Vui lòng đăng nhập để xác nhận cảnh báo hiện trường.', 'info');
+      notify('Đăng nhập để xác nhận cảnh báo này nhé.', 'info');
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
       return;
     }
@@ -559,16 +618,16 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
         const nextCount =
           typeof json.data?.confirmations === 'number'
             ? json.data.confirmations
-            : (localConfirmedMap[incId] ?? (inc.confirmations || 1)) + 1;
-        setLocalConfirmedMap((prev) => ({ ...prev, [incId]: nextCount }));
-        notify(json.message || `Đã xác nhận cảnh báo tại "${inc.trailName}" (+1 Xác thực)!`, 'success');
+            : (localConfirmedMap[confirmKey] ?? (inc.confirmations || 1)) + 1;
+        setLocalConfirmedMap((prev) => ({ ...prev, [confirmKey]: nextCount }));
+        notify(json.message || `Đã xác nhận cảnh báo trên cung "${inc.trailName}".`, 'success');
         setIncidentFetchTick((t) => t + 1);
         onRefreshIncidents?.();
       } else {
-        notify(json.message || 'Không thể xác nhận cảnh báo này.', 'error');
+        notify(json.message || 'Chưa xác nhận được cảnh báo này.', 'error');
       }
     } catch {
-      notify('Lỗi kết nối máy chủ khi xác nhận cảnh báo.', 'error');
+      notify('Mất kết nối máy chủ khi gửi xác nhận.', 'error');
     } finally {
       setConfirmingId(null);
     }
@@ -577,14 +636,14 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
   const handleSubmitDisputeIncident = async (inc: Incident) => {
     const incId = getIncidentId(inc);
     if (!incId || confirmingId === incId || isSyntheticIncident(inc as IncidentWithMeta)) return;
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!currentUser && !token) {
-      notify('Vui lòng đăng nhập để báo sai / phản hồi sự cố hiện trường.', 'info');
+      notify('Đăng nhập để báo lại nếu tình hình trên cung đã đổi.', 'info');
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
       return;
     }
 
-    const cleanReason = disputeReason.trim() || 'Đã qua khu vực này, hiện trường thực tế đã thông thoáng hoặc thông tin chưa chính xác.';
+    const cleanReason = disputeReason.trim() || 'Đã qua khu vực này, đường đã thông thoáng hoặc thông tin chưa chính xác.';
     setConfirmingId(incId);
     try {
       const res = await fetch(`/api/incidents/${encodeURIComponent(incId)}/confirm`, {
@@ -598,16 +657,16 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
       });
       const json = await res.json().catch(() => ({}));
       if (res.ok && json.success) {
-        notify(json.message || 'Đã ghi nhận báo sai / phản hồi hiện trường để Ban kiểm duyệt xác minh.', 'info');
+        notify(json.message || 'Đã gửi phản hồi — nhóm kiểm duyệt sẽ rà lại ngay.', 'info');
         setDisputingIncidentId(null);
         setDisputeReason('');
         setIncidentFetchTick((t) => t + 1);
         onRefreshIncidents?.();
       } else {
-        notify(json.message || 'Không thể gửi báo sai cho cảnh báo này.', 'error');
+        notify(json.message || 'Chưa gửi được báo sai lúc này.', 'error');
       }
     } catch {
-      notify('Lỗi kết nối máy chủ khi gửi báo sai.', 'error');
+      notify('Mất kết nối máy chủ khi gửi báo sai.', 'error');
     } finally {
       setConfirmingId(null);
     }
@@ -615,9 +674,9 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
 
   const handleUpvoteCondition = async (cond: TrailConditionReport) => {
     if (!cond._id || upvotingConditionId === cond._id) return;
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!currentUser && !token) {
-      notify('Vui lòng đăng nhập để đánh dấu báo cáo thực địa hữu ích.', 'info');
+      notify('Đăng nhập để đánh dấu báo cáo này hữu ích nhé.', 'info');
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
       return;
     }
@@ -645,20 +704,20 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
               : item
           )
         );
-        notify(json.message || 'Đã xác nhận báo cáo thực địa hữu ích!', 'success');
+        notify(json.message || 'Đã đánh dấu báo cáo hữu ích.', 'success');
       } else {
-        notify(json.message || 'Không thể bình chọn báo cáo này.', 'error');
+        notify(json.message || 'Chưa ghi nhận được lúc này.', 'error');
       }
     } catch {
-      notify('Lỗi kết nối máy chủ khi bình chọn báo cáo.', 'error');
+      notify('Mất kết nối máy chủ khi gửi phản hồi.', 'error');
     } finally {
       setUpvotingConditionId(null);
     }
   };
 
   const handleOpenAiGoNoGo = (trail: Trail | null, extraContext?: string) => {
-    const targetName = trail ? `${trail.name} (${trail.province})` : 'khu vực trekking';
-    const prompt = `Kiểm tra an toàn Go/No-Go hôm nay cho cung ${targetName}.${extraContext ? ` Ghi nhận thực địa hiện tại: ${extraContext}` : ''} Đánh giá rủi ro thời tiết, sạt lở và khuyến nghị hành động.`;
+    const targetName = trail ? `${trail.name} (${trail.province})` : 'cung đường này';
+    const prompt = `Hôm nay đi cung ${targetName} có ổn không?${extraContext ? ` Anh em vừa báo trên đường: ${extraContext}` : ''} Giúp mình xem thời tiết, nguy cơ sạt lở và nên đi hay hoãn.`;
     window.dispatchEvent(
       new CustomEvent('lost:open-ai-assistant', {
         detail: {
@@ -705,13 +764,13 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
           )}
           <div className="section-eyebrow" style={{ marginBottom: 6 }}>
             <IconRadar size={13} color="var(--color-error)" />
-            <span>RADAR AN TOÀN THỰC ĐỊA &amp; CẢNH BÁO TOÀN QUỐC</span>
+            <span>Cảnh báo đường rừng &amp; an toàn toàn quốc</span>
           </div>
           <h1 className="font-editorial" style={{ margin: 0, fontSize: 'clamp(1.6rem, 3vw, 2.2rem)', fontWeight: 600, color: 'var(--color-text-main)', lineHeight: 1.12 }}>
-            Trung Tâm Giám Sát An Toàn Đường Trek
+            Tình hình đường rừng &amp; cảnh báo
           </h1>
           <p style={{ margin: '8px 0 0 0', fontSize: '0.88rem', color: 'var(--color-text-muted)', maxWidth: 680 }}>
-            Tổng hợp cảnh báo sạt lở, lũ suối, thời tiết xấu và tình trạng đường mòn thực địa từ cộng đồng Trekker trên {trails.length} cung núi Việt Nam.
+            Cập nhật sạt lở, nước suối dâng, thời tiết xấu và tình trạng mặt đường do anh em vừa đi về báo lại trên {trails.length} cung núi Việt Nam.
           </p>
         </div>
 
@@ -724,7 +783,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
             style={{ padding: '8px 14px', fontSize: '0.8rem', fontWeight: 800, borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 6 }}
           >
             <IconAlertTriangle size={14} color="var(--color-on-danger)" />
-            <span>Báo Cáo Sự Cố Mới</span>
+            <span>Báo sự cố mới</span>
           </button>
 
           <button
@@ -734,7 +793,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
             style={{ padding: '8px 14px', fontSize: '0.8rem', fontWeight: 800, borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 6 }}
           >
             <IconClock size={14} color="var(--color-on-primary)" />
-            <span>Hẹn Giờ Báo Bình An</span>
+            <span>Hẹn giờ báo bình an</span>
           </button>
 
           <button
@@ -744,7 +803,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
             style={{ padding: '8px 14px', fontSize: '0.8rem', fontWeight: 700, borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 6 }}
           >
             <IconPhone size={14} color="var(--color-error)" />
-            <span>Danh Bạ Cứu Hộ 24/7</span>
+            <span>Số cứu hộ 24/7</span>
           </button>
         </div>
       </div>
@@ -768,13 +827,13 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
           }}
         >
           <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-            Cảnh Báo Đang Mở
+            Cảnh báo đang mở
           </div>
           <div style={{ fontSize: '1.5rem', fontWeight: 900, color: stats.activeCount > 0 ? 'var(--color-earth)' : 'var(--color-primary)', marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
             {stats.activeCount}
           </div>
           <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>
-            Ảnh hưởng {stats.impactedCount} tuyến đường
+            Ảnh hưởng {stats.impactedCount} cung đường
           </div>
         </div>
 
@@ -788,37 +847,37 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
           }}
         >
           <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-            Cấp 1 Khẩn Cấp / Cao
+            Khẩn cấp / mức cao
           </div>
           <div style={{ fontSize: '1.5rem', fontWeight: 900, color: 'var(--color-error-text, var(--color-error))', marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
             {stats.criticalCount} <span style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--color-text-muted)' }}>/ {stats.highCount} cao</span>
           </div>
           <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>
-            Ưu tiên theo dõi liên tục
+            Cần theo dõi sát
           </div>
         </div>
 
         <div className="card" style={{ padding: '14px 16px', borderRadius: 4, background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
           <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-            Đã Khắc Phục
+            Đã khắc phục
           </div>
           <div style={{ fontSize: '1.5rem', fontWeight: 900, color: 'var(--color-sky)', marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
             {stats.resolvedCount}
           </div>
           <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>
-            Lịch sử sự cố đã xử lý
+            Sự cố đã xử lý xong
           </div>
         </div>
 
         <div className="card" style={{ padding: '14px 16px', borderRadius: 4, background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
           <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-            Tuyến Chưa Có Cảnh Báo
+            Cung đang yên ổn
           </div>
           <div style={{ fontSize: '1.5rem', fontWeight: 900, color: 'var(--color-primary)', marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
             {stats.safeTrailCount}/{trails.length}
           </div>
           <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>
-            Toàn hệ thống {trails.length} cung đường
+            Trong tổng {trails.length} cung núi
           </div>
         </div>
       </div>
@@ -860,10 +919,10 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
               }}
             >
               <IconWaveform size={13} color="var(--color-primary)" />
-              <span>Nhịp Đập Thực Địa Việt Nam</span>
+              <span>Chuyện ngoài rừng hôm nay</span>
             </div>
             <div style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-              Số liệu vận hành thực địa trên {effectivePulse.totalTrails} cung núi Việt Nam.
+              Ghi nhận mới nhất trên {effectivePulse.totalTrails} cung núi Việt Nam.
             </div>
           </div>
 
@@ -917,7 +976,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
               className="btn btn-outline"
               disabled={isLoadingPulse}
               onClick={() => setPulseRefreshTick((prev) => prev + 1)}
-              aria-label="Làm mới Nhịp Đập Thực Địa Việt Nam"
+              aria-label="Làm mới cập nhật thực địa Việt Nam"
               style={{
                 padding: '4px 9px',
                 fontSize: '0.72rem',
@@ -952,7 +1011,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
               <IconShieldAlert size={12} color="var(--color-error-text, var(--color-error))" />
-              <span>Sự Cố Đang Mở</span>
+              <span>Sự cố đang mở</span>
             </div>
             <div
               style={{
@@ -969,7 +1028,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
               {effectivePulse.activeIncidentsCount.toLocaleString('vi-VN')}
             </div>
             <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>
-              Cảnh báo thực địa hoạt động
+              Cảnh báo cần để ý
             </div>
           </div>
 
@@ -983,7 +1042,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
               <IconUsers size={12} color="var(--color-sky)" />
-              <span>Đoàn Đang Tuyển</span>
+              <span>Đoàn đang rủ người</span>
             </div>
             <div style={{ fontSize: '1.2rem', fontWeight: 900, fontVariantNumeric: 'tabular-nums', color: 'var(--color-sky)', marginTop: 4 }}>
               {effectivePulse.openTripsCount !== null
@@ -991,7 +1050,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                 : '—'}
             </div>
             <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>
-              {effectivePulse.openTripsCount !== null ? 'Chuyến ghép đoàn mở' : 'Cần kết nối máy chủ'}
+              {effectivePulse.openTripsCount !== null ? 'Chuyến đang mở ghép đoàn' : 'Cần kết nối mạng'}
             </div>
           </div>
 
@@ -1005,7 +1064,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
               <IconMapPin size={12} color="var(--color-primary)" />
-              <span>Điểm Thực Địa POI</span>
+              <span>Điểm ghi chú thực địa</span>
             </div>
             <div style={{ fontSize: '1.2rem', fontWeight: 900, fontVariantNumeric: 'tabular-nums', color: 'var(--color-primary)', marginTop: 4 }}>
               {effectivePulse.verifiedPoisCount !== null
@@ -1013,7 +1072,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                 : '—'}
             </div>
             <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>
-              {effectivePulse.verifiedPoisCount !== null ? 'Nguồn nước, lán, sóng 4G' : 'Cần kết nối máy chủ'}
+              {effectivePulse.verifiedPoisCount !== null ? 'Nguồn nước, lán nghỉ, điểm có sóng' : 'Cần kết nối mạng'}
             </div>
           </div>
 
@@ -1027,7 +1086,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
               <IconCompass size={12} color="var(--color-earth)" />
-              <span>Cộng Đồng Đã Trek</span>
+              <span>Quãng đường cả nhà đã đi</span>
             </div>
             <div style={{ fontSize: '1.2rem', fontWeight: 900, fontVariantNumeric: 'tabular-nums', color: 'var(--color-earth)', marginTop: 4 }}>
               {effectivePulse.totalCommunityDistanceKm !== null
@@ -1036,8 +1095,8 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
             </div>
             <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
               {effectivePulse.totalCheckinsCount !== null
-                ? `${effectivePulse.totalCheckinsCount.toLocaleString('vi-VN')} lượt check-in đỉnh`
-                : 'Cần kết nối máy chủ'}
+                ? `${effectivePulse.totalCheckinsCount.toLocaleString('vi-VN')} lượt đóng dấu đỉnh`
+                : 'Cần kết nối mạng'}
             </div>
           </div>
         </div>
@@ -1055,8 +1114,8 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
               }}
             >
               {pulseState.data
-                ? 'Đỉnh Nổi Bật Thực Địa (Bấm để mở cung)'
-                : 'Đỉnh Nổi Bật Hệ Thống (Bấm để mở cung)'}
+                ? 'Những đỉnh anh em đang quan tâm nhiều (bấm để xem cung)'
+                : 'Các cung nổi bật (bấm để xem cung)'}
             </div>
             <div
               style={{
@@ -1163,22 +1222,22 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
           <div>
             <div style={{ fontSize: '0.7rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-              Ma Trận Rủi Ro Theo Vùng Địa Lý
+              Tình hình theo ba miền
             </div>
             <h2 style={{ margin: '2px 0 0 0', fontSize: '1.08rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-              Phân Bổ Cảnh Báo &amp; Độ An Toàn Tuyến Đường (Bấm vùng để lọc)
+              Phân bổ cảnh báo theo vùng (bấm vào miền để lọc)
             </h2>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: '0.72rem', color: 'var(--color-text-muted)', flexWrap: 'wrap' }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-              <span style={{ width: 9, height: 9, borderRadius: 2, background: 'var(--color-primary)' }} /> Tuyến ổn định
+              <span style={{ width: 9, height: 9, borderRadius: 2, background: 'var(--color-primary)' }} /> Đang ổn định
             </span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-              <span style={{ width: 9, height: 9, borderRadius: 2, background: 'var(--color-sun)' }} /> Trung bình / Nhẹ
+              <span style={{ width: 9, height: 9, borderRadius: 2, background: 'var(--color-sun)' }} /> Cần chú ý
             </span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-              <span style={{ width: 9, height: 9, borderRadius: 2, background: 'var(--color-error)' }} /> Cao / Khẩn cấp
+              <span style={{ width: 9, height: 9, borderRadius: 2, background: 'var(--color-error)' }} /> Mức cao / khẩn cấp
             </span>
           </div>
         </div>
@@ -1205,7 +1264,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
               return (
                 <g
                   key={row.region}
-                  onClick={() => setRegionFilter((prev) => (prev === row.region ? 'All' : row.region))}
+                  onClick={() => handleToggleRegionFilter(row.region)}
                   style={{ cursor: 'pointer' }}
                 >
                   <text
@@ -1281,7 +1340,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
               <button
                 key={row.region}
                 type="button"
-                onClick={() => setRegionFilter((prev) => (prev === row.region ? 'All' : row.region))}
+                onClick={() => handleToggleRegionFilter(row.region)}
                 style={{
                   textAlign: 'left',
                   padding: '10px 12px',
@@ -1333,7 +1392,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
               <div style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 <IconShieldAlert size={16} color="var(--color-error)" />
-                <span>Dòng Cảnh Báo Thực Địa ({filteredIncidents.length})</span>
+                <span>Cảnh báo mới từ đường rừng ({filteredIncidents.length})</span>
               </div>
 
               {/* Status Switcher */}
@@ -1415,10 +1474,10 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
             >
               <IconShieldCheck size={32} color="var(--color-primary)" style={{ margin: '0 auto 10px', display: 'block', opacity: 0.7 }} />
               <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 4 }}>
-                Không có cảnh báo nào khớp bộ lọc hiện tại
+                Chưa có cảnh báo nào khớp bộ lọc này
               </div>
               <p style={{ fontSize: '0.8rem', margin: 0 }}>
-                Nếu bạn phát hiện sạt lở, lũ suối hoặc cây đổ trên đường mòn, hãy bấm &ldquo;Báo Cáo Sự Cố Mới&rdquo; để cảnh báo cộng đồng.
+                Nếu vừa gặp sạt lở, suối xiết hay cây đổ trên đường, bấm &ldquo;Báo sự cố mới&rdquo; để nhắc anh em đi sau nhé.
               </p>
             </div>
           ) : (
@@ -1429,7 +1488,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                 const isSynthetic = isSyntheticIncident(incMeta);
                 const sev = SEVERITY_META[inc.severity] || SEVERITY_META.medium;
                 const matchedTrail = matchTrailForIncident(inc);
-                const confirmations = localConfirmedMap[incId] ?? (inc.confirmations || 1);
+                const confirmations = localConfirmedMap[`${currentUserId}:${incId}`] ?? (inc.confirmations || 1);
                 const isConfirming = confirmingId === incId;
                 const isDisputeOpen = disputingIncidentId === incId;
 
@@ -1492,7 +1551,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                             }}
                           >
                             <IconRadar size={11} color="var(--color-sky)" />
-                            <span>Tín hiệu tự động vệ tinh (chỉ đọc)</span>
+                            <span>Tín hiệu vệ tinh tự động (chỉ xem)</span>
                           </span>
                         )}
                       </div>
@@ -1536,8 +1595,8 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                     >
                       <span style={{ fontSize: '0.74rem', color: 'var(--color-text-dim)', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
                         {isSynthetic
-                          ? `Nguồn đo tự động: ${inc.verifiedBy || 'Vệ tinh khí tượng'}`
-                          : `${confirmations} Trekker đã xác thực hiện trường`}
+                          ? `Nguồn đo tự động: ${formatTelemetrySource(inc.verifiedBy)}`
+                          : `${confirmations} người đã xác nhận tại chỗ`}
                       </span>
 
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -1561,7 +1620,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                               }}
                             >
                               <IconCheckCircle size={13} color="var(--color-primary)" />
-                              <span>{isConfirming ? 'Đang gửi...' : 'Xác Nhận'}</span>
+                              <span>{isConfirming ? 'Đang gửi...' : 'Xác nhận'}</span>
                             </button>
                             <button
                               type="button"
@@ -1589,7 +1648,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                               }}
                             >
                               <IconAlertTriangle size={13} color="var(--color-error-text, var(--color-error))" />
-                              <span>Báo Sai</span>
+                              <span>Báo sai</span>
                             </button>
                           </>
                         )}
@@ -1601,7 +1660,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                             className="btn btn-outline"
                             style={{ padding: '5px 10px', fontSize: '0.74rem', fontWeight: 700, borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 4 }}
                           >
-                            <span>Mở Cung Đường</span>
+                            <span>Xem cung</span>
                             <IconArrowRight size={12} />
                           </button>
                         )}
@@ -1613,7 +1672,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                           style={{ padding: '5px 10px', fontSize: '0.74rem', fontWeight: 700, borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 4 }}
                         >
                           <IconBot size={13} color="var(--color-on-primary)" />
-                          <span>Go/No-Go</span>
+                          <span>Đi hay hoãn?</span>
                         </button>
                       </div>
                     </div>
@@ -1666,7 +1725,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                             onClick={() => void handleSubmitDisputeIncident(inc)}
                             style={{ padding: '4px 12px', fontSize: '0.72rem', borderRadius: 4 }}
                           >
-                            {isConfirming ? 'Đang gửi...' : 'Gửi Báo Sai'}
+                            {isConfirming ? 'Đang gửi...' : 'Gửi báo sai'}
                           </button>
                         </div>
                       </div>
@@ -1678,7 +1737,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
           )}
         </div>
 
-        {/* RIGHT COLUMN: Tình Trạng Đường Thực Địa Mới Nhất (Live Trails Inspector) */}
+        {/* RIGHT COLUMN: Tình trạng mặt đường mới nhất */}
         <div
           className="card"
           style={{
@@ -1694,13 +1753,13 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
           <div>
             <div style={{ fontSize: '0.68rem', fontWeight: 800, color: 'var(--color-sky)', textTransform: 'uppercase', letterSpacing: '0.06em', display: 'flex', alignItems: 'center', gap: 5 }}>
               <IconCompass size={13} color="var(--color-sky)" />
-              <span>TÌNH TRẠNG ĐƯỜNG THỰC ĐỊA MỚI NHẤT</span>
+              <span>Mặt đường mấy hôm nay ra sao</span>
             </div>
             <h3 style={{ margin: '4px 0 6px 0', fontSize: '1.05rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-              Tra Cứu Thực Địa Theo Từng Cung ({trails.length} Tuyến)
+              Hỏi thăm tình trạng từng cung ({trails.length} cung)
             </h3>
             <p style={{ margin: 0, fontSize: '0.76rem', color: 'var(--color-text-muted)', lineHeight: 1.45 }}>
-              Xem các báo cáo mặt đường, độ trơn, nguồn nước được Trekker vừa đi về cập nhật trong 7 ngày gần nhất.
+              Xem ghi nhận mặt đường, độ trơn, nguồn nước của anh em vừa đi về trong 7 ngày gần nhất.
             </p>
           </div>
 
@@ -1708,12 +1767,12 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
             htmlFor="radar-inspected-trail"
             style={{ display: 'block', fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase', marginBottom: 4 }}
           >
-            Chọn cung đường kiểm tra thực địa
+            Chọn cung muốn xem
           </label>
           <select
             id="radar-inspected-trail"
             className="form-select"
-            value={inspectedTrailId}
+            value={activeInspectedTrailId}
             onChange={(e) => setInspectedTrailId(e.target.value)}
             aria-label="Chọn cung đường để xem tình trạng mặt đường thực địa"
             style={{ width: '100%', padding: '9px 10px', fontSize: '0.82rem', borderRadius: 4 }}
@@ -1746,7 +1805,19 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                 </span>
               </div>
               <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)' }}>
-                Cứu hộ địa bàn: <strong style={{ color: 'var(--color-error-text, var(--color-error))' }}>{inspectedTrail.rescueContact?.phone || '112 / 114'}</strong> ({inspectedTrail.rescueContact?.name || 'Cứu hộ quốc gia'})
+                Cứu hộ địa bàn:{' '}
+                <a
+                  href={`tel:${extractRescueDialNumber(inspectedTrail.rescueContact?.phone)}`}
+                  style={{
+                    color: 'var(--color-error-text, var(--color-error))',
+                    fontWeight: 800,
+                    textDecoration: 'underline',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}
+                >
+                  {inspectedTrail.rescueContact?.phone || '112 / 114'}
+                </a>{' '}
+                ({inspectedTrail.rescueContact?.name || 'Cứu hộ quốc gia'})
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button
@@ -1756,7 +1827,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                   style={{ flex: 1, justifyContent: 'center', padding: '7px 10px', fontSize: '0.76rem', fontWeight: 800, borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 5 }}
                 >
                   <IconBot size={14} color="var(--color-on-primary)" />
-                  <span>Kiểm Tra Go/No-Go</span>
+                  <span>Xem nên đi hay hoãn</span>
                 </button>
                 {onSelectTrail && (
                   <button
@@ -1775,7 +1846,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
           {/* Live Condition Reports List */}
           {loadingConditions ? (
             <div style={{ textAlign: 'center', padding: '20px 12px', fontSize: '0.8rem', color: 'var(--color-text-dim)' }}>
-              Đang tải báo cáo tình trạng đường...
+              Đang tải ghi nhận mặt đường...
             </div>
           ) : conditions.length === 0 ? (
             <div
@@ -1791,9 +1862,9 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
               }}
             >
               <strong style={{ display: 'block', color: 'var(--color-text-main)', marginBottom: 4 }}>
-                Chưa có báo cáo thực địa trong 7 ngày qua
+                7 ngày qua chưa có ai báo thêm về cung này
               </strong>
-              Vui lòng kiểm tra thêm dự báo thời tiết đỉnh núi và gọi Kiểm lâm địa phương trước khi khởi hành.
+              Bạn nhớ xem thêm dự báo thời tiết đỉnh và gọi trước cho kiểm lâm địa phương trước khi lên đường nhé.
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 380, overflowY: 'auto' }}>
@@ -1846,7 +1917,7 @@ export const SafetyRadarView: React.FC<SafetyRadarViewProps> = ({
                       </div>
                     )}
                     <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 2 }}>
-                      <span>Bởi: {c.userId?.fullName || 'Trekker Thực Địa'}</span>
+                      <span>Bởi: {c.userId?.fullName || 'Người đi rừng'}</span>
                       <button
                         type="button"
                         disabled={isUpvoting || Boolean(c.hasUpvoted)}

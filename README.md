@@ -5,7 +5,7 @@
 [![Vite](https://img.shields.io/badge/Vite-8.1-purple.svg)](https://vitejs.dev/)
 [![MapLibre GL](https://img.shields.io/badge/MapLibre%20GL-6.19-teal.svg)](https://maplibre.org/)
 [![Express](https://img.shields.io/badge/Express-5.2-green.svg)](https://expressjs.com/)
-[![Mongoose](https://img.shields.io/badge/Mongoose-9.8-brightgreen.svg)](https://mongoosejs.com/)
+[![Mongoose](https://img.shields.io/badge/Mongoose-9.13-brightgreen.svg)](https://mongoosejs.com/)
 [![Cloudinary](https://img.shields.io/badge/Cloudinary-CDN-orange.svg)](https://cloudinary.com/)
 
 **LOST** là siêu ứng dụng bản đồ địa hình 3D, điều phối chuyến đi, an toàn thực địa offline và trợ lý AI đa phương thức dành riêng cho cộng đồng trekking tại Việt Nam. Toàn bộ cơ sở dữ liệu gồm **36 cung đường trekking thực địa đã kiểm chuẩn Copernicus / SRTM-30m DEM** (19 Miền Bắc, 8 Miền Trung, 9 Miền Nam; 139 waypoint định vị), **28 trạm VQG / Kiểm lâm / Cứu hộ CNCH xác thực**, **10 trung tâm dịch vụ dẫn đường chính quy của các VQG/KBT** và **10 bộ sưu tập Thử thách Chinh phục Đỉnh Việt Nam** — cam kết 100% dữ liệu địa lý thật.
@@ -19,13 +19,13 @@
   - **19 cung Miền Bắc**: Fansipan (3.143m), Pu Si Lung (3.083m), Pu Ta Leng (3.049m), Bạch Mộc Lương Tử – Kỳ Quan San (3.046m), Khang Su Văn – Phàn Liên San & Cột Mốc 79 (3.012m), **Tả Liên Sơn – Đỉnh Cổ Trâu (2.996m)**, Tà Chì Nhù (2.979m), Nhìu Cồ San (2.965m), Lùng Cúng (2.913m), Nam Kang Ho Tao (2.881m), Tà Xùa (2.865m), Lảo Thẩn (2.860m), Ngũ Chỉ Sơn (2.858m), Tây Côn Lĩnh (2.428m), **Đỉnh Pha Luông – Mộc Châu (2.000m)**, VQG Ba Vì (1.296m), **Bình Liêu – Sống Lưng Khủng Long & Cột Mốc 1305 (1.292m)**, Đỉnh Chùa Đồng Yên Tử (1.068m), **VQG Cúc Phương – Đỉnh Mây Bạc (648m)**.
   - **8 cung Miền Trung**: Chư Yang Sin (2.442m), Pù Luông (1.700m), **Khu BTTN Hòn Bà – Di Tích Bác Sĩ A. Yersin (1.578m)**, Bạch Mã (1.450m), VQG Núi Chúa (1.039m), Thác K50 Kon Chư Răng (1.020m), Giếng Trời Đà Nẵng (480m), Cực Đông Mũi Đôi (145m).
   - **9 cung Miền Nam**: Bidoup – Núi Bà (2.287m), Đỉnh Langbiang (2.167m), Tà Năng – Phan Dũng (1.100m), Núi Bà Đen (986m), Núi Chứa Chan (837m), **Núi Bà Rá – 1.767 Bậc Đá & Hồ Thác Mơ (723m)**, VQG Bù Gia Mập – Đắk Ka & Thác Lưu Ly (660m), Núi Dinh (504m), VQG Cát Tiên – Bàu Sấu (168m).
-- **Bản đồ kép Leaflet 2D + MapLibre GL 3D WebGL Terrain (`Terrain3DModal`)**: tích hợp chế độ **Bay Dọc Tuyến 3D (Fly-Through)** mượt mà theo sống núi GPX, bộ lọc nhanh **Đỉnh >2.500m / Người Mới (≤2) / Bán kính Gần Tôi 50–150–300km**, cụm gợi ý **4 cung lân cận kết hợp** (`GET /api/trails/:id/nearby-trails`), **Điểm Thực Địa Cộng Đồng "Thực Địa & Nước"** (`/api/trail-pois` + `TrailPoiSection`: nguồn nước, lán trại, sóng 4G, nguy hiểm, điểm ngắm cảnh có tọa độ WGS84 & xác nhận cộng đồng), **Biểu Đồ Khí Hậu Thực Tế 12 Tháng ERA5 (`GET /api/weather/climate/:trailId` + `SummitClimateChart`)** từ dữ liệu Open-Meteo ERA5 3 năm (`2023–2025`, hiệu chỉnh lapse-rate `-6.5°C/1000m`), và **So Sánh Đa Cung** với biểu đồ chồng đường cong cao độ DEM thuần SVG + bảng **Dự Báo Thời Tiết Đỉnh 3 Ngày Trực Tiếp** (`GET /api/weather/compare`).
-- **PWA Chuẩn Cài Đặt, Gói Tải Offline Theo Hành Lang GPX & Bộ Nhớ Offline (`manifest.json`, `sw.js`, `OfflineStoragePanel`)**: Manifest cài đặt `standalone` kèm lối tắt thực địa, `favicon.svg` Pine Green đồng bộ Field-Atlas, Service Worker `lost-static-v2` cho phép đúng danh sách máy chủ bản đồ 2D (loại trừ hoàn toàn DEM Terrarium 3D khỏi bộ đệm 2D và giới hạn dung lượng tile/opaque), cùng gói tải Offline theo hành lang polyline GPX (`offlinePack.ts`) lưu vào IndexedDB + Cache API cho vùng mất sóng 4G.
+- **Bản đồ WebGL hợp nhất MapLibre GL JS 6.19 (2D Vector + Địa hình 3D DEM + Fly-Through — `LostVectorMap`, `MapView`, `Terrain3DModal`)**: sử dụng 100% nguồn dữ liệu mở thương mại miễn phí (**OpenFreeMap** / OpenMapTiles + OpenStreetMap ODbL, **AWS Open Data Terrarium DEM** dựng bóng đồi GPU `hillshade` & địa hình 3D, ảnh vệ tinh **NASA GIBS** Public Domain), tích hợp chế độ **Bay Dọc Tuyến 3D (Fly-Through)** mượt mà theo sống núi GPX, bộ lọc nhanh **Đỉnh >2.500m / Người Mới (≤2) / Bán kính Gần Tôi 50–150–300km**, cụm gợi ý **4 cung lân cận kết hợp** (`GET /api/trails/:id/nearby-trails`), **Điểm Thực Địa Cộng Đồng "Thực Địa & Nước"** (`/api/trail-pois` + `TrailPoiSection`: nguồn nước, lán trại, sóng 4G, nguy hiểm, điểm ngắm cảnh có tọa độ WGS84 & xác nhận cộng đồng), **Biểu Đồ Khí Hậu Thực Tế 12 Tháng NASA POWER (MERRA-2)** (`GET /api/weather/climate/:trailId` + `SummitClimateChart`) từ kho lưu trữ khí hậu **NASA POWER 3 năm** (`power.larc.nasa.gov`, Public Domain, hiệu chỉnh lapse-rate `-6.5°C/1000m`), và **So Sánh Đa Cung** với biểu đồ chồng đường cong cao độ DEM thuần SVG + bảng **Dự Báo Thời Tiết Đỉnh 3 Ngày Trực Tiếp** từ **MET Norway Locationforecast 2.0 (CC BY 4.0)** (`GET /api/weather/compare`).
+- **PWA Chuẩn Cài Đặt, Gói Tải Offline Theo Hành Lang GPX & Bộ Nhớ Offline (`manifest.json`, `sw.js`, `OfflineStoragePanel`)**: Manifest cài đặt `standalone` kèm lối tắt thực địa, `favicon.svg` Pine Green đồng bộ Field-Atlas, Service Worker `lost-static-v5` (`lost-tiles-v1` + `lost-offline-packs-v1`) chỉ lưu đệm đúng 3 máy chủ dữ liệu mở thương mại miễn phí (`tiles.openfreemap.org`, `s3.amazonaws.com/elevation-tiles-prod/terrarium/*`, `gibs.earthdata.nasa.gov`, không bao giờ cache `/api/*` hay `/socket.io*`), cùng gói tải Offline theo hành lang polyline GPX (`offlinePack.ts`) lưu vào IndexedDB + Cache API cho vùng mất sóng 4G.
 
 ### 2. Hệ Sinh Thái 8 Flagship Field-Atlas Hubs (`ExpeditionHubBar`)
 1. **Hộ Chiếu Đỉnh, 10 Thử Thách & Thẻ PNG Hành Trình (`PeakPassportView` + `ExpeditionShareCardModal`)**: Xác thực check-in GPS/GPX, bảng xếp hạng chinh phục đỉnh, **10 bộ sưu tập thử thách** (gồm **Ngũ Đại Đỉnh >3.000m**, **Cột Mốc Biên Cương Việt Nam** & **Vườn Quốc Gia Di Sản 3 Miền**), mã QR Hộ chiếu chuẩn ISO/IEC 18004 dựng bằng SVG thuần (`qrMatrix.ts`) và **Trình Tạo Thẻ Ảnh PNG Ngoại Tuyến 100%** (`1080×1350` Story & `1200×630` Ngang bằng Canvas không CORS taint).
-2. **Lịch Mùa 12 Tháng, Khí Hậu Đỉnh ERA5 3 Năm, Radar Thời Tiết Đỉnh & Cảnh Báo Cá Nhân (`SeasonAlmanacView` + `SummitClimateChart` + `SummitWeatherRadar` + `WeatherAlertModal`)**: Tích hợp trực tiếp **Khí Hậu Thực Tế 12 Tháng ERA5 (3 Năm)** với biểu đồ SVG hai trục (nhiệt độ đỉnh °C & lượng mưa mm), **Radar Thời Tiết & Săn Mây Top Đỉnh Cao Việt Nam** (`GET /api/weather/summits-live`, lapse-rate `-6.5°C/1000m` & windchill), **Cảnh Báo Thời Tiết & Săn Mây Cá Nhân Hóa** (`/api/weather-alerts`, tách biệt cooldown an toàn `NO_GO` vs săn mây), ma trận 12 tháng × 36 cung và đánh giá AI Go/No-Go tức thì.
-3. **GIS Studio — Thiết Kế GPX, Đảo Chiều, Phân Tầng Độ Dốc 4 Cấp & Thẻ PNG (`RoutePlannerView`)**: Chấm điểm trên bản đồ Leaflet, **1 chạm Đảo Chiều Tuyến (Reverse)**, gắn nhãn mốc tọa độ (`start` / `summit` / `water` / `camp` / `caution`) xuất chuẩn GPX 1.1 `<wpt><sym>`, **Thanh Phân Tầng Độ Dốc 4 Cấp (`<5%`, `5–12%`, `12–20%`, `>20%`)**, **Bảng Phân Chặng Theo Mốc (Leg Splits)**, tính Naismith/Tobler ETA, xuất **Thẻ PNG Tuyến Tự Vẽ**, lưu/chia sẻ link tuyến (`/planner?route=<slug>`) và chuyển thẳng sang Biểu mẫu Đóng góp 5 bước.
+2. **Lịch Mùa 12 Tháng, Khí Hậu Đỉnh NASA POWER (MERRA-2) 3 Năm, Radar Thời Tiết Đỉnh & Cảnh Báo Cá Nhân (`SeasonAlmanacView` + `SummitClimateChart` + `SummitWeatherRadar` + `WeatherAlertModal`)**: Tích hợp trực tiếp **Khí Hậu Thực Tế 12 Tháng NASA POWER (3 Năm)** với biểu đồ SVG hai trục (nhiệt độ đỉnh °C & lượng mưa mm), **Radar Thời Tiết & Săn Mây Top Đỉnh Cao Việt Nam** (`GET /api/weather/summits-live`, nguồn MET Norway Locationforecast 2.0 CC BY 4.0, lapse-rate `-6.5°C/1000m` & windchill), **Cảnh Báo Thời Tiết & Săn Mây Cá Nhân Hóa** (`/api/weather-alerts`, tách biệt cooldown an toàn `NO_GO` vs săn mây), ma trận 12 tháng × 36 cung và đánh giá AI Go/No-Go tức thì.
+3. **GIS Studio — Thiết Kế GPX, Đảo Chiều, Phân Tầng Độ Dốc 4 Cấp & Thẻ PNG (`RoutePlannerView`)**: Chấm điểm trên bản đồ Vector MapLibre GL + lấy mẫu cao độ trực tiếp từ AWS Terrarium DEM, **1 chạm Đảo Chiều Tuyến (Reverse)**, gắn nhãn mốc tọa độ (`start` / `summit` / `water` / `camp` / `caution`) xuất chuẩn GPX 1.1 `<wpt><sym>`, **Thanh Phân Tầng Độ Dốc 4 Cấp (`<5%`, `5–12%`, `12–20%`, `>20%`)**, **Bảng Phân Chặng Theo Mốc (Leg Splits)**, tính Naismith/Tobler ETA, xuất **Thẻ PNG Tuyến Tự Vẽ**, lưu/chia sẻ link tuyến (`/planner?route=<slug>`) và chuyển thẳng sang Biểu mẫu Đóng góp 5 bước.
 4. **Bộ Công Cụ Sinh Tồn Offline 100%, Thẻ Y Tế ICE Màn Hình Khóa, Vật Lý Khí Quyển ISA & Thử Tài Địa Hình (`FieldToolkitView` + `iceLockscreenCard.ts` + `VietnamPeakQuizPanel`)**: **7 tab WAI-ARIA** (đồng bộ URL `?tab=` & điều hướng `ArrowLeft`/`ArrowRight`/`Home`/`End`) — La bàn SVG/WGS84-DMS kèm **Thẻ Tham Chiếu Áp Suất Khí Quyển ISA & Đường Cong Điểm Sôi / Oxy (`pO₂`) SVG** (`0m → 3.143m`, chuẩn ISO 2533 & NIST Antoine), Cung Mặt Trời NOAA (`solarMath.ts`), Bio-Calc, SOS 2G + Đèn Morse + Còi 3.1kHz + **Trình Tạo Thẻ Y Tế Khẩn Cấp ICE Màn Hình Khóa PNG `1080×1920` Ngoại Tuyến 100%** (chỉ lưu cục bộ theo tài khoản, 0 gửi PII y tế lên server), **Học Viện Sinh Tồn 8 Kịch Bản**, **Bộ Nhớ Offline**, và **Thử Tài Địa Hình Việt Nam** (biểu đồ trắc dọc DEM ẩn danh thuần SVG + 10 kịch bản WFA + kỷ lục ngoại tuyến).
 5. **Danh Bạ 28 Trạm Kiểm Lâm, 10 Đơn Vị Dẫn Đường Chính Quy & Dự Toán Chi Phí (`DirectoryCostView`)**: Tra cứu 28 đầu mối VQG/Kiểm lâm/CNCH (ghim cố định 112/114/115/113), gửi yêu cầu đặt lịch dẫn đoàn tới 10 đơn vị VQG/KBT (`/api/directory/inquiries`, bộ đệm cục bộ tách riêng theo tài khoản), và máy tính dự toán VND chi tiết cho toàn bộ **36 cung DEM** kèm chuyển nhanh sang lập đoàn ghép nhóm.
 6. **Giáo Án Thể Lực 4 / 6 / 8 Tuần (`TrainingPlannerView`)**: Sinh lộ trình tập luyện tăng tải lũy tiến & giảm tải (taper) theo cao độ 36 đỉnh mục tiêu, đồng bộ `/api/training-plans` + `localStorage` kèm xác nhận xóa 2 bước nội tuyến, vòng Readiness Ring & biểu đồ tích lũy cao độ tuần SVG thuần thích ứng di động.
@@ -62,16 +62,16 @@
 ## Công Nghệ Sử Dụng (Tech Stack)
 
 ### Frontend (`client/`)
-- **Core**: React 19, TypeScript 6, Vite 8.1 (Rolldown code-splitting), ESLint 10 (**`--max-warnings=0`, 0 lỗi & 0 cảnh báo trên toàn bộ 244 tệp mã nguồn**).
-- **Design System**: Field-Atlas **v4.3** Dual-Theme CSS Design Tokens (`[data-theme="dark"]` Obsidian Slate / `[data-theme="light"]` Field Paper đạt **100% chuẩn tương phản WCAG AA/AAA** toàn kho mã nguồn với `--color-error-text` `8.10:1` Dark / `7.18:1` Light và chữ nút nền đặc `--color-on-primary` / `--color-on-danger`), `color-mix()` surfaces, thang z-index 9 bậc (`--z-map-hud`..`--z-modal-nested`..`--z-toast`), khóa tiêu điểm modal LIFO (`useFocusTrap`) & bộ lọc IME tiếng Việt (`e.isComposing`), chế độ in ấn `@media print`, 1 font chữ duy nhất chuẩn tiếng Việt (**Plus Jakarta Sans**) và 100% Vector SVG thuần (0 emoji, 0 thư viện biểu đồ ngoài).
-- **Map, PWA & Offline**: Leaflet 1.9, React-Leaflet 5, Marker Cluster, MapLibre GL 6.19 (3D WebGL DEM + Fly-Through), Installable PWA (`manifest.json` + Field-Atlas `favicon.svg` + Terrarium-safe `sw.js` `lost-static-v2`), CORS Polyline Offline Pack (`IndexedDB` + Cache API), Canvas PNG Share Card & ICE Lockscreen Generator ngoại tuyến (`1080×1920`).
-- **Realtime & Media**: Socket.IO Client 4.8, Cloudinary CDN URL Transformer (`46/46` ảnh xác thực HTTP `200`).
+- **Core**: React 19, TypeScript 6, Vite 8.1 (Rolldown code-splitting), ESLint 10 (`--max-warnings=0`, 0 lỗi & 0 cảnh báo trên toàn bộ mã nguồn client).
+- **Design System**: Field-Atlas **v4.3** Dual-Theme CSS Design Tokens (`[data-theme="dark"]` Obsidian Slate / `[data-theme="light"]` Field Paper đạt **100% chuẩn tương phản WCAG AA/AAA** toàn kho mã nguồn với `--color-error-text` `8.10:1` Dark / `7.18:1` Light và chữ nút nền đặc `--color-on-primary` / `--color-on-danger`), `color-mix()` surfaces, thang z-index 9 bậc (`--z-map-hud`..`--z-modal-nested`..`--z-toast`), khóa tiêu điểm modal LIFO (`useFocusTrap`) & bộ lọc IME tiếng Việt (`e.isComposing`), chế độ in ấn `@media print`, 1 font chữ duy nhất chuẩn tiếng Việt tự lưu trữ cục bộ (**Plus Jakarta Sans** qua `@fontsource-variable/plus-jakarta-sans`, SIL OFL 1.1 — 0 CDN phông chữ ngoài) và 100% Vector SVG thuần (0 emoji, 0 thư viện biểu đồ ngoài).
+- **Map, PWA & Offline**: MapLibre GL JS 6.19 (WebGL 2D Vector + 3D DEM + GPU Hillshade + Fly-Through; OpenFreeMap, AWS Open Data Terrarium, NASA GIBS Public Domain), Installable PWA (`manifest.json` + Field-Atlas `favicon.svg` + `sw.js` `lost-static-v5`), CORS Polyline Offline Pack (`IndexedDB` + Cache API), Canvas PNG Share Card & ICE Lockscreen Generator ngoại tuyến (`1080×1920`).
+- **Realtime & Media**: Socket.IO Client 4.8, **132 đồ họa bìa địa hình & avatar SVG thuần tự dựng (`/covers/*.svg` — 0 hotlink ảnh bên ngoài, hoạt động offline)**; Cloudinary tùy chọn chỉ phục vụ ảnh người dùng tự tải lên (tự động xóa siêu dữ liệu EXIF GPS).
 
 ### Backend (`server/`)
 - **Runtime**: Node.js (`>= 18`), Express 5.2 (TypeScript 7 ESM).
-- **Database**: MongoDB với Mongoose 9.8 ODM (`2dsphere` geospatial index, text search tiếng Việt `default_language: 'none'`, partial unique indexes, TTL indexes, 37 Mongoose models gồm `WeatherAlertSubModel`, `TrailPoiModel` & `UserModel.annualGoals`).
-- **Security & Auth**: Custom HMAC JWT với `HttpOnly` Refresh Token rotation & tách biệt chặt `access`/`refresh`, PBKDF2-HMAC-SHA512 bất đồng bộ, xác thực Google OAuth (`aud` check), RBAC + Owner middleware, tách riêng rate-limiter đọc/ghi (`120/15m` vs `30/15m`) cho `/api/users/me/goals`, kiểm tra magic bytes ảnh upload, non-corrupting sanitization, fail-closed auth & Socket.IO, Cloudinary chống SSRF/LFI.
-- **Integrations**: Cloudinary v2 SDK, Socket.IO 4.8, Nodemailer 9, Open-Meteo Weather, Elevation & **ERA5 3-Year Historical Archive API** (`archive-api.open-meteo.com`, 24h SWR + 45s cold-failure backoff), NASA EONET (Vietnam bbox), Gemini Multimodal API (tùy chọn).
+- **Database**: MongoDB với Mongoose 9.13 ODM (`2dsphere` geospatial index, text search tiếng Việt `default_language: 'none'`, partial unique indexes, TTL indexes, **38 Mongoose models** gồm `WeatherAlertSubModel`, `TrailPoiModel`, `UploadAssetModel` & `UserModel.annualGoals`).
+- **Security & Auth**: Custom HMAC JWT với `HttpOnly` Refresh Token rotation & tách biệt chặt `access`/`refresh`, PBKDF2-HMAC-SHA512 bất đồng bộ, xác thực Google OAuth JWKS RS256 (`aud`/`iss`/`exp` check), RBAC + Owner middleware, tách riêng rate-limiter đọc/ghi (`120/15m` vs `30/15m`) cho `/api/users/me/goals`, kiểm tra magic bytes & xóa EXIF ảnh upload, non-corrupting sanitization, fail-closed auth & Socket.IO, bảo vệ SSRF/LFI DNS-aware.
+- **Integrations**: MET Norway Locationforecast 2.0 (`CC BY 4.0`, tuân thủ `If-Modified-Since` & `Expires`), NASA POWER 3-Year Historical Climate Archive (`MERRA-2`, `power.larc.nasa.gov`, Public Domain), AWS Open Data Terrarium DEM (`elevation.service.ts`), OpenStreetMap Nominatim (`ODbL`, hàng đợi toàn cục 1.1s + bộ đệm 24h), NASA EONET (Vietnam bbox, Public Domain), NOAA Solar Equations (tính cục bộ 100% offline), Socket.IO 4.8, Nodemailer 10, Cloudinary v2 SDK (tùy chọn), OpenRouteService / Self-hosted OSRM (tùy chọn), Gemini Multimodal API (tùy chọn).
 
 ---
 
@@ -91,27 +91,52 @@ npm --prefix client install
 npm --prefix server install
 ```
 
-### 3. Cấu Hình Biến Môi Trường (`server/.env`)
-Tạo tệp `.env` trong thư mục `server/`:
+### 3. Cấu Hình Biến Môi Trường (`server/.env` & `client/.env`)
+Sao chép tệp mẫu chuẩn hóa trước khi chạy (`server/.env.example` và `client/.env.example`):
+```bash
+cp server/.env.example server/.env
+# Tùy chọn cấu hình Frontend:
+cp client/.env.example client/.env
+```
+
+Các biến môi trường chính trong `server/.env`:
 ```env
+# Cốt lõi (BẮT BUỘC cấu hình đúng khi triển khai Production)
+NODE_ENV=development
 PORT=5000
 MONGODB_URI=mongodb://127.0.0.1:27017/lost
-JWT_SECRET=thay-bang-chuoi-bi-mat-manh-cho-moi-truong-cua-ban
+JWT_SECRET=thay-bang-chuoi-bi-mat-manh-toi-thieu-32-ky-tu-cho-production
 CLIENT_URL=http://localhost:5173
+
+# Bảo mật CORS, Reverse Proxy, Cookie & Khởi tạo Admin
+# Production: CORS_ORIGINS=https://lost.vn,https://www.lost.vn
+CORS_ORIGINS=http://localhost:5173
+# Đặt `false` khi chạy trực tiếp; đặt `1` (hoặc số hop thực tế / `loopback`) khi đứng sau Nginx/Cloudflare/Render
+TRUST_PROXY=false
+# `lax` (mặc định) | `strict` | `none` (tự bật cờ Secure, yêu cầu HTTPS)
+COOKIE_SAME_SITE=lax
+# Bắt buộc đặt mật khẩu mạnh trong lần khởi chạy Production đầu tiên để tạo tài khoản BQT mặc định
+ADMIN_SEED_PASSWORD=
+# Giữ `false` hoặc bỏ trống để không ghi đè dữ liệu BQT đã chỉnh sửa trong MongoDB
+FORCE_SEED_SYNC=false
 
 # Cloudinary CDN Credentials (tùy chọn khi chạy local, bắt buộc cho upload ảnh)
 CLOUDINARY_CLOUD_NAME=your_cloudinary_cloud_name
 CLOUDINARY_API_KEY=your_cloudinary_api_key
 CLOUDINARY_API_SECRET=your_cloudinary_api_secret
 
-# Tùy chọn nâng cao (Google OAuth, SMTP Email, Gemini AI)
+# Tùy chọn nâng cao (Google OAuth, SMTP Email, Định tuyến, Gemini AI)
 GOOGLE_CLIENT_ID=
 SMTP_HOST=
 SMTP_PORT=587
 SMTP_USER=
 SMTP_PASS=
+ORS_API_KEY=
+SELF_HOSTED_OSRM_URL=
 GEMINI_API_KEY=
 ```
+
+*(Lưu ý Production: khi `NODE_ENV=production`, server tự kiểm tra fail-fast `JWT_SECRET` (bắt buộc ≥ 32 ký tự) trước khi mở cổng HTTP, và `CLIENT_URL` mặc định trỏ `https://lost.vn` — không bao giờ phát tán đường dẫn `localhost`. Frontend `client/.env.example` hỗ trợ tùy chọn `VITE_GOOGLE_CLIENT_ID`, `VITE_SATELLITE_TILE_URL` & `VITE_SATELLITE_ATTRIBUTION`, vận hành cùng reverse proxy same-origin cho `/api/*` và `/socket.io/*`.)*
 
 ### 4. Khởi Chạy, Nạp Dữ Liệu & Kiểm Chứng
 ```bash
@@ -125,7 +150,10 @@ npm --prefix server run seed
 # Build TypeScript & Vite production cho cả Server và Client
 npm run build
 
-# Kiểm tra lint Frontend
+# Chạy toàn bộ kiểm thử tự động Server & Client
+npm test
+
+# Kiểm tra lint Frontend (--max-warnings=0)
 npm run lint
 ```
 
@@ -138,10 +166,10 @@ Truy cập ứng dụng tại: `http://localhost:5173`
 ```text
 LOST/
 ├── client/                              # Frontend React 19 + Vite 8 App
-│   ├── public/                          # PWA manifest.json, Field-Atlas favicon.svg & Service Worker (sw.js lost-static-v2)
+│   ├── public/                          # PWA manifest.json, favicon.svg, sw.js (lost-static-v5), 132 covers/*.svg & THIRD_PARTY_LICENSES.txt
 │   └── src/
 │       ├── components/
-│       │   ├── admin/                   # AdminDashboardView & Moderation Modal
+│       │   ├── admin/                   # AdminDashboardView, AdminCommandDeck, AdminSpatialInspector & AdminModals
 │       │   ├── ai-assistant/            # LOST Alpine AI 4-Mode Suite (SSE/TTS, Readiness Audit 0–100, Pace/Fuel, Photo Triage, Expedition Brief)
 │       │   ├── auth/                    # Login / Register / OTP / Google OAuth Modals
 │       │   ├── common/                  # SvgIcons, CommandPaletteModal (Ctrl+K), ShortcutsHelpModal (?), ExpeditionShareCardModal, OfflineStoragePanel
@@ -151,33 +179,35 @@ LOST/
 │       │   ├── incidents/               # Báo cáo & cảnh báo sự cố thực địa
 │       │   ├── landing/                 # Editorial Hero, HubShowcaseStrip, SummitAltitudeLadder, BentoCommandHub, SeasonExpeditionRadar
 │       │   ├── layout/                  # Navbar, Footer & Theme Switcher
-│       │   ├── map/                     # Leaflet 2D (Proximity/Peak Filters) & MapLibre 3D DEM Terrain (Fly-Through)
+│       │   ├── legal/                   # LegalNoticesModal (Điều khoản, Bảo mật NĐ 13/2023 & Bản quyền nguồn mở)
+│       │   ├── map/                     # LostVectorMap (MapLibre GL 2D/3D WebGL), MapView & Terrain3DModal (Fly-Through)
 │       │   ├── messages/                # Nhắn tin 1-1 & phòng chat đoàn realtime
 │       │   ├── notifications/           # Trung tâm thông báo
 │       │   ├── profile/                 # Passport 3D, Wishlist Collections + CSV Export, ProfileAnalyticsPanel (Cloud Annual Goals & 3 SVG Rings)
 │       │   ├── safety/                  # LiveTrekTrackerModal, LiveBeaconViewerPage (/beacon/:token), SafetyTimerModal, EmergencyContactsModal
 │       │   ├── search/                  # Bộ lọc nâng cao & tìm kiếm tiếng Việt không dấu
-│       │   ├── trail/                   # TrailCard, TrailDetailView (Nearby Trails, TrailPoiSection & ERA5 Climate), TrailComparisonModal
+│       │   ├── trail/                   # TrailCard, TrailDetailView (Nearby Trails, TrailPoiSection & NASA POWER Climate), TrailComparisonModal
 │       │   ├── trip-reports/            # Nhật ký hành trình, TripReportDetailModal (Reading Time, LIFO Lightbox & Trail Jump) & Owner CRUD
 │       │   ├── trips/                   # Ghép đoàn, ExpeditionCalendarGrid, SquadWorkspaceModal (Gear Matrix, 6-Step Gate, Ranger CSV & Debt)
-│       │   └── weather/                 # SummitClimateChart (ERA5 3-Year Dual-Axis SVG) & WeatherAlertModal
+│       │   └── weather/                 # SummitClimateChart (NASA POWER 3-Year Dual-Axis SVG) & WeatherAlertModal
 │       ├── data/                        # seedData.ts (36 trails) & vietnamDirectory.ts (10 challenges, 28 rangers, 10 guides — synced SHA-256)
 │       ├── hooks/                       # useFocusTrap (LIFO 40-portal stack), useSocket
-│       ├── services/                    # REST API clients (ERA5 Climate, Cloud Goals), AI SSE/Pace/Fuel/Readiness service, Socket.IO
-│       ├── utils/                       # storageScope.ts, iceLockscreenCard.ts, offlinePack.ts, routeMetrics.ts, expeditionShareCard.ts, solarMath.ts, qrMatrix.ts
+│       ├── services/                    # REST API clients (MET Norway / NASA POWER Climate, Cloud Goals), AI SSE/Pace/Fuel/Readiness service, Socket.IO
+│       ├── utils/                       # storageScope.ts, mapTiles.ts, mountainSafetyMath.ts, iceLockscreenCard.ts, offlinePack.ts, routeMetrics.ts, solarMath.ts, qrMatrix.ts
 │       └── App.tsx                      # Main Router, Hub Switcher, /beacon/:token, Logout Storage Wipe & Global Hotkeys (Ctrl+K, ?, Alt+A, Alt+T)
 ├── server/                              # Backend Express 5 + Mongoose 9 ESM Server
 │   └── src/
 │       ├── config/                      # MongoDB, Socket.IO & Cloudinary SDK Configuration
-│       ├── controllers/                 # Domain Controllers (AI, ERA5 Weather Climate, User Annual Goals, WeatherAlert, TrailPoi, LiveBeacon, Directory...)
+│       ├── controllers/                 # Domain Controllers (AI, MET Norway / NASA POWER Climate, User Annual Goals, WeatherAlert, TrailPoi, LiveBeacon, Directory...)
 │       ├── data/                        # seedData.ts (36 trails), vietnamDirectory.ts, trekkerKnowledgeDataset.ts
-│       ├── middleware/                  # Auth JWT, RBAC, Split Read/Write Rate Limiters, Input Sanitization
-│       ├── models/                      # 37 Mongoose Schemas (User + annualGoals, Trail, WeatherAlertSub, TrailPoi, LiveBeacon, Guide, RangerStation...)
+│       ├── middleware/                  # Auth JWT, RBAC, Split Read/Write Rate Limiters, Cache & Compression
+│       ├── models/                      # 38 Mongoose Schemas (User + annualGoals, Trail, UploadAsset, WeatherAlertSub, TrailPoi, LiveBeacon, Guide, RangerStation...)
 │       ├── routes/                      # Express API Routers
 │       ├── scripts/                     # Standalone CLI Seeder (seed.ts)
-│       ├── services/                    # AI Services (Readiness Audit, Pace, Fuel, SSE, Photo Triage, Expedition Brief, Go/No-Go)
-│       ├── utils/                       # seedDatabase.ts (Idempotent Seeder), Auth Crypto, Notifications
+│       ├── services/                    # AI Services (Readiness Audit, Pace, Fuel, SSE, Photo Triage, Expedition Brief, Go/No-Go) & Public APIs / Terrarium DEM Elevation
+│       ├── utils/                       # seedDatabase.ts (Idempotent Seeder), Auth Crypto, Mailer, Validation (SSRF DNS guard), Notifications
 │       └── app.ts                       # Express + Socket.IO Server Entry Point
+├── THIRD_PARTY_LICENSES.md              # Danh mục giấy phép mã nguồn mở & ghi nhận dữ liệu mở đầy đủ
 ├── DESIGN.md                            # LOST Field-Atlas Design System v4.3
 ├── ROADMAP.md                           # Lộ trình 13 Giai đoạn (Phase 0 – Phase 12)
 └── README.md
@@ -190,4 +220,4 @@ LOST/
 - **Đơn vị phát triển**: LOST Expedition Team
 - **GitHub Repository**: [https://github.com/Hoang-124/LOST](https://github.com/Hoang-124/LOST)
 - **Bản quyền ứng dụng**: © 2026 LOST Việt Nam. All Rights Reserved (Thương mại — không phân phối lại mã nguồn gốc khi chưa có sự cho phép bằng văn bản).
-- **Mã nguồn mở & Dữ liệu mở bên thứ ba**: Xem đầy đủ giấy phép và ghi nhận nguồn (OpenStreetMap ODbL, OpenFreeMap, AWS Open Data Terrarium, MET Norway CC BY 4.0, NASA POWER/GIBS/EONET Public Domain, Plus Jakarta Sans SIL OFL 1.1, Leaflet BSD-2-Clause, MapLibre GL BSD-3-Clause, v.v.) tại [THIRD_PARTY_LICENSES.md](./THIRD_PARTY_LICENSES.md).
+- **Mã nguồn mở & Dữ liệu mở bên thứ ba**: Xem đầy đủ giấy phép và ghi nhận nguồn (OpenStreetMap ODbL, OpenFreeMap, AWS Open Data Terrarium, MET Norway CC BY 4.0, NASA POWER/GIBS/EONET Public Domain, NOAA Solar Public Domain, Plus Jakarta Sans SIL OFL 1.1, MapLibre GL BSD-3-Clause, v.v.) tại [THIRD_PARTY_LICENSES.md](./THIRD_PARTY_LICENSES.md).

@@ -24,7 +24,7 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
       return res.json({ success: true, count: 0, data: [] });
     }
 
-    const limit = Math.min(Math.max(Number(req.query.limit) || 30, 1), 50);
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '30'), 10) || 30, 1), 50);
     const currentObjId = new mongoose.Types.ObjectId(currentUserId);
 
     const conversations = await ConversationModel.find({
@@ -277,6 +277,9 @@ export const getMessages = async (req: AuthRequest, res: Response) => {
     if (!isValidObjectId(conversationId)) {
       return res.status(400).json({ success: false, message: 'Mã cuộc trò chuyện không hợp lệ.' });
     }
+    if (mongoose.connection.readyState !== 1) {
+      return res.json({ success: true, count: 0, data: [], hasMore: false });
+    }
 
     const conversation = await ConversationModel.findOne({
       _id: conversationId,
@@ -300,7 +303,7 @@ export const getMessages = async (req: AuthRequest, res: Response) => {
       query.isDeleted = { $ne: true };
     }
 
-    const parsedLimit = Math.min(Math.max(Number(limit) || 20, 1), 50);
+    const parsedLimit = Math.min(Math.max(parseInt(String(limit || '20'), 10) || 20, 1), 50);
 
     // Sort by _id: -1 to match the _id cursor strictly (eliminates same-millisecond skip/duplicate glitches)
     const messages = await MessageModel.find(query)
@@ -344,9 +347,12 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
     if (!isValidObjectId(conversationId)) {
       return res.status(400).json({ success: false, message: 'Mã cuộc trò chuyện không hợp lệ.' });
     }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
 
     const safeImages = Array.isArray(images)
-      ? images.filter((u): u is string => typeof u === 'string' && isSafeHttpUrl(u)).slice(0, 4)
+      ? images.slice(0, 20).filter((u): u is string => typeof u === 'string' && isSafeHttpUrl(u)).slice(0, 4)
       : [];
 
     const rawText = typeof content === 'string' ? content : '';
@@ -464,6 +470,9 @@ export const editMessage = async (req: AuthRequest, res: Response) => {
     if (!isValidObjectId(messageId)) {
       return res.status(400).json({ success: false, message: 'Mã tin nhắn không hợp lệ.' });
     }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
     if (typeof content !== 'string' || !content.trim()) {
       return res.status(400).json({ success: false, message: 'Nội dung tin nhắn không được để trống.' });
     }
@@ -542,6 +551,9 @@ export const deleteMessage = async (req: AuthRequest, res: Response) => {
     if (!isValidObjectId(messageId)) {
       return res.status(400).json({ success: false, message: 'Mã tin nhắn không hợp lệ.' });
     }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
+    }
 
     const msg = await MessageModel.findById(messageId);
     if (!msg) {
@@ -608,6 +620,9 @@ export const markConversationAsRead = async (req: AuthRequest, res: Response) =>
     }
     if (!isValidObjectId(conversationId)) {
       return res.status(400).json({ success: false, message: 'Mã cuộc trò chuyện không hợp lệ.' });
+    }
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
     }
 
     const currentObjId = new mongoose.Types.ObjectId(currentUserId);

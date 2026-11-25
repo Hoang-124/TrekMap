@@ -30,6 +30,7 @@ import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
 import type { UserProfile } from '../../types.js';
 import type { TripReportCommentItem, TripReportItem } from './TripReportCard.js';
+import { safeLocalStorageGet } from '../../utils/storageScope.js';
 
 interface TripReportDetailModalProps {
   report: TripReportItem | null;
@@ -43,6 +44,78 @@ interface TripReportDetailModalProps {
   ) => void;
   onReportUpdated?: (updated: TripReportItem) => void;
   onReportDeleted?: (reportId: string) => void;
+}
+
+const ALLOWED_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+]);
+const ALLOWED_IMAGE_ACCEPT = 'image/jpeg,image/png,image/webp,image/gif';
+
+const REPORT_DETAIL_DEDUPE_TTL_MS = 2500;
+const recentReportDetailFetches = new Map<
+  string,
+  { ts: number; promise: Promise<TripReportItem | null> }
+>();
+
+function fetchTripReportDetailDeduped(reportId: string): Promise<TripReportItem | null> {
+  const now = Date.now();
+  const cached = recentReportDetailFetches.get(reportId);
+  if (cached && now - cached.ts < REPORT_DETAIL_DEDUPE_TTL_MS) {
+    return cached.promise;
+  }
+
+  // Prune stale entries so the cache never grows unbounded
+  for (const [k, entry] of recentReportDetailFetches.entries()) {
+    if (now - entry.ts >= REPORT_DETAIL_DEDUPE_TTL_MS) {
+      recentReportDetailFetches.delete(k);
+    }
+  }
+
+  const promise = fetch(`/api/trip-reports/${encodeURIComponent(reportId)}`, {
+    headers: getApiHeaders(),
+  })
+    .then((res) => (res.ok ? res.json() : null))
+    .then((json) => (json?.success && json.data ? (json.data as TripReportItem) : null))
+    .catch(() => null);
+
+  recentReportDetailFetches.set(reportId, { ts: now, promise });
+  return promise;
+}
+
+function toVietnamDateInputValue(raw?: string): string {
+  if (!raw) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) return raw.trim();
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) {
+    return /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : '';
+  }
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(d);
+    const y = parts.find((p) => p.type === 'year')?.value;
+    const m = parts.find((p) => p.type === 'month')?.value;
+    const day = parts.find((p) => p.type === 'day')?.value;
+    if (y && m && day) return `${y}-${m}-${day}`;
+  } catch {
+    // Fallback to UTC+7 offset
+  }
+  const vn = new Date(d.getTime() + 7 * 60 * 60 * 1000);
+  return `${vn.getUTCFullYear()}-${String(vn.getUTCMonth() + 1).padStart(2, '0')}-${String(vn.getUTCDate()).padStart(2, '0')}`;
+}
+
+function clampGroupSize(raw: string | number, fallback = 2): number {
+  const str = String(raw).trim();
+  if (!str) return fallback;
+  const parsed = Math.round(Number(str));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(50, parsed));
 }
 
 const REPORT_REACTIONS: Array<{
@@ -153,6 +226,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [failedImageKeys, setFailedImageKeys] = useState<string[]>([]);
 
   // Comments state
   const [comments, setComments] = useState<TripReportCommentItem[]>(() =>
@@ -172,6 +246,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
     setConfirmDelete(false);
     setConfirmDeleteCommentId(null);
     setCommentInput('');
+    setFailedImageKeys([]);
     setComments(Array.isArray(report?.comments) ? report.comments : []);
     setReactions({
       like: report?.reactions?.like || 0,
@@ -188,28 +263,31 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
     setLightboxIndex(null);
   }
   const isLightboxOpen = isModalOpen && lightboxIndex !== null && Boolean(activePhotos[lightboxIndex]);
+  const currentUserIdRef = useRef(currentUserId);
+  useEffect(() => {
+    currentUserIdRef.current = currentUserId;
+  }, [currentUserId]);
+
+  const markImageFailed = useCallback((key: string) => {
+    setFailedImageKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
+  }, []);
 
   // LIFO Focus Traps: main dialog + nested photo lightbox
   useFocusTrap(isModalOpen, dialogRef);
   useFocusTrap(isLightboxOpen, lightboxRef, { initialFocusRef: lightboxCloseBtnRef });
 
-  // Fetch full trip report detail from GET /api/trip-reports/:id with graceful fallback to card data
+  // Fetch full trip report detail once per reportId (deduped against StrictMode double-hit to prevent double viewsCount)
   useEffect(() => {
     if (!reportId) {
       return;
     }
 
-    const controller = new AbortController();
+    let cancelled = false;
 
-    fetch(`/api/trip-reports/${encodeURIComponent(reportId)}`, {
-      headers: getApiHeaders(),
-      signal: controller.signal,
-    })
-      .then((res) => res.json())
-      .then((json) => {
-        if (controller.signal.aborted) return;
-        if (json?.success && json.data) {
-          const fetched: TripReportItem = json.data;
+    fetchTripReportDetailDeduped(reportId)
+      .then((fetched) => {
+        if (cancelled) return;
+        if (fetched) {
           setFetchedDetail(fetched);
           if (Array.isArray(fetched.comments)) {
             setComments(fetched.comments);
@@ -219,18 +297,17 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
             love: fetched.reactions?.love || 0,
             wow: fetched.reactions?.wow || 0,
           });
-          setUserReaction(resolveInitialUserReaction(fetched, currentUserId));
+          setUserReaction(resolveInitialUserReaction(fetched, currentUserIdRef.current));
         }
       })
-      .catch(() => {
-        // Fallback to card report data silently
-      })
       .finally(() => {
-        if (!controller.signal.aborted) setLoadedReportId(reportId);
+        if (!cancelled) setLoadedReportId(reportId);
       });
 
-    return () => controller.abort();
-  }, [reportId, currentUserId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [reportId]);
 
   const readingMinutes = useMemo(() => estimateReadingMinutes(detail), [detail]);
 
@@ -326,16 +403,9 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
     setEditTitle(detail.title || '');
     setEditSummary(detail.summary && detail.summary !== detail.title ? detail.summary : '');
     setEditContent(detail.content || '');
-    const parsedDate = detail.tripDate ? new Date(detail.tripDate) : null;
-    setEditTripDate(
-      parsedDate && !Number.isNaN(parsedDate.getTime())
-        ? parsedDate.toISOString().split('T')[0]
-        : typeof detail.tripDate === 'string' && /^\d{4}-\d{2}-\d{2}/.test(detail.tripDate)
-          ? detail.tripDate.slice(0, 10)
-          : ''
-    );
+    setEditTripDate(toVietnamDateInputValue(detail.tripDate));
     setEditDuration(detail.duration || '');
-    setEditGroupSize(String(detail.groupSize || 2));
+    setEditGroupSize(String(clampGroupSize(detail.groupSize || 2, 2)));
     setEditTotalCost(detail.totalCost || '');
     setEditWeather(detail.weatherCondition || '');
     setEditRating(Math.min(5, Math.max(1, Number(detail.rating) || 5)));
@@ -354,31 +424,74 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
     if (!fileList || fileList.length === 0) return;
     const slots = Math.max(0, 10 - editPhotos.length);
     if (slots === 0) {
-      dispatchToast('Tối đa 10 ảnh thực địa cho mỗi nhật ký.', 'info');
+      dispatchToast('Tối đa 10 ảnh cho mỗi bài nhật ký.', 'info');
       e.target.value = '';
       return;
     }
+
+    const files = Array.from(fileList).slice(0, slots);
+    const truncatedCount = Math.max(0, fileList.length - slots);
     setUploadingEditPhoto(true);
+
+    let uploadedCount = 0;
+    let invalidTypeCount = 0;
+    let oversizeCount = 0;
+    let failedCount = 0;
+
     try {
-      const uploaded: string[] = [];
-      for (const file of Array.from(fileList).slice(0, slots)) {
-        if (!file.type.startsWith('image/') || file.size > 5 * 1024 * 1024) continue;
-        const base64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = (ev) => resolve(String(ev.target?.result || ''));
-          reader.onerror = () => reject(new Error('read_failed'));
-          reader.readAsDataURL(file);
-        });
-        if (base64) {
-          const url = await uploadImageToCloudinary(base64, file.name, 'reviews');
-          uploaded.push(url);
+      for (const file of files) {
+        if (!ALLOWED_IMAGE_MIME_TYPES.has(file.type.toLowerCase())) {
+          invalidTypeCount += 1;
+          continue;
+        }
+        if (file.size > 5 * 1024 * 1024) {
+          oversizeCount += 1;
+          continue;
+        }
+        try {
+          const base64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (ev) => resolve(String(ev.target?.result || ''));
+            reader.onerror = () => reject(new Error('read_failed'));
+            reader.readAsDataURL(file);
+          });
+          if (base64) {
+            const url = await uploadImageToCloudinary(base64, file.name, 'reviews');
+            if (!isMountedRef.current) return;
+            uploadedCount += 1;
+            setEditPhotos((prev) => (prev.length >= 10 || prev.includes(url) ? prev : [...prev, url]));
+          }
+        } catch {
+          failedCount += 1;
         }
       }
-      if (uploaded.length > 0 && isMountedRef.current) {
-        setEditPhotos((prev) => [...prev, ...uploaded].slice(0, 10));
+
+      if (!isMountedRef.current) return;
+      const notices: string[] = [];
+      if (invalidTypeCount > 0) {
+        notices.push(
+          `${invalidTypeCount} tệp bị bỏ qua do không đúng định dạng (chỉ hỗ trợ JPG, PNG, WebP, GIF — không hỗ trợ SVG/HEIC/BMP).`
+        );
       }
-    } catch {
-      dispatchToast('Không thể tải ảnh lên máy chủ ảnh.', 'error');
+      if (oversizeCount > 0) {
+        notices.push(`${oversizeCount} ảnh vượt quá 5MB nên đã bỏ qua.`);
+      }
+      if (failedCount > 0) {
+        notices.push(
+          uploadedCount > 0
+            ? `Đã lưu ${uploadedCount} ảnh, nhưng ${failedCount} ảnh tải lên bị lỗi.`
+            : `Không thể tải ${failedCount} ảnh lên máy chủ ảnh.`
+        );
+      }
+      if (truncatedCount > 0) {
+        notices.push(`Chỉ giữ tối đa 10 ảnh (đã bỏ qua ${truncatedCount} ảnh vượt giới hạn).`);
+      }
+      if (notices.length > 0) {
+        dispatchToast(
+          notices.join(' '),
+          failedCount > 0 || invalidTypeCount > 0 || oversizeCount > 0 ? 'error' : 'info'
+        );
+      }
     } finally {
       if (isMountedRef.current) setUploadingEditPhoto(false);
       e.target.value = '';
@@ -393,7 +506,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
       return;
     }
     if (editPhotos.length >= 10) {
-      dispatchToast('Tối đa 10 ảnh thực địa cho mỗi nhật ký.', 'info');
+      dispatchToast('Tối đa 10 ảnh cho mỗi bài nhật ký.', 'info');
       return;
     }
     setEditPhotos((prev) => (prev.includes(trimmed) ? prev : [...prev, trimmed].slice(0, 10)));
@@ -448,7 +561,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
           tripDate: editTripDate || detail.tripDate,
           photos: finalPhotos.slice(0, 10),
           duration: editDuration.trim() || detail.duration,
-          groupSize: Math.min(100, Math.max(1, Math.round(Number(editGroupSize) || 2))),
+          groupSize: clampGroupSize(editGroupSize, 2),
           totalCost: editTotalCost.trim(),
           weatherCondition: editWeather.trim(),
           rating: editRating,
@@ -484,7 +597,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
   const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!detail || isPostingComment) return;
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!token) {
       dispatchToast('Vui lòng đăng nhập để bình luận nhật ký chuyến đi.', 'info');
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
@@ -610,7 +723,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
   const handleReact = useCallback(
     async (type: 'like' | 'love' | 'wow') => {
       if (!detail || isReacting) return;
-      const token = localStorage.getItem('lost_token');
+      const token = safeLocalStorageGet('lost_token');
       if (!token) {
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
@@ -692,11 +805,21 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
   const formattedTripDate = detail.tripDate
     ? (() => {
         const d = new Date(detail.tripDate);
-        return Number.isNaN(d.getTime())
-          ? detail.tripDate
-          : d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+        if (Number.isNaN(d.getTime())) return detail.tripDate;
+        try {
+          return d.toLocaleDateString('vi-VN', {
+            timeZone: 'Asia/Ho_Chi_Minh',
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+          });
+        } catch {
+          return d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+        }
       })()
     : 'Chưa rõ ngày';
+  const authorAvatarKey = `author:${detail._id}:${authorAvatar}`;
+  const showAuthorAvatar = Boolean(authorAvatar) && !failedImageKeys.includes(authorAvatarKey);
 
   const ratingVal = Math.min(5, Math.max(1, Number(detail.rating) || 5));
   const difficultyVal = Math.min(5, Math.max(1, Number(detail.difficultyActual) || 3));
@@ -762,13 +885,14 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                {authorAvatar ? (
+                {showAuthorAvatar ? (
                   <img
                     loading="lazy"
                     decoding="async"
                     src={authorAvatar}
                     alt={authorName}
                     referrerPolicy="no-referrer"
+                    onError={() => markImageFailed(authorAvatarKey)}
                     style={{
                       width: 36,
                       height: 36,
@@ -1008,21 +1132,22 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                     </div>
                     <div>
                       <label style={{ display: 'block', fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-text-muted)', marginBottom: 4 }}>
-                        Quy mô đoàn (người)
+                        Quy mô đoàn (1–50 người)
                       </label>
                       <input
                         type="number"
                         min={1}
-                        max={100}
+                        max={50}
                         className="form-input"
                         value={editGroupSize}
                         onChange={(e) => setEditGroupSize(e.target.value)}
+                        onBlur={() => setEditGroupSize(String(clampGroupSize(editGroupSize, 2)))}
                         style={{ width: '100%', padding: '7px 10px', fontSize: '0.82rem', borderRadius: 4 }}
                       />
                     </div>
                     <div>
                       <label style={{ display: 'block', fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-text-muted)', marginBottom: 4 }}>
-                        Chi phí thực tế
+                        Chi phí chuyến đi
                       </label>
                       <input
                         type="text"
@@ -1082,7 +1207,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
 
                     <div>
                       <div style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-text-muted)', marginBottom: 4 }}>
-                        Độ khó thực tế ({editDifficulty}/5)
+                        Độ khó cảm nhận ({editDifficulty}/5)
                       </div>
                       <div style={{ display: 'inline-flex', gap: 4 }}>
                         {[1, 2, 3, 4, 5].map((d) => (
@@ -1138,7 +1263,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                     </div>
                     <div>
                       <label style={{ display: 'block', fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-error-text, var(--color-error))', marginBottom: 4 }}>
-                        Cảnh báo hiện trường (mỗi dòng 1 ý)
+                        Lưu ý an toàn trên đường (mỗi dòng 1 ý)
                       </label>
                       <textarea
                         className="form-input"
@@ -1166,7 +1291,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8, flexWrap: 'wrap' }}>
                       <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--color-text-muted)' }}>
-                        Ảnh thực địa ({editPhotos.length}/10 ảnh)
+                        Ảnh chuyến đi ({editPhotos.length}/10 ảnh)
                       </label>
                       {editPhotos.length < 10 && (
                         <label
@@ -1188,7 +1313,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                           <span>{uploadingEditPhoto ? 'Đang tải...' : 'Tải thêm ảnh'}</span>
                           <input
                             type="file"
-                            accept="image/*"
+                            accept={ALLOWED_IMAGE_ACCEPT}
                             multiple
                             disabled={uploadingEditPhoto}
                             onChange={handleEditPhotoFiles}
@@ -1200,44 +1325,74 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
 
                     {editPhotos.length > 0 && (
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(84px, 1fr))', gap: 8, marginBottom: 8 }}>
-                        {editPhotos.map((src, idx) => (
-                          <div
-                            key={`${src}-${idx}`}
-                            style={{
-                              position: 'relative',
-                              height: 66,
-                              borderRadius: 4,
-                              overflow: 'hidden',
-                              border: '1px solid var(--color-border)',
-                              background: 'var(--color-bg-main)',
-                            }}
-                          >
-                            <img loading="lazy" decoding="async" src={src} alt={`Ảnh ${idx + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-                            <button
-                              type="button"
-                              onClick={() => setEditPhotos((prev) => prev.filter((_, i) => i !== idx))}
-                              aria-label={`Xóa ảnh ${idx + 1}`}
+                        {editPhotos.map((src, idx) => {
+                          const editImgKey = `edit:${detail._id}:${src}`;
+                          const isBroken = failedImageKeys.includes(editImgKey);
+                          return (
+                            <div
+                              key={`${src}-${idx}`}
                               style={{
-                                position: 'absolute',
-                                top: 3,
-                                right: 3,
-                                width: 20,
-                                height: 20,
+                                position: 'relative',
+                                height: 66,
                                 borderRadius: 4,
-                                background: 'var(--overlay-bg)',
-                                border: '1px solid var(--color-border-strong)',
-                                color: 'var(--color-on-media)',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                cursor: 'pointer',
-                                padding: 0,
+                                overflow: 'hidden',
+                                border: '1px solid var(--color-border)',
+                                background: 'var(--color-bg-main)',
                               }}
                             >
-                              <IconX size={11} color="var(--color-on-media)" />
-                            </button>
-                          </div>
-                        ))}
+                              {isBroken ? (
+                                <div
+                                  style={{
+                                    width: '100%',
+                                    height: '100%',
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: 2,
+                                    color: 'var(--color-text-dim)',
+                                    fontSize: '0.62rem',
+                                  }}
+                                >
+                                  <IconImage size={14} color="var(--color-text-dim)" />
+                                  <span>Lỗi ảnh</span>
+                                </div>
+                              ) : (
+                                <img
+                                  loading="lazy"
+                                  decoding="async"
+                                  src={src}
+                                  alt={`Ảnh ${idx + 1}`}
+                                  onError={() => markImageFailed(editImgKey)}
+                                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                                />
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setEditPhotos((prev) => prev.filter((_, i) => i !== idx))}
+                                aria-label={`Xóa ảnh ${idx + 1}`}
+                                style={{
+                                  position: 'absolute',
+                                  top: 3,
+                                  right: 3,
+                                  width: 20,
+                                  height: 20,
+                                  borderRadius: 4,
+                                  background: 'var(--overlay-bg)',
+                                  border: '1px solid var(--color-border-strong)',
+                                  color: 'var(--color-on-media)',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  cursor: 'pointer',
+                                  padding: 0,
+                                }}
+                              >
+                                <IconX size={11} color="var(--color-on-media)" />
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
 
@@ -1250,6 +1405,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                           value={editPhotoUrlInput}
                           onChange={(e) => setEditPhotoUrlInput(e.target.value)}
                           onKeyDown={(e) => {
+                            if (e.nativeEvent.isComposing) return;
                             if (e.key === 'Enter') {
                               e.preventDefault();
                               handleAddEditPhotoUrl();
@@ -1363,7 +1519,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
 
                 <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: '10px 12px' }}>
                   <div style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 5 }}>
-                    <IconMountain size={12} color="var(--color-earth)" /> Độ khó thực tế
+                    <IconMountain size={12} color="var(--color-earth)" /> Độ khó cảm nhận
                   </div>
                   <div style={{ fontSize: '0.86rem', fontWeight: 800, color: 'var(--color-earth)', marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
                     {difficultyVal}/5 {difficultyVal >= 4 ? '(Thử thách)' : difficultyVal <= 2 ? '(Nhẹ nhàng)' : '(Trung bình)'}
@@ -1384,7 +1540,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                 {detail.totalCost && (
                   <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: '10px 12px' }}>
                     <div style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 5 }}>
-                      <IconFlame size={12} color="var(--color-sun)" /> Chi phí thực tế
+                      <IconFlame size={12} color="var(--color-sun)" /> Chi phí chuyến đi
                     </div>
                     <div style={{ fontSize: '0.86rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
                       {detail.totalCost}
@@ -1410,7 +1566,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                 >
                   <IconCloud size={16} color="var(--color-sky)" style={{ flexShrink: 0 }} />
                   <div>
-                    <strong style={{ color: 'var(--color-sky)' }}>Thời tiết &amp; Đường mòn thực địa: </strong>
+                    <strong style={{ color: 'var(--color-sky)' }}>Thời tiết &amp; tình trạng đường mòn: </strong>
                     <span>{detail.weatherCondition}</span>
                   </div>
                 </div>
@@ -1467,7 +1623,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                       }}
                     >
                       <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-error-text, var(--color-error))', textTransform: 'uppercase', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <IconAlertTriangle size={14} color="var(--color-error-text, var(--color-error))" /> Cảnh báo hiện trường
+                        <IconAlertTriangle size={14} color="var(--color-error-text, var(--color-error))" /> Lưu ý an toàn trên đường
                       </div>
                       <ul style={{ margin: 0, paddingLeft: 16, display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.8rem', color: 'var(--color-text-main)' }}>
                         {warnings.map((w, i) => (
@@ -1504,7 +1660,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                 <div>
                   <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
                     <IconImage size={14} color="var(--color-primary)" />
-                    <span>Thư viện ảnh thực địa ({activePhotos.length})</span>
+                    <span>Ảnh chụp chuyến đi ({activePhotos.length})</span>
                   </div>
                   <div
                     style={{
@@ -1513,48 +1669,72 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                       gap: 10,
                     }}
                   >
-                    {activePhotos.map((photo, idx) => (
-                      <button
-                        key={idx}
-                        type="button"
-                        onClick={() => setLightboxIndex(idx)}
-                        style={{
-                          position: 'relative',
-                          height: activePhotos.length === 1 ? 260 : 150,
-                          borderRadius: 4,
-                          overflow: 'hidden',
-                          border: '1px solid var(--color-border)',
-                          padding: 0,
-                          cursor: 'zoom-in',
-                          background: 'var(--color-bg-main)',
-                        }}
-                        title="Bấm để phóng to ảnh"
-                      >
-                        <img
-                          loading="lazy"
-                          decoding="async"
-                          src={photo}
-                          alt={`${detail.title} - ảnh ${idx + 1}`}
-                          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                        />
-                        <span
+                    {activePhotos.map((photo, idx) => {
+                      const photoKey = `gallery:${detail._id}:${photo}`;
+                      const isBroken = failedImageKeys.includes(photoKey);
+                      return (
+                        <button
+                          key={`${photo}-${idx}`}
+                          type="button"
+                          onClick={() => setLightboxIndex(idx)}
                           style={{
-                            position: 'absolute',
-                            bottom: 6,
-                            right: 6,
-                            background: 'var(--overlay-bg)',
-                            color: 'var(--color-on-media)',
-                            fontSize: '0.68rem',
-                            fontWeight: 700,
-                            padding: '2px 7px',
+                            position: 'relative',
+                            height: activePhotos.length === 1 ? 260 : 150,
                             borderRadius: 4,
-                            border: '1px solid var(--color-border-strong)',
+                            overflow: 'hidden',
+                            border: '1px solid var(--color-border)',
+                            padding: 0,
+                            cursor: 'zoom-in',
+                            background: 'var(--color-bg-main)',
                           }}
+                          title="Bấm để phóng to ảnh"
                         >
-                          Ảnh #{idx + 1}
-                        </span>
-                      </button>
-                    ))}
+                          {isBroken ? (
+                            <div
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: 6,
+                                color: 'var(--color-text-dim)',
+                                fontSize: '0.76rem',
+                              }}
+                            >
+                              <IconImage size={20} color="var(--color-text-dim)" />
+                              <span>Không tải được ảnh</span>
+                            </div>
+                          ) : (
+                            <img
+                              loading="lazy"
+                              decoding="async"
+                              src={photo}
+                              alt={`${detail.title} - ảnh ${idx + 1}`}
+                              onError={() => markImageFailed(photoKey)}
+                              style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                            />
+                          )}
+                          <span
+                            style={{
+                              position: 'absolute',
+                              bottom: 6,
+                              right: 6,
+                              background: 'var(--overlay-bg)',
+                              color: 'var(--color-on-media)',
+                              fontSize: '0.68rem',
+                              fontWeight: 700,
+                              padding: '2px 7px',
+                              borderRadius: 4,
+                              border: '1px solid var(--color-border-strong)',
+                            }}
+                          >
+                            Ảnh #{idx + 1}
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -1596,6 +1776,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                     value={commentInput}
                     onChange={(e) => setCommentInput(e.target.value)}
                     onKeyDown={(e) => {
+                      if (e.nativeEvent.isComposing || (e as unknown as { isComposing?: boolean }).isComposing) return;
                       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
                         e.preventDefault();
                         if (commentInput.trim() && !isPostingComment) {
@@ -1660,14 +1841,28 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                       const createdLabel = (() => {
                         const d = new Date(c.createdAt);
                         if (Number.isNaN(d.getTime())) return '';
-                        return d.toLocaleString('vi-VN', {
-                          day: '2-digit',
-                          month: '2-digit',
-                          year: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        });
+                        try {
+                          return d.toLocaleString('vi-VN', {
+                            timeZone: 'Asia/Ho_Chi_Minh',
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          });
+                        } catch {
+                          return d.toLocaleString('vi-VN', {
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          });
+                        }
                       })();
+                      const commentAvatarKey = `comment-avatar:${c._id}:${c.authorAvatar || ''}`;
+                      const showCommentAvatar =
+                        Boolean(c.authorAvatar) && !failedImageKeys.includes(commentAvatarKey);
 
                       return (
                         <div
@@ -1684,13 +1879,14 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                         >
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                              {c.authorAvatar ? (
+                              {showCommentAvatar ? (
                                 <img
                                   loading="lazy"
                                   decoding="async"
                                   src={c.authorAvatar}
                                   alt={c.authorName}
                                   referrerPolicy="no-referrer"
+                                  onError={() => markImageFailed(commentAvatarKey)}
                                   style={{
                                     width: 24,
                                     height: 24,
@@ -1868,7 +2064,7 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
                     }}
                   >
                     <IconMountain size={13} color="var(--color-on-primary)" />
-                    <span>Mở Cung Đường Này</span>
+                    <span>Xem cung đường này</span>
                     <IconArrowRight size={13} color="var(--color-on-primary)" />
                   </button>
                 )}
@@ -2012,21 +2208,45 @@ export const TripReportDetailModal: React.FC<TripReportDetailModalProps> = ({
               </button>
             )}
 
-            <img
-              loading="lazy"
-              decoding="async"
-              src={activePhotos[lightboxIndex]}
-              alt={`${detail.title} - ảnh ${lightboxIndex + 1}`}
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                maxWidth: '86vw',
-                maxHeight: '74vh',
-                borderRadius: 4,
-                border: '1px solid var(--color-border-strong)',
-                boxShadow: 'var(--shadow-3d)',
-                objectFit: 'contain',
-              }}
-            />
+            {failedImageKeys.includes(`lightbox:${detail._id}:${activePhotos[lightboxIndex]}`) ? (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  padding: '32px 28px',
+                  borderRadius: 4,
+                  background: 'var(--color-bg-card)',
+                  border: '1px solid var(--color-border-strong)',
+                  color: 'var(--color-text-muted)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: 8,
+                  fontSize: '0.86rem',
+                }}
+              >
+                <IconImage size={28} color="var(--color-text-dim)" />
+                <span>Không thể tải ảnh này</span>
+              </div>
+            ) : (
+              <img
+                loading="lazy"
+                decoding="async"
+                src={activePhotos[lightboxIndex]}
+                alt={`${detail.title} - ảnh ${lightboxIndex + 1}`}
+                onClick={(e) => e.stopPropagation()}
+                onError={() =>
+                  markImageFailed(`lightbox:${detail._id}:${activePhotos[lightboxIndex]}`)
+                }
+                style={{
+                  maxWidth: '86vw',
+                  maxHeight: '74vh',
+                  borderRadius: 4,
+                  border: '1px solid var(--color-border-strong)',
+                  boxShadow: 'var(--shadow-3d)',
+                  objectFit: 'contain',
+                }}
+              />
+            )}
 
             {activePhotos.length > 1 && (
               <button

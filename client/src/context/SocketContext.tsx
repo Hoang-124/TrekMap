@@ -1,7 +1,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type { UserProfile } from '../types.js';
-import { clearSensitiveSessionStorage } from '../utils/storageScope.js';
+import { fetchWithTimeout } from '../utils/sessionHeaders.js';
+import { clearSensitiveSessionStorage, safeLocalStorageGet, safeLocalStorageRemove } from '../utils/storageScope.js';
 
 interface SocketConnectionContextType {
   socket: Socket | null;
@@ -49,7 +50,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
   }, [currentUserId, currentUserEmail]);
 
   useEffect(() => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('lost_token') : null;
+    const token = typeof window !== 'undefined' ? safeLocalStorageGet('lost_token') : null;
     const configuredUrl = (import.meta as ImportMeta & { env?: { VITE_API_BASE_URL?: string } }).env?.VITE_API_BASE_URL;
     const socketUrl =
       configuredUrl && configuredUrl.trim()
@@ -120,6 +121,9 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
       });
     });
 
+    const unmountController = new AbortController();
+    let banRedirectTimer: ReturnType<typeof setTimeout> | null = null;
+
     socketInstance.on('userBanned', (data: { userId?: string; email?: string; reason?: string }) => {
       const myId = userIdentityRef.current.id;
       const myEmail = userIdentityRef.current.email;
@@ -128,7 +132,7 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
         (data.email && myEmail && myEmail === data.email.toLowerCase())
       ) {
         clearSensitiveSessionStorage();
-        localStorage.removeItem('lost_token');
+        safeLocalStorageRemove('lost_token');
         window.dispatchEvent(new CustomEvent('lost:auth-changed'));
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
@@ -140,7 +144,9 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
             },
           })
         );
-        setTimeout(() => {
+        if (banRedirectTimer) clearTimeout(banRedirectTimer);
+        banRedirectTimer = setTimeout(() => {
+          banRedirectTimer = null;
           window.location.href = '/';
         }, 1200);
       }
@@ -150,10 +156,16 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
       const myId = userIdentityRef.current.id;
       if (data.userId && myId && String(myId) !== String(data.userId)) return;
       try {
-        const res = await fetch('/api/auth/refresh', {
-          method: 'POST',
-          credentials: 'include',
-        });
+        const res = await fetchWithTimeout(
+          '/api/auth/refresh',
+          {
+            method: 'POST',
+            credentials: 'include',
+            signal: unmountController.signal,
+          },
+          10_000
+        );
+        if (unmountController.signal.aborted) return;
         if (res.ok) {
           const json = await res.json().catch(() => ({}));
           if (json?.token) {
@@ -161,8 +173,10 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
           }
         }
       } catch {
+        if (unmountController.signal.aborted) return;
         // Non-fatal: user will refresh on next navigation
       }
+      if (unmountController.signal.aborted) return;
       window.dispatchEvent(new CustomEvent('lost:auth-changed'));
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
@@ -192,7 +206,13 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ currentUser, chi
     });
 
     return () => {
+      unmountController.abort();
+      if (banRedirectTimer) {
+        clearTimeout(banRedirectTimer);
+        banRedirectTimer = null;
+      }
       clearInterval(pingInterval);
+      socketInstance.removeAllListeners();
       socketInstance.disconnect();
       setSocket((prev) => (prev === null ? prev : null));
       setIsConnected((prev) => (prev ? false : prev));

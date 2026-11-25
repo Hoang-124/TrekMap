@@ -10,6 +10,9 @@ import { awardReputationPoints } from '../utils/reputation.js';
 import { recordActivity } from '../utils/audit.js';
 import { sendNotification } from '../utils/notification.js';
 import { invalidateCache } from '../middleware/cache.middleware.js';
+import { isValidObjectId } from '../utils/resolveTrail.js';
+
+const VALID_CHALLENGE_REGIONS = new Set(['Toàn Quốc', 'Miền Bắc', 'Miền Trung', 'Miền Nam']);
 
 interface UserConquestSnapshot {
   uniqueTrails: Array<{
@@ -206,19 +209,23 @@ export const getChallenges = async (req: AuthRequest, res: Response) => {
     }
 
     const filter: any = { isActive: true };
-    if (typeof req.query.region === 'string' && req.query.region !== 'All' && req.query.region.trim()) {
+    if (
+      typeof req.query.region === 'string' &&
+      req.query.region !== 'All' &&
+      VALID_CHALLENGE_REGIONS.has(req.query.region.trim())
+    ) {
       filter.region = req.query.region.trim();
     }
     if (typeof req.query.tier === 'string' && req.query.tier.trim()) {
-      filter.tier = req.query.tier.trim();
+      filter.tier = req.query.tier.trim().slice(0, 40);
     }
 
-    const challenges = await SummitChallengeModel.find(filter).sort({ sortOrder: 1, createdAt: 1 }).lean();
+    const challenges = await SummitChallengeModel.find(filter).sort({ sortOrder: 1, createdAt: 1 }).limit(100).lean();
 
     let snapshot: UserConquestSnapshot | null = null;
     const claimedSlugs = new Set<string>();
 
-    if (req.user?.userId && Types.ObjectId.isValid(req.user.userId)) {
+    if (req.user?.userId && isValidObjectId(req.user.userId)) {
       const [snap, claims] = await Promise.all([
         buildUserConquestSnapshot(req.user.userId),
         ChallengeClaimModel.find({ userId: new Types.ObjectId(req.user.userId) }).select('challengeSlug').lean(),
@@ -549,8 +556,8 @@ export const getChallengeLeaderboard = async (req: Request, res: Response) => {
 export const getChallengeBySlug = async (req: AuthRequest, res: Response) => {
   try {
     const slug = String(req.params.slug || '').trim().toLowerCase();
-    if (!slug) {
-      return res.status(400).json({ success: false, message: 'Thiếu mã thử thách.' });
+    if (!slug || slug.length > 80) {
+      return res.status(400).json({ success: false, message: 'Mã thử thách không hợp lệ.' });
     }
     if (mongoose.connection.readyState !== 1) {
       return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
@@ -629,11 +636,11 @@ export const claimChallengeReward = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
     const slug = String(req.params.slug || '').trim().toLowerCase();
-    if (!userId || !Types.ObjectId.isValid(userId)) {
+    if (!userId || !isValidObjectId(userId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để nhận huy hiệu thử thách.' });
     }
-    if (!slug) {
-      return res.status(400).json({ success: false, message: 'Thiếu mã thử thách.' });
+    if (!slug || slug.length > 80) {
+      return res.status(400).json({ success: false, message: 'Mã thử thách không hợp lệ.' });
     }
     if (mongoose.connection.readyState !== 1) {
       return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });

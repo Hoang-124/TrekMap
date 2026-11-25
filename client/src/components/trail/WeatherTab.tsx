@@ -67,7 +67,7 @@ export const WeatherTab: React.FC<WeatherTabProps> = ({ trail }) => {
           setAstroData(null);
           setGridElevationM(null);
           setApiSource('');
-          setErrorMessage(res.error || 'Chưa có dữ liệu dự báo thời tiết thực tế từ trạm Open-Meteo.');
+          setErrorMessage(res.error || 'Chưa có dữ liệu dự báo thời tiết thực tế từ MET Norway.');
         }
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') return;
@@ -104,7 +104,7 @@ export const WeatherTab: React.FC<WeatherTabProps> = ({ trail }) => {
           Không thể tải dữ liệu thời tiết vùng núi
         </div>
         <div style={{ fontSize: '0.86rem', color: 'var(--color-text-muted)', maxWidth: 460 }}>
-          {errorMessage || 'Trạm dự báo Open-Meteo hiện tạm thời không phản hồi. Vui lòng thử lại sau ít phút.'}
+          {errorMessage || 'Trạm dự báo MET Norway hiện tạm thời không phản hồi. Vui lòng thử lại sau ít phút.'}
         </div>
         <button
           type="button"
@@ -122,7 +122,7 @@ export const WeatherTab: React.FC<WeatherTabProps> = ({ trail }) => {
   const cloudIndex = todayWeather.seaOfCloudsIndex ?? 0;
   const WEEKDAYS_VI = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
 
-  // Residual alpine lapse rate from Open-Meteo DEM grid elevation up to actual trail summit (-6.5°C / 1,000m)
+  // Residual alpine lapse rate from MET Norway DEM grid elevation up to actual trail summit (-6.5°C / 1,000m)
   const summitAltitudeM = Math.max(0, Number(trail.maxAltitudeM) || 0);
   const effectiveGridElevM =
     gridElevationM !== null && gridElevationM > 0 ? Math.min(gridElevationM, summitAltitudeM) : Math.round(summitAltitudeM * 0.72);
@@ -254,7 +254,7 @@ export const WeatherTab: React.FC<WeatherTabProps> = ({ trail }) => {
             Chênh cao dư <strong style={{ color: 'var(--color-sky)' }}>+{residualAltitudeM.toLocaleString('vi-VN')}m</strong> → giảm thêm{' '}
             <strong style={{ color: 'var(--color-primary)' }}>-{residualDropC}°C</strong> (-6,5°C/1.000m). {altitudeClimateAdvice}
           </span>
-          <span className="badge badge-stream" style={{ flexShrink: 0 }}>Open-Meteo GPS</span>
+          <span className="badge badge-stream" style={{ flexShrink: 0 }}>MET Norway (CC BY 4.0)</span>
         </div>
 
         <div
@@ -301,7 +301,7 @@ export const WeatherTab: React.FC<WeatherTabProps> = ({ trail }) => {
             Dự báo thời tiết vùng {trail.province}
           </h3>
           <p style={{ fontSize: '0.8rem', color: 'var(--color-text-dim)', marginBottom: 20 }}>
-            Nhiệt độ đã hiệu chỉnh lên đỉnh {summitAltitudeM.toLocaleString('vi-VN')}m (-{residualDropC}°C từ trạm lưới Open-Meteo {effectiveGridElevM.toLocaleString('vi-VN')}m).
+            Nhiệt độ đã hiệu chỉnh lên đỉnh {summitAltitudeM.toLocaleString('vi-VN')}m (-{residualDropC}°C từ lưới DEM MET Norway {effectiveGridElevM.toLocaleString('vi-VN')}m). Nguồn: MET Norway (CC BY 4.0).
           </p>
 
           <div

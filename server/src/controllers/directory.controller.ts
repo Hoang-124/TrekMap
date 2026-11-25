@@ -8,13 +8,28 @@ import { UserModel } from '../models/User.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { isValidObjectId, resolveTrailByIdOrSlug } from '../utils/resolveTrail.js';
 import { sanitizeInput, validatePhoneNumber } from '../utils/validation.js';
-import { notifyAdmins } from '../utils/notification.js';
+import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
+import { notifyAdmins, sendNotification } from '../utils/notification.js';
+import { recordAuditLog } from '../utils/audit.js';
 
 const VALID_ROLE_TYPES = new Set(['guide', 'porter', 'operator']);
 const VALID_AUTHORITY_TYPES = new Set(['national_park', 'ranger_station', 'border_guard', 'rescue_center']);
 const VALID_REGIONS = new Set(['Miền Bắc', 'Miền Trung', 'Miền Nam']);
 const VALID_RANGER_REGIONS = new Set(['Toàn Quốc', 'Miền Bắc', 'Miền Trung', 'Miền Nam']);
 const VALID_INQUIRY_STATUSES = new Set<GuideInquiryStatus>(['pending', 'contacted', 'confirmed', 'cancelled']);
+const MAX_ACTIVE_INQUIRIES_PER_USER = 10;
+const INQUIRY_STATUS_LABELS: Record<GuideInquiryStatus, string> = {
+  pending: 'Đang chờ xác nhận',
+  contacted: 'Đã liên hệ',
+  confirmed: 'Đã xác nhận lịch',
+  cancelled: 'Đã hủy',
+};
+
+function parseStrictFiniteNumber(val: unknown): number | null {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
 
 // GET /api/directory/guides - Rich filterable Porter/Guide & Local Operator directory
 export const getDirectoryGuides = async (req: Request, res: Response) => {
@@ -37,7 +52,7 @@ export const getDirectoryGuides = async (req: Request, res: Response) => {
       sortBy = 'rating',
     } = req.query;
 
-    const page = Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1);
+    const page = Math.min(Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1), 1000);
     const limit = Math.min(Math.max(parseInt(String(req.query.limit || '24'), 10) || 24, 1), 60);
     const skip = (page - 1) * limit;
 
@@ -64,11 +79,13 @@ export const getDirectoryGuides = async (req: Request, res: Response) => {
       const esc = language.trim().slice(0, 50).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.languages = { $regex: new RegExp(esc, 'i') };
     }
-    if (minRating !== undefined && Number.isFinite(Number(minRating))) {
-      filter.rating = { $gte: Math.max(0, Math.min(5, Number(minRating))) };
+    const parsedMinRating = parseStrictFiniteNumber(minRating);
+    if (parsedMinRating !== null) {
+      filter.rating = { $gte: Math.max(0, Math.min(5, parsedMinRating)) };
     }
-    if (maxPriceVnd !== undefined && Number.isFinite(Number(maxPriceVnd)) && Number(maxPriceVnd) > 0) {
-      filter.basePricePerDayVnd = { $lte: Number(maxPriceVnd) };
+    const parsedMaxPrice = parseStrictFiniteNumber(maxPriceVnd);
+    if (parsedMaxPrice !== null && parsedMaxPrice > 0) {
+      filter.basePricePerDayVnd = { $lte: parsedMaxPrice };
     }
     if (verified === 'true') {
       filter.verified = true;
@@ -172,6 +189,17 @@ export const createGuideInquiry = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ success: false, message: 'Không tìm thấy Porter/Guide khả dụng.' });
     }
 
+    const openInquiriesCount = await GuideInquiryModel.countDocuments({
+      userId: new Types.ObjectId(userId),
+      status: { $in: ['pending', 'contacted'] },
+    });
+    if (openInquiriesCount >= MAX_ACTIVE_INQUIRIES_PER_USER) {
+      return res.status(400).json({
+        success: false,
+        message: `Bạn đang có ${MAX_ACTIVE_INQUIRIES_PER_USER} yêu cầu đặt Porter/Guide đang mở. Vui lòng hoàn tất hoặc hủy bớt trước khi gửi thêm.`,
+      });
+    }
+
     const {
       trailId,
       trailName,
@@ -206,7 +234,7 @@ export const createGuideInquiry = async (req: AuthRequest, res: Response) => {
 
     if (typeof trailId === 'string' && trailId.trim()) {
       const trail = await resolveTrailByIdOrSlug(trailId.trim());
-      if (trail) {
+      if (trail && (!trail.status || trail.status === 'approved')) {
         resolvedTrailId = trail._id;
         resolvedTrailSlug = trail.id || '';
         if (!resolvedTrailName) resolvedTrailName = trail.name;
@@ -214,6 +242,15 @@ export const createGuideInquiry = async (req: AuthRequest, res: Response) => {
     }
     if (!resolvedTrailName) {
       return res.status(400).json({ success: false, message: 'Vui lòng chọn hoặc nhập tên cung đường.' });
+    }
+
+    const safeNotes = sanitizeInput(String(notes || '')).slice(0, 800);
+    if (containsProfanity(`${resolvedTrailName} ${safeNotes}`)) {
+      const matched = getProfanityMatch(`${resolvedTrailName} ${safeNotes}`);
+      return res.status(400).json({
+        success: false,
+        message: `Yêu cầu liên hệ chứa từ ngữ không phù hợp ("${matched}").`,
+      });
     }
 
     // Server-side transparent VND calculation
@@ -232,7 +269,7 @@ export const createGuideInquiry = async (req: AuthRequest, res: Response) => {
       groupSize: safeGroupSize,
       needPortersCount: safePorters,
       contactPhone: phoneCheck.cleanPhone,
-      notes: sanitizeInput(String(notes || '')).slice(0, 800),
+      notes: safeNotes,
       estimatedTotalVnd,
       status: 'pending',
     });
@@ -292,7 +329,7 @@ export const getAllGuideInquiriesAdmin = async (req: AuthRequest, res: Response)
     }
 
     const limit = Math.min(Math.max(parseInt(String(req.query.limit || '100'), 10) || 100, 1), 200);
-    const page = Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1);
+    const page = Math.min(Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1), 1000);
     const skip = (page - 1) * limit;
     const rawStatus = typeof req.query.status === 'string' ? req.query.status.trim() : '';
 
@@ -363,8 +400,33 @@ export const updateGuideInquiryStatus = async (req: AuthRequest, res: Response) 
       return res.status(403).json({ success: false, message: 'Người đặt chỉ có thể hủy yêu cầu.' });
     }
 
+    const prevStatus = inquiry.status;
     inquiry.status = status as GuideInquiryStatus;
     await inquiry.save();
+
+    if (prevStatus !== inquiry.status) {
+      await recordAuditLog(
+        req,
+        'UPDATE_GUIDE_INQUIRY_STATUS',
+        'guide_inquiries',
+        `Cập nhật trạng thái yêu cầu đặt Porter/Guide ${inquiry._id}: ${prevStatus} -> ${inquiry.status}`
+      );
+
+      if (isStaff && !isOwner) {
+        const guideDoc = await GuideModel.findById(inquiry.guideId).select('name').lean();
+        const guideName = guideDoc?.name || 'Porter/Guide';
+        const statusLabel = INQUIRY_STATUS_LABELS[inquiry.status] || inquiry.status;
+        sendNotification({
+          recipientId: String(inquiry.userId),
+          type: 'system',
+          category: 'system',
+          title: 'Cập nhật trạng thái yêu cầu Porter/Guide',
+          message: `Yêu cầu đặt ${guideName} cho cung "${inquiry.trailName}" đã chuyển sang trạng thái: ${statusLabel}.`,
+          link: '/directory',
+          relatedId: inquiry._id.toString(),
+        }).catch(() => {});
+      }
+    }
 
     return res.json({ success: true, message: 'Đã cập nhật trạng thái yêu cầu.', data: inquiry });
   } catch (err) {

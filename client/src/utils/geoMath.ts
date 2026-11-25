@@ -124,9 +124,27 @@ ${trkpts}
 </gpx>`;
 }
 
+function stripVietnameseToGsm7(input: string): string {
+  return String(input || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .replace(/[^\x20-\x7E\n]/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+function isIosSmsSeparator(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/iPad|iPhone|iPod/i.test(ua)) return true;
+  return navigator.platform === 'MacIntel' && typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1;
+}
+
 /**
- * Generates an Offline 2G-compatible SOS SMS URI (`sms:<phone>?body=...`) containing exact decimal GPS,
- * altitude, and trail name so trekkers can send rescue beacons without mobile data.
+ * Generates an Offline 2G-compatible SOS SMS URI (`sms:<phone>?body=...` on Android, `&body=` on iOS)
+ * using 7-bit GSM-7 ASCII so rescue beacons avoid UCS-2 multi-part fragmentation on weak 2G mountain signal.
  */
 export function buildOfflineSosSmsUri(params: {
   phone?: string;
@@ -136,29 +154,33 @@ export function buildOfflineSosSmsUri(params: {
   altitudeM?: number | null;
   note?: string;
 }): { uri: string; body: string } {
-  const targetPhone = (params.phone || '112').replace(/[^\d+]/g, '') || '112';
+  const targetPhone = (params.phone || '').replace(/[^\d+]/g, '');
   const hasCoords =
     typeof params.lat === 'number' &&
     typeof params.lng === 'number' &&
     Number.isFinite(params.lat) &&
     Number.isFinite(params.lng);
 
+  const safeTrail = params.trailName ? stripVietnameseToGsm7(params.trailName) : '';
+  const safeNote = params.note ? stripVietnameseToGsm7(params.note) : '';
+
   const lines = [
     '[SOS KHAN CAP - LOST]',
-    params.trailName ? `Tuyen: ${params.trailName}` : 'Can ho tro cuu nan khan cap!',
+    safeTrail ? `Tuyen: ${safeTrail}` : 'Can ho tro cuu nan khan cap!',
     hasCoords
       ? `Toa do GPS: ${params.lat!.toFixed(6)}, ${params.lng!.toFixed(6)}`
-      : 'Toa do GPS: Dang do tin hieu',
+      : 'Toa do GPS: Chua khoa duoc GPS',
     hasCoords ? `Maps: https://maps.google.com/?q=${params.lat!.toFixed(6)},${params.lng!.toFixed(6)}` : '',
     typeof params.altitudeM === 'number' && Number.isFinite(params.altitudeM)
       ? `Do cao: ${Math.round(params.altitudeM)}m`
       : '',
-    params.note ? `Tinh trang: ${params.note}` : 'Can ho tro khan cap, vui long lien he ngay!',
+    safeNote ? `Tinh trang: ${safeNote}` : 'Can ho tro khan cap, vui long lien he ngay!',
   ].filter(Boolean);
 
   const body = lines.join('\n');
+  const separator = isIosSmsSeparator() ? '&' : '?';
   return {
-    uri: `sms:${targetPhone}?body=${encodeURIComponent(body)}`,
+    uri: `sms:${targetPhone}${separator}body=${encodeURIComponent(body)}`,
     body,
   };
 }
@@ -215,7 +237,7 @@ export function buildOfflineTileUrls(
     return urls.length >= maxTiles;
   };
 
-  // Add slight padding (~0.01 deg ≈ 1km) around the trail bounding box for overview zooms (<= 13)
+  // Add slight padding (~0.01 deg ≈ 1km) around the trail bounding box for overview zooms (<= 12)
   const pad = 0.01;
   const padMinLat = minLat - pad;
   const padMaxLat = maxLat + pad;
@@ -223,7 +245,7 @@ export function buildOfflineTileUrls(
   const padMaxLng = maxLng + pad;
 
   for (const z of zooms) {
-    if (z <= 13) {
+    if (z <= 12) {
       const topLeft = latLngToTile(padMaxLat, padMinLng, z);
       const bottomRight = latLngToTile(padMinLat, padMaxLng, z);
       for (let x = topLeft.x; x <= bottomRight.x; x++) {
@@ -305,14 +327,21 @@ export function computeExpenseSettlement(
   memberCount: number
 ): ExpenseSettlementSummary {
   const safeMembers = Math.max(1, memberCount || 1);
-  const totalVnd = expenses.reduce((sum, e) => sum + (Number(e.amountVnd) || 0), 0);
-  const perPersonAverageVnd = Math.round(totalVnd / safeMembers);
+  let totalVnd = 0;
+  let perPersonShareSum = 0;
 
   const byPayer = new Map<string, number>();
   for (const exp of expenses) {
+    const amount = Number(exp.amountVnd) || 0;
+    const rawSplit = Number(exp.splitCount);
+    const divisor = Number.isFinite(rawSplit) && rawSplit >= 1 ? Math.min(safeMembers, Math.round(rawSplit)) : safeMembers;
+    totalVnd += amount;
+    perPersonShareSum += amount / divisor;
     const name = exp.paidByName || 'Thành viên';
-    byPayer.set(name, (byPayer.get(name) || 0) + (Number(exp.amountVnd) || 0));
+    byPayer.set(name, (byPayer.get(name) || 0) + amount);
   }
+
+  const perPersonAverageVnd = Math.round(perPersonShareSum);
 
   const payerTotals = Array.from(byPayer.entries()).map(([name, paidVnd]) => ({
     name,

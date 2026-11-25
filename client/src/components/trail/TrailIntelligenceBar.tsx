@@ -23,7 +23,9 @@ import {
   IconBot,
   IconDownload,
   IconCopy,
+  IconX,
 } from '../common/SvgIcons.js';
+import { safeLocalStorageGet } from '../../utils/storageScope.js';
 
 const Terrain3DModal = lazy(() => import('../map/Terrain3DModal.js'));
 const SafetyTimerModal = lazy(() =>
@@ -47,6 +49,35 @@ interface TrailIntelligenceBarProps {
 /**
  * Returns today's date (YYYY-MM-DD) strictly in Vietnam local timezone (Asia/Ho_Chi_Minh).
  */
+const CONDITION_STATUS_VI: Record<string, string> = {
+  clear: 'Khô ráo / Thuận lợi',
+  dry: 'Khô ráo',
+  good: 'Thuận lợi',
+  muddy: 'Lầy lội',
+  slippery: 'Trơn trượt',
+  flooded: 'Ngập nước / Suối dâng',
+  landslide: 'Sạt lở',
+  foggy: 'Sương mù dày',
+  overgrown: 'Cây rậm / Khó tìm lối',
+  closed: 'Tạm đóng tuyến',
+  danger: 'Nguy hiểm',
+  caution: 'Cần thận trọng',
+};
+
+function formatConditionStatusVi(status?: string): string {
+  const key = String(status || '').trim().toLowerCase();
+  return CONDITION_STATUS_VI[key] || (key ? 'Cập nhật thực địa' : 'Thực địa');
+}
+
+function escapePrintHtml(text: string): string {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function getVietnamLocalDateIso(offsetDays = 0): string {
   const target = new Date(Date.now() + offsetDays * 86_400_000);
   try {
@@ -90,6 +121,20 @@ export const TrailIntelligenceBar: React.FC<TrailIntelligenceBarProps> = ({
   // AbortControllers to eliminate stale trail-switch race conditions
   const goNoGoAbortRef = useRef<AbortController | null>(null);
   const permitAbortRef = useRef<AbortController | null>(null);
+  const offlineAbortRef = useRef<AbortController | null>(null);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      offlineAbortRef.current?.abort();
+      offlineAbortRef.current = null;
+    };
+  }, []);
+
+  const currentUserId =
+    currentUser?.id || (currentUser as (UserProfile & { _id?: string }) | null)?._id || null;
 
   const emitToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     window.dispatchEvent(new CustomEvent('lost:show-toast', { detail: { message, type } }));
@@ -107,18 +152,21 @@ export const TrailIntelligenceBar: React.FC<TrailIntelligenceBarProps> = ({
     setPermitLoading(false);
     setShowPermitDrawer(false);
     setShowGoNoGo(false);
+    setOfflineProgress(null);
   }
 
   useEffect(() => {
     let active = true;
     goNoGoAbortRef.current?.abort();
     permitAbortRef.current?.abort();
+    offlineAbortRef.current?.abort();
+    offlineAbortRef.current = null;
 
     getOfflineTrailPack(trail.id).then((pack) => {
       if (active) setOfflinePack(pack);
     });
 
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!token) {
       Promise.resolve().then(() => {
         if (active) setIsSaved(false);
@@ -130,7 +178,7 @@ export const TrailIntelligenceBar: React.FC<TrailIntelligenceBarProps> = ({
 
     const savedCtrl = new AbortController();
     fetch('/api/saved-trails', { headers: getApiHeaders(), signal: savedCtrl.signal })
-      .then((res) => (res.ok ? res.json() : null))
+      .then((res) => (res.ok ? res.json().catch(() => null) : null))
       .then((json) => {
         if (!active) return;
         if (json?.success && Array.isArray(json.data)) {
@@ -149,11 +197,12 @@ export const TrailIntelligenceBar: React.FC<TrailIntelligenceBarProps> = ({
       savedCtrl.abort();
       goNoGoAbortRef.current?.abort();
       permitAbortRef.current?.abort();
+      offlineAbortRef.current?.abort();
     };
-  }, [trail.id, trailMongoId]);
+  }, [trail.id, trailMongoId, currentUserId]);
 
   const handleToggleWishlist = async () => {
-    if (!currentUser && !localStorage.getItem('lost_token')) {
+    if (!currentUser && !safeLocalStorageGet('lost_token')) {
       onRequireLogin?.('lưu cung đường yêu thích');
       return;
     }
@@ -164,8 +213,8 @@ export const TrailIntelligenceBar: React.FC<TrailIntelligenceBarProps> = ({
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({}),
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.message);
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.success) throw new Error(data?.message || 'Không thể lưu cung đường lúc này.');
       setIsSaved(Boolean(data.saved));
       emitToast(data.message || (data.saved ? 'Đã lưu cung đường!' : 'Đã bỏ lưu cung đường.'), data.saved ? 'success' : 'info');
     } catch (err: unknown) {
@@ -175,14 +224,34 @@ export const TrailIntelligenceBar: React.FC<TrailIntelligenceBarProps> = ({
     }
   };
 
+  const handleCancelOfflineDownload = () => {
+    if (!offlineAbortRef.current) return;
+    offlineAbortRef.current.abort();
+    offlineAbortRef.current = null;
+    setOfflineProgress(null);
+    emitToast('Đã hủy tải gói ngoại tuyến.', 'info');
+  };
+
   const handleDownloadOfflinePack = async () => {
     if (offlineProgress !== null) return;
+    offlineAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    offlineAbortRef.current = ctrl;
     setOfflineProgress(5);
     try {
-      const pack = await downloadOfflineTrailPack(trail, (pct) => setOfflineProgress(pct));
+      const pack = await downloadOfflineTrailPack(
+        trail,
+        (pct) => {
+          if (isMountedRef.current && !ctrl.signal.aborted) {
+            setOfflineProgress(pct);
+          }
+        },
+        { signal: ctrl.signal }
+      );
+      if (!isMountedRef.current || ctrl.signal.aborted) return;
       setOfflinePack(pack);
       setOfflineProgress(null);
-      emitToast(`Đã tải Gói Offline (${pack.tileCount} ô bản đồ · ~${pack.estimatedSizeMb} MB)!`, 'success');
+      emitToast(`Đã tải gói ngoại tuyến (${pack.tileCount} ô địa hình · ~${pack.estimatedSizeMb} MB)!`, 'success');
 
       if (localStorage.getItem('lost_token')) {
         fetch(`/api/saved-trails/${encodeURIComponent(trail.id)}`, {
@@ -190,12 +259,21 @@ export const TrailIntelligenceBar: React.FC<TrailIntelligenceBarProps> = ({
           headers: getApiHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ savedOffline: true, forceSave: true }),
         })
-          .then((r) => r.ok && setIsSaved(true))
+          .then((r) => {
+            if (r.ok && isMountedRef.current) setIsSaved(true);
+          })
           .catch(() => {});
       }
     } catch (err: unknown) {
-      setOfflineProgress(null);
-      emitToast(err instanceof Error ? err.message : 'Không thể tải gói bản đồ Offline.', 'error');
+      if (err instanceof Error && err.name === 'AbortError') return;
+      if (isMountedRef.current) {
+        setOfflineProgress(null);
+        emitToast(err instanceof Error ? err.message : 'Không thể tải gói bản đồ Offline.', 'error');
+      }
+    } finally {
+      if (offlineAbortRef.current === ctrl) {
+        offlineAbortRef.current = null;
+      }
     }
   };
 
@@ -245,8 +323,8 @@ export const TrailIntelligenceBar: React.FC<TrailIntelligenceBarProps> = ({
         const res = await fetch(`/api/trails/${encodeURIComponent(trail.id)}/permit-template`, {
           signal: ctrl.signal,
         });
-        const json = await res.json();
-        if (!ctrl.signal.aborted && json.success && json.data) {
+        const json = await res.json().catch(() => null);
+        if (!ctrl.signal.aborted && res.ok && json?.success && json.data) {
           setPermitData(json.data);
         } else if (!ctrl.signal.aborted) {
           emitToast('Không thể tải mẫu giấy phép VQG lúc này.', 'error');
@@ -331,20 +409,45 @@ export const TrailIntelligenceBar: React.FC<TrailIntelligenceBarProps> = ({
               </button>
             </div>
           ) : (
-            <button
-              type="button"
-              className="btn btn-outline"
-              onClick={handleDownloadOfflinePack}
-              disabled={offlineProgress !== null}
-              style={{ padding: '7px 13px', fontSize: '0.8rem' }}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--color-sky)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="7 10 12 15 17 10" />
-                <line x1="12" y1="15" x2="12" y2="3" />
-              </svg>
-              <span>{offlineProgress !== null ? `Đang tải Offline (${offlineProgress}%)...` : 'Tải Gói Offline'}</span>
-            </button>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={handleDownloadOfflinePack}
+                disabled={offlineProgress !== null}
+                style={{ padding: '7px 13px', fontSize: '0.8rem' }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--color-sky)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                <span>{offlineProgress !== null ? `Đang tải Offline (${offlineProgress}%)...` : 'Tải Gói Offline'}</span>
+              </button>
+              {offlineProgress !== null && (
+                <button
+                  type="button"
+                  onClick={handleCancelOfflineDownload}
+                  aria-label="Hủy tải gói ngoại tuyến"
+                  style={{
+                    padding: '7px 10px',
+                    borderRadius: 4,
+                    fontSize: '0.78rem',
+                    fontWeight: 700,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    border: '1px solid color-mix(in srgb, var(--color-error) 40%, transparent)',
+                    background: 'color-mix(in srgb, var(--color-error) 10%, var(--color-bg-card))',
+                    color: 'var(--color-error-text, var(--color-error))',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <IconX size={13} color="currentColor" />
+                  <span>Hủy tải</span>
+                </button>
+              )}
+            </div>
           )}
 
           <button
@@ -461,7 +564,7 @@ export const TrailIntelligenceBar: React.FC<TrailIntelligenceBarProps> = ({
 
           {goNoGoLoading ? (
             <div style={{ textAlign: 'center', padding: 20, color: 'var(--color-text-muted)', fontSize: '0.84rem' }}>
-              Đang tổng hợp thời tiết Open-Meteo {trail.durationDays > 1 ? `(${trail.durationDays} ngày hành trình)` : ''}, nhiệt độ đỉnh {trail.maxAltitudeM}m, sự cố sạt lở và báo cáo thực địa...
+              Đang tổng hợp thời tiết MET Norway (CC BY 4.0) {trail.durationDays > 1 ? `(${trail.durationDays} ngày hành trình)` : ''}, nhiệt độ đỉnh {trail.maxAltitudeM}m, sự cố sạt lở và báo cáo thực địa...
             </div>
           ) : goNoGoResult ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -613,7 +716,10 @@ export const TrailIntelligenceBar: React.FC<TrailIntelligenceBarProps> = ({
                   <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--color-text-muted)', lineHeight: 1.55 }}>
                     {goNoGoResult.recentConditions.map((c, idx) => (
                       <li key={idx}>
-                        <strong style={{ color: 'var(--color-text-main)' }}>[{c.status.toUpperCase()}]</strong> {c.note}{' '}
+                        <strong style={{ color: 'var(--color-text-main)' }}>
+                          [{formatConditionStatusVi(c.status)}]
+                        </strong>{' '}
+                        {c.note}{' '}
                         <span style={{ color: 'var(--color-text-dim)' }}>({c.reportedAt})</span>
                       </li>
                     ))}
@@ -740,7 +846,56 @@ export const TrailIntelligenceBar: React.FC<TrailIntelligenceBarProps> = ({
                     type="button"
                     className="btn btn-outline"
                     onClick={() => {
-                      window.print();
+                      const printWin = window.open('', '_blank', 'noopener,noreferrer,width=840,height=920');
+                      if (!printWin) {
+                        window.print();
+                        return;
+                      }
+                      const checklistHtml = permitData.checklist
+                        .map((item) => `<li>${escapePrintHtml(item)}</li>`)
+                        .join('');
+                      const htmlDoc = `<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<title>Hồ Sơ Đăng Ký Rừng — ${escapePrintHtml(trail.name)}</title>
+<style>
+  @page { size: A4; margin: 18mm; }
+  body { font-family: 'Plus Jakarta Sans', 'Inter', system-ui, -apple-system, sans-serif; color: black; background: white; margin: 0; padding: 0; line-height: 1.55; }
+  .header { border-bottom: 2px solid black; padding-bottom: 10px; margin-bottom: 14px; }
+  .eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: dimgray; font-weight: 700; }
+  h1 { font-size: 18px; margin: 4px 0; }
+  .meta { font-size: 13px; color: dimgray; }
+  h2 { font-size: 14px; margin: 14px 0 6px 0; }
+  ul { margin: 0 0 14px 0; padding-left: 20px; font-size: 13px; }
+  pre { white-space: pre-wrap; font-family: inherit; font-size: 13px; border: 1px solid silver; padding: 14px; border-radius: 4px; background: whitesmoke; line-height: 1.6; }
+  .footer { margin-top: 14px; font-size: 11px; color: gray; text-align: right; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="eyebrow">Hồ Sơ Thủ Tục Rừng &amp; Biên Giới Việt Nam · LOST</div>
+    <h1>${escapePrintHtml(trail.name)} — ${escapePrintHtml(trail.province)}</h1>
+    <div class="meta">Cơ quan tiếp nhận: <strong>${escapePrintHtml(permitData.authority)}</strong></div>
+  </div>
+  <h2>Danh mục chuẩn bị trước chốt kiểm lâm</h2>
+  <ul>${checklistHtml}</ul>
+  <h2>Mẫu đơn đăng ký đoàn leo núi</h2>
+  <pre>${escapePrintHtml(permitData.registrationTemplateText)}</pre>
+  <div class="footer">Xuất từ LOST Việt Nam (https://lost.vn) — Phiếu đăng ký thực địa độc lập</div>
+</body>
+</html>`;
+                      printWin.document.open();
+                      printWin.document.write(htmlDoc);
+                      printWin.document.close();
+                      printWin.focus();
+                      window.setTimeout(() => {
+                        try {
+                          printWin.print();
+                        } catch {
+                          // ignore print dialog close
+                        }
+                      }, 250);
                     }}
                     style={{ padding: '6px 12px', fontSize: '0.78rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
                   >
@@ -787,14 +942,50 @@ export const TrailIntelligenceBar: React.FC<TrailIntelligenceBarProps> = ({
 
       {/* Lazy-Loaded Real 3D Terrain WebGL Modal */}
       {isTerrain3DOpen && (
-        <Suspense fallback={null}>
+        <Suspense
+          fallback={
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                padding: '10px 14px',
+                borderRadius: 6,
+                background: 'var(--color-bg-card)',
+                border: '1px solid var(--color-border-strong)',
+                color: 'var(--color-text-muted)',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+              }}
+            >
+              Đang khởi tạo bản đồ địa hình 3D...
+            </div>
+          }
+        >
           <Terrain3DModal trail={trail} isOpen={isTerrain3DOpen} onClose={() => setIsTerrain3DOpen(false)} />
         </Suspense>
       )}
 
       {/* Safety Check-in Timer & Offline 2G SOS Modal */}
       {isSafetyModalOpen && (
-        <Suspense fallback={null}>
+        <Suspense
+          fallback={
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                padding: '10px 14px',
+                borderRadius: 6,
+                background: 'var(--color-bg-card)',
+                border: '1px solid var(--color-border-strong)',
+                color: 'var(--color-text-muted)',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+              }}
+            >
+              Đang mở Hẹn giờ báo bình an &amp; SOS 2G...
+            </div>
+          }
+        >
           <SafetyTimerModal
             isOpen={isSafetyModalOpen}
             onClose={() => setIsSafetyModalOpen(false)}

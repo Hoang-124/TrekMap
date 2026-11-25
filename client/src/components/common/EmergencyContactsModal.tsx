@@ -156,8 +156,31 @@ export const EmergencyContactsModal: React.FC<EmergencyContactsModalProps> = ({
   const handleCopyPhone = async (phone: string) => {
     const dialable = extractPrimaryDialPhone(phone);
     if (!dialable) return;
+    let copied = false;
     try {
-      await navigator.clipboard.writeText(dialable);
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(dialable);
+        copied = true;
+      }
+    } catch {
+      copied = false;
+    }
+    if (!copied && typeof document !== 'undefined') {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = dialable;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        copied = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch {
+        copied = false;
+      }
+    }
+    if (copied) {
       setCopiedPhone(dialable);
       if (copiedTimerRef.current !== null) {
         window.clearTimeout(copiedTimerRef.current);
@@ -166,8 +189,15 @@ export const EmergencyContactsModal: React.FC<EmergencyContactsModalProps> = ({
         () => setCopiedPhone((curr) => (curr === dialable ? null : curr)),
         1800
       );
-    } catch {
-      // ignore clipboard errors in restricted environments
+    } else {
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: {
+            message: `Không thể sao chép tự động. Số cần gọi: ${dialable}`,
+            type: 'info',
+          },
+        })
+      );
     }
   };
 
@@ -401,6 +431,22 @@ export const EmergencyContactsModal: React.FC<EmergencyContactsModalProps> = ({
                     </a>
                   );
                 })}
+              </div>
+
+              <div
+                style={{
+                  fontSize: '0.73rem',
+                  color: 'var(--color-text-muted)',
+                  background: 'var(--color-bg-main)',
+                  border: '1px solid var(--color-border)',
+                  borderRadius: 4,
+                  padding: '7px 10px',
+                  marginBottom: 12,
+                  lineHeight: 1.45,
+                  flexShrink: 0,
+                }}
+              >
+                <strong style={{ color: 'var(--color-text-main)' }}>Lưu ý sóng yếu 2G:</strong> 112/114/115 chỉ gọi thoại — hãy gửi SMS tọa độ tới số di động người thân hoặc porter.
               </div>
 
               {/* Search & Region Filter Bar */}
@@ -691,7 +737,42 @@ export const EmergencyContactsModal: React.FC<EmergencyContactsModalProps> = ({
         )}
 
       {isSafetyTimerOpen && (
-        <Suspense fallback={null}>
+        <Suspense
+          fallback={
+            createPortal(
+              <div
+                className="modal-overlay"
+                role="status"
+                aria-live="polite"
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  background: 'var(--overlay-bg)',
+                  zIndex: 'var(--z-modal, 3000)' as unknown as number,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <div
+                  className="modal-content"
+                  style={{
+                    padding: '16px 22px',
+                    borderRadius: 6,
+                    background: 'var(--color-bg-card)',
+                    border: '1px solid var(--color-border-strong)',
+                    color: 'var(--color-text-main)',
+                    fontSize: '0.84rem',
+                    fontWeight: 600,
+                  }}
+                >
+                  Đang mở Hẹn giờ an toàn...
+                </div>
+              </div>,
+              document.body
+            )
+          }
+        >
           <SafetyTimerModal
             isOpen={isSafetyTimerOpen}
             onClose={() => setIsSafetyTimerOpen(false)}

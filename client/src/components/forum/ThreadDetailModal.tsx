@@ -18,10 +18,14 @@ import {
   IconMountain,
   IconPin,
   IconPinOff,
+  IconRotateCw,
   IconTrash,
 } from '../common/SvgIcons.js';
+import { safeLocalStorageGet } from '../../utils/storageScope.js';
 
 type ForumThreadWithTrail = ForumThread & { trailId?: string; trailName?: string };
+
+const ALLOWED_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 
 const THREAD_CATEGORIES: Array<ForumThread['category']> = [
   'Kinh Nghiệm',
@@ -32,7 +36,7 @@ const THREAD_CATEGORIES: Array<ForumThread['category']> = [
 
 const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
   return ({ size = defaultSize, color = 'currentColor', style, className }: { size?: number; color?: string; style?: React.CSSProperties; className?: string }) => (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style} className={className}>
+    <svg aria-hidden="true" focusable="false" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style} className={className}>
       {d}
     </svg>
   );
@@ -165,6 +169,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
   );
   const [commentText, setCommentText] = useState('');
   const [comments, setComments] = useState<CommentItem[]>([]);
+  const [commentsError, setCommentsError] = useState<string | null>(null);
   const [totalCommentCount, setTotalCommentCount] = useState<number>(0);
   const [loadingComments, setLoadingComments] = useState<boolean>(true);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -201,12 +206,33 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const lightboxRef = useRef<HTMLDivElement | null>(null);
   const lightboxCloseBtnRef = useRef<HTMLButtonElement | null>(null);
+  const mountedRef = useRef<boolean>(true);
+  const isDeletingThreadRef = useRef<boolean>(false);
+  const threadReactionSeqRef = useRef<number>(0);
+  const commentReactionSeqRef = useRef<Record<string, number>>({});
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const showToast = useCallback(
+    (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+      if (onShowToast) {
+        onShowToast(message, type);
+      } else {
+        window.dispatchEvent(new CustomEvent('lost:show-toast', { detail: { message, type } }));
+      }
+    },
+    [onShowToast]
+  );
 
   const activeImages = activeThread.images || [];
-  if (lightboxIndex !== null && (lightboxIndex < 0 || lightboxIndex >= activeImages.length)) {
-    setLightboxIndex(null);
-  }
-  const isLightboxOpen = lightboxIndex !== null && Boolean(activeImages[lightboxIndex]);
+  const validLightboxIndex =
+    lightboxIndex !== null && lightboxIndex >= 0 && lightboxIndex < activeImages.length ? lightboxIndex : null;
+  const isLightboxOpen = validLightboxIndex !== null && Boolean(activeImages[validLightboxIndex]);
   const isBusyCloseLock =
     isDeletingThread ||
     isSavingThread ||
@@ -343,26 +369,33 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
 
     if (!silent) {
       setLoadingComments(true);
+      setCommentsError(null);
     }
     try {
       const res = await fetch(`/api/forum/threads/${encodeURIComponent(threadId)}/comments`, {
         headers: getApiHeaders(),
         signal: controller.signal,
       });
-      const json = await res.json();
+      const json = await res.json().catch(() => null);
       if (controller.signal.aborted || reqId !== commentsRequestIdRef.current) return;
-      if (json.success && Array.isArray(json.data)) {
+      if (res.ok && json?.success && Array.isArray(json.data)) {
         setComments(json.data);
+        setCommentsError(null);
         const count = json.totalCount !== undefined ? json.totalCount : json.data.length;
         setTotalCommentCount(count);
         if (onUpdateCommentCountRef.current) {
           onUpdateCommentCountRef.current(threadId, count);
         }
+      } else if (!silent) {
+        setCommentsError(json?.message || 'Chưa tải được bình luận lúc này. Bạn thử tải lại nhé.');
       }
     } catch (err: unknown) {
       const isAbort = err instanceof DOMException && err.name === 'AbortError';
       if (isAbort || controller.signal.aborted || reqId !== commentsRequestIdRef.current) return;
       console.error('[Fetch Real Comments Error]:', err);
+      if (!silent) {
+        setCommentsError('Chưa tải được bình luận lúc này. Bạn kiểm tra mạng rồi thử lại nhé.');
+      }
     } finally {
       if (!controller.signal.aborted && reqId === commentsRequestIdRef.current) {
         setLoadingComments(false);
@@ -370,7 +403,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
     }
   }, [threadId]);
 
-  // Fetch live thread detail (GET /api/forum/threads/:id -> increments viewsCount & refreshes metadata) + comments
+  // Fetch live thread detail (GET /api/forum/threads/:id -> increments viewsCount once per open) + comments
   useEffect(() => {
     const controller = new AbortController();
     const initialCommentsReqId = ++commentsRequestIdRef.current;
@@ -385,7 +418,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
         if (json?.success && json.data) {
           const refreshed = json.data as ForumThread;
           setLiveThread(refreshed);
-          setThreadUpvotes(refreshed.upvotes ?? thread.upvotes);
+          setThreadUpvotes((prev) => refreshed.upvotes ?? prev);
           setThreadReactionsSummary(refreshed.reactions ? { ...refreshed.reactions } : {});
           setReaction((refreshed.userReaction as ReactionType) || null);
         }
@@ -398,22 +431,26 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
       headers: getApiHeaders(),
       signal: controller.signal,
     })
-      .then((res) => res.json())
-      .then((json) => {
+      .then(async (res) => ({ ok: res.ok, json: await res.json().catch(() => null) }))
+      .then(({ ok, json }) => {
         if (controller.signal.aborted || initialCommentsReqId !== commentsRequestIdRef.current) return;
-        if (json.success && Array.isArray(json.data)) {
+        if (ok && json?.success && Array.isArray(json.data)) {
           setComments(json.data);
+          setCommentsError(null);
           const count = json.totalCount !== undefined ? json.totalCount : json.data.length;
           setTotalCommentCount(count);
           if (onUpdateCommentCountRef.current) {
             onUpdateCommentCountRef.current(threadId, count);
           }
+        } else {
+          setCommentsError(json?.message || 'Chưa tải được bình luận lúc này. Bạn thử tải lại nhé.');
         }
       })
       .catch((err: unknown) => {
         const isAbort = err instanceof DOMException && err.name === 'AbortError';
-        if (!isAbort && !controller.signal.aborted) {
+        if (!isAbort && !controller.signal.aborted && initialCommentsReqId === commentsRequestIdRef.current) {
           console.error('[Fetch Real Comments Error]:', err);
+          setCommentsError('Chưa tải được bình luận lúc này. Bạn kiểm tra mạng rồi thử lại nhé.');
         }
       })
       .finally(() => {
@@ -429,7 +466,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
       }
       commentsRequestIdRef.current += 1;
     };
-  }, [threadId, thread.upvotes]);
+  }, [threadId]);
 
   // Real-time socket listener for silent background updates
   useEffect(() => {
@@ -485,6 +522,10 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
     const handleThreadLocked = (data: { threadId?: string; isLocked?: boolean }) => {
       if (String(data.threadId) === String(threadId) && typeof data.isLocked === 'boolean') {
         setLiveThread((prev) => ({ ...prev, isLocked: data.isLocked }));
+        if (data.isLocked) {
+          setActiveReplyId(null);
+          setReplyInputText('');
+        }
       }
     };
 
@@ -496,6 +537,9 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
 
     const handleThreadDeleted = (data: { threadId?: string }) => {
       if (String(data.threadId) === String(threadId)) {
+        if (!isDeletingThreadRef.current) {
+          showToast('Bài viết này vừa được xóa.', 'info');
+        }
         onClose();
       }
     };
@@ -523,7 +567,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
       socket.off('threadLocked', handleThreadLocked);
       socket.off('threadDeleted', handleThreadDeleted);
     };
-  }, [socket, threadId, fetchRealComments, onClose]);
+  }, [socket, threadId, fetchRealComments, onClose, showToast]);
 
   if (!activeThread) return null;
 
@@ -531,27 +575,11 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
     currentUser &&
       (isStaff || (currentUserId && activeThread.userId && String(activeThread.userId) === currentUserId))
   );
-
-  const normalizedThreadAuthor = (activeThread.authorName || '').replace(/\(.*\)/, '').trim().toLowerCase();
-  const isThreadAuthorByName = Boolean(
-    currentUser &&
-      !activeThread.userId &&
-      normalizedThreadAuthor &&
-      ((currentUser.fullName && currentUser.fullName.trim().toLowerCase() === normalizedThreadAuthor) ||
-        (currentUser.username && currentUser.username.trim().toLowerCase() === normalizedThreadAuthor))
-  );
-  const canPinBestAnswer = canManageThread || isThreadAuthorByName;
-
-  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
-    if (onShowToast) {
-      onShowToast(message, type);
-    } else {
-      window.dispatchEvent(new CustomEvent('lost:show-toast', { detail: { message, type } }));
-    }
-  };
+  // Backend strictly authorizes Best Answer by staff role or immutable thread.userId match
+  const canPinBestAnswer = canManageThread;
 
   const ensureAuthenticated = (actionLabel: string): boolean => {
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!currentUser && !token) {
       showToast(`Vui lòng đăng nhập để ${actionLabel}.`, 'info');
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
@@ -633,6 +661,10 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
         const nextLocked = Boolean(json.data?.isLocked);
         const updated: ForumThreadWithTrail = { ...activeThread, isLocked: nextLocked };
         setLiveThread(updated);
+        if (nextLocked) {
+          setActiveReplyId(null);
+          setReplyInputText('');
+        }
         onThreadUpdated?.(updated);
         notifyForumUpdated({ threadId: updated.id, updatedThread: updated });
         showToast(json.message || (nextLocked ? 'Đã khóa bình luận!' : 'Đã mở khóa bình luận.'), 'success');
@@ -669,8 +701,8 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
     Array.from(files)
       .slice(0, availableSlots)
       .forEach((file) => {
-        if (!file.type.startsWith('image/')) {
-          showToast('Chỉ chấp nhận định dạng ảnh (JPG, PNG, WebP).', 'error');
+        if (!ALLOWED_IMAGE_MIME.has(file.type)) {
+          showToast('Chỉ chấp nhận định dạng ảnh JPG, PNG, WebP hoặc GIF.', 'error');
           return;
         }
         if (file.size > 5 * 1024 * 1024) {
@@ -678,16 +710,32 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
           return;
         }
         const reader = new FileReader();
+        reader.onerror = () => {
+          if (mountedRef.current) {
+            showToast('Không thể đọc tệp ảnh này.', 'error');
+          }
+        };
         reader.onload = (ev) => {
+          if (!mountedRef.current) return;
           const result = ev.target?.result as string;
           if (!result) return;
           const img = new Image();
+          img.onerror = () => {
+            if (mountedRef.current) {
+              showToast('Ảnh bị lỗi hoặc không hợp lệ.', 'error');
+            }
+          };
           img.onload = () => {
+            if (!mountedRef.current) return;
+            if (!img.width || !img.height) {
+              showToast('Ảnh không hợp lệ.', 'error');
+              return;
+            }
             const canvas = document.createElement('canvas');
             const MAX_W = 1280;
             const scale = Math.min(1, MAX_W / img.width);
-            canvas.width = img.width * scale;
-            canvas.height = img.height * scale;
+            canvas.width = Math.round(img.width * scale);
+            canvas.height = Math.round(img.height * scale);
             const ctx = canvas.getContext('2d');
             if (ctx) {
               ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
@@ -738,7 +786,8 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
             const cloudUrl = await uploadImageToCloudinary(img, `forum_edit_${Date.now()}_${i}.jpg`, 'forum');
             uploadedImages.push(cloudUrl);
           } catch {
-            showToast(`Không thể tải ảnh #${i + 1} lên máy chủ ảnh.`, 'error');
+            showToast(`Không thể tải ảnh #${i + 1} lên máy chủ ảnh. Đã hủy lưu để tránh mất ảnh.`, 'error');
+            return;
           }
         } else {
           uploadedImages.push(img);
@@ -769,13 +818,16 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
     } catch {
       showToast('Lỗi kết nối máy chủ khi cập nhật bài viết.', 'error');
     } finally {
-      setIsSavingThread(false);
+      if (mountedRef.current) {
+        setIsSavingThread(false);
+      }
     }
   };
 
   const handleDeleteThread = async () => {
     if (isDeletingThread) return;
     setIsDeletingThread(true);
+    isDeletingThreadRef.current = true;
     try {
       const res = await fetch(`/api/forum/threads/${encodeURIComponent(activeThread.id)}`, {
         method: 'DELETE',
@@ -788,13 +840,17 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
         showToast(json.message || 'Đã xóa bài viết thành công!', 'success');
         onClose();
       } else {
+        isDeletingThreadRef.current = false;
         showToast(json.message || 'Không thể xóa bài viết này.', 'error');
       }
     } catch {
+      isDeletingThreadRef.current = false;
       showToast('Lỗi kết nối máy chủ khi xóa bài viết.', 'error');
     } finally {
-      setIsDeletingThread(false);
-      setConfirmDeleteThread(false);
+      if (mountedRef.current) {
+        setIsDeletingThread(false);
+        setConfirmDeleteThread(false);
+      }
     }
   };
 
@@ -881,7 +937,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
       });
       const json = await res.json();
       if (res.ok && json.success && json.data) {
-        await fetchRealComments();
+        await fetchRealComments(true);
         showToast('Gửi bình luận thành công!', 'success');
       } else {
         showToast(json.message || 'Không thể gửi bình luận.', 'error');
@@ -918,7 +974,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
       const json = await res.json();
       if (res.ok && json.success && json.data) {
         setActiveReplyId(null);
-        await fetchRealComments();
+        await fetchRealComments(true);
         showToast('Gửi phản hồi thành công!', 'success');
       } else {
         showToast(json.message || 'Không thể gửi phản hồi.', 'error');
@@ -944,9 +1000,12 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
     });
   };
 
-  // Handle Comment Reaction (auth-guarded; server derives previous state from DB)
+  // Handle Comment Reaction (auth-guarded + seq lock + error toast)
   const handleCommentReaction = async (commentId: string, reactionType: ReactionType) => {
     if (!ensureAuthenticated('thả cảm xúc bình luận')) return;
+    const seq = (commentReactionSeqRef.current[commentId] || 0) + 1;
+    commentReactionSeqRef.current[commentId] = seq;
+
     try {
       const res = await fetch(`/api/forum/comments/${encodeURIComponent(commentId)}/reaction`, {
         method: 'POST',
@@ -954,6 +1013,8 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
         body: JSON.stringify({ reactionType }),
       });
       const json = await res.json().catch(() => ({}));
+      if (commentReactionSeqRef.current[commentId] !== seq) return;
+
       if (res.ok && json.success && json.data) {
         setComments((prevComments) => updateCommentReactionsInTree(prevComments, commentId, json.data));
         if (json.userReaction !== undefined) {
@@ -962,20 +1023,24 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
       } else if (res.status === 401) {
         showToast(json.message || 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.', 'info');
         window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
-      } else if (json.message) {
-        showToast(json.message, 'error');
+      } else {
+        showToast(json.message || 'Không thể lưu cảm xúc bình luận lúc này.', 'error');
       }
     } catch (err) {
+      if (commentReactionSeqRef.current[commentId] !== seq) return;
+      showToast('Lỗi kết nối máy chủ khi thả cảm xúc bình luận.', 'error');
       console.error('[Comment Reaction Error]:', err);
     }
   };
 
-  // Handle Main Discussion Thread Reaction (auth-guarded + rollback on error)
+  // Handle Main Discussion Thread Reaction (auth-guarded + seq lock + optimistic upvotes + rollback on error)
   const handleThreadReaction = async (r: ReactionType) => {
     if (!ensureAuthenticated('thả cảm xúc cho bài viết')) return;
+    const seq = ++threadReactionSeqRef.current;
 
     const prev = reaction;
     const prevSummarySnapshot = { ...threadReactionsSummary };
+    const prevUpvotesSnapshot = threadUpvotes;
     const next = prev === r ? null : r;
 
     setReaction(next);
@@ -997,7 +1062,12 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
     if (next && summary[next] !== undefined) {
       summary[next] = (summary[next] || 0) + 1;
     }
+    const optimisticUpvotes = Object.values(summary).reduce(
+      (acc, count) => acc + (typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0),
+      0
+    );
     setThreadReactionsSummary(summary);
+    setThreadUpvotes(optimisticUpvotes);
 
     try {
       const res = await fetch(`/api/forum/threads/${encodeURIComponent(activeThread.id)}/reaction`, {
@@ -1006,6 +1076,8 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
         body: JSON.stringify({ reactionType: r }),
       });
       const json = await res.json().catch(() => ({}));
+      if (threadReactionSeqRef.current !== seq) return;
+
       if (res.ok && json.success && json.upvotes !== undefined) {
         setThreadUpvotes(json.upvotes);
         if (json.userReaction !== undefined) {
@@ -1024,16 +1096,20 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
       } else {
         setReaction(prev);
         setThreadReactionsSummary(prevSummarySnapshot);
+        setThreadUpvotes(prevUpvotesSnapshot);
         if (res.status === 401) {
           showToast(json.message || 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.', 'info');
           window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
-        } else if (json.message) {
-          showToast(json.message, 'error');
+        } else {
+          showToast(json.message || 'Không thể lưu cảm xúc bài viết lúc này.', 'error');
         }
       }
     } catch (err) {
+      if (threadReactionSeqRef.current !== seq) return;
       setReaction(prev);
       setThreadReactionsSummary(prevSummarySnapshot);
+      setThreadUpvotes(prevUpvotesSnapshot);
+      showToast('Lỗi kết nối máy chủ khi thả cảm xúc bài viết.', 'error');
       console.error('[Thread Reaction Error]:', err);
     }
   };
@@ -1044,11 +1120,18 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
     const isConfirmingDeleteThis = confirmDeleteCommentId === comment.id;
     const isDeletingThis = deletingCommentId === comment.id;
     const isBestAnswer = Boolean(bestCommentId && comment.id === bestCommentId);
-    const currentCommentReaction = commentReactionsState[comment.id] || comment.userReaction || null;
+    const currentCommentReaction =
+      commentReactionsState[comment.id] !== undefined
+        ? commentReactionsState[comment.id]
+        : (comment.userReaction || null);
 
     const cleanCommentAuthor = comment.authorName.replace(/\(.*\)/, '').trim();
     const cleanThreadAuthor = (activeThread.authorName || '').replace(/\(.*\)/, '').trim();
-    const isPostAuthor = cleanCommentAuthor.toLowerCase() === cleanThreadAuthor.toLowerCase();
+    // Match OP badge by immutable userId whenever present; only fall back to name when userId is absent on both
+    const isPostAuthor =
+      activeThread.userId || comment.userId
+        ? Boolean(activeThread.userId && comment.userId && String(comment.userId) === String(activeThread.userId))
+        : Boolean(cleanThreadAuthor && cleanCommentAuthor.toLowerCase() === cleanThreadAuthor.toLowerCase());
     const canManageComment = Boolean(
       currentUser &&
         (isStaff || (currentUserId && comment.userId && String(comment.userId) === currentUserId))
@@ -1124,17 +1207,21 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
             {(() => {
               const isCommentAuthorCurrent = Boolean(
-                currentUser && (
-                  (currentUser.fullName && cleanCommentAuthor.toLowerCase() === currentUser.fullName.toLowerCase()) ||
-                  (currentUser.username && cleanCommentAuthor.toLowerCase() === currentUser.username.toLowerCase())
-                )
+                currentUser &&
+                  (comment.userId
+                    ? Boolean(currentUserId && String(comment.userId) === currentUserId)
+                    : Boolean(
+                        (currentUser.fullName && cleanCommentAuthor.toLowerCase() === currentUser.fullName.trim().toLowerCase()) ||
+                          (currentUser.username && cleanCommentAuthor.toLowerCase() === currentUser.username.trim().toLowerCase())
+                      ))
               );
               const commentEffectiveAvatar = (isCommentAuthorCurrent && (currentUser?.avatarUrl || currentUser?.avatar))
                 ? (currentUser.avatarUrl || currentUser.avatar)
                 : (comment.authorAvatar || '');
 
               return (
-                <div
+                <button
+                  type="button"
                   onClick={() =>
                     onOpenAuthorProfile({
                       name: cleanCommentAuthor,
@@ -1142,7 +1229,17 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                       userId: comment.userId,
                     })
                   }
-                  style={{ display: 'flex', alignItems: 'center', gap: 9, cursor: 'pointer' }}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 9,
+                    cursor: 'pointer',
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    textAlign: 'left',
+                    fontFamily: 'var(--font-family)',
+                  }}
                   title="Bấm để xem hồ sơ người bình luận"
                 >
                   {commentEffectiveAvatar ? (
@@ -1182,7 +1279,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                   <span style={{ fontSize: '0.86rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
                     {cleanCommentAuthor}
                   </span>
-                </div>
+                </button>
               );
             })()}
             {isPostAuthor && (
@@ -1389,8 +1486,8 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
           )}
         </div>
 
-        {/* Inline Reply Input Box */}
-        {isReplyingThis && (
+        {/* Inline Reply Input Box (hidden immediately if thread is locked) */}
+        {isReplyingThis && !activeThread.isLocked && (
           <div style={{ marginTop: 12, paddingLeft: isNested ? 0 : 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
               <textarea
@@ -1516,7 +1613,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
 
                 {activeThread.isLocked && (
                   <span className="badge badge-error" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    <IconLock size={11} color="var(--color-error)" />
+                    <IconLock size={11} color="var(--color-error-text, var(--color-error))" />
                     Đã khóa
                   </span>
                 )}
@@ -1525,24 +1622,37 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                 {(() => {
                   const cleanName = activeThread.authorName.replace(/\(.*\)/, '').trim();
                   const isCurrentUserAuthor = Boolean(
-                    currentUser && (
-                      (activeThread.userId && currentUser.id && String(activeThread.userId) === String(currentUser.id)) ||
-                      (currentUser.fullName && cleanName.toLowerCase() === currentUser.fullName.toLowerCase()) ||
-                      (currentUser.username && cleanName.toLowerCase() === currentUser.username.toLowerCase())
-                    )
+                    currentUser &&
+                      (activeThread.userId
+                        ? Boolean(currentUserId && String(activeThread.userId) === currentUserId)
+                        : Boolean(
+                            (currentUser.fullName && cleanName.toLowerCase() === currentUser.fullName.trim().toLowerCase()) ||
+                              (currentUser.username && cleanName.toLowerCase() === currentUser.username.trim().toLowerCase())
+                          ))
                   );
                   const effectiveAvatar = (isCurrentUserAuthor && (currentUser?.avatarUrl || currentUser?.avatar))
                     ? (currentUser.avatarUrl || currentUser.avatar)
                     : (activeThread.authorAvatar || '');
 
                   return (
-                    <div
+                    <button
+                      type="button"
                       onClick={() => onOpenAuthorProfile({
                         name: cleanName,
                         avatar: effectiveAvatar || '',
                         userId: activeThread.userId,
                       })}
-                      style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        cursor: 'pointer',
+                        background: 'none',
+                        border: 'none',
+                        padding: 0,
+                        textAlign: 'left',
+                        fontFamily: 'var(--font-family)',
+                      }}
                       title="Bấm để xem hồ sơ tác giả bài viết"
                     >
                       {effectiveAvatar ? (
@@ -1576,7 +1686,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                       <span style={{ fontSize: 'var(--font-size-xs)', fontWeight: 'var(--font-weight-bold)', color: 'var(--color-primary)', textDecoration: 'underline' }}>
                         {cleanName}
                       </span>
-                    </div>
+                    </button>
                   );
                 })()}
 
@@ -1851,7 +1961,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                         >
                           <IconImage size={13} color="var(--color-primary)" />
                           <span>Tải ảnh</span>
-                          <input type="file" accept="image/*" multiple onChange={handleEditImageFilesChange} style={{ display: 'none' }} />
+                          <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple onChange={handleEditImageFilesChange} style={{ display: 'none' }} />
                         </label>
                         <input
                           type="url"
@@ -1913,11 +2023,11 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                 </>
               )}
 
-              {/* Attached Real Photos Gallery */}
+              {/* Attached Photos Gallery */}
               {activeImages.length > 0 && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-primary)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                    Hình Ảnh Thực Tế Từ Chuyến Đi ({activeImages.length})
+                    Ảnh chụp từ chuyến đi ({activeImages.length})
                   </span>
                   <div
                     style={{
@@ -1927,11 +2037,16 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                     }}
                   >
                     {activeImages.map((imgSrc, idx) => (
-                      <div
-                        key={idx}
+                      <button
+                        key={`${imgSrc.slice(0, 40)}-${idx}`}
+                        type="button"
                         onClick={() => setLightboxIndex(idx)}
+                        aria-label={`Xem phóng to ảnh ${idx + 1} trên ${activeImages.length}`}
                         style={{
                           position: 'relative',
+                          display: 'block',
+                          width: '100%',
+                          padding: 0,
                           height: activeImages.length === 1 ? 280 : 160,
                           borderRadius: 4,
                           overflow: 'hidden',
@@ -1956,7 +2071,10 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                           decoding="async"
                           src={imgSrc}
                           alt={`Ảnh hành trình ${idx + 1}`}
-                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                          }}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                         />
                         <div
                           style={{
@@ -1974,7 +2092,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                         >
                           Ảnh #{idx + 1}
                         </div>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -2009,6 +2127,34 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                   {loadingComments ? (
                     <div style={{ textAlign: 'center', padding: 20, color: 'var(--color-primary)', fontSize: 'var(--font-size-xs)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
                       <Loader2 size={18} className="spin" /> Đang tải bình luận...
+                    </div>
+                  ) : commentsError ? (
+                    <div
+                      role="alert"
+                      style={{
+                        textAlign: 'center',
+                        padding: '18px 16px',
+                        background: 'var(--banner-danger-bg)',
+                        borderRadius: 4,
+                        border: '1px solid var(--banner-danger-border)',
+                        color: 'var(--banner-danger-text)',
+                        fontSize: 'var(--font-size-xs)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: 8,
+                      }}
+                    >
+                      <span style={{ fontWeight: 700 }}>{commentsError}</span>
+                      <button
+                        type="button"
+                        className="btn btn-outline"
+                        onClick={() => void fetchRealComments(false)}
+                        style={{ padding: '5px 12px', fontSize: '0.74rem', borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                      >
+                        <IconRotateCw size={12} />
+                        <span>Thử lại</span>
+                      </button>
                     </div>
                   ) : comments.length === 0 ? (
                     <div style={{ textAlign: 'center', padding: 20, color: 'var(--color-text-muted)', fontSize: 'var(--font-size-xs)', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)' }}>
@@ -2092,7 +2238,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
       )}
 
       {/* Interactive Fullscreen Gallery Lightbox */}
-      {isLightboxOpen && lightboxIndex !== null && createPortal(
+      {isLightboxOpen && validLightboxIndex !== null && createPortal(
         <div
           ref={lightboxRef}
           role="dialog"
@@ -2146,7 +2292,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
               }}
             >
               <IconImage size={15} color="var(--color-primary)" />
-              <span>Ảnh {lightboxIndex + 1} / {activeImages.length}</span>
+              <span>Ảnh {validLightboxIndex + 1} / {activeImages.length}</span>
             </div>
 
             <button
@@ -2222,8 +2368,8 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
             <img
               loading="lazy"
               decoding="async"
-              src={activeImages[lightboxIndex]}
-              alt={`Ảnh ${lightboxIndex + 1}`}
+              src={activeImages[validLightboxIndex]}
+              alt={`Ảnh ${validLightboxIndex + 1}`}
               onClick={(e) => e.stopPropagation()}
               style={{
                 maxWidth: '88vw',
@@ -2287,10 +2433,10 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
               }}
             >
               {activeImages.map((imgSrc, idx) => {
-                const isActive = idx === lightboxIndex;
+                const isActive = idx === validLightboxIndex;
                 return (
                   <button
-                    key={idx}
+                    key={`${imgSrc.slice(0, 40)}-${idx}`}
                     type="button"
                     onClick={() => setLightboxIndex(idx)}
                     style={{
@@ -2306,6 +2452,7 @@ const ThreadDetailModalInner: React.FC<Omit<ThreadDetailModalProps, 'thread'> & 
                       flexShrink: 0,
                     }}
                     title={`Chuyển sang ảnh ${idx + 1}`}
+                    aria-label={`Chuyển sang ảnh ${idx + 1}`}
                   >
                     <img
                       loading="lazy"

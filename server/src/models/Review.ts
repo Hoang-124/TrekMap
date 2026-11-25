@@ -36,5 +36,10 @@ const reviewSchema = new Schema<IReview>(
 );
 
 reviewSchema.index({ trailId: 1, createdAt: -1 });
+reviewSchema.index({ createdAt: -1 });
+reviewSchema.index(
+  { userId: 1, trailId: 1 },
+  { unique: true, partialFilterExpression: { userId: { $type: 'objectId' } } }
+);
 
 export const ReviewModel = model<IReview>('Review', reviewSchema);

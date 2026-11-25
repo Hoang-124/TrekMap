@@ -14,13 +14,22 @@ interface ConversationListProps {
   conversations: Conversation[];
   selectedConversationId: string | null;
   onSelectConversation: (id: string) => void;
-  currentUserId: string;
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
+  loadError?: string | null;
+  onRetryLoad?: () => void;
 }
 
 export const ConversationList: React.FC<ConversationListProps> = ({
   conversations,
   selectedConversationId,
   onSelectConversation,
+  hasMore = false,
+  loadingMore = false,
+  onLoadMore,
+  loadError = null,
+  onRetryLoad,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const { isUserOnline } = useSocket();
@@ -28,7 +37,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
   const filtered = conversations.filter((c) => {
     if (!searchTerm.trim()) return true;
     const name = c.isGroup
-      ? c.groupName || 'Nhóm Đoàn LOST'
+      ? c.groupName || 'Nhóm đoàn LOST'
       : c.otherParticipant?.fullName || c.otherParticipant?.username || '';
     const lastText = c.lastMessage?.content || '';
     return searchMatchVietnamese(name, searchTerm) || searchMatchVietnamese(lastText, searchTerm);
@@ -48,7 +57,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({
       <div style={{ padding: '16px 14px', borderBottom: '1px solid var(--color-border)' }}>
         <div className="section-eyebrow" style={{ marginBottom: 4 }}>Tin nhắn</div>
         <h3 className="font-editorial" style={{ fontSize: '1.35rem', fontWeight: 500, margin: '0 0 12px 0', color: 'var(--color-text-main)' }}>
-          Hội Thoại
+          Hội thoại
         </h3>
         <div style={{ position: 'relative' }}>
           <Search
@@ -81,179 +90,211 @@ export const ConversationList: React.FC<ConversationListProps> = ({
 
       {/* Conversations Scroll View */}
       <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
-        {filtered.length === 0 ? (
+        {loadError && conversations.length === 0 ? (
+          <div style={{ padding: 24, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '0.84rem' }}>
+            <div style={{ color: 'var(--color-error-text, var(--color-error))', marginBottom: 10, fontWeight: 600 }}>
+              {loadError}
+            </div>
+            {onRetryLoad && (
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={onRetryLoad}
+                style={{ padding: '6px 14px', fontSize: '0.78rem', fontWeight: 700, borderRadius: 4 }}
+              >
+                Thử lại
+              </button>
+            )}
+          </div>
+        ) : filtered.length === 0 ? (
           <div style={{ padding: 24, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
             {searchTerm.trim() ? `Không tìm thấy hội thoại khớp "${searchTerm}".` : 'Chưa có cuộc trò chuyện nào.'}
           </div>
         ) : (
-          filtered.map((conv) => {
-            const isSelected = conv._id === selectedConversationId;
-            const isGroup = Boolean(conv.isGroup);
-            const other = conv.otherParticipant;
-            const name = isGroup
-              ? conv.groupName || 'Nhóm Đoàn LOST'
-              : other?.fullName || other?.username || 'Thành viên LOST';
-            const avatar = other?.avatarUrl || '';
+          <>
+            {filtered.map((conv) => {
+              const isSelected = conv._id === selectedConversationId;
+              const isGroup = Boolean(conv.isGroup);
+              const other = conv.otherParticipant;
+              const name = isGroup
+                ? conv.groupName || 'Nhóm đoàn LOST'
+                : other?.fullName || other?.username || 'Thành viên LOST';
+              const avatar = other?.avatarUrl || '';
 
-            const lastMsgContent =
-              conv.lastMessage?.content ||
-              (isGroup
-                ? `Nhóm đoàn • ${conv.participants?.length || 1} thành viên`
-                : 'Bắt đầu cuộc trò chuyện...');
-            const unread = conv.unreadCount || 0;
-            const isOnline = !isGroup && isUserOnline(other?._id, other?.email);
+              const lastMsgContent =
+                conv.lastMessage?.content ||
+                (isGroup
+                  ? `Nhóm đoàn • ${conv.participants?.length || 1} thành viên`
+                  : 'Bắt đầu cuộc trò chuyện...');
+              const unread = conv.unreadCount || 0;
+              const isOnline = !isGroup && isUserOnline(other?._id, other?.email);
 
-            return (
-              <div
-                key={conv._id}
-                role="button"
-                tabIndex={0}
-                onClick={() => onSelectConversation(conv._id)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    onSelectConversation(conv._id);
-                  }
-                }}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 12,
-                  padding: 11,
-                  borderRadius: 4,
-                  cursor: 'pointer',
-                  marginBottom: 4,
-                  background: isSelected ? 'var(--color-surface-elevated)' : 'transparent',
-                  border: isSelected ? '1px solid var(--color-border-strong)' : '1px solid transparent',
-                  borderLeft: isSelected ? '2px solid var(--color-primary)' : '2px solid transparent',
-                  transition: 'background-color 0.18s ease',
-                }}
-              >
-                <div style={{ position: 'relative', flexShrink: 0 }}>
-                  {isGroup ? (
-                    <div
-                      style={{
-                        width: 44,
-                        height: 44,
-                        borderRadius: '50%',
-                        background: 'color-mix(in srgb, var(--color-sky) 16%, transparent)',
-                        border: '2px solid var(--color-sky)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        color: 'var(--color-sky)',
-                      }}
-                    >
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                        <circle cx="9" cy="7" r="4" />
-                        <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                        <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-                      </svg>
-                    </div>
-                  ) : (
-                    <>
-                      {avatar ? (
-                        <img
-                          loading="lazy"
-                          decoding="async"
-                          src={avatar}
-                          alt={name}
-                          referrerPolicy="no-referrer"
+              return (
+                <div
+                  key={conv._id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => onSelectConversation(conv._id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelectConversation(conv._id);
+                    }
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    padding: 11,
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                    marginBottom: 4,
+                    background: isSelected ? 'var(--color-surface-elevated)' : 'transparent',
+                    border: isSelected ? '1px solid var(--color-border-strong)' : '1px solid transparent',
+                    borderLeft: isSelected ? '2px solid var(--color-primary)' : '2px solid transparent',
+                    transition: 'background-color 0.18s ease',
+                  }}
+                >
+                  <div style={{ position: 'relative', flexShrink: 0 }}>
+                    {isGroup ? (
+                      <div
+                        style={{
+                          width: 44,
+                          height: 44,
+                          borderRadius: '50%',
+                          background: 'color-mix(in srgb, var(--color-sky) 16%, transparent)',
+                          border: '2px solid var(--color-sky)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: 'var(--color-sky)',
+                        }}
+                      >
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                          <circle cx="9" cy="7" r="4" />
+                          <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                        </svg>
+                      </div>
+                    ) : (
+                      <>
+                        {avatar ? (
+                          <img
+                            loading="lazy"
+                            decoding="async"
+                            src={avatar}
+                            alt={name}
+                            referrerPolicy="no-referrer"
+                            style={{
+                              width: 44,
+                              height: 44,
+                              borderRadius: '50%',
+                              objectFit: 'cover',
+                              border: isOnline ? '2px solid var(--color-primary)' : '2px solid var(--color-border)',
+                            }}
+                          />
+                        ) : (
+                          <div
+                            style={{
+                              width: 44,
+                              height: 44,
+                              borderRadius: '50%',
+                              background: 'color-mix(in srgb, var(--color-primary) 16%, transparent)',
+                              border: isOnline ? '2px solid var(--color-primary)' : '2px solid var(--color-border)',
+                              color: 'var(--color-primary)',
+                              fontWeight: 800,
+                              fontSize: '0.96rem',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                          >
+                            {name.charAt(0).toUpperCase()}
+                          </div>
+                        )}
+                        <span
                           style={{
-                            width: 44,
-                            height: 44,
+                            position: 'absolute',
+                            bottom: 0,
+                            right: 0,
+                            width: 12,
+                            height: 12,
                             borderRadius: '50%',
-                            objectFit: 'cover',
-                            border: isOnline ? '2px solid var(--color-primary)' : '2px solid var(--color-border)',
+                            background: isOnline ? 'var(--color-primary)' : 'var(--color-text-dim)',
+                            border: '2px solid var(--color-bg-card)',
                           }}
+                          title={isOnline ? 'Trực tuyến' : 'Ngoại tuyến'}
                         />
-                      ) : (
-                        <div
-                          style={{
-                            width: 44,
-                            height: 44,
-                            borderRadius: '50%',
-                            background: 'color-mix(in srgb, var(--color-primary) 16%, transparent)',
-                            border: isOnline ? '2px solid var(--color-primary)' : '2px solid var(--color-border)',
-                            color: 'var(--color-primary)',
-                            fontWeight: 800,
-                            fontSize: '0.96rem',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                          }}
-                        >
-                          {name.charAt(0).toUpperCase()}
-                        </div>
-                      )}
+                      </>
+                    )}
+                  </div>
+
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span
                         style={{
-                          position: 'absolute',
-                          bottom: 0,
-                          right: 0,
-                          width: 12,
-                          height: 12,
-                          borderRadius: '50%',
-                          background: isOnline ? 'var(--color-primary)' : 'var(--color-text-dim)',
-                          border: '2px solid var(--color-bg-card)',
+                          fontSize: '0.9rem',
+                          fontWeight: unread > 0 ? 800 : 700,
+                          color: 'var(--color-text-main)',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
                         }}
-                        title={isOnline ? 'Trực tuyến' : 'Ngoại tuyến'}
-                      />
-                    </>
-                  )}
-                </div>
+                      >
+                        {name}
+                      </span>
+                    </div>
 
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span
+                    <div
                       style={{
-                        fontSize: '0.9rem',
-                        fontWeight: unread > 0 ? 800 : 700,
-                        color: 'var(--color-text-main)',
+                        fontSize: '0.78rem',
+                        color: unread > 0 ? 'var(--color-primary)' : 'var(--color-text-muted)',
+                        fontWeight: unread > 0 ? 700 : 400,
+                        marginTop: 3,
                         whiteSpace: 'nowrap',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                       }}
                     >
-                      {name}
-                    </span>
+                      {lastMsgContent}
+                    </div>
                   </div>
 
-                  <div
-                    style={{
-                      fontSize: '0.78rem',
-                      color: unread > 0 ? 'var(--color-primary)' : 'var(--color-text-muted)',
-                      fontWeight: unread > 0 ? 700 : 400,
-                      marginTop: 3,
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {lastMsgContent}
-                  </div>
+                  {unread > 0 && (
+                    <div
+                      style={{
+                        background: 'var(--color-primary)',
+                        color: 'var(--color-on-primary)',
+                        fontSize: '0.7rem',
+                        fontWeight: 800,
+                        borderRadius: 4,
+                        padding: '2px 7px',
+                        minWidth: 18,
+                        textAlign: 'center',
+                      }}
+                    >
+                      {unread}
+                    </div>
+                  )}
                 </div>
+              );
+            })}
 
-                {unread > 0 && (
-                  <div
-                    style={{
-                      background: 'var(--color-primary)',
-                      color: 'var(--color-on-primary)',
-                      fontSize: '0.7rem',
-                      fontWeight: 800,
-                      borderRadius: 4,
-                      padding: '2px 7px',
-                      minWidth: 18,
-                      textAlign: 'center',
-                    }}
-                  >
-                    {unread}
-                  </div>
-                )}
+            {hasMore && onLoadMore && !searchTerm.trim() && (
+              <div style={{ padding: '8px 4px 4px', textAlign: 'center' }}>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  disabled={loadingMore}
+                  onClick={onLoadMore}
+                  style={{ width: '100%', padding: '7px 12px', fontSize: '0.76rem', fontWeight: 700, borderRadius: 4 }}
+                >
+                  {loadingMore ? 'Đang tải thêm...' : 'Tải thêm hội thoại'}
+                </button>
               </div>
-            );
-          })
+            )}
+          </>
         )}
       </div>
     </div>

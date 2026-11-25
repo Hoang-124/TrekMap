@@ -9,6 +9,7 @@ import {
   type WeatherAlertSubItem,
 } from '../../services/api.js';
 import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
+import { safeLocalStorageGet } from '../../utils/storageScope.js';
 import {
   IconBell,
   IconCloud,
@@ -67,7 +68,7 @@ function getTodayIsoVn(): string {
   } catch {
     // fallback below
   }
-  return new Date().toISOString().slice(0, 10);
+  return new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
 }
 
 function getVerdictMeta(status?: WeatherAlertLiveEvaluation['status'] | string | null) {
@@ -126,10 +127,7 @@ export const WeatherAlertModal: React.FC<WeatherAlertModalProps> = ({
   onRequireLogin,
   onShowToast,
 }) => {
-  const [hasToken, setHasToken] = useState<boolean>(() => {
-    if (typeof localStorage === 'undefined') return false;
-    return Boolean(localStorage.getItem('lost_token'));
-  });
+  const [hasToken, setHasToken] = useState<boolean>(() => Boolean(safeLocalStorageGet('lost_token')));
   const isAuthed = Boolean(isAuthenticated) || hasToken;
 
   const openSessionKey = `${isOpen ? '1' : '0'}:${trail.id}:${isAuthed ? 'auth' : 'guest'}`;
@@ -212,8 +210,7 @@ export const WeatherAlertModal: React.FC<WeatherAlertModalProps> = ({
   // Keep auth status synced across same-tab login/logout (lost:auth-changed) & cross-tab storage/focus
   useEffect(() => {
     const syncAuth = () => {
-      if (typeof localStorage === 'undefined') return;
-      setHasToken(Boolean(localStorage.getItem('lost_token')));
+      setHasToken(Boolean(safeLocalStorageGet('lost_token')));
     };
     window.addEventListener('lost:auth-changed', syncAuth);
     window.addEventListener('storage', syncAuth);
@@ -864,7 +861,7 @@ export const WeatherAlertModal: React.FC<WeatherAlertModalProps> = ({
               >
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
                   <span style={{ fontSize: '0.72rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--color-text-dim)' }}>
-                    Đánh Giá Khí Tượng Thực Tế (Open-Meteo DEM)
+                    Đánh Giá Khí Tượng Thực Tế (MET Norway · AWS Open Data Terrarium DEM)
                   </span>
                   {verdictMeta && liveEval && (
                     <span
@@ -969,7 +966,7 @@ export const WeatherAlertModal: React.FC<WeatherAlertModalProps> = ({
                               : previewMatches.wouldTrigger
                               ? `Đang chạm ngưỡng kích hoạt: ${previewMatches.reasons.join(' · ')}`
                               : previewMatches.weatherUnavailable
-                              ? 'Dữ liệu vệ tinh Open-Meteo tạm gián đoạn — hệ thống đang theo dõi trạng thái an toàn NO-GO.'
+                              ? 'Dữ liệu khí tượng MET Norway (CC BY 4.0) tạm gián đoạn — hệ thống đang giữ trạng thái cảnh báo dừng chuyến.'
                               : 'Chưa chạm ngưỡng thông báo — hệ thống sẽ báo ngay khi điều kiện khớp.'}
                           </span>
                         </div>

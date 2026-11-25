@@ -1,9 +1,10 @@
 import { mockTrails } from '../data/seedData.js';
 import { VIETNAM_RANGER_STATIONS } from '../data/vietnamDirectory.js';
-import { getApiHeaders } from '../utils/sessionHeaders.js';
-import { scopedStorageKey } from '../utils/storageScope.js';
+import { fetchWithTimeout, getApiHeaders } from '../utils/sessionHeaders.js';
+import { getActiveStorageUid, safeLocalStorageGet, scopedStorageKey } from '../utils/storageScope.js';
 import { haversineMeters } from '../utils/geoMath.js';
 import { computeClientBioMetrics } from '../utils/gpxParser.js';
+import { calculateTurnaroundTime } from '../utils/mountainSafetyMath.js';
 import type { Trail } from '../types.js';
 import {
   extractPrimaryDialNumber,
@@ -106,6 +107,28 @@ export function removeEmojis(str: string): string {
     .replace(/\u200D|\uFE0F/g, '')
     .replace(/([^\s])[ \t]{2,}/g, '$1 ')
     .trim();
+}
+
+function stripEmojisKeepWhitespace(str: string): string {
+  if (!str) return '';
+  return str
+    .replace(
+      /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F900}-\u{1F9FF}\u{1FA70}-\u{1FAFF}]/gu,
+      ''
+    )
+    .replace(/\u200D|\uFE0F/g, '');
+}
+
+function getCurrentVietnamMonthClient(): number {
+  try {
+    const m = Number(
+      new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Ho_Chi_Minh', month: 'numeric' }).format(new Date())
+    );
+    if (m >= 1 && m <= 12) return m;
+  } catch {
+    // fallback below
+  }
+  return new Date(Date.now() + 7 * 3600_000).getUTCMonth() + 1;
 }
 
 export function removeVietnameseDiacritics(str: string): string {
@@ -212,33 +235,63 @@ export function consumeQueuedAiAssistantPrompt(): { prompt: string; trailId?: st
 }
 
 /**
- * Resolves a stable per-account localStorage scope slug so AI chat caches never leak across accounts.
+ * Builds emergency contacts prioritizing 112 + the active trail's verified local ranger station when available.
  */
-function resolveAiStorageScope(userId?: string | null): string {
-  const explicit = typeof userId === 'string' ? userId.trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) : '';
-  if (explicit) return explicit;
-  if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
-    try {
-      const token = localStorage.getItem('lost_token');
-      if (token) {
-        const parts = token.split('.');
-        const payloadSegment = parts.length === 2 ? parts[0] : parts[1];
-        if (parts.length >= 2 && payloadSegment) {
-          const normalized = payloadSegment.replace(/-/g, '+').replace(/_/g, '/');
-          const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
-          const payload = JSON.parse(atob(padded)) as Record<string, unknown>;
-          const rawId = payload.id ?? payload.userId ?? payload._id ?? payload.sub;
-          if (typeof rawId === 'string' || typeof rawId === 'number') {
-            const cleaned = String(rawId).trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
-            if (cleaned) return cleaned;
-          }
-        }
-      }
-    } catch {
-      // Fall back safely to guest scope on malformed token or restricted storage
+export function buildEmergencyContactsForTrail(activeTrail?: Trail | null): VerifiedEmergencyContact[] {
+  const result: VerifiedEmergencyContact[] = [];
+  const seenDials = new Set<string>();
+  const pushUnique = (contact: VerifiedEmergencyContact) => {
+    const dial = extractPrimaryDialNumber(contact.dialNumber || contact.phone);
+    if (seenDials.has(dial)) return;
+    seenDials.add(dial);
+    result.push({ ...contact, dialNumber: dial });
+  };
+
+  // Always keep National Emergency 112 at #1
+  pushUnique(FALLBACK_EMERGENCY_CONTACTS[0]);
+
+  if (activeTrail) {
+    const matchedStation =
+      VIETNAM_RANGER_STATIONS.find((s) => s.coveredTrailSlugs.includes(activeTrail.id)) ||
+      VIETNAM_RANGER_STATIONS.find(
+        (s) =>
+          s.province !== 'Toàn Quốc' &&
+          (normalizeAscii(activeTrail.province).includes(normalizeAscii(s.province)) ||
+            normalizeAscii(s.province).includes(normalizeAscii(activeTrail.province)))
+      );
+    if (matchedStation) {
+      pushUnique({
+        name: `${matchedStation.name} (Địa bàn ${activeTrail.name})`,
+        phone: matchedStation.hotlinePhone || matchedStation.emergencyPhone,
+        dialNumber: extractPrimaryDialNumber(matchedStation.hotlinePhone || matchedStation.emergencyPhone),
+        rangerContact: matchedStation.emergencyPhone,
+        region: matchedStation.province,
+        address: matchedStation.address,
+      });
+    } else if (activeTrail.rescueContact?.phone) {
+      pushUnique({
+        name: `${activeTrail.rescueContact.name} (${activeTrail.name})`,
+        phone: activeTrail.rescueContact.phone,
+        dialNumber: extractPrimaryDialNumber(activeTrail.rescueContact.phone),
+        region: activeTrail.province,
+        address: `${activeTrail.district}, ${activeTrail.province}`,
+      });
     }
   }
-  return 'guest';
+
+  for (const contact of FALLBACK_EMERGENCY_CONTACTS.slice(1)) {
+    pushUnique(contact);
+  }
+  return result.slice(0, 6);
+}
+
+/**
+ * Resolves a stable per-account localStorage scope slug aligned with storageScope.ts.
+ */
+function resolveAiStorageScope(userId?: string | null): string {
+  const uid = getActiveStorageUid(userId);
+  const cleaned = uid.trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+  return cleaned || 'guest';
 }
 
 function getScopedLocalThreadsKey(userId?: string | null): string {
@@ -260,13 +313,32 @@ export function loadLocalAiThreads(userId?: string | null): LocalAiThreadRecord[
   return [];
 }
 
-export function saveLocalAiThreads(threads: LocalAiThreadRecord[], userId?: string | null) {
+export function saveLocalAiThreads(threads: LocalAiThreadRecord[], userId?: string | null): boolean {
+  const key = getScopedLocalThreadsKey(userId);
   try {
-    localStorage.setItem(getScopedLocalThreadsKey(userId), JSON.stringify(threads.slice(0, 25)));
+    localStorage.setItem(key, JSON.stringify(threads.slice(0, 25)));
+    return true;
   } catch {
-    // ignore quota errors
+    // Retry once with compacted history if localStorage quota is nearly full
+    try {
+      const compact = threads.slice(0, 10).map((t) => ({
+        ...t,
+        messages: t.messages.slice(-16),
+      }));
+      localStorage.setItem(key, JSON.stringify(compact));
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
+
+const GENERIC_TRAIL_STOPWORDS = new Set([
+  'dinh', 'chinh', 'nui', 'cung', 'duong', 'rung', 'thac', 'suoi', 'viet', 'nam',
+  'trek', 'trekking', 'ngay', 'dem', 'muon', 'nhanh', 'chuan', 'thoi', 'tiet',
+  'bao', 'nhieu', 'khong', 'duoc', 'nhung', 'nguoi', 'cho', 'di', 'leo', 'san',
+  'may', 'tinh', 'vung', 'mien', 'bac', 'trung', 'tay', 'dong',
+]);
 
 /**
  * Priority-ordered, Accent-Insensitive Local Offline Fallback Engine (strictly brand LOST)
@@ -285,71 +357,240 @@ function generateLocalFallback(
 
   // P0: EMERGENCY SOS & WFA TRIAGE (Always runs before greetings!)
   const emergencyPhrases = [
-    'cuu ho', 'khan cap', 'lac duong', 'bi lac', 'soc do cao', 'ams', 'ha than nhiet',
-    'ran can', 'ran doc', 'gay xuong', 'bong gan', 'lat so mi', 'set danh', 'lu quet',
-    'soc nhiet', 'say nang', 'ong dot', 'sos',
+    'cuu ho', 'khan cap', 'lac duong', 'bi lac', 'soc do cao', 'say do cao', 'say nui', 'ams', 'ha than nhiet',
+    'ran can', 'ran doc', 'gay xuong', 'chan thuong', 'bong gan', 'lat so mi', 'set danh',
+    'lu quet', 'soc nhiet', 'say nang', 'ong dot', 'sos',
   ];
-  if (emergencyPhrases.some((p) => hasWholeWordPhrase(qNorm, p))) {
-    const isAms = hasWholeWordPhrase(qNorm, 'soc do cao') || hasWholeWordPhrase(qNorm, 'ams');
+  const hasAmsNeuroSymptom =
+    hasWholeWordPhrase(qNorm, 'dau dau') ||
+    hasWholeWordPhrase(qNorm, 'buon non') ||
+    hasWholeWordPhrase(qNorm, 'chong mat') ||
+    hasWholeWordPhrase(qNorm, 'kho tho') ||
+    hasWholeWordPhrase(qNorm, 'non mua') ||
+    hasWholeWordPhrase(qNorm, 'phu phoi') ||
+    hasWholeWordPhrase(qNorm, 'phu nao');
+  const hasHighAltitudeContext =
+    hasWholeWordPhrase(qNorm, 'do cao') ||
+    hasWholeWordPhrase(qNorm, 'dinh') ||
+    hasWholeWordPhrase(qNorm, 'nui') ||
+    /\b(?:2[4-9]\d{2}|[3-8]\d{3})\s*m?\b/.test(qNorm) ||
+    (activeTrail?.maxAltitudeM ?? 0) >= 2400;
+  const hasHighAltitudeAmsSymptoms = hasAmsNeuroSymptom && hasHighAltitudeContext;
+
+  if (emergencyPhrases.some((p) => hasWholeWordPhrase(qNorm, p)) || hasHighAltitudeAmsSymptoms) {
+    const isHeatstroke = hasWholeWordPhrase(qNorm, 'soc nhiet') || hasWholeWordPhrase(qNorm, 'say nang');
+    const isHypothermia = hasWholeWordPhrase(qNorm, 'ha than nhiet');
+    const isTrauma =
+      hasWholeWordPhrase(qNorm, 'gay xuong') ||
+      hasWholeWordPhrase(qNorm, 'chan thuong') ||
+      hasWholeWordPhrase(qNorm, 'bong gan') ||
+      hasWholeWordPhrase(qNorm, 'lat so mi');
+    const isStorm = hasWholeWordPhrase(qNorm, 'set danh') || hasWholeWordPhrase(qNorm, 'lu quet');
+    const isSting = hasWholeWordPhrase(qNorm, 'ong dot');
+    const isAms =
+      hasWholeWordPhrase(qNorm, 'soc do cao') ||
+      hasWholeWordPhrase(qNorm, 'say do cao') ||
+      hasWholeWordPhrase(qNorm, 'say nui') ||
+      hasWholeWordPhrase(qNorm, 'ams') ||
+      hasHighAltitudeAmsSymptoms;
     const isLost = hasWholeWordPhrase(qNorm, 'lac duong') || hasWholeWordPhrase(qNorm, 'bi lac');
     const isSnake = hasWholeWordPhrase(qNorm, 'ran can') || hasWholeWordPhrase(qNorm, 'ran doc');
+
+    const contacts = buildEmergencyContactsForTrail(activeTrail);
+
+    let conditionCode = 'WFA-SOS';
+    let conditionTitle = 'Hướng dẫn sơ cứu & cứu hộ khẩn cấp (chế độ ngoại tuyến)';
+    let immediateSteps = [
+      'Đánh giá an toàn hiện trường, giữ bình tĩnh và đưa nạn nhân ra khỏi vùng nguy hiểm (đá lở, khe suối, gió mạnh hoặc nắng gắt).',
+      'Kiểm tra ý thức, nhịp thở và vết chảy máu; giữ nguyên tư thế an toàn và bật định vị GPS.',
+      'Gọi ngay 112 / 114 / 115 hoặc bấm Soạn tin nhắn SOS 2G kèm GPS bên dưới.',
+    ];
+    let forbiddenActions = [
+      'KHÔNG tự tách đoàn di chuyển trong đêm tối, sương mù dày hoặc thời tiết xấu.',
+      'KHÔNG tự ý di chuyển nạn nhân nếu nghi ngờ chấn thương đầu, cổ hoặc cột sống.',
+    ];
+    let whenToEvacuate = [
+      'Bất kỳ dấu hiệu lú lẫn, khó thở, chảy máu không cầm, đau ngực hoặc không thể tự di chuyển.',
+      'Triệu chứng không cải thiện sau sơ cứu ban đầu — gọi cứu hộ 112 / 115 ngay.',
+    ];
+
+    if (isHeatstroke) {
+      conditionCode = 'WFA-HEAT';
+      conditionTitle = 'Sơ cứu sốc nhiệt / say nắng (WFA)';
+      immediateSteps = [
+        'Đưa nạn nhân ngay vào bóng râm thoáng gió, nới lỏng hoặc cởi bớt lớp áo dày và balo.',
+        'Làm mát tích cực ngay: đắp khăn ướt mát lên cổ, nách, bẹn, trán; phun sương nước mát và quạt gió liên tục.',
+        'Nếu nạn nhân còn tỉnh táo, cho nhấp từng ngụm nhỏ nước mát pha Oresol hoặc nước điện giải.',
+        'Theo dõi liên tục thân nhiệt và tri giác; chuẩn bị gọi 115 / 112 nếu có dấu hiệu nặng.',
+      ];
+      forbiddenActions = [
+        'TUYỆT ĐỐI KHÔNG ủ ấm, đắp chăn hay giữ nhiệt cho người bị sốc nhiệt/say nắng!',
+        'KHÔNG cho uống rượu bia, cà phê, nước tăng lực hoặc ép uống khi nạn nhân lơ mơ/nôn ói.',
+        'KHÔNG đổ nước đá lạnh đột ngột lên người gây co mạch, dễ làm nặng thêm tình trạng.',
+      ];
+      whenToEvacuate = [
+        'Da nóng khô hoặc vã mồ hôi kèm lú lẫn, nói nhảm, co giật, nôn liên tục hoặc ngất xỉu.',
+        'Thân nhiệt không hạ sau 15–20 phút làm mát tích cực — đây là cấp cứu tối khẩn, gọi 115 / 112 ngay.',
+      ];
+    } else if (isHypothermia) {
+      conditionCode = 'WFA-HYPO';
+      conditionTitle = 'Sơ cứu hạ thân nhiệt trên núi cao (WFA)';
+      immediateSteps = [
+        'Đưa ngay nạn nhân vào nơi kín gió (lán trại, lều hoặc túi bivy), thay toàn bộ quần áo ướt bằng đồ khô.',
+        'Cách ly hoàn toàn cơ thể khỏi mặt đất lạnh (lót tấm cách nhiệt, balo, quần áo khô).',
+        'Ủ ấm tập trung vùng thân trung tâm (ngực, bụng, cổ, đầu) bằng túi ngủ, áo lông vũ hoặc chăn nhiệt cứu sinh.',
+        'Nếu nạn nhân hoàn toàn tỉnh táo và nuốt tốt, cho uống từng ngụm nước ấm có đường/trà gừng ấm.',
+      ];
+      forbiddenActions = [
+        'KHÔNG chà xát mạnh tay chân (dễ đẩy máu lạnh về tim gây rối loạn nhịp tim).',
+        'KHÔNG cho uống rượu bia (gây giãn mạch mất nhiệt nhanh hơn) và KHÔNG áp nguồn nhiệt quá nóng trực tiếp lên da.',
+      ];
+      whenToEvacuate = [
+        'Nạn nhân đột ngột ngừng run rẩy nhưng vẫn lạnh cóng, nói lắp, mất phương hướng, buồn ngủ bất thường hoặc lơ mơ.',
+        'Nhịp thở chậm, mạch yếu hoặc bất tỉnh — xử lý nhẹ nhàng và gọi 112 / 115 cấp cứu ngay.',
+      ];
+    } else if (isTrauma) {
+      conditionCode = 'WFA-TRAUMA';
+      conditionTitle = 'Sơ cứu gãy xương / chấn thương đường rừng (WFA)';
+      immediateSteps = [
+        'Giữ yên nạn nhân, không di chuyển nếu nghi chấn thương cổ/cột sống; ép gạc sạch 5–10 phút nếu có vết thương chảy máu.',
+        'Với nghi gãy xương: cố định chi ở đúng tư thế hiện tại bằng nẹp tạm (gậy trekking + áo khoác cuộn làm đệm), buộc cố định phía trên và dưới ổ gãy.',
+        'Với bong gân / lật sơ mi nhẹ: áp dụng RICE — nghỉ ngơi, chườm mát bằng khăn thấm nước suối, băng thun ép nhẹ và kê cao chân.',
+        'Kiểm tra độ ấm và cảm giác đầu ngón tay/chân sau khi băng nẹp để đảm bảo không băng quá chặt.',
+      ];
+      forbiddenActions = [
+        'KHÔNG cố nắn chỉnh khớp trật hoặc đẩy đầu xương gãy vào trong.',
+        'KHÔNG ép nạn nhân tự đi tiếp khi nghi gãy xương, đau dữ dội hoặc sưng biến dạng chi.',
+      ];
+      whenToEvacuate = [
+        'Gãy xương hở, chi biến dạng, đầu ngón tím tái/tê mất cảm giác, chảy máu nhiều không cầm.',
+        'Chấn thương vùng đầu, cổ, lưng, ngực bụng hoặc nạn nhân không thể tự bước đi.',
+      ];
+    } else if (isStorm) {
+      conditionCode = 'WFA-STORM';
+      conditionTitle = 'Ứng phó sét đánh / lũ quét đột ngột (WFA)';
+      immediateSteps = [
+        'Nếu gặp dông sét: rời ngay đỉnh núi, sống núi trọc và cây cao đơn độc; hạ độ cao xuống vùng rừng thấp đồng đều.',
+        'Ngồi xổm hai bàn chân khép sát trên balo/tấm cách nhiệt khô, thu gọn người, cách xa gậy trekking/khung kim loại ít nhất 5–10m.',
+        'Nếu nghi lũ quét (nước suối đục đột ngột, tiếng ầm ầm từ thượng nguồn, cành lá trôi mạnh): leo vuông góc lên sườn dốc cao ngay lập tức.',
+        'Nếu có người bị sét đánh: nạn nhân KHÔNG mang điện — tiếp cận kiểm tra hô hấp/mạch ngay và ép tim (CPR) nếu ngừng thở.',
+      ];
+      forbiddenActions = [
+        'KHÔNG trú dưới gốc cây cổ thụ đơn độc, mỏm đá nhô cao hay hang nông ẩm ướt.',
+        'KHÔNG nằm bẹt xuống mặt đất khi có sét và KHÔNG cố lội qua suối đang dâng cao chảy xiết.',
+      ];
+      whenToEvacuate = [
+        'Có người bị sét đánh (dù tỉnh lại vẫn cần kiểm tra tim mạch tại bệnh viện), bị đá lở/cây đổ trúng.',
+        'Lối xuống núi bị lũ chia cắt — giữ vị trí trên điểm cao an toàn và gửi SMS 2G kèm GPS cho 112 / 114.',
+      ];
+    } else if (isSting) {
+      conditionCode = 'WFA-STING';
+      conditionTitle = 'Sơ cứu ong đốt & phòng sốc phản vệ (WFA)';
+      immediateSteps = [
+        'Di chuyển nhanh và bình tĩnh rời khỏi khu vực tổ ong ít nhất 50–100m, che vùng đầu và mặt.',
+        'Gạt nhẹ ngòi ong theo phương ngang bằng cạnh thẻ cứng (không bóp túi nọc), rửa sạch vết đốt và chườm mát.',
+        'Theo dõi sát hô hấp và da nạn nhân trong 30–60 phút đầu để phát hiện sớm sốc phản vệ.',
+      ];
+      forbiddenActions = [
+        'KHÔNG dùng nhíp bóp nát túi nọc còn dính trên da, KHÔNG đắp vôi hoặc lá rừng lên vết đốt.',
+        'KHÔNG vung tay đập mạnh gần tổ ong rừng.',
+      ];
+      whenToEvacuate = [
+        'Bị đốt nhiều nốt (>10 nốt) hoặc đốt ở vùng đầu, mặt, cổ, trong miệng.',
+        'Xuất hiện nổi mề đay toàn thân, sưng môi/mí mắt, khò khè khó thở, chóng mặt hoặc tụt huyết áp — gọi 115 / 112 ngay!',
+      ];
+    } else if (isAms) {
+      conditionCode = 'WFA-AMS';
+      conditionTitle = 'Sơ cứu sốc độ cao cấp tính (AMS / HAPE / HACE)';
+      immediateSteps = [
+        'Dừng leo lên ngay lập tức; nếu triệu chứng vừa hoặc nặng, HẠ ĐỘ CAO NGAY 300m – 500m (hoặc đến khi đỡ hẳn).',
+        'Cho nạn nhân nghỉ nơi kín gió, giữ ấm cổ ngực, nhấp từng ngụm nước ấm pha Oresol và theo dõi sát nhịp thở.',
+      ];
+      forbiddenActions = [
+        'TUYỆT ĐỐI KHÔNG cố leo lên cao hơn khi đang đau đầu, buồn nôn, chóng mặt hoặc khó thở lúc nghỉ.',
+        'KHÔNG để người nghi sốc độ cao đi xuống một mình hoặc ngủ một mình qua đêm.',
+      ];
+      whenToEvacuate = [
+        'Mất thăng bằng đi loạng choạng, lú lẫn (nghi phù não HACE) hoặc ho ra bọt hồng, khó thở ngay cả khi ngồi nghỉ (nghi phù phổi HAPE).',
+      ];
+    } else if (isLost) {
+      conditionCode = 'WFA-LOST';
+      conditionTitle = 'Xử lý khi lạc đường / mất dấu (quy tắc S.T.O.P)';
+      immediateSteps = [
+        'S (Stop) — Dừng lại ngay, ngồi xuống hít thở sâu, uống nước để lấy lại bình tĩnh.',
+        'T & O (Think & Observe) — Kiểm tra lại hướng đi cuối cùng trên GPX Offline, đánh dấu vị trí hiện tại; nếu cần bắt sóng hãy tìm điểm cao thoáng, tránh đi sâu xuống khe suối rậm.',
+        'P (Plan) — Giữ nguyên vị trí dễ nhìn thấy, thổi còi 3 hồi ngắn lặp lại và gửi SMS 2G kèm tọa độ GPS cho 112 hoặc trạm kiểm lâm.',
+      ];
+      forbiddenActions = [
+        'KHÔNG hoảng loạn chạy sâu vào rừng hoặc tiếp tục mò đường khi trời đã sập tối / sương mù dày.',
+        'KHÔNG tách rời nhóm đi tìm đường một mình.',
+      ];
+      whenToEvacuate = [
+        'Khi mất hoàn toàn phương hướng, trời sắp tối, cạn nước/pin hoặc có thành viên bị thương — kích hoạt SOS 2G về 112 ngay khi còn pin.',
+      ];
+    } else if (isSnake) {
+      conditionCode = 'WFA-SNAKE';
+      conditionTitle = 'Sơ cứu rắn độc cắn (WFA)';
+      immediateSteps = [
+        'Đưa nạn nhân ra xa con rắn, trấn an nằm yên tuyệt đối; tháo bỏ nhẫn, đồng hồ, dây giày gần vùng bị cắn trước khi sưng.',
+        'Cố định chi bị cắn bằng nẹp và đặt THẤP HƠN MỨC TIM; băng ép thun đàn hồi vừa phải (chỉ đủ lọt 1 ngón tay) nếu nghi rắn hổ, KHÔNG garo tắc mạch.',
+        'Ghi nhớ thời điểm bị cắn và đặc điểm rắn (chụp ảnh từ xa nếu an toàn), cáng/chuyển tới bệnh viện có huyết thanh kháng nọc ngay.',
+      ];
+      forbiddenActions = [
+        'CẤM rạch da, CẤM hút nọc bằng miệng, CẤM đắp lá cây hay thuốc nam, CẤM garo siết chặt gây hoại tử.',
+        'KHÔNG để nạn nhân tự chạy bộ (vận động mạnh làm nọc lan nhanh hơn).',
+      ];
+      whenToEvacuate = [
+        'MỌI trường hợp bị rắn rừng cắn đều cần chuyển ngay tới cơ sở y tế gần nhất và gọi 115 / 112 hỗ trợ cáng.',
+      ];
+    }
 
     actions.push({
       type: 'first_aid_triage',
       triageData: {
         severity: 'critical',
-        conditionCode: isAms ? 'WFA-AMS' : isLost ? 'WFA-LOST' : isSnake ? 'WFA-SNAKE' : 'WFA-SOS',
-        conditionTitle: isAms
-          ? 'Sốc Độ Cao Cấp Tính (AMS)'
-          : isLost
-          ? 'Lạc Đường / Mất Dấu (Quy Tắc S.T.O.P)'
-          : isSnake
-          ? 'Sơ Cứu Rắn Độc Cắn (WFA)'
-          : 'Giao Thức Cứu Hộ Khẩn Cấp Thực Địa (Chế Độ Offline)',
-        summary: 'Chế độ sinh tồn ngoại tuyến LOST AI — ưu tiên giữ bình tĩnh, sơ cứu đúng chuẩn và gọi/gửi SMS 2G tới 112.',
-        immediateSteps: isAms
-          ? ['HẠ CAO ĐỘ NGAY 300m – 500m.', 'Nghỉ kín gió, giữ ấm cổ ngực, nhấp nước ấm pha Oresol.']
-          : isLost
-          ? ['S — Dừng lại ngay, không đi tiếp vào rừng.', 'T/O — Tìm điểm cao thoáng bắt sóng, không đi xuống khe suối cạn.', 'P — Thổi còi 3 hồi ngắn / gửi SMS 2G kèm GPS về 112.']
-          : isSnake
-          ? ['Đặt nạn nhân nằm yên, cố định chi bị cắn THẤP HƠN TIM.', 'Băng ép thun đàn hồi nhẹ từ đầu chi lên trên và cáng đi viện ngay.']
-          : ['Giữ ấm, bảo toàn năng lượng và bật định vị GPS.', 'Gọi 112 / 114 / 115 hoặc bấm Soạn SMS 2G ngay bên dưới.'],
-        forbiddenActions: isSnake
-          ? ['CẤM rạch da, CẤM hút nọc bằng miệng, CẤM đắp lá, CẤM garo chặt.']
-          : ['KHÔNG tự tách đoàn di chuyển trong đêm tối hoặc sương mù dày.'],
-        whenToEvacuate: ['Bất kỳ dấu hiệu lú lẫn, khó thở, chảy máu nặng hoặc không thể tự di chuyển.'],
-        emergencyContacts: FALLBACK_EMERGENCY_CONTACTS,
+        conditionCode,
+        conditionTitle,
+        summary: 'Chế độ hỗ trợ khẩn cấp ngoại tuyến của LOST AI — giữ bình tĩnh, sơ cứu đúng bước và gọi hoặc gửi tin nhắn SOS 2G tới 112.',
+        immediateSteps,
+        forbiddenActions,
+        whenToEvacuate,
+        emergencyContacts: contacts,
         sosSmsNote: `CAN HO TRO CUU NAN KHAN CAP${activeTrail ? ` tai ${activeTrail.name}` : ''}.`,
       },
     });
     return {
-      reply: `**CẤP CỨU THỰC ĐỊA (CHẾ ĐỘ NGOẠI TUYẾN LOST):**\n\nThực hiện ngay quy trình sơ cứu ưu tiên và sử dụng đường dây nóng xác thực / nút **Soạn SMS 2G kèm GPS** bên dưới.`,
+      reply: `**Hướng dẫn khẩn cấp (chế độ ngoại tuyến LOST):**\n\nMình đã mở sẵn các bước xử lý ưu tiên cho **${conditionTitle}**. Bạn làm lần lượt từng bước, lưu ý phần **khi nào cần gọi cứu hộ ngay** và bấm số trực / **Soạn tin nhắn SOS 2G** bên dưới nhé.`,
       actions,
       modelUsed: 'lost-knowledge-engine',
     };
   }
 
   // P1A: HEAD-TO-HEAD TRAIL COMPARISON (OFFLINE)
-  if (
-    ['so sanh', 'tot hon', 'dep hon', 'kho hon', 'de hon', 'nen di', 'vs', 'hay'].some((p) =>
-      hasWholeWordPhrase(qNorm, p)
-    )
-  ) {
+  // Require explicit comparison words OR >=2 distinct trails mentioned so Go/No-Go prompts ("có nên đi X không") are never hijacked
+  const explicitCompareKeywords = ['so sanh', 'tot hon', 'dep hon', 'kho hon', 'de hon', 'vs', 'chon cung nao'];
+  const hasExplicitCompare = explicitCompareKeywords.some((p) => hasWholeWordPhrase(qNorm, p));
+  const hasSoftCompare =
+    (hasWholeWordPhrase(qNorm, 'hay') || hasWholeWordPhrase(qNorm, 'nen di')) &&
+    !hasWholeWordPhrase(qNorm, 'go no go') &&
+    !hasWholeWordPhrase(qNorm, 'hom nay');
+
+  if (hasExplicitCompare || hasSoftCompare) {
     const offlineCompare = computeOfflineTrailCompare({
       query,
-      activeTrailId: activeTrail?.id,
+      activeTrailId: hasExplicitCompare ? activeTrail?.id : undefined,
     });
     if (offlineCompare) {
       return {
-        reply: `**SO SÁNH ĐỐI ĐẦU (NGOẠI TUYẾN) — ${offlineCompare.trails.map((t) => t.name).join(' VS ').toUpperCase()}:**\n\n${offlineCompare.summaryVerdict}\n\n- **Người mới**: **${offlineCompare.beginnerPick.name}** — ${offlineCompare.beginnerPick.reason}\n- **Trekker kinh nghiệm**: **${offlineCompare.veteranPick.name}** — ${offlineCompare.veteranPick.reason}`,
+        reply: `**So sánh nhanh (ngoại tuyến) — ${offlineCompare.trails.map((t) => t.name).join(' và ')}:**\n\n${offlineCompare.summaryVerdict}\n\n- **Hợp người mới**: **${offlineCompare.beginnerPick.name}** — ${offlineCompare.beginnerPick.reason}\n- **Hợp người đi quen**: **${offlineCompare.veteranPick.name}** — ${offlineCompare.veteranPick.reason}`,
         actions: [
           { type: 'trail_compare_card', compareData: offlineCompare },
           {
             type: 'quick_reply',
             suggestions: [
-              `Đánh giá Go/No-Go ${offlineCompare.trails[0].name}`,
-              `Đánh giá Go/No-Go ${offlineCompare.trails[1].name}`,
-              `Checklist trang bị cho ${offlineCompare.beginnerPick.name}`,
+              `Hôm nay có nên leo ${offlineCompare.trails[0].name} không (Go/No-Go)?`,
+              `Hôm nay có nên leo ${offlineCompare.trails[1].name} không (Go/No-Go)?`,
+              `Checklist đồ đạc cho ${offlineCompare.beginnerPick.name}`,
             ],
           },
         ],
@@ -358,34 +599,44 @@ function generateLocalFallback(
     }
   }
 
-  // P1: BIO-CALCULATOR
-  if (['naismith', 'tobler', 'mat bao lau', 'bao nhieu lit nuoc', 'tinh calo', 'balo nang'].some((p) => hasWholeWordPhrase(qNorm, p))) {
+  // P1: BIO-CALCULATOR (honors numeric distance / elevation / pack / body weight parsed from prompt)
+  if (['naismith', 'tobler', 'mat bao lau', 'bao nhieu lit nuoc', 'bao nhieu nuoc', 'tinh calo', 'balo nang'].some((p) => hasWholeWordPhrase(qNorm, p))) {
+    const distMatch = qNorm.match(/(\d+(?:\.\d+)?)\s*km\b/) || query.match(/(\d+(?:[.,]\d+)?)\s*km\b/i);
+    const elevMatch = query.match(/(?:\+|cao|doc|elevation|gain)\s*(\d{3,4})\s*m\b/i);
+    const packMatch = qNorm.match(/balo\s*(\d+(?:\.\d+)?)\s*kg\b/) || query.match(/balo\s*(\d+(?:[.,]\d+)?)\s*kg\b/i);
+    const bodyMatch = qNorm.match(/(?:nang|can nang)\s*(\d{2,3})\s*kg\b/);
+
+    const parsedDist = distMatch ? Number(distMatch[1].replace(',', '.')) : NaN;
+    const parsedElev = elevMatch ? Number(elevMatch[1]) : NaN;
+    const parsedPack = packMatch ? Number(packMatch[1].replace(',', '.')) : NaN;
+    const parsedBody = bodyMatch ? Number(bodyMatch[1]) : NaN;
+
     const bio = computeClientBioMetrics({
       trailName: activeTrail?.name,
-      distanceKm: activeTrail?.distanceKm ?? 14,
-      elevationGainM: activeTrail?.elevationGainM ?? 850,
+      distanceKm: Number.isFinite(parsedDist) && parsedDist >= 1 && parsedDist <= 120 ? parsedDist : (activeTrail?.distanceKm ?? 14),
+      elevationGainM: Number.isFinite(parsedElev) && parsedElev >= 50 && parsedElev <= 5000 ? parsedElev : (activeTrail?.elevationGainM ?? 850),
       maxAltitudeM: activeTrail?.maxAltitudeM ?? 2000,
-      bodyWeightKg: 62,
-      packWeightKg: 8,
+      bodyWeightKg: Number.isFinite(parsedBody) && parsedBody >= 35 && parsedBody <= 150 ? parsedBody : 62,
+      packWeightKg: Number.isFinite(parsedPack) && parsedPack >= 0 && parsedPack <= 35 ? parsedPack : 8,
       fitnessLevel: 'intermediate',
       durationDays: activeTrail?.durationDays ?? 2,
     });
     return {
-      reply: `**TÍNH TOÁN SINH HỌC LEO NÚI (OFFLINE):**\n\n- **Thời gian di chuyển**: **${bio.recommendedMovingHours} giờ** (Naismith ${bio.naismithHours}h | Tobler ${bio.toblerHours}h).\n- **Nước uống**: **${bio.waterLitersTotal}L** + **${bio.oresolPackets} gói Oresol**.\n- **Năng lượng**: **${bio.caloriesActiveKcal.toLocaleString()} kcal**.\n\n*Điều chỉnh cân nặng & balo trực tiếp ở thẻ tương tác bên dưới!*`,
+      reply: `**Ước tính giờ đi, nước uống & năng lượng (ngoại tuyến):**\n\n- **Thời gian di chuyển**: **${bio.recommendedMovingHours} giờ** (Naismith ${bio.naismithHours}h | Tobler ${bio.toblerHours}h).\n- **Nước uống**: **${bio.waterLitersTotal}L** + **${bio.oresolPackets} gói Oresol**.\n- **Năng lượng tiêu hao**: **${bio.caloriesActiveKcal.toLocaleString('vi-VN')} kcal**.\n\n*Bạn kéo thanh trượt cân nặng và balo ngay ở thẻ bên dưới để tính sát với mình hơn nhé.*`,
       actions: [{ type: 'bio_calculator', trailId: activeTrail?.id, trailName: activeTrail?.name, bioCalcData: bio }],
       modelUsed: 'lost-knowledge-engine',
     };
   }
 
   // P2: GEAR CHECKLIST (Whole-word safe — won't hijack "bản đồ")
-  if (['checklist', 'trang bi', 'xep balo', 'chuan bi do', 'mang theo gi', 'do leo nui'].some((p) => hasWholeWordPhrase(qNorm, p))) {
+  if (['checklist', 'trang bi', 'xep balo', 'chuan bi do', 'mang theo gi', 'do leo nui', 'do dac'].some((p) => hasWholeWordPhrase(qNorm, p))) {
     actions.push({
       type: 'gear_checklist',
       trailId: activeTrail?.id,
       trailName: activeTrail?.name,
       checklistItems: [
         {
-          category: 'Trang phục & Giữ nhiệt (Quy tắc 3 lớp)',
+          category: 'Trang phục & giữ ấm (quy tắc 3 lớp)',
           items: [
             { name: 'Áo thun thoát mồ hôi (Base Layer) x2', weightGrams: 300, isEssential: true, targetCategory: 'Trang phục' },
             { name: 'Áo nỉ / lông vũ giữ nhiệt (Mid Layer)', weightGrams: 420, isEssential: true, targetCategory: 'Trang phục' },
@@ -394,7 +645,7 @@ function generateLocalFallback(
           ],
         },
         {
-          category: 'Di chuyển & An toàn sinh tồn',
+          category: 'Di chuyển & an toàn đường rừng',
           items: [
             { name: 'Giày trekking cổ lửng đế gai sâu', weightGrams: 850, isEssential: true, targetCategory: 'Trang phục' },
             { name: 'Cặp gậy trekking hợp kim nhôm', weightGrams: 500, isEssential: true, targetCategory: 'Trang phục' },
@@ -406,28 +657,28 @@ function generateLocalFallback(
       ],
     });
     return {
-      reply: `**CHECKLIST TRANG BỊ LEO NÚI CHUẨN LOST:**\n\n- **Giới hạn tải trọng**: Tối đa **18% – 20% thể trọng**.\n- **Xếp balo 3 tầng**: Đáy (túi ngủ) -> Giữa sát lưng (nước/thực phẩm) -> Đỉnh (áo mưa/đèn pin/sơ cứu).`,
+      reply: `**Gợi ý đồ đạc leo núi (ngoại tuyến):**\n\n- **Giới hạn độ nặng balo**: Nên giữ trong khoảng **18% – 20% cân nặng cơ thể** để đi đường dài đỡ mỏi gối.\n- **Cách xếp balo 3 tầng**: Đáy (túi ngủ, đồ ngủ) → Giữa sát lưng (nước, đồ ăn nặng) → Đỉnh (áo mưa, đèn pin, hộp sơ cứu để lấy ngay).`,
       actions,
       modelUsed: 'lost-knowledge-engine',
     };
   }
 
-  // P3: GREETING (Strictly brand LOST)
+  // P3: GREETING (Strictly brand LOST — warm unified "Mình" voice)
   if (
     ['chao', 'hi', 'hello', 'xin chao', 'alo', 'ban la ai'].some((p) => hasWholeWordPhrase(qNorm, p)) &&
     qNorm.split(' ').length <= 7
   ) {
     const greetingName = displayName ? `**${displayName}**` : 'bạn';
     return {
-      reply: `**Chào ${greetingName}!** Rất vui được đồng hành cùng bạn trên **LOST**.\n\nEm là **LOST AI** — Trợ lý Thám hiểm & Sinh tồn Núi cao Việt Nam (đang hoạt động ở chế độ dự phòng ngoại tuyến).\n\nEm có thể hỗ trợ bạn:\n- **Xếp hạng cung đường** theo thể lực & mùa đẹp.\n- **Tính thời gian Naismith/Tobler, nước uống & calo**.\n- **Sơ cứu khẩn cấp WFA & Hotline xác thực** 112 / 114 / 115 / VQG.\n- **Phân tích file GPX** trực tiếp ngay cả khi mất sóng.`,
+      reply: `**Chào ${greetingName}!** Rất vui được đi cùng bạn trên **LOST**.\n\nMình là **LOST AI**, bạn đồng hành rành đường rừng núi Việt Nam (hiện đang chạy chế độ dự phòng ngoại tuyến).\n\nMình có thể giúp bạn ngay cả khi mất sóng:\n- **Gợi ý cung đường** hợp thể lực và mùa đẹp.\n- **Ước tính giờ đi (Naismith/Tobler), lượng nước và calo**.\n- **Hướng dẫn sơ cứu dã ngoại WFA & số trực** 112 / 114 / 115 / kiểm lâm.\n- **Đọc file GPX** trực tiếp để xem độ dốc và cao độ.`,
       actions: [
         {
           type: 'quick_reply',
           suggestions: [
-            'Gợi ý cung săn mây cho người mới',
-            'Tính thời gian & lượng nước leo núi',
-            'Checklist Balo 2N1Đ',
-            'Cấp cứu khẩn cấp: Sốc độ cao & Lạc đường',
+            'Gợi ý vài cung săn mây dễ đi cho người mới',
+            'Đường 15km cần bao nhiêu nước và đi mấy tiếng (Naismith)?',
+            'Chuẩn bị balo và đồ đạc cho chuyến 2N1Đ',
+            'Xử lý khẩn cấp khi sốc độ cao hoặc lạc đường',
           ],
         },
       ],
@@ -435,57 +686,80 @@ function generateLocalFallback(
     };
   }
 
-  // P4: TRAIL MATCHING FALLBACK (capped to top 3)
+  // P4: TRAIL MATCHING FALLBACK (stopword-filtered + real VN-TZ seasonStatus)
+  const queryTokens = qNorm
+    .split(' ')
+    .filter((w) => w.length >= 4 && !GENERIC_TRAIL_STOPWORDS.has(w));
   const matched = mockTrails.filter((t) => {
     const nameNorm = normalizeAscii(t.name);
     const provNorm = normalizeAscii(t.province);
-    return hasWholeWordPhrase(qNorm, nameNorm) || hasWholeWordPhrase(qNorm, provNorm) || qNorm.split(' ').some((w) => w.length >= 4 && nameNorm.includes(w));
+    const altMatch = (t.altNames || []).some((alt) => {
+      const aNorm = normalizeAscii(alt);
+      return aNorm.length >= 3 && hasWholeWordPhrase(qNorm, aNorm);
+    });
+    return (
+      hasWholeWordPhrase(qNorm, nameNorm) ||
+      hasWholeWordPhrase(qNorm, provNorm) ||
+      altMatch ||
+      queryTokens.some((w) => nameNorm.split(' ').includes(w))
+    );
   });
   const chosen = (matched.length > 0 ? matched : activeTrail ? [activeTrail] : mockTrails.slice(0, 3)).slice(0, 3);
+  const currentVnMonth = getCurrentVietnamMonthClient();
 
   actions.push({
     type: 'ranked_trails',
-    rankedTrails: chosen.map((t, i) => ({
-      id: t.id,
-      name: t.name,
-      province: t.province,
-      district: t.district,
-      region: t.region,
-      distanceKm: t.distanceKm,
-      elevationGainM: t.elevationGainM,
-      maxAltitudeM: t.maxAltitudeM,
-      difficultyLevel: t.difficultyLevel,
-      difficultyNote: t.difficultyNote,
-      durationDays: t.durationDays,
-      durationHoursNote: t.durationHoursNote,
-      coverImage: t.coverImage,
-      bestMonths: t.bestMonths,
-      matchScore: Math.max(70, 92 - i * 6),
-      matchReasons: [`${t.maxAltitudeM.toLocaleString()}m • ${t.distanceKm} km`, `Cấp ${t.difficultyLevel}/5 (${t.durationHoursNote})`],
-      seasonStatus: 'ok',
-    })),
+    rankedTrails: chosen.map((t, i) => {
+      const seasonStatus: 'ideal' | 'ok' | 'avoid' = t.avoidMonths?.includes(currentVnMonth)
+        ? 'avoid'
+        : t.bestMonths?.includes(currentVnMonth)
+        ? 'ideal'
+        : 'ok';
+      return {
+        id: t.id,
+        name: t.name,
+        province: t.province,
+        district: t.district,
+        region: t.region,
+        distanceKm: t.distanceKm,
+        elevationGainM: t.elevationGainM,
+        maxAltitudeM: t.maxAltitudeM,
+        difficultyLevel: t.difficultyLevel,
+        difficultyNote: t.difficultyNote,
+        durationDays: t.durationDays,
+        durationHoursNote: t.durationHoursNote,
+        coverImage: t.coverImage,
+        bestMonths: t.bestMonths,
+        matchScore: Math.max(70, 92 - i * 6),
+        matchReasons: [`${t.maxAltitudeM.toLocaleString('vi-VN')}m · ${t.distanceKm} km`, `Cấp ${t.difficultyLevel}/5 (${t.durationHoursNote})`],
+        seasonStatus,
+      };
+    }),
   });
 
   return {
-    reply: `**GỢI Ý CUNG ĐƯỜNG THỰC ĐỊA (DỮ LIỆU OFFLINE LOST):**\n\n${chosen
+    reply: `**Gợi ý cung đường phù hợp (dữ liệu ngoại tuyến LOST):**\n\n${chosen
       .map(
         (t, idx) =>
-          `**${idx + 1}. ${t.name}** — **${t.maxAltitudeM.toLocaleString()}m** | ${t.distanceKm} km (${t.durationHoursNote}) | ${t.province}`
+          `**${idx + 1}. ${t.name}** — **${t.maxAltitudeM.toLocaleString('vi-VN')}m** | ${t.distanceKm} km (${t.durationHoursNote}) | ${t.province}`
       )
-      .join('\n')}\n\n*Chọn thẻ bên dưới để mở bản đồ 3D DEM và dữ liệu chi tiết.*`,
+      .join('\n')}\n\n*Chọn thẻ bên dưới để mở bản đồ 3D và xem thông tin chi tiết nhé.*`,
     actions,
     modelUsed: 'lost-knowledge-engine',
   };
 }
 
 /**
- * Send chat message to LOST AI (sends Auth + Session headers, 15s timeout, honest 429/400 handling).
+ * Send chat message to LOST AI (sends Auth + Session headers, 16s timeout, honest 429/400 handling).
  */
 export async function sendAiMessage(payload: ChatPayload, signal?: AbortSignal): Promise<ChatResponse> {
+  if (signal?.aborted) {
+    throw new DOMException('Request aborted by user', 'AbortError');
+  }
   const timeoutCtrl = new AbortController();
   const timer = setTimeout(() => timeoutCtrl.abort(), 16_000);
   const onExternalAbort = () => timeoutCtrl.abort();
-  signal?.addEventListener('abort', onExternalAbort);
+  signal?.addEventListener('abort', onExternalAbort, { once: true });
 
   try {
     const res = await fetch(`${API_BASE}/chat`, {
@@ -500,7 +774,7 @@ export async function sendAiMessage(payload: ChatPayload, signal?: AbortSignal):
       return {
         reply:
           json?.message ||
-          'Bạn đang gửi câu hỏi quá nhanh. Vui lòng đợi ít phút trước khi tiếp tục trò chuyện với LOST AI.',
+          'Bạn đang gửi câu hỏi quá nhanh. Đợi ít phút rồi hỏi tiếp nhé.',
         actions: [],
         modelUsed: 'lost-knowledge-engine',
         rateLimited: true,
@@ -544,7 +818,7 @@ export async function sendAiMessage(payload: ChatPayload, signal?: AbortSignal):
 /**
  * Wave 8A SSE Streaming Chat Consumer (`POST /api/ai/chat/stream`).
  * Emits progressive `onDelta(chunk)` updates and resolves final `ChatResponse` (actions + threadId + modelUsed).
- * Automatically falls back to `sendAiMessage` if SSE is unavailable or interrupted before completion.
+ * Supports CRLF proxies, handles `event: error`, preserves delta whitespace, and never duplicates DB turns after timeout.
  */
 export async function sendAiMessageStream(
   payload: ChatPayload,
@@ -554,14 +828,22 @@ export async function sendAiMessageStream(
   } = {}
 ): Promise<ChatResponse> {
   const { onDelta, signal } = opts;
+  if (signal?.aborted) {
+    throw new DOMException('Request aborted by user', 'AbortError');
+  }
   const timeoutCtrl = new AbortController();
-  const timer = setTimeout(() => timeoutCtrl.abort(), 22_000);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    timeoutCtrl.abort();
+  }, 22_000);
   const onExternalAbort = () => timeoutCtrl.abort();
-  signal?.addEventListener('abort', onExternalAbort);
+  signal?.addEventListener('abort', onExternalAbort, { once: true });
 
   let streamedAny = false;
   let accumulated = '';
   let finalResponse: ChatResponse | null = null;
+  let streamErrorMsg: string | null = null;
 
   try {
     const res = await fetch(`${API_BASE}/chat/stream`, {
@@ -576,7 +858,7 @@ export async function sendAiMessageStream(
       return {
         reply:
           json?.message ||
-          'Bạn đang gửi câu hỏi quá nhanh. Vui lòng đợi ít phút trước khi tiếp tục trò chuyện với LOST AI.',
+          'Bạn đang gửi câu hỏi quá nhanh. Đợi ít phút rồi hỏi tiếp nhé.',
         actions: [],
         modelUsed: 'lost-knowledge-engine',
         rateLimited: true,
@@ -601,7 +883,7 @@ export async function sendAiMessageStream(
       let buffer = '';
 
       const processEventBlock = (block: string) => {
-        const lines = block.split('\n');
+        const lines = block.split(/\r?\n/);
         let eventType = 'message';
         const dataLines: string[] = [];
         for (const rawLine of lines) {
@@ -609,7 +891,7 @@ export async function sendAiMessageStream(
           if (line.startsWith('event:')) {
             eventType = line.slice(6).trim();
           } else if (line.startsWith('data:')) {
-            dataLines.push(line.slice(5).trim());
+            dataLines.push(line.slice(5).trimStart());
           }
         }
         const rawData = dataLines.join('\n');
@@ -620,29 +902,35 @@ export async function sendAiMessageStream(
           if (eventType === 'delta' && typeof parsed.chunk === 'string') {
             streamedAny = true;
             accumulated += parsed.chunk;
-            onDelta?.(parsed.chunk, removeEmojis(accumulated));
+            onDelta?.(parsed.chunk, stripEmojisKeepWhitespace(accumulated));
           } else if (eventType === 'done') {
             finalResponse = {
               ...(parsed as unknown as ChatResponse),
               reply: removeEmojis(String(parsed.reply || accumulated)),
             };
+          } else if (eventType === 'error') {
+            streamErrorMsg =
+              typeof parsed.message === 'string' && parsed.message.trim()
+                ? parsed.message.trim()
+                : 'Kết nối máy chủ AI bị gián đoạn giữa chừng.';
           }
         } catch {
           // ignore malformed SSE data frame
         }
       };
 
+      const sepRegex = /\r?\n\r?\n/;
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
-          let sepIdx = buffer.indexOf('\n\n');
-          while (sepIdx !== -1) {
-            const block = buffer.slice(0, sepIdx).trim();
-            buffer = buffer.slice(sepIdx + 2);
+          let match = sepRegex.exec(buffer);
+          while (match) {
+            const block = buffer.slice(0, match.index).trim();
+            buffer = buffer.slice(match.index + match[0].length);
             if (block) processEventBlock(block);
-            sepIdx = buffer.indexOf('\n\n');
+            match = sepRegex.exec(buffer);
           }
         }
         if (buffer.trim()) {
@@ -660,13 +948,32 @@ export async function sendAiMessageStream(
           modelUsed: 'lost-knowledge-engine',
         };
       }
+      if (streamErrorMsg) {
+        return {
+          reply: removeEmojis(streamErrorMsg),
+          actions: [],
+          modelUsed: 'lost-knowledge-engine',
+          errorStatus: 500,
+        };
+      }
     }
   } catch (error: unknown) {
     if (signal?.aborted) {
       throw new DOMException('Request aborted by user', 'AbortError');
     }
     const errMsg = error instanceof Error ? error.message : String(error);
-    console.warn('[LOST AI] SSE stream fallback to standard /chat:', errMsg);
+    console.warn('[LOST AI] SSE stream interrupted:', errMsg);
+    if (streamedAny && accumulated.trim()) {
+      return {
+        reply: removeEmojis(accumulated),
+        actions: [],
+        modelUsed: 'lost-knowledge-engine',
+      };
+    }
+    if (timedOut) {
+      // Avoid retrying /chat after 22s timeout so we never persist duplicate DB turns
+      return generateLocalFallback(payload.message, payload.currentTrailContext || payload.context, payload.userName);
+    }
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', onExternalAbort);
@@ -759,11 +1066,15 @@ export async function fetchAiThreadDetailApi(threadId: string): Promise<{
 
 export async function updateAiThreadApi(threadId: string, patch: { title?: string; pinned?: boolean }): Promise<boolean> {
   try {
-    const res = await fetch(`${API_BASE}/threads/${encodeURIComponent(threadId)}`, {
-      method: 'PATCH',
-      headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(patch),
-    });
+    const res = await fetchWithTimeout(
+      `${API_BASE}/threads/${encodeURIComponent(threadId)}`,
+      {
+        method: 'PATCH',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(patch),
+      },
+      10_000
+    );
     return res.ok;
   } catch {
     return false;
@@ -772,10 +1083,14 @@ export async function updateAiThreadApi(threadId: string, patch: { title?: strin
 
 export async function deleteAiThreadApi(threadId: string): Promise<boolean> {
   try {
-    const res = await fetch(`${API_BASE}/threads/${encodeURIComponent(threadId)}`, {
-      method: 'DELETE',
-      headers: getApiHeaders(),
-    });
+    const res = await fetchWithTimeout(
+      `${API_BASE}/threads/${encodeURIComponent(threadId)}`,
+      {
+        method: 'DELETE',
+        headers: getApiHeaders(),
+      },
+      10_000
+    );
     return res.ok;
   } catch {
     return false;
@@ -786,26 +1101,43 @@ export async function deleteAiThreadApi(threadId: string): Promise<boolean> {
 // ALPINE TOOL APIs (GPX Analyzer, Bio-Calc, Go/No-Go)
 // =========================================================================
 
-export async function analyzeGpxApi(params: {
-  fileName: string;
-  points: Array<[number, number, number | null]>;
-  bodyWeightKg?: number;
-  packWeightKg?: number;
-  fitnessLevel?: AiFitnessLevel;
-  threadId?: string;
-}): Promise<{ analysis: GpxAnalysisResult; reply: string; actions: RichAiAction[]; threadId?: string } | null> {
+export async function analyzeGpxApi(
+  params: {
+    fileName: string;
+    points: Array<[number, number, number | null]>;
+    bodyWeightKg?: number;
+    packWeightKg?: number;
+    fitnessLevel?: AiFitnessLevel;
+    threadId?: string;
+  },
+  signal?: AbortSignal
+): Promise<{ analysis: GpxAnalysisResult; reply: string; actions: RichAiAction[]; threadId?: string } | null> {
+  if (signal?.aborted) {
+    throw new DOMException('Request aborted by user', 'AbortError');
+  }
+  const internalCtrl = new AbortController();
+  const timer = setTimeout(() => internalCtrl.abort(), 12_000);
+  const onExternalAbort = () => internalCtrl.abort();
+  signal?.addEventListener('abort', onExternalAbort, { once: true });
+
   try {
     const res = await fetch(`${API_BASE}/analyze-gpx`, {
       method: 'POST',
       headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-      signal: AbortSignal.timeout(12_000),
+      signal: internalCtrl.signal,
       body: JSON.stringify(params),
     });
     if (!res.ok) return null;
     const json = await res.json();
     if (json.success && json.data) return json.data;
   } catch {
+    if (signal?.aborted) {
+      throw new DOMException('Request aborted by user', 'AbortError');
+    }
     // fallback handled by caller via client-side gpxParser offlineAnalysis
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onExternalAbort);
   }
   return null;
 }
@@ -845,12 +1177,16 @@ export async function assessGoNoGoApi(
   departureDate?: string,
   signal?: AbortSignal
 ): Promise<GoNoGoAssessmentData> {
-  const res = await fetch(`${API_BASE}/go-no-go`, {
-    method: 'POST',
-    headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-    signal,
-    body: JSON.stringify({ trailId, departureDate }),
-  });
+  const res = await fetchWithTimeout(
+    `${API_BASE}/go-no-go`,
+    {
+      method: 'POST',
+      headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+      signal,
+      body: JSON.stringify({ trailId, departureDate }),
+    },
+    15_000
+  );
   const json = await res.json().catch(() => ({}));
   if (!res.ok || !json.success || !json.data) {
     throw new Error(json.message || 'Không thể chạy đánh giá Go/No-Go lúc này.');
@@ -877,7 +1213,7 @@ export async function applyGearItemsToTrailChecklist(
 ): Promise<{ addedCount: number; cloudSynced: boolean }> {
   const legacyKey = `lost_checklist_${trailId}`;
   const storageKey = scopedStorageKey(legacyKey);
-  const hasAuthToken = typeof window !== 'undefined' && Boolean(localStorage.getItem('lost_token'));
+  const hasAuthToken = Boolean(safeLocalStorageGet('lost_token'));
 
   const readLocalChecklist = (): Array<Record<string, unknown>> => {
     try {
@@ -984,16 +1320,20 @@ export async function applyGearItemsToTrailChecklist(
         : existingCloudDays || matchedTrail?.durationDays || 2;
 
     try {
-      const res = await fetch(`/api/gear-checklists/${encodeURIComponent(trailId)}`, {
-        method: 'PUT',
-        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          title: existingCloudTitle || `Checklist ${trailName}`,
-          bodyWeightKg: resolvedBodyWeight,
-          createdForDays: resolvedDays,
-          items: merged,
-        }),
-      });
+      const res = await fetchWithTimeout(
+        `/api/gear-checklists/${encodeURIComponent(trailId)}`,
+        {
+          method: 'PUT',
+          headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            title: existingCloudTitle || `Checklist ${trailName}`,
+            bodyWeightKg: resolvedBodyWeight,
+            createdForDays: resolvedDays,
+            items: merged,
+          }),
+        },
+        12_000
+      );
       cloudSynced = res.ok;
     } catch {
       cloudSynced = false;
@@ -1014,12 +1354,7 @@ export function applyItineraryToTrail(
 ): void {
   const legacyKey = `lost_itinerary_${trailId}`;
   const storageKey = scopedStorageKey(legacyKey);
-  const todayVn = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Ho_Chi_Minh',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date());
+  const todayVn = getVietnamTodayIsoClient();
 
   let prevStartDate = todayVn;
   let prevMemberCount = 4;
@@ -1077,9 +1412,21 @@ const CLIENT_DRY_SLUGS = new Set([
   'trail-muidoi', 'trail-nuichua', 'trail-badenh', 'trail-chuachan', 'trail-tanangphandung',
 ]);
 
+const TAY_NGUYEN_PROVINCES = ['dak lak', 'lam dong', 'gia lai', 'kon tum', 'dak nong'];
+
+function isTayNguyenTrail(trail: Trail): boolean {
+  const prov = normalizeAscii(trail.province);
+  return TAY_NGUYEN_PROVINCES.some((p) => prov.includes(p));
+}
+
 function computeOfflineRecommendTrails(input: TrailRecommendInput, customTrails?: Trail[]): TrailRecommendResponse {
   const source = customTrails && customTrails.length > 0 ? customTrails : mockTrails;
-  const poolBase = input.region !== 'all' ? source.filter((t) => t.region === input.region) : source;
+  const poolBase =
+    input.region === 'all'
+      ? source
+      : input.region === 'Miền Nam'
+      ? source.filter((t) => t.region === 'Miền Nam' || isTayNguyenTrail(t))
+      : source.filter((t) => t.region === input.region);
   const pool = poolBase.length > 0 ? poolBase : source;
   const prefs = new Set(input.preferences);
 
@@ -1194,19 +1541,28 @@ function computeOfflineRecommendTrails(input: TrailRecommendInput, customTrails?
     matches: matches.slice(0, 5),
     totalEvaluated: pool.length,
     targetMonth: input.targetMonth,
-    summaryNote: `Đã xếp hạng ${pool.length} cung đường thực địa (chế độ tính toán ngoại tuyến) cho tháng ${input.targetMonth}.`,
+    summaryNote: `Đã chọn lọc từ ${pool.length} cung đường (chế độ ngoại tuyến) cho tháng ${input.targetMonth}.`,
   };
 }
 
 export async function recommendTrailsApi(
   input: TrailRecommendInput,
-  fallbackTrails?: Trail[]
+  fallbackTrails?: Trail[],
+  signal?: AbortSignal
 ): Promise<TrailRecommendResponse> {
+  if (signal?.aborted) {
+    throw new DOMException('Request aborted by user', 'AbortError');
+  }
+  const internalCtrl = new AbortController();
+  const timer = setTimeout(() => internalCtrl.abort(), 7000);
+  const onExternalAbort = () => internalCtrl.abort();
+  signal?.addEventListener('abort', onExternalAbort, { once: true });
+
   try {
     const res = await fetch(`${API_BASE}/recommend`, {
       method: 'POST',
       headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-      signal: AbortSignal.timeout(7000),
+      signal: internalCtrl.signal,
       body: JSON.stringify(input),
     });
     if (res.ok) {
@@ -1214,7 +1570,13 @@ export async function recommendTrailsApi(
       if (json.success && json.data) return json.data as TrailRecommendResponse;
     }
   } catch {
+    if (signal?.aborted) {
+      throw new DOMException('Request aborted by user', 'AbortError');
+    }
     // Offline fallback
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onExternalAbort);
   }
   return computeOfflineRecommendTrails(input, fallbackTrails);
 }
@@ -1256,11 +1618,17 @@ function computeOfflinePackAudit(input: PackAuditInput, customTrails?: Trail[]):
     score -= 12;
     criticalMissing.push({ name: 'Áo mưa bộ 2 lớp chống thấm & Áo trùm balo', category: 'Trang phục', weightGrams: 450, reason: 'Phòng mưa rừng đột ngột gây hạ thân nhiệt.', severity: 'critical' });
   }
-  if ((!trail.hasWaterSource || CLIENT_DRY_SLUGS.has(trail.id)) && !hasAny(['nuoc', 'binh', 'tui nuoc'])) {
+  const isDryTrail = !trail.hasWaterSource || CLIENT_DRY_SLUGS.has(trail.id);
+  const hasWaterContainer = hasAny(['nuoc', 'binh', 'tui nuoc', 'chai nuoc']);
+  if (isDryTrail && !hasWaterContainer) {
     score -= 22;
-    criticalMissing.push({ name: 'Bình / Túi nước 3–4 lít + 3 gói Oresol (Tuyến khô)', category: 'Ăn uống & Nước', weightGrams: 350, reason: 'Tuyến khô / nắng gắt thiếu nguồn nước tự nhiên.', severity: 'critical' });
-  } else if (trail.hasWaterSource && !hasAny(['loc nuoc', 'sawyer', 'aquatabs'])) {
-    recommendedAdditions.push({ name: 'Màng lọc nước Sawyer hoặc viên lọc Aquatabs', category: 'Ăn uống & Nước', weightGrams: 120, reason: 'Lọc nước suối dọc đường giúp giảm trọng lượng balo.', severity: 'recommended' });
+    criticalMissing.push({ name: 'Bình / túi nước 3–4 lít + 3 gói Oresol (cung khô)', category: 'Ăn uống & Nước', weightGrams: 350, reason: 'Tuyến ít nguồn nước tự nhiên, cần tự mang đủ cho cả chặng.', severity: 'critical' });
+  } else if (!hasWaterContainer) {
+    score -= 16;
+    criticalMissing.push({ name: 'Bình / túi nước 1.5–2 lít + 2 gói Oresol', category: 'Ăn uống & Nước', weightGrams: 260, reason: 'Dù dọc tuyến có suối vẫn cần bình chứa đủ nước giữa các chặng leo.', severity: 'critical' });
+  }
+  if (!isDryTrail && trail.hasWaterSource && !hasAny(['loc nuoc', 'sawyer', 'aquatabs'])) {
+    recommendedAdditions.push({ name: 'Màng lọc nước Sawyer hoặc viên lọc Aquatabs', category: 'Ăn uống & Nước', weightGrams: 120, reason: 'Lọc nước suối dọc đường giúp mang nhẹ hơn và tránh đau bụng.', severity: 'recommended' });
   }
   if ((trail.maxAltitudeM >= 2200 || summitTempMinC <= 9) && !hasAny(['long vu', 'giu nhiet', 'ao am', 'ao ni', 'ao khoac'])) {
     score -= 16;
@@ -1306,11 +1674,11 @@ function computeOfflinePackAudit(input: PackAuditInput, customTrails?: Trail[]):
     maxAltitudeM: trail.maxAltitudeM,
     difficultyLevel: trail.difficultyLevel,
     durationDays: trail.durationDays,
-    hasWaterSource: trail.hasWaterSource,
+    hasWaterSource: !isDryTrail && trail.hasWaterSource,
     hasCampsite: trail.hasCampsite,
     permitRequired: trail.permitRequired,
     summitTempMinC,
-    weatherNote: `Chế độ kiểm toán ngoại tuyến theo cao độ đỉnh ${trail.maxAltitudeM.toLocaleString()}m.`,
+    weatherNote: `Rà soát balo ngoại tuyến theo độ cao đỉnh ${trail.maxAltitudeM.toLocaleString('vi-VN')}m.`,
     readinessScore,
     readinessGrade,
     packRatioPercent,
@@ -1324,12 +1692,24 @@ function computeOfflinePackAudit(input: PackAuditInput, customTrails?: Trail[]):
   };
 }
 
-export async function auditPackApi(input: PackAuditInput, fallbackTrails?: Trail[]): Promise<PackAuditResult> {
+export async function auditPackApi(
+  input: PackAuditInput,
+  fallbackTrails?: Trail[],
+  signal?: AbortSignal
+): Promise<PackAuditResult> {
+  if (signal?.aborted) {
+    throw new DOMException('Request aborted by user', 'AbortError');
+  }
+  const internalCtrl = new AbortController();
+  const timer = setTimeout(() => internalCtrl.abort(), 7000);
+  const onExternalAbort = () => internalCtrl.abort();
+  signal?.addEventListener('abort', onExternalAbort, { once: true });
+
   try {
     const res = await fetch(`${API_BASE}/audit-pack`, {
       method: 'POST',
       headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-      signal: AbortSignal.timeout(7000),
+      signal: internalCtrl.signal,
       body: JSON.stringify(input),
     });
     if (res.ok) {
@@ -1337,7 +1717,13 @@ export async function auditPackApi(input: PackAuditInput, fallbackTrails?: Trail
       if (json.success && json.data) return json.data as PackAuditResult;
     }
   } catch {
+    if (signal?.aborted) {
+      throw new DOMException('Request aborted by user', 'AbortError');
+    }
     // Offline fallback
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onExternalAbort);
   }
   return computeOfflinePackAudit(input, fallbackTrails);
 }
@@ -1394,7 +1780,7 @@ export function computeOfflineTrailCompare(
 
   if (picked.length < 2) return null;
 
-  const targetMonth = new Date().getMonth() + 1;
+  const targetMonth = getCurrentVietnamMonthClient();
   const items: TrailCompareItem[] = picked.map((t) => {
     const bio = computeClientBioMetrics({
       trailName: t.name,
@@ -1902,6 +2288,7 @@ export async function analyzeAiImageApi(
     ? 'injury_medical'
     : 'general';
 
+  const activeTrail = payload.trailId ? mockTrails.find((t) => t.id === payload.trailId) : undefined;
   const fallbackActions: RichAiAction[] = [];
   if (isSnake || isMushroom || isInjury) {
     fallbackActions.push({
@@ -1910,20 +2297,20 @@ export async function analyzeAiImageApi(
         severity: isSnake || isMushroom ? 'critical' : 'urgent',
         conditionCode: isSnake ? 'WFA-SNAKE' : isMushroom ? 'WFA-POISON' : 'WFA-WOUND',
         conditionTitle: isSnake
-          ? 'Cảnh Báo Rắn Độc (Ngoại Tuyến)'
+          ? 'Cảnh báo rắn độc (ngoại tuyến)'
           : isMushroom
-          ? 'Cảnh Báo Nấm Rừng — Cấm Ăn Thử (Ngoại Tuyến)'
-          : 'Sơ Cứu Vết Thương Thực Địa (Ngoại Tuyến)',
-        summary: 'Mất kết nối máy chủ phân tích ảnh — ưu tiên giữ an toàn, không chạm/ăn thử và gọi ngay 115 / 112 nếu có triệu chứng.',
+          ? 'Cảnh báo nấm rừng — tuyệt đối không ăn thử (ngoại tuyến)'
+          : 'Sơ cứu vết thương đường rừng (ngoại tuyến)',
+        summary: 'Chưa kết nối được máy chủ phân tích ảnh — giữ an toàn trước tiên, không chạm hoặc ăn thử và gọi 115 / 112 nếu có triệu chứng.',
         immediateSteps: isSnake
           ? ['Giữ khoảng cách >= 2m, không chọc gậy.', 'Nếu bị cắn: bất động chi thấp hơn tim và chuyển viện ngay.']
           : isMushroom
-          ? ['Tuyệt đối không ăn nấm/lá rừng lạ.', 'Nếu đã nuốt phải: giữ mẫu nấm và đưa ngay tới bệnh viện / gọi 115.']
+          ? ['Tuyệt đối không ăn nấm hoặc lá rừng lạ.', 'Nếu đã nuốt phải: giữ mẫu nấm và đưa ngay tới bệnh viện / gọi 115.']
           : ['Ép cầm máu bằng gạc sạch 5–10 phút.', 'Rửa sạch bằng nước muối sinh lý hoặc nước sạch, không đắp lá rừng.'],
         forbiddenActions: ['Không tin nhận diện ảnh để ăn nấm lạ hoặc tiếp cận rắn rừng.'],
         whenToEvacuate: ['Mọi tình huống nghi rắn cắn, ngộ độc hoặc vết thương chảy máu nhiều.'],
-        emergencyContacts: FALLBACK_EMERGENCY_CONTACTS,
-        sosSmsNote: 'Can ho tro y te khan cap ngoai thuc dia (LOST AI Offline).',
+        emergencyContacts: buildEmergencyContactsForTrail(activeTrail),
+        sosSmsNote: `Can ho tro y te khan cap${activeTrail ? ` tai ${activeTrail.name}` : ''} (LOST AI Offline).`,
       },
     });
   }
@@ -2042,23 +2429,255 @@ export async function computeFuelPlanApi(
 
 
 // =========================================================================
-// WAVE 16A: AI EXPEDITION READINESS AUDIT API (0-100 PRE-FLIGHT)
+// WAVE 16A: AI EXPEDITION READINESS AUDIT API + OFFLINE FALLBACK
 // =========================================================================
+
+export function computeOfflineReadinessAudit(
+  input: ReadinessAuditInput,
+  fallbackTrails?: Trail[]
+): ReadinessAuditResult {
+  const pool = fallbackTrails && fallbackTrails.length > 0 ? fallbackTrails : mockTrails;
+  const trail = pool.find((t) => t.id === input.trailId) || pool[0] || mockTrails[0];
+  const departureDate =
+    input.departureDate && /^\d{4}-\d{2}-\d{2}$/.test(input.departureDate)
+      ? input.departureDate
+      : getVietnamTodayIsoClient();
+  const todayIso = getVietnamTodayIsoClient();
+  const daysUntilDeparture = Math.max(
+    0,
+    Math.round((new Date(`${departureDate}T00:00:00Z`).getTime() - new Date(`${todayIso}T00:00:00Z`).getTime()) / 86_400_000)
+  );
+  const depMonth = Number(departureDate.slice(5, 7)) || getCurrentVietnamMonthClient();
+
+  const startTime = input.startTime && /^\d{2}:\d{2}$/.test(input.startTime) ? input.startTime : '06:00';
+  const bodyWeightKg = Math.max(35, Math.min(160, Math.round(Number(input.bodyWeightKg) || 62)));
+  const packWeightKg = Math.max(
+    0,
+    Math.min(35, Number.isFinite(Number(input.packWeightKg)) ? Number(input.packWeightKg) : trail.durationDays >= 2 ? 9 : 4.5)
+  );
+  const fitnessLevel: AiFitnessLevel =
+    input.fitnessLevel === 'beginner' || input.fitnessLevel === 'advanced' ? input.fitnessLevel : 'intermediate';
+  const dietType = input.dietType || 'standard';
+  const groupSize = Math.max(1, Math.min(20, Math.round(Number(input.groupSize) || 4)));
+  const hasPermitConfirmed = Boolean(input.hasPermitConfirmed);
+
+  const bio = computeClientBioMetrics({
+    trailName: trail.name,
+    distanceKm: trail.distanceKm,
+    elevationGainM: trail.elevationGainM,
+    elevationLossM: trail.elevationGainM,
+    maxAltitudeM: trail.maxAltitudeM,
+    bodyWeightKg,
+    packWeightKg,
+    fitnessLevel,
+    durationDays: trail.durationDays,
+  });
+
+  const seasonAvoid = trail.avoidMonths?.includes(depMonth);
+  const seasonIdeal = trail.bestMonths?.includes(depMonth);
+  // Offline safety-first cap: without live MET Norway weather telemetry, cap weatherScore <= 72 and never mark 'good'
+  const weatherScore = seasonAvoid ? 38 : seasonIdeal ? 72 : 64;
+  const [sh, sm] = startTime.split(':').map(Number);
+  const startMin = (Number.isFinite(sh) ? sh : 6) * 60 + (Number.isFinite(sm) ? sm : 0);
+  const effectiveDays = Math.max(1, Number(trail.durationDays) || 1);
+  const dailyHours = bio.estimatedTotalTripHours / effectiveDays;
+  const estFinishMin = startMin + Math.round(dailyHours * 60);
+  const approxSunsetMin = 17 * 60 + 45;
+  const daylightMarginMinutes = approxSunsetMin - estFinishMin;
+  const dailyDistanceKm = Math.max(1, (Number(trail.distanceKm) || 10) / effectiveDays);
+  const dailyElevationGainM = Math.max(0, (Number(trail.elevationGainM) || 500) / effectiveDays);
+  const halfLegKm = dailyDistanceKm / 2;
+  const turnaround = calculateTurnaroundTime({
+    startMinutes: startMin,
+    totalAscentKm: halfLegKm,
+    ascentGainM: dailyElevationGainM,
+    descentKm: halfLegKm,
+    civilDuskMinutes: approxSunsetMin,
+    safetyMarginMinutes: 45,
+  });
+  const safeTurnaroundTime = turnaround.turnaroundLabel;
+  const paceScore = daylightMarginMinutes >= 60 ? 90 : daylightMarginMinutes >= 0 ? 70 : 42;
+  const loadScore =
+    bio.packStatus === 'optimal'
+      ? fitnessLevel === 'beginner' && trail.difficultyLevel >= 4
+        ? 62
+        : 88
+      : bio.packStatus === 'caution'
+      ? 68
+      : 44;
+  const isBorderPermit = Boolean(
+    trail.permitInfo && normalizeAscii(trail.permitInfo).includes('bien phong')
+  );
+  const recommendedPermitLeadDays = isBorderPermit ? 7 : trail.permitRequired ? 2 : 0;
+  const permitScore = !trail.permitRequired || hasPermitConfirmed ? 90 : daysUntilDeparture < recommendedPermitLeadDays ? 40 : 62;
+
+  const rawReadinessScore = Math.round(weatherScore * 0.3 + paceScore * 0.25 + loadScore * 0.25 + permitScore * 0.2);
+  // Hard safety ceiling (matches README.md & server aiReadinessAudit.service.ts):
+  // Offline audit always runs with weatherAvailable === false, so NEVER return 'READY' without live weather verification.
+  const readinessScore = Math.min(rawReadinessScore, seasonAvoid ? 59 : 74);
+  const verdict: ReadinessAuditResult['verdict'] =
+    readinessScore >= 52 ? 'ADJUST_BEFORE_GO' : 'HOLD_OFF';
+  const verdictLabel =
+    verdict === 'ADJUST_BEFORE_GO'
+      ? 'Cần xác minh thời tiết trực tuyến trước khi đi'
+      : 'Nên cân nhắc dời lịch';
+
+  const matchedStation =
+    VIETNAM_RANGER_STATIONS.find((s) => s.coveredTrailSlugs.includes(trail.id)) ||
+    VIETNAM_RANGER_STATIONS.find(
+      (s) =>
+        s.province !== 'Toàn Quốc' &&
+        (normalizeAscii(trail.province).includes(normalizeAscii(s.province)) ||
+          normalizeAscii(s.province).includes(normalizeAscii(trail.province)))
+    );
+  const emergencyPhone = matchedStation?.hotlinePhone || trail.rescueContact?.phone || '112';
+
+  const topFixes: ReadinessAuditResult['topFixes'] = [];
+  if (seasonAvoid) {
+    topFixes.push({
+      priority: 'critical',
+      pillar: 'weatherSafety',
+      title: `Tháng ${depMonth} rơi vào mùa bất lợi`,
+      action: 'Kiểm tra lại dự báo mưa gió trực tuyến khi có sóng và cân nhắc đổi sang tháng đẹp.',
+    });
+  } else {
+    topFixes.push({
+      priority: 'medium',
+      pillar: 'weatherSafety',
+      title: 'Thiếu dữ liệu thời tiết trực tuyến (khóa trần an toàn)',
+      action:
+        'Chế độ ngoại tuyến không cấp mức READY khi thiếu thời tiết sống — cần kiểm tra lại dự báo MET Norway và bảng Go/No-Go trực tuyến 12–24h trước giờ xuất phát.',
+    });
+  }
+  if (daylightMarginMinutes < 30) {
+    topFixes.push({
+      priority: 'high',
+      pillar: 'daylightPace',
+      title: 'Dễ về trễ sát giờ tối',
+      action: `Xuất phát sớm hơn 30–60 phút, bám sát giờ quay đầu an toàn ${safeTurnaroundTime} và mang theo đèn pin đội đầu đủ pin dự phòng.`,
+    });
+  }
+  if (bio.packStatus !== 'optimal') {
+    topFixes.push({
+      priority: bio.packStatus === 'overweight' ? 'critical' : 'high',
+      pillar: 'loadFitness',
+      title: `Balo đang chiếm ${bio.packRatioPercent}% cân nặng`,
+      action: 'Lọc bớt đồ ít dùng hoặc thuê Porter san tải để đưa balo về dưới 18% cân nặng cơ thể.',
+    });
+  }
+  if (trail.permitRequired && !hasPermitConfirmed) {
+    topFixes.push({
+      priority: daysUntilDeparture < recommendedPermitLeadDays ? 'critical' : 'high',
+      pillar: 'hydrationPermit',
+      title: 'Chưa xác nhận giấy phép vào rừng',
+      action: `Liên hệ ${matchedStation?.name || 'Ban quản lý / Kiểm lâm'} (${emergencyPhone}) trước ít nhất ${recommendedPermitLeadDays} ngày.`,
+    });
+  }
+
+  const carryWaterPerLegLiters = trail.hasWaterSource
+    ? Math.max(1.5, Math.min(2.5, Math.round(bio.waterLitersPerDay * 0.65 * 10) / 10))
+    : Math.max(2.5, bio.waterLitersPerDay);
+
+  return {
+    trailId: trail.id,
+    trailName: trail.name,
+    province: trail.province,
+    region: trail.region,
+    maxAltitudeM: trail.maxAltitudeM,
+    distanceKm: trail.distanceKm,
+    elevationGainM: trail.elevationGainM,
+    durationDays: trail.durationDays,
+    difficultyLevel: trail.difficultyLevel,
+    departureDate,
+    daysUntilDeparture,
+    readinessScore,
+    verdict,
+    verdictLabel,
+    inputs: {
+      startTime,
+      bodyWeightKg,
+      packWeightKg,
+      packRatioPercent: bio.packRatioPercent,
+      fitnessLevel,
+      dietType,
+      groupSize,
+      hasPermitConfirmed,
+    },
+    pillars: [
+      {
+        key: 'weatherSafety',
+        label: 'Thời tiết & mùa vụ',
+        score: weatherScore,
+        weightPct: 30,
+        status: weatherScore >= 55 ? 'warn' : 'critical',
+        summary: seasonAvoid
+          ? `Tháng ${depMonth} là mùa mưa bão/trơn trượt của cung (chưa có dữ liệu thời tiết sống — khóa trần không cấp READY).`
+          : seasonIdeal
+          ? `Tháng ${depMonth} đang vào mùa đẹp nhưng chưa có dữ liệu thời tiết sống (khóa trần Cần điều chỉnh cho tới khi xác minh trực tuyến).`
+          : `Tháng ${depMonth} là mùa chuyển tiếp và chưa có dữ liệu thời tiết sống — cần xác minh mưa gió trực tuyến trước khi đi.`,
+      },
+      {
+        key: 'daylightPace',
+        label: 'Nhịp đi & ánh sáng',
+        score: paceScore,
+        weightPct: 25,
+        status: paceScore >= 75 ? 'good' : paceScore >= 55 ? 'warn' : 'critical',
+        summary: `Xuất phát ${startTime}, quay đầu an toàn ${safeTurnaroundTime}, ước tính ~${dailyHours.toFixed(1)}h/ngày (dư ${daylightMarginMinutes}p so với ~17:45).`,
+      },
+      {
+        key: 'loadFitness',
+        label: 'Balo & thể lực',
+        score: loadScore,
+        weightPct: 25,
+        status: loadScore >= 75 ? 'good' : loadScore >= 55 ? 'warn' : 'critical',
+        summary: `${bio.packAdvice} (${packWeightKg}kg / ${bodyWeightKg}kg).`,
+      },
+      {
+        key: 'hydrationPermit',
+        label: 'Nước & giấy phép',
+        score: permitScore,
+        weightPct: 20,
+        status: permitScore >= 75 ? 'good' : permitScore >= 55 ? 'warn' : 'critical',
+        summary: trail.permitRequired
+          ? hasPermitConfirmed
+            ? `Đã xác nhận giấy phép · mang ${carryWaterPerLegLiters}L nước/chặng + ${bio.oresolPackets} Oresol.`
+            : `Cần giấy phép VQG/Biên phòng (nên làm trước ${recommendedPermitLeadDays} ngày).`
+          : `Cung mở (mang CCCD gốc) · mang ${carryWaterPerLegLiters}L nước/chặng + ${bio.oresolPackets} Oresol.`,
+      },
+    ],
+    topFixes,
+    snapshot: {
+      weatherAvailable: false,
+      goNoGoVerdict: null,
+      goNoGoScore: null,
+      noaaSunset: '17:45',
+      safeTurnaroundTime,
+      daylightMarginMinutes,
+      waterLitersPerDay: bio.waterLitersPerDay,
+      carryWaterPerLegLiters,
+      oresolPacketsTotal: bio.oresolPackets,
+      dailyKcal: bio.caloriesDailyTotalKcal,
+      permitRequired: trail.permitRequired,
+      isBorderPermit,
+      recommendedPermitLeadDays,
+      emergencyPhone,
+    },
+  };
+}
 
 export async function computeReadinessAuditApi(
   input: ReadinessAuditInput,
-  signal?: AbortSignal
-): Promise<ReadinessAuditResult | null> {
+  signal?: AbortSignal,
+  fallbackTrails?: Trail[]
+): Promise<ReadinessAuditResult> {
+  if (signal?.aborted) {
+    throw new DOMException('Request aborted by user', 'AbortError');
+  }
   const internalCtrl = new AbortController();
   const timer = setTimeout(() => internalCtrl.abort(), 12_000);
   const onExternalAbort = () => internalCtrl.abort();
-  if (signal) {
-    if (signal.aborted) {
-      clearTimeout(timer);
-      throw new DOMException('Request aborted by user', 'AbortError');
-    }
-    signal.addEventListener('abort', onExternalAbort, { once: true });
-  }
+  signal?.addEventListener('abort', onExternalAbort, { once: true });
+
   try {
     const res = await fetch(`${API_BASE}/readiness-audit`, {
       method: 'POST',
@@ -2088,5 +2707,5 @@ export async function computeReadinessAuditApi(
     clearTimeout(timer);
     signal?.removeEventListener('abort', onExternalAbort);
   }
-  return null;
+  return computeOfflineReadinessAudit(input, fallbackTrails);
 }

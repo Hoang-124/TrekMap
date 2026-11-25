@@ -143,7 +143,7 @@ export interface GpxElevationSample {
 export interface GpxAnalysisResult {
   fileName: string;
   pointCount: number;
-  elevationSource: 'gpx-elevation' | 'open-meteo-dem' | 'interpolated-fallback';
+  elevationSource: 'gpx-elevation' | 'aws-terrarium-dem' | 'interpolated-fallback';
   distanceKm: number;
   elevationGainM: number;
   elevationLossM: number;
@@ -460,6 +460,14 @@ export const VERIFIED_VIETNAM_EMERGENCY_CONTACTS: Record<string, VerifiedEmergen
     region: 'Quảng Ninh - Đông Bắc',
     address: 'Hạt Kiểm lâm Huyện Bình Liêu, Tỉnh Quảng Ninh',
   },
+  yenTuPark: {
+    name: 'Ban Quản lý Di sản thế giới Vịnh Hạ Long – Yên Tử (Quảng Ninh)',
+    phone: '0812.488.111',
+    dialNumber: '0812488111',
+    rangerContact: '02033.854.153 / 112 / 114',
+    region: 'Quảng Ninh - Đông Bắc',
+    address: 'Xã Thượng Yên Công, TP. Uông Bí, Tỉnh Quảng Ninh',
+  },
   cucPhuongPark: {
     name: 'Ban Quản lý VQG Cúc Phương (Nho Quan, Ninh Bình)',
     phone: '1800.5555.88',
@@ -489,7 +497,7 @@ export const VERIFIED_VIETNAM_EMERGENCY_CONTACTS: Record<string, VerifiedEmergen
 export function extractPrimaryDialNumber(rawPhone?: string): string {
   const raw = String(rawPhone || '').trim();
   if (!raw) return '112';
-  const firstSegment = raw.split(/[/|,;()]/)[0] || raw;
+  const firstSegment = raw.split(/[/|,;]/)[0] || raw;
   const digits = firstSegment.replace(/[^\d+]/g, '');
   return digits.length >= 3 ? digits : '112';
 }

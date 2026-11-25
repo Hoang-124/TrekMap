@@ -32,6 +32,15 @@ import {
   type IceLockscreenTheme,
 } from '../../utils/iceLockscreenCard.js';
 import {
+  calculateHeatIndexC,
+  calculateTurnaroundTime,
+  calculateWindChillC,
+  classifyColdRisk,
+  classifyHeatRisk,
+  encodePlusCode,
+  formatMinutesToHHMM,
+} from '../../utils/mountainSafetyMath.js';
+import {
   IconAlertTriangle,
   IconArrowLeft,
   IconArrowRight,
@@ -58,9 +67,11 @@ import {
   IconShare,
   IconShieldAlert,
   IconShieldCheck,
+  IconSnowflake,
   IconSun,
   IconTrash,
   IconWaveform,
+  IconWind,
   IconX,
 } from '../common/SvgIcons.js';
 import { OfflineStoragePanel } from '../common/OfflineStoragePanel.js';
@@ -125,74 +136,74 @@ const SURVIVAL_DRILLS_STORAGE_KEY = 'lost_survival_drills_v1';
 const VIETNAM_SURVIVAL_DRILLS: SurvivalDrillScenario[] = [
   {
     id: 'drill-muidoi-heatstroke',
-    title: 'Sốc Nhiệt Trên Đồi Cát Mũi Đôi (39°C)',
+    title: 'Sốc nhiệt trên đồi cát Mũi Đôi (39°C)',
     location: 'Bán đảo Hòn Gốm, Vạn Ninh, Khánh Hòa',
     severity: 'critical',
     situation:
       '13:30 trên tiểu sa mạc đồi cát Đầm Môn, đồng đội dừng bước đột ngột, da đỏ nóng rực, ngưng đổ mồ hôi, nói năng lú lẫn và choáng váng nặng. Bạn cần ưu tiên xử trí bước nào đầu tiên?',
     options: [
       { id: 'A', text: 'Ép uống liền 1,5 lít nước lạnh thật nhanh và tiếp tục đi gấp tới Bãi Rạng.' },
-      { id: 'B', text: 'Đưa vào bóng râm/dựng tăng che nắng ngay, cởi bớt lớp áo dày, làm mát tích cực bằng nước ướt + quạt gió vào cổ, nách, bẹn; chỉ cho nhấp từng ngụm nhỏ khi còn tỉnh táo và gọi cứu hộ.' },
+      { id: 'B', text: 'Đưa vào bóng râm hoặc dựng tăng che nắng ngay, cởi bớt lớp áo dày, làm mát tích cực bằng nước ướt kết hợp quạt gió vào cổ, nách, bẹn; chỉ cho nhấp từng ngụm nhỏ khi còn tỉnh táo và gọi cứu hộ.' },
       { id: 'C', text: 'Cho uống ngay 2 viên thuốc hạ sốt Paracetamol và bọc áo gió giữ ẩm.' },
       { id: 'D', text: 'Xoa dầu gió nóng khắp lưng và cạo gió cho ra mồ hôi.' },
     ],
     correctOptionId: 'B',
     clinicalExplanation:
-      'Sốc nhiệt (Heat Stroke) có biểu hiện rối loạn tri giác và mất cơ chế tiết mồ hôi là tình trạng đe dọa tính mạng. Chuẩn WFA yêu cầu "Cool First, Transport Second": hạ nhiệt thân lõi khẩn cấp bằng cách tạo bóng râm, thấm ướt toàn thân kết hợp quạt đối lưu mạnh (tập trung vùng mạch lớn cổ–nách–bẹn) và sơ tán y tế ngay.',
+      'Sốc nhiệt (Heat Stroke) kèm rối loạn tri giác và ngưng tiết mồ hôi là tình trạng đe dọa tính mạng. Chuẩn WFA yêu cầu "Cool First, Transport Second": hạ nhiệt thân lõi khẩn cấp bằng cách tạo bóng râm, thấm ướt toàn thân kết hợp quạt đối lưu mạnh (tập trung vùng mạch lớn cổ–nách–bẹn) và sơ tán y tế ngay.',
     forbiddenMistake:
-      'CẤM KỴ: Không dùng thuốc hạ sốt (Paracetamol/Ibuprofen không có tác dụng với sốc nhiệt và gây độc gan/thận khi mất nước), không xoa dầu nóng, không ép người lú lẫn uống nhiều nước gây sặc đường thở.',
+      'Tuyệt đối tránh: Không dùng thuốc hạ sốt (Paracetamol/Ibuprofen không có tác dụng với sốc nhiệt và gây độc gan, thận khi mất nước), không xoa dầu nóng, không ép người lú lẫn uống nhiều nước gây sặc đường thở.',
     hotlineLabel: 'Cấp cứu 115 / Chi cục KL Khánh Hòa',
     hotlinePhone: '0258.3837.149',
   },
   {
     id: 'drill-fansipan-hypothermia',
-    title: 'Hạ Thân Nhiệt Tại Đỉnh Fansipan (0°C, Gió Lạnh)',
+    title: 'Hạ thân nhiệt gần đỉnh Fansipan (0°C, gió buốt)',
     location: 'VQG Hoàng Liên, Sa Pa, Lào Cai (3.143m)',
     severity: 'critical',
     situation:
-      'Mưa phùn kéo dài và gió 40 km/h gần mốc 2.800m. Một thành viên mặc áo cotton ướt sũng, run cầm cập không kiểm soát, phát âm chậm chạp và đánh rơi gậy trekking. Xử trí chuẩn WFA?',
+      'Mưa phùn kéo dài và gió 40 km/h gần mốc 2.800m. Một thành viên mặc áo cotton ướt sũng, run cầm cập không kiểm soát, nói chậm chạp và đánh rơi gậy trekking. Xử trí thế nào cho đúng chuẩn WFA?',
     options: [
       { id: 'A', text: 'Cho uống một ngụm rượu ngô Tây Bắc để làm ấm cơ thể nhanh từ bên trong.' },
       { id: 'B', text: 'Chà xát thật mạnh tay chân nạn nhân để máu lưu thông nhanh trở lại.' },
-      { id: 'C', text: 'Đưa vào chỗ kín gió/lều ngay, thay sạch quần áo ướt bằng đồ khô giữ nhiệt, cách ly khỏi mặt đất lạnh (tấm trải + túi ngủ), chườm ấm vùng trung tâm (ngực–cổ–bẹn) và cho uống nước ấm có đường nếu tỉnh táo.' },
+      { id: 'C', text: 'Đưa vào chỗ kín gió hoặc lều ngay, thay sạch quần áo ướt bằng đồ khô giữ nhiệt, cách ly khỏi mặt đất lạnh (tấm trải + túi ngủ), chườm ấm vùng trung tâm (ngực–cổ–bẹn) và cho uống nước ấm có đường nếu còn tỉnh táo.' },
       { id: 'D', text: 'Bắt chạy bộ tại chỗ 15 phút để cơ thể tự sinh nhiệt.' },
     ],
     correctOptionId: 'C',
     clinicalExplanation:
-      'Hạ thân nhiệt mức độ vừa–nặng đòi hỏi chặn đứng mọi kênh mất nhiệt (gió, đồ ướt, dẫn nhiệt từ nền đất) bằng "Hypothermia Wrap": cởi đồ ẩm, mặc lớp len/lông vũ khô, lót cách nhiệt dưới lưng, làm ấm vùng thân lõi trước và bổ sung calo dễ hấp thu dạng nước ấm.',
+      'Hạ thân nhiệt mức độ vừa đến nặng đòi hỏi chặn đứng mọi đường mất nhiệt (gió, đồ ướt, dẫn nhiệt từ nền đất) bằng cách bọc giữ nhiệt (Hypothermia Wrap): cởi đồ ẩm, mặc lớp len hoặc lông vũ khô, lót cách nhiệt dưới lưng, làm ấm vùng thân lõi trước và bổ sung calo dễ hấp thu dạng nước ấm.',
     forbiddenMistake:
-      'CẤM KỴ: Tuyệt đối không uống rượu bia (gây giãn mạch ngoại vi làm mất nhiệt lõi nhanh hơn), không xoa bóp mạnh tứ chi hoặc ngâm nước quá nóng (nguy cơ tụt huyết áp & rối loạn nhịp tim do máu lạnh đổ dồn về tim — Afterdrop).',
+      'Tuyệt đối tránh: Không uống rượu bia (gây giãn mạch ngoại vi làm mất nhiệt lõi nhanh hơn), không xoa bóp mạnh tay chân hoặc ngâm nước quá nóng (nguy cơ tụt huyết áp và rối loạn nhịp tim do máu lạnh dồn về tim — Afterdrop).',
     hotlineLabel: 'BQL VQG Hoàng Liên (Sa Pa)',
     hotlinePhone: '02143.871.494',
   },
   {
     id: 'drill-cattien-snakebite',
-    title: 'Rắn Lục Đuôi Đỏ Cắn Ở VQG Cát Tiên',
+    title: 'Rắn lục đuôi đỏ cắn ở VQG Cát Tiên',
     location: 'Tuyến Bàu Sấu, VQG Cát Tiên, Đồng Nai',
     severity: 'critical',
     situation:
-      'Trên lối mòn xuyên rừng vào Bàu Sấu, một trekker bị rắn lục đuôi đỏ (đầu tam giác, đuôi nâu đỏ) cắn vào cổ chân phải. Vết cắn sưng nề, đau nhói tăng nhanh. Xử trí sơ cứu chuẩn xác nhất?',
+      'Trên lối mòn xuyên rừng vào Bàu Sấu, một bạn trong đoàn bị rắn lục đuôi đỏ (đầu tam giác, đuôi nâu đỏ) cắn vào cổ chân phải. Vết cắn sưng nề, đau nhói tăng nhanh. Sơ cứu thế nào là chuẩn nhất?',
     options: [
       { id: 'A', text: 'Rạch chữ thập tại vết cắn, dùng miệng hút nọc độc ra ngoài rồi đắp lá rừng.' },
       { id: 'B', text: 'Buộc dây garo siết thật chặt trên đầu gối để chặn máu chảy về tim.' },
-      { id: 'C', text: 'Giữ nạn nhân nằm yên bất động, tháo nhẫn/giày/tất trước khi sưng to, rửa nhẹ vết thương bằng nước sạch, nẹp cố định chi bị cắn thấp hơn mức tim và cáng khẩn cấp tới bệnh viện có huyết thanh kháng nọc.' },
+      { id: 'C', text: 'Giữ nạn nhân nằm yên bất động, tháo nhẫn, giày, tất trước khi sưng to, rửa nhẹ vết thương bằng nước sạch, nẹp cố định chi bị cắn thấp hơn mức tim và cáng khẩn cấp tới bệnh viện có huyết thanh kháng nọc.' },
       { id: 'D', text: 'Để nạn nhân tự đi bộ thật nhanh ra cổng VQG cho kịp giờ.' },
     ],
     correctOptionId: 'C',
     clinicalExplanation:
-      'Nọc rắn lục đuôi đỏ gây rối loạn đông máu và hoại tử mô tại chỗ. Vận động mạnh làm bơm bạch huyết đẩy nọc lan nhanh toàn thân. Giữ bất động tuyệt đối, cố định chi thấp hơn tim, tháo bỏ trang sức/giày chật, theo dõi mốc thời gian + viền sưng và vận chuyển bằng cáng tới cơ sở y tế có huyết thanh là phác đồ sống còn.',
+      'Nọc rắn lục đuôi đỏ gây rối loạn đông máu và hoại tử mô tại chỗ. Vận động mạnh làm bơm bạch huyết đẩy nọc lan nhanh toàn thân. Giữ bất động tuyệt đối, cố định chi thấp hơn tim, tháo bỏ trang sức hoặc giày chật, ghi nhận mốc giờ cắn kèm viền sưng và đưa bằng cáng tới cơ sở y tế có huyết thanh là phác đồ sống còn.',
     forbiddenMistake:
-      'CẤM KỴ: Không rạch da (gây chảy máu không cầm do độc tố đông máu), không hút nọc bằng miệng, không garo chặt (gây hoại tử phải cắt cụt chi), không chườm đá hay đắp thuốc nam.',
+      'Tuyệt đối tránh: Không rạch da (gây chảy máu không cầm do độc tố đông máu), không hút nọc bằng miệng, không garo chặt (gây hoại tử phải cắt cụt chi), không chườm đá hay đắp lá thuốc.',
     hotlineLabel: 'BQL VQG Cát Tiên / Cấp cứu 115',
     hotlinePhone: '02513.669.228',
   },
   {
     id: 'drill-giengtroi-flashflood',
-    title: 'Lũ Quét Đột Ngột Tại Suối Giếng Trời',
+    title: 'Lũ quét bất ngờ ở suối Giếng Trời',
     location: 'Rừng Bà Nà – Hòa Vang, TP. Đà Nẵng',
     severity: 'critical',
     situation:
-      'Đang nghỉ ăn trưa cạnh bờ đá suối Giếng Trời thì thấy nước suối đột ngột đục ngầu đỏ quạch, nổi nhiều bọt trắng, lá cây tươi trôi dạt và nghe tiếng ầm rền từ thượng nguồn dù tại chỗ chưa mưa to. Hành động đúng?',
+      'Đang nghỉ ăn trưa cạnh bờ đá suối Giếng Trời thì thấy nước suối đột ngột đục ngầu đỏ quạch, nổi nhiều bọt trắng, lá cây tươi trôi dạt và nghe tiếng ầm rền từ thượng nguồn dù tại chỗ chưa mưa to. Bạn cần làm gì ngay?',
     options: [
       { id: 'A', text: 'Tranh thủ thu gọn đầy đủ lều bạt, balo nặng rồi mới từ từ lội qua bờ bên kia.' },
       { id: 'B', text: 'Bỏ lại toàn bộ đồ nặng nếu cản trở, lập tức di chuyển vuông góc lên sườn đồi cao nhất cách xa lòng suối và tuyệt đối không cố lội ngược dòng hay vượt suối lúc nước đang lên.' },
@@ -201,93 +212,93 @@ const VIETNAM_SURVIVAL_DRILLS: SurvivalDrillScenario[] = [
     ],
     correctOptionId: 'B',
     clinicalExplanation:
-      'Nước đục ngầu đột ngột, rác thực vật tươi và tiếng ầm thượng nguồn là 3 dấu hiệu vàng của lũ ống/lũ quét sắp ập tới trong vài chục giây đến vài phút. Nguyên tắc sinh tồn: tính mạng trên hết — leo thẳng vuông góc lên triền dốc cao vững chắc và chờ tối thiểu nhiều giờ sau khi nước rút hẳn.',
+      'Nước đục ngầu đột ngột, rác thực vật tươi và tiếng ầm từ thượng nguồn là 3 dấu hiệu rõ nhất của lũ ống, lũ quét sắp ập tới chỉ trong vài chục giây đến vài phút. Người trước, đồ sau — leo thẳng vuông góc lên triền dốc cao vững chắc và chờ nhiều giờ sau khi nước rút hẳn mới tính tiếp.',
     forbiddenMistake:
-      'CẤM KỴ: Không chạy dọc lòng suối (lũ quét di chuyển nhanh hơn người chạy 3–5 lần), không đứng trên đá giữa suối, không quay lại nhặt balo/thiết bị và không cố lội qua dòng nước đục sâu quá đầu gối.',
+      'Tuyệt đối tránh: Không chạy dọc lòng suối (lũ quét lao nhanh gấp 3–5 lần người chạy), không đứng trên đá giữa suối, không quay lại nhặt balo hay thiết bị và không cố lội qua dòng nước đục sâu quá đầu gối.',
     hotlineLabel: 'Tổng đài CNCH Quốc gia 112 / 114',
     hotlinePhone: '112',
   },
   {
     id: 'drill-taxua-lightning',
-    title: 'Giông Sét Trên Sống Lưng Khủng Long Tà Xùa',
+    title: 'Giông sét trên sống lưng khủng long Tà Xùa',
     location: 'Trạm Tấu (Yên Bái) / Bắc Yên (Sơn La) — 2.865m',
     severity: 'critical',
     situation:
-      '15:00 trên sống núi trống trải không có nhà kiên cố, mây đen kéo tới nhanh, khoảng cách giữa tia chớp và tiếng sấm rút ngắn dưới 15 giây, tóc bắt đầu dựng đứng và gậy kim loại kêu rè nhẹ. Xử trí khẩn cấp?',
+      '15:00 trên sống núi trống trải không có nhà kiên cố, mây đen kéo tới nhanh, khoảng cách giữa tia chớp và tiếng sấm rút ngắn dưới 15 giây, tóc bắt đầu dựng đứng và gậy kim loại kêu rè nhẹ. Xử trí khẩn cấp thế nào?',
     options: [
       { id: 'A', text: 'Chạy ngay vào đứng trú dưới gốc cây cổ thụ cao nhất mọc đơn độc bên sườn núi.' },
       { id: 'B', text: 'Nằm bẹp sát toàn thân xuống mặt đất để giảm chiều cao tối đa.' },
-      { id: 'C', text: 'Lập tức rời đỉnh/sống lưng cao xuống sườn thấp hơn, bỏ gậy trekking/vật kim loại cách xa 15m, cả đoàn tản cách nhau tối thiểu 10–15m, ngồi xổm tư thế Lightning Squat trên tấm cách nhiệt/balo khô, hai bàn chân chụm sát nhau.' },
+      { id: 'C', text: 'Lập tức rời đỉnh và sống lưng cao xuống sườn thấp hơn, bỏ gậy trekking cùng vật kim loại cách xa 15m, cả đoàn tản cách nhau tối thiểu 10–15m, ngồi xổm tư thế Lightning Squat trên tấm cách nhiệt hoặc balo khô, hai bàn chân chụm sát nhau.' },
       { id: 'D', text: 'Cả đoàn đứng sát vòng tròn ôm nhau cho ấm và đỡ sợ.' },
     ],
     correctOptionId: 'C',
     clinicalExplanation:
-      'Quy tắc 30–30: khi thời gian từ chớp tới sấm <= 30 giây, sét đã ở trong bán kính nguy hiểm (<10 km). Rời ngay đường sống núi cao, tản đội hình để tránh thương vong hàng loạt do dòng điện mặt đất (Ground Current), đặt chân chụm sát để triệt tiêu điện áp bước và chỉ tiếp xúc đất tối thiểu qua đệm cách điện.',
+      'Theo quy tắc 30–30, khi thời gian từ chớp tới sấm từ 30 giây trở xuống nghĩa là sét đã ở trong vùng nguy hiểm (<10 km). Rời ngay đường sống núi cao, tản đội hình để tránh thương vong hàng loạt do dòng điện lan trên mặt đất (Ground Current), chụm sát hai bàn chân để triệt tiêu điện áp bước và chỉ tiếp xúc đất tối thiểu qua đệm cách điện.',
     forbiddenMistake:
-      'CẤM KỴ: Không nằm dài xuống đất (tăng diện tích dẫn dòng điện mặt đất đi qua tim), không trú dưới cây đơn độc hoặc vách hang nông, không tụm đông sát nhau và không cầm gậy kim loại/dựng khung lều nhôm.',
+      'Tuyệt đối tránh: Không nằm dài xuống đất (tăng diện tích dẫn dòng điện mặt đất qua tim), không trú dưới cây đơn độc hoặc vách hang nông, không tụm sát nhau và không cầm gậy kim loại hay dựng khung lều nhôm.',
     hotlineLabel: 'Chi cục Kiểm lâm Yên Bái / CNCH 112',
     hotlinePhone: '02163.852.341',
   },
   {
     id: 'drill-kyquansan-lost',
-    title: 'Lạc Đường Trong Sương Mù Đặc Kỳ Quan San',
+    title: 'Lạc đường giữa sương mù đặc Kỳ Quan San',
     location: 'Bát Xát, Lào Cai (3.046m — Sàng Ma Sáo)',
     severity: 'urgent',
     situation:
-      '16:40 sương mù dày tầm nhìn dưới 10m, trời sắp tối, không thấy dấu sơn chỉ đường và bạn không chắc hướng quay về Lán Núi Muối. Quy trình chuẩn S.T.O.P là gì?',
+      '16:40 sương mù dày tầm nhìn dưới 10m, trời sắp tối, không thấy dấu sơn chỉ đường và bạn không chắc hướng quay về Lán Núi Muối. Quy trình S.T.O.P chuẩn là gì?',
     options: [
       { id: 'A', text: 'Cố gắng đi thật nhanh xuống các khe suối sâu vì nước suối luôn chảy về bản làng.' },
-      { id: 'B', text: 'S-T-O-P: Dừng lại ngay tại vị trí an toàn kín gió trước khi trời tối, bình tĩnh quan sát GPS/bản đồ Offline, thổi còi 3 hồi ngắn định kỳ, mặc đủ lớp giữ ấm, gửi SMS 2G kèm tọa độ WGS84 về 112 và ở nguyên một chỗ chờ cứu hộ.' },
+      { id: 'B', text: 'S-T-O-P: Dừng lại ngay tại vị trí an toàn kín gió trước khi trời tối, bình tĩnh xem GPS và bản đồ ngoại tuyến, thổi còi 3 hồi ngắn định kỳ, mặc đủ lớp giữ ấm, gửi SMS 2G kèm tọa độ WGS84 về 112 và ở yên một chỗ chờ cứu hộ.' },
       { id: 'C', text: 'Tách từng người trong nhóm đi tỏa ra 3 hướng khác nhau tìm đường mòn rồi hú gọi nhau.' },
       { id: 'D', text: 'Đốt lửa lớn ngay giữa rừng trúc khô để tạo cột khói cầu cứu.' },
     ],
     correctOptionId: 'B',
     clinicalExplanation:
-      'Hầu hết các ca lạc rừng tử vong tại Việt Nam xảy ra khi nạn nhân hoảng loạn di chuyển trong đêm tối hoặc tụt xuống khe suối dốc đá trơn trượt. Ở yên tại điểm an toàn, giữ ấm chống hạ thân nhiệt, dùng còi 3.1kHz (tín hiệu 3 hồi) và gửi SMS 2G tọa độ giúp lực lượng kiểm lâm khoanh vùng cứu hộ cực nhanh.',
+      'Phần lớn các vụ lạc rừng nguy hiểm ở Việt Nam xảy ra khi người đi hoảng loạn cố đi tiếp trong đêm tối hoặc tụt xuống khe suối dốc đá trơn trượt. Ở yên tại điểm kín gió, mặc ấm chống hạ thân nhiệt, thổi còi 3.1kHz (nhịp 3 hồi) và gửi SMS 2G kèm tọa độ giúp lực lượng kiểm lâm khoanh vùng tìm thấy rất nhanh.',
     forbiddenMistake:
-      'CẤM KỴ: Không đi xuống khe suối cạn/thác đá (địa hình hiểm trở, mất sóng hoàn toàn, dễ trượt ngã), không tách đoàn và không di chuyển mò mẫm sau khi trời tối hẳn.',
-    hotlineLabel: 'Chi cục Kiểm lâm Lào Cai / 112',
-    hotlinePhone: '02163.852.341',
+      'Tuyệt đối tránh: Không tụt xuống khe suối cạn hay thác đá (địa hình hiểm trở, mất sóng hoàn toàn, dễ trượt ngã), không tách đoàn và không mò mẫm đi tiếp sau khi trời đã tối hẳn.',
+    hotlineLabel: 'BQL VQG Hoàng Liên (Lào Cai) / 112',
+    hotlinePhone: '02143.871.494',
   },
   {
     id: 'drill-pusilung-ams',
-    title: 'Say Độ Cao Nặng (AMS / HAPE) Trên Pu Si Lung 3.083m',
+    title: 'Say độ cao nặng (AMS / HAPE) trên Pu Si Lung 3.083m',
     location: 'Xã Pa Vệ Sử, Mường Tè, Lai Châu (3.083m)',
     severity: 'critical',
     situation:
-      'Đêm thứ hai ở độ cao gần 2.900m, thành viên đau đầu dữ dội không giảm sau khi uống thuốc giảm đau, nôn ói liên tục, đi loạng choạng như say rượu và ho khạc bọt hồng kèm khó thở ngay cả khi nằm nghỉ. Xử trí tối thượng?',
+      'Đêm thứ hai ở độ cao gần 2.900m, một thành viên đau đầu dữ dội không giảm sau khi uống thuốc giảm đau, nôn ói liên tục, đi loạng choạng như say rượu và ho khạc bọt hồng kèm khó thở ngay cả khi nằm nghỉ. Cần làm gì ngay lúc này?',
     options: [
       { id: 'A', text: 'Cho nằm yên trong lều ngủ một giấc tới sáng xem có tự hết không.' },
       { id: 'B', text: 'Cho uống nhiều trà gừng đặc và sáng hôm sau cố leo nốt lên đỉnh 3.083m rồi mới xuống.' },
-      { id: 'C', text: 'Nhận diện dấu hiệu phù phổi / phù não độ cao (HAPE/HACE) đe dọa tính mạng: lập tức HẠ ĐỘ CAO ngay ít nhất 300–500m (có người dìu/cáng, giữ ấm, đầu cao hơn thân) kể cả trong đêm khi an toàn di chuyển và kích hoạt cứu hộ khẩn cấp.' },
+      { id: 'C', text: 'Nhận diện dấu hiệu phù phổi hoặc phù não độ cao (HAPE/HACE) đe dọa tính mạng: lập tức hạ độ cao ngay ít nhất 300–500m (có người dìu hoặc cáng, giữ ấm, kê đầu cao hơn thân) kể cả trong đêm khi đường đủ an toàn di chuyển và gọi cứu hộ khẩn cấp.' },
       { id: 'D', text: 'Cho uống thuốc ngủ để nạn nhân nghỉ ngơi sâu hơn.' },
     ],
     correctOptionId: 'C',
     clinicalExplanation:
-      'Mất thăng bằng (Ataxia), lú lẫn (HACE) hoặc khó thở khi nghỉ, ho bọt hồng (HAPE) là biến chứng độ cao nguy kịch. Quy tắc vàng của Y học Núi cao (WMS): "Descent is the definitive treatment" — chỉ có hạ cao độ lập tức mới cứu sống bệnh nhân.',
+      'Mất thăng bằng (Ataxia), lú lẫn (HACE) hoặc khó thở lúc nghỉ, ho bọt hồng (HAPE) là biến chứng độ cao nguy kịch. Nguyên tắc vàng của y học núi cao (WMS): "Descent is the definitive treatment" — chỉ có hạ độ cao lập tức mới cứu sống được người bệnh.',
     forbiddenMistake:
-      'CẤM KỴ: Tuyệt đối không tiếp tục leo cao hơn khi có triệu chứng AMS, không để bệnh nhân ngủ qua đêm chờ sáng khi đã có dấu hiệu HAPE/HACE và CẤM dùng thuốc ngủ/an thần (làm ức chế hô hấp nghiêm trọng hơn).',
+      'Tuyệt đối tránh: Không tiếp tục leo cao hơn khi đã có triệu chứng AMS, không để người bệnh ngủ qua đêm chờ sáng khi đã có dấu hiệu HAPE/HACE và không dùng thuốc ngủ hay an thần (làm ức chế hô hấp nặng hơn).',
     hotlineLabel: 'Chi cục Kiểm lâm Lai Châu / 112',
     hotlinePhone: '02133.876.605',
   },
   {
     id: 'drill-taynguyen-anaphylaxis',
-    title: 'Sốc Phản Vệ Ong Vò Vẽ & Vết Vắt Rừng Tây Nguyên',
+    title: 'Sốc phản vệ do ong vò vẽ ở rừng Tây Nguyên',
     location: 'VQG Bidoup – Núi Bà / Chư Yang Sin (Tây Nguyên)',
     severity: 'critical',
     situation:
       'Sau khi bị 3 con ong vò vẽ rừng đốt ở cổ và cánh tay, một thành viên sau 8 phút bắt đầu nổi mề đay toàn thân, sưng môi mắt, khàn tiếng, thở rít và chóng mặt tụt huyết áp. Bạn phải làm gì ngay?',
     options: [
       { id: 'A', text: 'Chờ theo dõi thêm 30 phút và bôi vôi hoặc kem đánh răng lên nốt đốt.' },
-      { id: 'B', text: 'Khẩn cấp tiêm bắp Adrenaline (EpiPen vào mặt ngoài đùi) nếu đoàn có mang theo, đặt nạn nhân nằm ngửa nâng cao chân (hoặc ngồi nửa nằm nếu khó thở), nới lỏng quần áo, gạt ngòi nhẹ nhàng, gọi 115/BQL VQG và sơ tán cấp cứu ngay.' },
+      { id: 'B', text: 'Khẩn cấp tiêm bắp Adrenaline (EpiPen vào mặt ngoài đùi) nếu đoàn có mang theo, đặt nạn nhân nằm ngửa kê cao chân (hoặc ngồi nửa nằm nếu khó thở), nới lỏng quần áo, gạt ngòi nhẹ nhàng, gọi 115 hoặc BQL VQG và sơ tán cấp cứu ngay.' },
       { id: 'C', text: 'Đứng dậy đi lại thật nhanh để tim đập mạnh chống tụt huyết áp.' },
       { id: 'D', text: 'Dùng nhíp bóp mạnh túi nọc ong để rút nọc ra hết.' },
     ],
     correctOptionId: 'B',
     clinicalExplanation:
-      'Sưng đường thở, khàn tiếng, thở rít và tụt huyết áp sau khi bị ong đốt là Sốc phản vệ độ III–IV. Adrenaline tiêm bắp (mặt ngoài đùi) là thuốc cứu mạng duy nhất đầu tay. Duy trì tư thế nằm nâng chân (không để đứng dậy đột ngột gây trụy mạch), sẵn sàng liều nhắc sau 5–15 phút nếu triệu chứng không cải thiện và vận chuyển cấp cứu ngay.',
+      'Sưng đường thở, khàn tiếng, thở rít và tụt huyết áp sau khi bị ong đốt là sốc phản vệ độ III–IV. Adrenaline tiêm bắp (mặt ngoài đùi) là thuốc cứu mạng đầu tay duy nhất. Giữ tư thế nằm nâng chân (không để đứng dậy đột ngột gây trụy mạch), sẵn sàng liều nhắc sau 5–15 phút nếu chưa đỡ và chuyển cấp cứu ngay.',
     forbiddenMistake:
-      'CẤM KỴ: Không bắt nạn nhân sốc phản vệ đứng dậy hay tự đi bộ (nguy cơ ngừng tim đột ngột do tụt huyết áp tư thế), không bóp túi nọc bằng nhíp (bơm thêm nọc vào da) và không dùng thuốc kháng histamin uống thay thế cho Adrenaline.',
+      'Tuyệt đối tránh: Không bắt người sốc phản vệ đứng dậy hay tự đi bộ (dễ ngừng tim đột ngột do tụt huyết áp tư thế), không bóp túi nọc bằng nhíp (bơm thêm nọc vào da) và không dùng thuốc kháng histamin uống thay cho Adrenaline.',
     hotlineLabel: 'VQG Bidoup - Núi Bà / Cấp cứu 115',
     hotlinePhone: '0263.3502.005',
   },
@@ -332,6 +343,18 @@ interface DeviceOrientationConstructorWithPermission {
   requestPermission?: () => Promise<'granted' | 'denied'>;
 }
 
+interface WakeLockSentinelLike {
+  released: boolean;
+  release: () => Promise<void>;
+  addEventListener?: (type: 'release', listener: () => void) => void;
+}
+
+type NavigatorWithWakeLock = Omit<Navigator, 'wakeLock'> & {
+  wakeLock?: {
+    request: (type: 'screen') => Promise<WakeLockSentinelLike>;
+  };
+};
+
 interface MorseElement {
   on: boolean;
   ms: number;
@@ -365,38 +388,38 @@ const MORSE_SOS_PATTERN: MorseElement[] = [
 ];
 
 const SOS_QUICK_NOTES = [
-  'Bi lac duong trong rung, can xac dinh huong va ho tro.',
-  'Chan thuong chan, khong the tu di chuyen xuong nui.',
-  'Co dau hieu soc do cao AMS (dau dau, non, kho tho).',
-  'Ha than nhiet do mua gio lanh, can cuu ho khan cap.',
-  'Can nuoc va kiet suc, dang o diem dung an toan.',
+  'Lac duong trong rung, can dinh huong va ho tro.',
+  'Chan thuong chan, khong tu di xuong nui duoc.',
+  'Co dau hieu say do cao AMS (dau dau, non, kho tho).',
+  'Ha than nhiet do mua gio lanh, can cuu ho gap.',
+  'Kiet suc va het nuoc, dang o yen tai diem an toan.',
 ];
 
 const CLOUD_CHECKLIST_ITEMS = [
   {
     id: 'humidity',
-    title: 'Độ ẩm không khí ban đêm >= 85%',
-    detail: 'Không khí ẩm vùng thung lũng tích tụ thành tầng mây đặc từ 01:00–05:00 sáng.',
+    title: 'Độ ẩm ban đêm từ 85% trở lên',
+    detail: 'Hơi ẩm đọng dưới thung lũng từ khoảng 1h đến 5h sáng, gom lại thành biển mây đặc.',
   },
   {
     id: 'wind',
-    title: 'Gió trên sống lưng / đỉnh < 20 km/h',
-    detail: 'Gió nhẹ giữ biển mây nằm êm dưới thung lũng, không bị thổi tan hay cuộn mù.',
+    title: 'Gió trên đỉnh nhẹ dưới 20 km/h',
+    detail: 'Gió dịu mới giữ mây nằm êm dưới chân núi; gió mạnh sẽ thổi tan hoặc cuốn mù mịt.',
   },
   {
     id: 'rain',
-    title: 'Mưa tạnh trước 02:00 sáng (không bão/áp thấp)',
-    detail: 'Cơn mưa nhẹ chiều hôm trước giúp tăng hơi ẩm, sau đó trời quang tạo biển mây dày.',
+    title: 'Mưa tạnh trước 2h sáng, không có bão',
+    detail: 'Chiều hôm trước mưa nhẹ rồi đêm tạnh ráo, trời quang là điều kiện rất dễ gặp mây dày.',
   },
   {
     id: 'inversion',
-    title: 'Nghịch nhiệt ngày – đêm chênh >= 7°C',
-    detail: 'Đêm lạnh dưới 12°C, sáng có nắng hửng giúp tạo ranh giới mây sắc nét dưới chân đỉnh.',
+    title: 'Nhiệt độ ngày và đêm chênh từ 7°C trở lên',
+    detail: 'Đêm lạnh dưới 12°C, sáng hửng nắng sớm giúp tách mặt biển mây sắc nét dưới chân đỉnh.',
   },
   {
     id: 'arrival',
-    title: 'Có mặt tại điểm ngắm trước giờ Bình minh Dân dụng',
-    detail: 'Xuất phát từ lán sớm 45–60 phút để đón trọn dải ánh sáng Giờ Xanh & Giờ Vàng.',
+    title: 'Lên tới điểm ngắm trước giờ hửng sáng',
+    detail: 'Rời lán sớm hơn 45–60 phút để kịp đón trọn ánh xanh đầu ngày và nắng vàng lúc mặt trời ló dạng.',
   },
 ];
 
@@ -431,6 +454,76 @@ function extractPrimaryDialNumber(rawPhone: string): string {
   return digits.length >= 3 ? digits : '112';
 }
 
+function classifyVietnamSmsRecipient(rawPhone: string): 'empty' | 'voice_only' | 'landline' | 'mobile' {
+  const digits = String(rawPhone || '').replace(/[^\d+]/g, '');
+  if (!digits) return 'empty';
+  if (/^(112|113|114|115)$/.test(digits)) return 'voice_only';
+  if (/^(02\d{7,10}|\+?842\d{7,10})$/.test(digits)) return 'landline';
+  return 'mobile';
+}
+
+function extractVietnamMobileNumber(...candidates: Array<string | undefined>): string | null {
+  for (const raw of candidates) {
+    if (!raw) continue;
+    const segments = String(raw).split(/[/|,;()]/);
+    for (const seg of segments) {
+      const digits = seg.replace(/[^\d+]/g, '');
+      if (/^(0[35789]\d{8}|\+?84[35789]\d{8})$/.test(digits)) {
+        return digits;
+      }
+    }
+  }
+  return null;
+}
+
+function formatVietnameseCardinal(deg: number): string {
+  return getCardinalDirectionLabel(deg).replace(/\s*\([^)]*\)$/, '').trim();
+}
+
+function normalizeHeading360(deg: number): number {
+  const rounded = Math.round(deg);
+  return ((rounded % 360) + 360) % 360;
+}
+
+function getScreenOrientationDeg(): number {
+  if (typeof window === 'undefined') return 0;
+  const angle = window.screen?.orientation?.angle;
+  if (typeof angle === 'number' && Number.isFinite(angle)) return angle;
+  const legacy = (window as Window & { orientation?: number }).orientation;
+  return typeof legacy === 'number' && Number.isFinite(legacy) ? legacy : 0;
+}
+
+function copyTextViaExecCommand(text: string): boolean {
+  if (typeof document === 'undefined' || !document.body) return false;
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', 'true');
+    textarea.style.position = 'fixed';
+    textarea.style.top = '-9999px';
+    textarea.style.left = '-9999px';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function copyTextWithFallback(text: string): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    return navigator.clipboard
+      .writeText(text)
+      .then(() => true)
+      .catch(() => copyTextViaExecCommand(text));
+  }
+  return Promise.resolve(copyTextViaExecCommand(text));
+}
+
 function getTodayVietnamIso(): string {
   const vnNow = new Date(Date.now() + 7 * 3_600_000);
   const y = vnNow.getUTCFullYear();
@@ -451,10 +544,10 @@ function formatDayLengthVi(minutes: number): string {
 }
 
 function getAccuracyMeta(accuracyM: number | null): { label: string; badgeClass: string } {
-  if (accuracyM === null) return { label: 'Chưa khóa GPS', badgeClass: 'badge-cloud' };
-  if (accuracyM <= 15) return { label: `Rất chính xác (±${Math.round(accuracyM)}m)`, badgeClass: 'badge-success' };
-  if (accuracyM <= 50) return { label: `Độ chính xác khá (±${Math.round(accuracyM)}m)`, badgeClass: 'badge-sun' };
-  return { label: `Tín hiệu yếu (±${Math.round(accuracyM)}m)`, badgeClass: 'badge-error' };
+  if (accuracyM === null) return { label: 'Chưa lấy GPS', badgeClass: 'badge-cloud' };
+  if (accuracyM <= 15) return { label: `Sóng rất tốt (±${Math.round(accuracyM)}m)`, badgeClass: 'badge-success' };
+  if (accuracyM <= 50) return { label: `Tín hiệu khá (±${Math.round(accuracyM)}m)`, badgeClass: 'badge-sun' };
+  return { label: `Sóng yếu (±${Math.round(accuracyM)}m)`, badgeClass: 'badge-error' };
 }
 
 export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
@@ -548,7 +641,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
   // =========================================================================
   const [headingDeg, setHeadingDeg] = useState<number>(38);
   const [compassMode, setCompassMode] = useState<'manual' | 'sensor'>('manual');
-  const [sensorStatus, setSensorStatus] = useState<string>('Chế độ chỉnh tay (Desktop / Mô phỏng)');
+  const [sensorStatus, setSensorStatus] = useState<string>('Đang chỉnh hướng bằng tay (máy tính hoặc mô phỏng)');
 
   const [gpsLock, setGpsLock] = useState<GpsLockState | null>(null);
   const [gpsLoading, setGpsLoading] = useState<boolean>(false);
@@ -662,40 +755,60 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
     setDecLng(dec.toFixed(6));
   };
 
-  // DeviceOrientation compass listener
+  // DeviceOrientation compass listener (resolves Android dual-listener conflict + screen rotation + 360° wrap)
   useEffect(() => {
     if (compassMode !== 'sensor') return;
 
-    const handleOrientation = (ev: Event) => {
+    let hasAbsoluteReading = false;
+
+    const handleAbsoluteOrientation = (ev: Event) => {
       const e = ev as DeviceOrientationEventWithPermission;
-      if (typeof e.webkitCompassHeading === 'number' && Number.isFinite(e.webkitCompassHeading)) {
-        setHeadingDeg(Math.round(e.webkitCompassHeading));
-        setSensorStatus('Cảm biến từ kế iOS đang hoạt động');
-      } else if (typeof e.alpha === 'number' && Number.isFinite(e.alpha)) {
-        const heading = (360 - e.alpha) % 360;
-        setHeadingDeg(Math.round(heading < 0 ? heading + 360 : heading));
-        setSensorStatus('Cảm biến la bàn thiết bị đang hoạt động');
+      if (typeof e.alpha === 'number' && Number.isFinite(e.alpha)) {
+        hasAbsoluteReading = true;
+        const screenAngle = getScreenOrientationDeg();
+        const heading = normalizeHeading360(360 - e.alpha + screenAngle);
+        setHeadingDeg(heading);
+        setSensorStatus('Đang nhận hướng Bắc thực từ cảm biến la bàn');
       }
     };
 
-    window.addEventListener('deviceorientationabsolute', handleOrientation, true);
-    window.addEventListener('deviceorientation', handleOrientation, true);
+    const handleStandardOrientation = (ev: Event) => {
+      if (hasAbsoluteReading) return;
+      const e = ev as DeviceOrientationEventWithPermission;
+      const screenAngle = getScreenOrientationDeg();
+      if (typeof e.webkitCompassHeading === 'number' && Number.isFinite(e.webkitCompassHeading)) {
+        const heading = normalizeHeading360(e.webkitCompassHeading + screenAngle);
+        setHeadingDeg(heading);
+        setSensorStatus('Đang nhận hướng từ cảm biến la bàn iOS');
+      } else if (typeof e.alpha === 'number' && Number.isFinite(e.alpha)) {
+        const heading = normalizeHeading360(360 - e.alpha + screenAngle);
+        setHeadingDeg(heading);
+        setSensorStatus(
+          e.absolute
+            ? 'Đang nhận hướng Bắc thực từ la bàn điện thoại'
+            : 'La bàn đang dùng góc tương đối — cầm máy vẽ hình số 8 để hiệu chuẩn'
+        );
+      }
+    };
+
+    window.addEventListener('deviceorientationabsolute', handleAbsoluteOrientation, true);
+    window.addEventListener('deviceorientation', handleStandardOrientation, true);
     return () => {
-      window.removeEventListener('deviceorientationabsolute', handleOrientation, true);
-      window.removeEventListener('deviceorientation', handleOrientation, true);
+      window.removeEventListener('deviceorientationabsolute', handleAbsoluteOrientation, true);
+      window.removeEventListener('deviceorientation', handleStandardOrientation, true);
     };
   }, [compassMode]);
 
   const handleToggleCompassSensor = async () => {
     if (compassMode === 'sensor') {
       setCompassMode('manual');
-      setSensorStatus('Đã chuyển sang chế độ chỉnh tay');
+      setSensorStatus('Đã chuyển về xoay tay');
       return;
     }
 
     if (typeof window === 'undefined' || !('DeviceOrientationEvent' in window)) {
-      setSensorStatus('Thiết bị không có cảm biến la bàn — dùng thanh trượt để định hướng.');
-      onShowToast?.('Trình duyệt máy tính không hỗ trợ cảm biến từ kế. Hãy dùng thanh xoay góc thủ công.', 'info');
+      setSensorStatus('Máy này không có cảm biến la bàn — bạn kéo thanh bên dưới để xoay hướng nhé.');
+      onShowToast?.('Máy tính không có cảm biến la bàn — bạn kéo thanh trượt để chỉnh góc thủ công nhé.', 'info');
       return;
     }
 
@@ -704,25 +817,26 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
       if (typeof OrientationCtor.requestPermission === 'function') {
         const permission = await OrientationCtor.requestPermission();
         if (permission !== 'granted') {
-          setSensorStatus('Người dùng từ chối quyền truy cập cảm biến hướng.');
-          onShowToast?.('Chưa cấp quyền cảm biến La bàn trên iOS.', 'error');
+          setSensorStatus('Bạn chưa cấp quyền cảm biến hướng cho trình duyệt.');
+          onShowToast?.('Chưa mở quyền la bàn trên iOS.', 'error');
           return;
         }
       }
       setCompassMode('sensor');
-      setSensorStatus('Đang chờ tín hiệu từ kế (xoay điện thoại hình số 8 để hiệu chuẩn)...');
+      setSensorStatus('Đang chờ cảm biến bắt hướng — cầm điện thoại vẽ hình số 8 để hiệu chuẩn nhé...');
     } catch {
-      setSensorStatus('Không thể kích hoạt cảm biến hướng — chuyển sang chế độ thủ công.');
-      onShowToast?.('Không thể bật cảm biến hướng trên thiết bị này.', 'error');
+      setSensorStatus('Không bật được cảm biến hướng, tạm chuyển về xoay tay.');
+      onShowToast?.('Không mở được cảm biến la bàn trên máy này.', 'error');
     }
   };
 
   // Live GPS lock (shared by Tab 1 & Tab 4)
-  const handleLockGps = () => {
+  const requestGpsLock = useCallback((opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent);
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      const msg = 'Thiết bị không hỗ trợ định vị GPS (Geolocation API).';
+      const msg = 'Thiết bị này không hỗ trợ lấy tọa độ GPS.';
       setGpsError(msg);
-      onShowToast?.(msg, 'error');
+      if (!silent) onShowToast?.(msg, 'error');
       return;
     }
     setGpsLoading(true);
@@ -757,17 +871,17 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
             setPhysicsAltM(clampedAlt);
             setPhysicsSourceLabel('Cao độ GPS thực tế');
             onShowToast?.(
-              `Đã khóa GPS và đồng bộ cao độ ${clampedAlt.toLocaleString('vi-VN')}m vào bảng vật lý ISA.`,
+              `Đã chốt GPS và đưa cao độ ${clampedAlt.toLocaleString('vi-VN')}m vào bảng tính khí quyển.`,
               'success'
             );
           } else {
             onShowToast?.(
-              `Đã khóa tọa độ GPS (±${lock.accuracyM ?? '?'}m), nhưng thiết bị chưa trả về cao độ vệ tinh. Hãy chọn đỉnh hoặc kéo thanh cao độ.`,
+              `Đã bắt được tọa độ GPS (±${lock.accuracyM ?? '?'}m), nhưng máy chưa đo được cao độ. Bạn chọn sẵn một đỉnh hoặc kéo thanh cao độ bên dưới nhé.`,
               'info'
             );
           }
-        } else {
-          onShowToast?.(`Đã khóa tọa độ GPS (±${lock.accuracyM ?? '?'}m).`, 'success');
+        } else if (!silent) {
+          onShowToast?.(`Đã bắt tọa độ GPS (±${lock.accuracyM ?? '?'}m).`, 'success');
         }
       },
       (err) => {
@@ -776,16 +890,20 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
         setGpsLoading(false);
         const msg =
           err.code === err.PERMISSION_DENIED
-            ? 'Trình duyệt đang chặn quyền GPS. Hãy bật Vị trí trong Cài đặt.'
+            ? 'Trình duyệt đang chặn quyền vị trí. Bạn mở lại GPS trong phần Cài đặt nhé.'
             : err.code === err.TIMEOUT
-              ? 'Quá thời gian bắt sóng vệ tinh GPS — hãy di chuyển ra khoảng thoáng.'
-              : 'Không thể xác định tọa độ GPS lúc này.';
+              ? 'Chờ sóng vệ tinh hơi lâu — thử bước ra chỗ thoáng, tránh tán rừng dày xem sao.'
+              : 'Chưa lấy được tọa độ GPS lúc này.';
         setGpsError(msg);
-        onShowToast?.(msg, 'error');
+        if (!silent) onShowToast?.(msg, 'error');
       },
       { enableHighAccuracy: true, timeout: 12_000, maximumAge: 5_000 }
     );
-  };
+  }, [onShowToast]);
+
+  const handleLockGps = useCallback(() => {
+    requestGpsLock({ silent: false });
+  }, [requestGpsLock]);
 
   const bearingMetrics = useMemo(() => {
     const lat1 = Number(originLat);
@@ -825,12 +943,30 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
   const [solarDateIso, setSolarDateIso] = useState<string>(getTodayVietnamIso);
   const [solarInspectHour, setSolarInspectHour] = useState<number>(getCurrentVietnamDecimalHour);
   const [cloudChecks, setCloudChecks] = useState<Record<string, boolean>>({
-    humidity: true,
-    wind: true,
+    humidity: false,
+    wind: false,
     rain: false,
-    inversion: true,
+    inversion: false,
     arrival: false,
   });
+
+  // Turnaround Time ("Giờ quay đầu") & Thermal Comfort (Wind Chill / Heat Index) Instrument State
+  const [turnaroundStartStr, setTurnaroundStartStr] = useState<string>('06:00');
+  const [turnaroundAscentKm, setTurnaroundAscentKm] = useState<number>(() =>
+    Math.max(1, Math.round(((initialTrail?.distanceKm ?? 12) / 2) * 10) / 10)
+  );
+  const [turnaroundGainM, setTurnaroundGainM] = useState<number>(() =>
+    Math.max(100, initialTrail?.elevationGainM ?? 1380)
+  );
+  const [turnaroundDescentKm, setTurnaroundDescentKm] = useState<number>(() =>
+    Math.max(1, Math.round(((initialTrail?.distanceKm ?? 12) / 2) * 10) / 10)
+  );
+  const [turnaroundMarginMin, setTurnaroundMarginMin] = useState<number>(45);
+  const [thermalTempC, setThermalTempC] = useState<number>(() =>
+    initialTrail && initialTrail.maxAltitudeM >= 2200 ? 5 : 32
+  );
+  const [thermalWindKmh, setThermalWindKmh] = useState<number>(28);
+  const [thermalHumidityPct, setThermalHumidityPct] = useState<number>(70);
 
   const selectedSolarTrail = useMemo(
     () => trails.find((t) => t.id === solarTrailId) || null,
@@ -844,6 +980,11 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
       setSolarLat(tr.endLat.toFixed(5));
       setSolarLng(tr.endLng.toFixed(5));
       setSolarAltitudeM(tr.maxAltitudeM);
+      const halfKm = Math.max(1, Math.round((tr.distanceKm / 2) * 10) / 10);
+      setTurnaroundAscentKm(halfKm);
+      setTurnaroundDescentKm(halfKm);
+      setTurnaroundGainM(Math.max(100, tr.elevationGainM));
+      setThermalTempC(tr.maxAltitudeM >= 2200 ? 5 : tr.maxAltitudeM >= 1400 ? 15 : 32);
     }
   };
 
@@ -862,18 +1003,19 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
       Number.isFinite(latNum) ? latNum : 22.3033,
       Number.isFinite(lngNum) ? lngNum : 103.775,
       targetDate,
-      7
+      7,
+      solarAltitudeM
     );
-  }, [solarDateIso, solarInspectHour, solarLat, solarLng]);
+  }, [solarDateIso, solarInspectHour, solarLat, solarLng, solarAltitudeM]);
 
   const sunriseCountdownLabel = useMemo(() => {
     const diffHours = solarData.sunriseHours - solarInspectHour;
-    if (Math.abs(diffHours) < 0.08) return 'Đúng khoảnh khắc Mặt Trời mọc!';
+    if (Math.abs(diffHours) < 0.08) return 'Đúng lúc mặt trời vừa ló rạng!';
     if (diffHours > 0) {
-      return `Còn ${formatDayLengthVi(Math.round(diffHours * 60))} tới Bình minh (${solarData.sunrise})`;
+      return `Còn ${formatDayLengthVi(Math.round(diffHours * 60))} nữa là mặt trời mọc (${solarData.sunrise})`;
     }
     const nextSunriseDiff = 24 - solarInspectHour + solarData.sunriseHours;
-    return `Đã qua bình minh — Bình minh kế tiếp sau ${formatDayLengthVi(Math.round(nextSunriseDiff * 60))}`;
+    return `Đã qua bình minh — hẹn bình minh mai sau ${formatDayLengthVi(Math.round(nextSunriseDiff * 60))}`;
   }, [solarData.sunrise, solarData.sunriseHours, solarInspectHour]);
 
   const cloudReadinessScore = useMemo(() => {
@@ -892,6 +1034,50 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
         : 5;
     return Math.min(100, Math.round(checklistPoints + altitudePoints + seasonPoints));
   }, [cloudChecks, solarAltitudeM, solarDateIso, selectedSolarTrail]);
+
+  const turnaroundStartMinutes = useMemo(() => {
+    const [hhRaw, mmRaw] = turnaroundStartStr.split(':');
+    const hh = Number(hhRaw);
+    const mm = Number(mmRaw);
+    if (!Number.isFinite(hh) || !Number.isFinite(mm)) return 360;
+    return Math.max(0, Math.min(1439, Math.floor(hh) * 60 + Math.floor(mm)));
+  }, [turnaroundStartStr]);
+
+  const civilDuskMinutes = useMemo(
+    () => Math.max(0, Math.min(1439, Math.round(solarData.civilDuskHours * 60))),
+    [solarData.civilDuskHours]
+  );
+
+  const turnaroundResult = useMemo(
+    () =>
+      calculateTurnaroundTime({
+        startMinutes: turnaroundStartMinutes,
+        totalAscentKm: turnaroundAscentKm,
+        ascentGainM: turnaroundGainM,
+        descentKm: turnaroundDescentKm,
+        civilDuskMinutes,
+        safetyMarginMinutes: turnaroundMarginMin,
+      }),
+    [
+      turnaroundStartMinutes,
+      turnaroundAscentKm,
+      turnaroundGainM,
+      turnaroundDescentKm,
+      civilDuskMinutes,
+      turnaroundMarginMin,
+    ]
+  );
+
+  const windChillC = useMemo(
+    () => calculateWindChillC(thermalTempC, thermalWindKmh),
+    [thermalTempC, thermalWindKmh]
+  );
+  const coldRisk = useMemo(() => classifyColdRisk(windChillC), [windChillC]);
+  const heatIndexC = useMemo(
+    () => calculateHeatIndexC(thermalTempC, thermalHumidityPct),
+    [thermalTempC, thermalHumidityPct]
+  );
+  const heatRisk = useMemo(() => classifyHeatRisk(heatIndexC), [heatIndexC]);
 
   // =========================================================================
   // TAB 3: HYDRATION, CALORIES & PACK WEIGHT (POST /api/ai/bio-calc + OFFLINE)
@@ -957,13 +1143,17 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
 
   const activeBioMetrics = bioSource === 'server' && serverBioResult ? serverBioResult : offlineBioMetrics;
 
-  // Debounced online sync with POST /api/ai/bio-calc (seamless offline fallback)
+  const bioRateLimitedUntilRef = useRef<number>(0);
+
+  // Debounced online sync (900ms) with POST /api/ai/bio-calc so slider drags don't burn the shared 60/15m AI rate limit
   useEffect(() => {
     if (activeTab !== 'bio') return;
     if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+    if (Date.now() < bioRateLimitedUntilRef.current) return;
 
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
+      if (Date.now() < bioRateLimitedUntilRef.current) return;
       try {
         setBioSyncing(true);
         const res = await fetch('/api/ai/bio-calc', {
@@ -985,6 +1175,11 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
           }),
         });
         if (controller.signal.aborted || !isMountedRef.current) return;
+        if (res.status === 429) {
+          bioRateLimitedUntilRef.current = Date.now() + 90_000;
+          setBioSource('offline');
+          return;
+        }
         if (!res.ok) {
           setBioSource('offline');
           return;
@@ -1005,7 +1200,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
           setBioSyncing(false);
         }
       }
-    }, 450);
+    }, 900);
 
     return () => {
       window.clearTimeout(timer);
@@ -1028,9 +1223,14 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
   // =========================================================================
   // TAB 4: SOS 2G COMPOSER, NEAREST RANGERS, VISUAL STROBE, 3.1KHZ WHISTLE & ICE CARD
   // =========================================================================
-  const [sosPhone, setSosPhone] = useState<string>('112');
+  const [sosPhone, setSosPhone] = useState<string>(() => {
+    const savedIce = loadIceCardProfile();
+    return extractVietnamMobileNumber(savedIce.contact1?.phone, savedIce.contact2?.phone) || '';
+  });
   const [sosTrailName, setSosTrailName] = useState<string>(initialTrail?.name || '');
   const [sosNote, setSosNote] = useState<string>(SOS_QUICK_NOTES[0]);
+  const autoRequestedSosGpsRef = useRef<boolean>(false);
+  const sosWakeLockRef = useRef<WakeLockSentinelLike | null>(null);
 
   const findNearestStationForCoords = useCallback((lat: number, lng: number): RangerStationSeed | null => {
     let best: RangerStationSeed | null = null;
@@ -1115,7 +1315,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
     } else {
       setIceSavedAt(null);
       setIceStorageError(
-        'Trình duyệt đang chặn lưu cục bộ (Chế độ ẩn danh / Đầy bộ nhớ). Hồ sơ ICE chỉ giữ tạm trong phiên này — hãy tải ảnh PNG ngay.'
+        'Trình duyệt đang chặn lưu dữ liệu (có thể do tab ẩn danh hoặc đầy bộ nhớ). Thông tin ICE chỉ giữ tạm trong phiên này — bạn nhớ tải ảnh PNG về máy ngay nhé.'
       );
     }
   }, []);
@@ -1178,7 +1378,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
           if (seq !== iceRenderSeqRef.current || !isMountedRef.current) return;
           setIceRendering(false);
           setIceError(
-            err instanceof Error ? err.message : 'Không thể dựng ảnh thẻ ICE trên trình duyệt này.'
+            err instanceof Error ? err.message : 'Chưa tạo được ảnh thẻ ICE trên trình duyệt này.'
           );
         });
     }, 160);
@@ -1261,12 +1461,12 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
       if (!isMountedRef.current) return;
       triggerIceBlobDownload(blob, fileName);
       onShowToast?.(
-        'Đã tải ảnh màn hình khóa ICE (1080×1920 PNG). Hãy đặt làm hình nền khóa trước chuyến đi.',
+        'Đã tải ảnh màn hình khóa ICE (1080×1920). Nhớ cài làm hình nền khóa trước khi lên đường nhé.',
         'success'
       );
     } catch {
       if (isMountedRef.current) {
-        onShowToast?.('Không thể xuất ảnh PNG thẻ ICE lúc này.', 'error');
+        onShowToast?.('Chưa xuất được ảnh thẻ ICE lúc này.', 'error');
       }
     } finally {
       if (isMountedRef.current) {
@@ -1284,7 +1484,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
         rendered = await ensureFreshIceBlob();
       } catch {
         if (isMountedRef.current) {
-          onShowToast?.('Không thể dựng ảnh PNG thẻ ICE lúc này.', 'error');
+          onShowToast?.('Chưa tạo được ảnh thẻ ICE lúc này.', 'error');
         }
         return;
       }
@@ -1302,8 +1502,8 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
       ) {
         try {
           await navWithShare.share({
-            title: 'Thẻ Y Tế Khẩn Cấp ICE • LOST',
-            text: 'Ảnh màn hình khóa y tế khẩn cấp ICE (1080×1920) tạo ngoại tuyến bằng LOST.',
+            title: 'Thẻ y tế khẩn cấp ICE · LOST',
+            text: 'Ảnh màn hình khóa y tế khẩn cấp ICE (1080×1920), tạo ngay trên máy bằng LOST.',
             files: [file],
           });
           return;
@@ -1316,12 +1516,12 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
       if (!isMountedRef.current) return;
       triggerIceBlobDownload(blob, fileName);
       onShowToast?.(
-        'Đã tải ảnh màn hình khóa ICE (1080×1920 PNG) về thiết bị.',
+        'Đã lưu ảnh màn hình khóa ICE (1080×1920) về máy.',
         'success'
       );
     } catch {
       if (isMountedRef.current) {
-        onShowToast?.('Không thể chia sẻ hoặc lưu ảnh PNG thẻ ICE lúc này.', 'error');
+        onShowToast?.('Chưa chia sẻ hoặc lưu được ảnh thẻ ICE lúc này.', 'error');
       }
     } finally {
       if (isMountedRef.current) {
@@ -1343,7 +1543,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
         rangerHotline: nearest?.hotlinePhone || prev.rangerHotline || '112',
       }));
       onShowToast?.(
-        `Đã đồng bộ ${chosen.name} và trạm ${nearest?.name || 'kiểm lâm gần nhất'} vào thẻ ICE.`,
+        `Đã điền cung ${chosen.name} cùng trạm ${nearest?.name || 'kiểm lâm gần nhất'} vào thẻ ICE.`,
         'info'
       );
     },
@@ -1362,7 +1562,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
     setIceStorageError(null);
     setIceTruncatedFields([]);
     setIceConfirmClear(false);
-    onShowToast?.('Đã xóa toàn bộ thông tin ICE khỏi bộ nhớ cục bộ thiết bị.', 'info');
+    onShowToast?.('Đã xóa sạch thông tin ICE khỏi máy.', 'info');
   }, [onShowToast]);
 
   const [strobeActive, setStrobeActive] = useState<boolean>(false);
@@ -1386,15 +1586,86 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
     whistleVolumeRef.current = whistleVolume;
   }, [whistleVolume]);
 
+  // Auto-request real GPS once when opening SOS tab so SOS SMS gets real coordinates instead of a fallback
+  useEffect(() => {
+    if (activeTab !== 'sos' || gpsLock || autoRequestedSosGpsRef.current) return;
+    autoRequestedSosGpsRef.current = true;
+    const tid = window.setTimeout(() => {
+      requestGpsLock({ silent: true });
+    }, 0);
+    return () => window.clearTimeout(tid);
+  }, [activeTab, gpsLock, requestGpsLock]);
+
+  // Acquire & re-acquire Screen WakeLock while visual SOS strobe or 3.1kHz rescue whistle is active
+  useEffect(() => {
+    const shouldHoldWakeLock = strobeActive || whistleActive;
+    if (!shouldHoldWakeLock) {
+      const existing = sosWakeLockRef.current;
+      sosWakeLockRef.current = null;
+      if (existing && !existing.released) {
+        void existing.release().catch(() => undefined);
+      }
+      return;
+    }
+
+    let cancelled = false;
+    const nav = typeof navigator !== 'undefined' ? (navigator as NavigatorWithWakeLock) : null;
+
+    const acquire = async () => {
+      if (cancelled || !nav?.wakeLock || typeof nav.wakeLock.request !== 'function') return;
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (sosWakeLockRef.current && !sosWakeLockRef.current.released) return;
+      try {
+        const sentinel = await nav.wakeLock.request('screen');
+        if (cancelled) {
+          void sentinel.release().catch(() => undefined);
+          return;
+        }
+        sosWakeLockRef.current = sentinel;
+        sentinel.addEventListener?.('release', () => {
+          if (sosWakeLockRef.current === sentinel) {
+            sosWakeLockRef.current = null;
+          }
+        });
+      } catch {
+        // WakeLock not supported or rejected by battery saver
+      }
+    };
+
+    void acquire();
+
+    const handleVisibility = () => {
+      if (typeof document !== 'undefined' && !document.hidden && !cancelled) {
+        void acquire();
+      }
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibility);
+    }
+
+    return () => {
+      cancelled = true;
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibility);
+      }
+      const existing = sosWakeLockRef.current;
+      sosWakeLockRef.current = null;
+      if (existing && !existing.released) {
+        void existing.release().catch(() => undefined);
+      }
+    };
+  }, [strobeActive, whistleActive]);
+
   const nationalHotlines = useMemo(
     () => VIETNAM_RANGER_STATIONS.filter((s) => s.region === 'Toàn Quốc'),
     []
   );
 
+  // Anchor used ONLY to sort nearest ranger stations (NEVER injected into SOS SMS coordinates!)
   const referenceSosCoords = useMemo(() => {
-    if (gpsLock) return { lat: gpsLock.lat, lng: gpsLock.lng, label: 'Tọa độ GPS thực tế' };
-    if (initialTrail) return { lat: initialTrail.endLat, lng: initialTrail.endLng, label: initialTrail.name };
-    return { lat: 22.3033, lng: 103.775, label: 'Đỉnh Fansipan (mặc định)' };
+    if (gpsLock) return { lat: gpsLock.lat, lng: gpsLock.lng, label: 'tọa độ GPS thực tế của bạn' };
+    if (initialTrail) return { lat: initialTrail.endLat, lng: initialTrail.endLng, label: `cung tham chiếu ${initialTrail.name}` };
+    return { lat: 22.3033, lng: 103.775, label: 'khu vực Hoàng Liên Sơn (chưa có GPS)' };
   }, [gpsLock, initialTrail]);
 
   const nearestRangerStations = useMemo<Array<{ station: RangerStationSeed; distanceKm: number }>>(() => {
@@ -1412,18 +1683,40 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
       .slice(0, 6);
   }, [referenceSosCoords]);
 
-  const smsPayload = useMemo(
-    () =>
-      buildOfflineSosSmsUri({
-        phone: sosPhone,
-        trailName: sosTrailName || referenceSosCoords.label,
-        lat: gpsLock?.lat ?? referenceSosCoords.lat,
-        lng: gpsLock?.lng ?? referenceSosCoords.lng,
-        altitudeM: gpsLock?.altitudeM ?? initialTrail?.maxAltitudeM ?? null,
-        note: sosNote,
-      }),
-    [sosPhone, sosTrailName, referenceSosCoords, gpsLock, initialTrail?.maxAltitudeM, sosNote]
+  const sosPlusCode = useMemo(
+    () => (gpsLock ? encodePlusCode(gpsLock.lat, gpsLock.lng) : null),
+    [gpsLock]
   );
+
+  // Life-safety P0: NEVER silently inject catalog Fansipan coordinates into SOS SMS when real GPS isn't locked
+  const smsPayload = useMemo(() => {
+    const base = buildOfflineSosSmsUri({
+      phone: sosPhone.trim(),
+      trailName: sosTrailName || initialTrail?.name || '',
+      lat: gpsLock ? gpsLock.lat : null,
+      lng: gpsLock ? gpsLock.lng : null,
+      altitudeM: gpsLock ? gpsLock.altitudeM : null,
+      note: sosNote,
+    });
+    if (!sosPlusCode) return base;
+    const lines = base.body.split('\n');
+    const coordIdx = lines.findIndex((line) => line.startsWith('Toa do GPS:'));
+    if (coordIdx >= 0) {
+      lines.splice(coordIdx + 1, 0, `Plus Code: ${sosPlusCode}`);
+    } else {
+      lines.push(`Plus Code: ${sosPlusCode}`);
+    }
+    const enrichedBody = lines.join('\n');
+    const targetPhone = sosPhone.trim().replace(/[^\d+]/g, '');
+    const separator = base.uri.includes('&body=') ? '&' : '?';
+    return {
+      body: enrichedBody,
+      uri: `sms:${targetPhone}${separator}body=${encodeURIComponent(enrichedBody)}`,
+    };
+  }, [sosPhone, sosTrailName, initialTrail?.name, gpsLock, sosNote, sosPlusCode]);
+
+  const sosRecipientKind = classifyVietnamSmsRecipient(sosPhone);
+  const cleanSosDial = sosPhone.replace(/[^\d+]/g, '');
 
   // Full-screen Visual SOS Strobe Morse scheduler + Escape exit
   useEffect(() => {
@@ -1498,7 +1791,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
         window.AudioContext ||
         (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!AudioCtxCtor) {
-        onShowToast?.('Trình duyệt không hỗ trợ Web Audio API cho còi cứu hộ.', 'error');
+        onShowToast?.('Trình duyệt này không phát được âm thanh còi cứu hộ.', 'error');
         return;
       }
 
@@ -1554,7 +1847,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
       tick();
     } catch {
       stopRescueWhistle();
-      onShowToast?.('Không thể khởi tạo âm thanh còi SOS. Hãy thử bấm lại.', 'error');
+      onShowToast?.('Chưa phát được tiếng còi SOS — bạn thử bấm lại nhé.', 'error');
     }
   }, [onShowToast, stopRescueWhistle]);
 
@@ -1598,7 +1891,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
     setDrillAnswers({});
     saveDrillAnswers({});
     setActiveDrillIdx(0);
-    onShowToast?.('Đã đặt lại toàn bộ 8 bài tập Học Viện Sinh Tồn.', 'info');
+    onShowToast?.('Đã xóa kết quả cũ để bạn làm lại cả 8 tình huống.', 'info');
   };
 
   // Sync initialTrailId when switching trails in-place across hub deep-links
@@ -1633,6 +1926,11 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
       setSolarLat(tr.endLat.toFixed(5));
       setSolarLng(tr.endLng.toFixed(5));
       setSolarAltitudeM(tr.maxAltitudeM);
+      const halfKm = Math.max(1, Math.round((tr.distanceKm / 2) * 10) / 10);
+      setTurnaroundAscentKm(halfKm);
+      setTurnaroundDescentKm(halfKm);
+      setTurnaroundGainM(Math.max(100, tr.elevationGainM));
+      setThermalTempC(tr.maxAltitudeM >= 2200 ? 5 : tr.maxAltitudeM >= 1400 ? 15 : 32);
       setBioTrailId(tr.id);
       setBioDistanceKm(tr.distanceKm);
       setBioGainM(tr.elevationGainM);
@@ -1646,11 +1944,11 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
   }, [initialTrailId, trails, findNearestStationForCoords]);
 
   const handleCopyText = async (text: string, label: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
+    const ok = await copyTextWithFallback(text);
+    if (ok) {
       onShowToast?.(`Đã sao chép ${label}.`, 'success');
-    } catch {
-      onShowToast?.('Trình duyệt không cho phép sao chép tự động.', 'error');
+    } else {
+      onShowToast?.('Trình duyệt chặn tự sao chép — bạn bôi đen chép tay giúp nhé.', 'error');
     }
   };
 
@@ -1767,7 +2065,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
   const relativeBearingOnRose = (bearingMetrics.forwardDeg - headingDeg + 360) % 360;
 
   return (
-    <section className="hub-container page-view-slide" aria-label="Bộ Công Cụ Sinh Tồn Thực Địa LOST">
+    <section className="hub-container page-view-slide" aria-label="Bộ đồ nghề đi rừng LOST">
       {/* Header */}
       <div
         style={{
@@ -1780,7 +2078,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
         }}
       >
         <div>
-          <div className="section-eyebrow">LOST FIELD SURVIVAL CONSOLE • 100% OFFLINE</div>
+          <div className="section-eyebrow">Đồ nghề đi rừng LOST · dùng khi mất sóng</div>
           <h1
             className="font-editorial"
             style={{
@@ -1790,16 +2088,16 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               marginBottom: 6,
             }}
           >
-            Bộ Công Cụ Sinh Tồn Thực Địa
+            Bộ đồ nghề đi rừng
           </h1>
           <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem', maxWidth: 680, lineHeight: 1.55 }}>
-            La bàn từ kế, chuyển đổi tọa độ WGS84, tính giờ săn mây NOAA, định mức nước/calo/balo và phát tín hiệu cứu hộ SOS 2G — hoạt động ổn định ngay cả khi mất hoàn toàn kết nối mạng trên núi cao.
+            La bàn, đổi tọa độ WGS84, canh giờ săn mây, tính nước và tải balo, cùng tin nhắn SOS 2G — tất cả vẫn chạy tốt khi lên núi mất sạch sóng.
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <span className="badge badge-success">
             <IconShieldCheck size={13} />
-            Hoạt động ngoại tuyến 100%
+            Chạy tốt khi mất sóng
           </span>
           {onBack && (
             <button type="button" className="btn btn-outline" onClick={onBack}>
@@ -1815,22 +2113,22 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
         ref={toolkitTabTrackRef}
         className="editorial-tabs-bar has-glider"
         role="tablist"
-        aria-label="Chức năng sinh tồn thực địa"
+        aria-label="Các công cụ đi rừng"
       >
         <span aria-hidden="true" className="lost-glider-tab" style={toolkitTabIndicatorStyle} />
         {(
           [
-            { id: 'compass' as const, icon: <IconCompass size={16} />, label: 'La Bàn & Tọa Độ GPS' },
-            { id: 'solar' as const, icon: <IconSun size={16} />, label: 'Mặt Trời, Giờ Vàng & Săn Mây' },
-            { id: 'bio' as const, icon: <IconBackpack size={16} />, label: 'Nước, Calo & Balo' },
-            { id: 'sos' as const, icon: <IconShieldAlert size={16} />, label: 'SOS 2G & Tín Hiệu Khẩn Cấp' },
+            { id: 'compass' as const, icon: <IconCompass size={16} />, label: 'La bàn & tọa độ' },
+            { id: 'solar' as const, icon: <IconSun size={16} />, label: 'Canh nắng & săn mây' },
+            { id: 'bio' as const, icon: <IconBackpack size={16} />, label: 'Nước, calo & balo' },
+            { id: 'sos' as const, icon: <IconShieldAlert size={16} />, label: 'SOS 2G & cứu hộ' },
             {
               id: 'academy' as const,
               icon: <IconBookOpen size={16} />,
-              label: `Học Viện Sinh Tồn (${drillStats.correct}/${drillStats.total})`,
+              label: `Tình huống sinh tồn (${drillStats.correct}/${drillStats.total})`,
             },
-            { id: 'offline' as const, icon: <IconDownload size={16} />, label: 'Bộ Nhớ Offline' },
-            { id: 'quiz' as const, icon: <IconMountain size={16} />, label: 'Thử Tài Địa Hình' },
+            { id: 'offline' as const, icon: <IconDownload size={16} />, label: 'Dữ liệu ngoại tuyến' },
+            { id: 'quiz' as const, icon: <IconMountain size={16} />, label: 'Thử tài đỉnh núi' },
           ] as const
         ).map((tab, idx) => {
           const isSelected = activeTab === tab.id;
@@ -1875,7 +2173,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
                   <div>
                     <h2 style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 4 }}>
-                      La Bàn Từ Kế & Định Hướng Mục Tiêu
+                      La bàn & hướng tới đỉnh
                     </h2>
                     <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>{sensorStatus}</p>
                   </div>
@@ -1886,7 +2184,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     style={{ padding: '7px 12px', fontSize: '0.78rem' }}
                   >
                     <IconCompass size={15} />
-                    {compassMode === 'sensor' ? 'Đang bật Cảm biến' : 'Bật Cảm biến Thiết bị'}
+                    {compassMode === 'sensor' ? 'Đang dùng cảm biến' : 'Dùng la bàn điện thoại'}
                   </button>
                 </div>
 
@@ -2000,11 +2298,11 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       y="153"
                       textAnchor="middle"
                       fill="var(--color-primary)"
-                      fontSize="9.5"
+                      fontSize="9"
                       fontWeight="700"
                       style={{ fontFamily: 'var(--font-family)' }}
                     >
-                      {getCardinalDirectionLabel(headingDeg).split(' ')[0]}
+                      {formatVietnameseCardinal(headingDeg)}
                     </text>
                   </svg>
                 </div>
@@ -2012,7 +2310,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 {/* Manual Azimuth Slider & Quick Cardinal Presets */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
-                    <span>Xoay góc phương vị thủ công (mô phỏng / định hướng bản đồ)</span>
+                    <span>Xoay hướng bằng tay (ướm hướng trên bản đồ giấy)</span>
                     <strong style={{ color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
                       {headingDeg}° • {getCardinalDirectionLabel(headingDeg)}
                     </strong>
@@ -2063,11 +2361,11 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   >
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                       <span style={{ width: 10, height: 3, background: 'var(--color-error)', display: 'inline-block' }} />
-                      Kim Đỏ: Bắc Thực (0°)
+                      Kim đỏ: hướng Bắc (0°)
                     </span>
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                       <span style={{ width: 10, height: 3, background: 'var(--color-primary)', display: 'inline-block' }} />
-                      Mũi tên Xanh: Hướng tới Đỉnh mục tiêu ({bearingMetrics.forwardDeg}°)
+                      Mũi tên xanh: hướng tới đỉnh đích ({bearingMetrics.forwardDeg}°)
                     </span>
                   </div>
                 </div>
@@ -2081,7 +2379,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <IconCrosshairSvg size={18} />
                       <h2 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                        Khóa Tọa Độ GPS Thực Tế
+                        Lấy tọa độ GPS hiện tại
                       </h2>
                     </div>
                     <span className={`badge ${gpsAccuracyMeta.badgeClass}`}>{gpsAccuracyMeta.label}</span>
@@ -2110,13 +2408,13 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                           Cao độ GPS
                         </span>
                         <strong style={{ fontSize: '0.96rem', color: 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
-                          {gpsLock.altitudeM !== null ? `${gpsLock.altitudeM} m` : 'Không có dữ liệu'}
+                          {gpsLock.altitudeM !== null ? `${gpsLock.altitudeM} m` : 'Chưa có dữ liệu'}
                         </strong>
                       </div>
                     </div>
                   ) : (
                     <p style={{ fontSize: '0.84rem', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
-                      Bấm nút bên dưới để lấy tọa độ vệ tinh trực tiếp từ chip GPS của thiết bị (không cần 4G/Wi-Fi).
+                      Bấm nút bên dưới để lấy tọa độ thẳng từ chip GPS trên máy — đi rừng không có 4G vẫn chạy bình thường.
                     </p>
                   )}
 
@@ -2143,7 +2441,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       disabled={gpsLoading}
                     >
                       <IconMapPin size={15} />
-                      {gpsLoading ? 'Đang bắt tín hiệu vệ tinh...' : 'Khóa Tọa Độ GPS Ngay'}
+                      {gpsLoading ? 'Đang bắt sóng vệ tinh...' : 'Lấy tọa độ GPS'}
                     </button>
                     {gpsLock && (
                       <button
@@ -2152,7 +2450,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                         onClick={() => handleCopyText(`${gpsLock.lat.toFixed(6)}, ${gpsLock.lng.toFixed(6)}`, 'tọa độ WGS84')}
                       >
                         <IconCopy size={15} />
-                        Sao chép WGS84
+                        Chép tọa độ WGS84
                       </button>
                     )}
                   </div>
@@ -2162,7 +2460,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                     <h2 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                      Chuyển Đổi WGS84 Thập Phân ↔ Độ-Phút-Giây (DMS)
+                      Đổi tọa độ thập phân (WGS84) và độ-phút-giây (DMS)
                     </h2>
                     <button
                       type="button"
@@ -2178,7 +2476,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   {/* Preset Trail Picker */}
                   <div>
                     <label className="form-label" htmlFor="dms-trail-preset" style={{ display: 'block', marginBottom: 6 }}>
-                      Nạp nhanh tọa độ đỉnh thực tế LOST
+                      Chọn nhanh tọa độ một đỉnh núi
                     </label>
                     <select
                       id="dms-trail-preset"
@@ -2198,7 +2496,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                         fontSize: '0.84rem',
                       }}
                     >
-                      <option value="">-- Chọn 1 trong {trails.length} đỉnh LOST để nạp tọa độ --</option>
+                      <option value="">-- Chọn trong {trails.length} đỉnh để điền nhanh tọa độ --</option>
                       {trails.map((tr) => (
                         <option key={tr.id} value={tr.id}>
                           {tr.name} ({tr.maxAltitudeM}m — {tr.province})
@@ -2211,7 +2509,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   <div className="hub-grid-2" style={{ gap: 12 }}>
                     <div>
                       <label className="form-label" htmlFor="dec-lat-input" style={{ display: 'block', marginBottom: 4 }}>
-                        Vĩ độ thập phân (Decimal Lat)
+                        Vĩ độ thập phân (Lat)
                       </label>
                       <input
                         id="dec-lat-input"
@@ -2233,7 +2531,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     </div>
                     <div>
                       <label className="form-label" htmlFor="dec-lng-input" style={{ display: 'block', marginBottom: 4 }}>
-                        Kinh độ thập phân (Decimal Lng)
+                        Kinh độ thập phân (Lng)
                       </label>
                       <input
                         id="dec-lng-input"
@@ -2258,7 +2556,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   {/* DMS Lat Row */}
                   <div>
                     <span className="form-label" style={{ display: 'block', marginBottom: 6 }}>
-                      Vĩ độ DMS (Độ ° / Phút &apos; / Giây &quot;)
+                      Vĩ độ dạng độ · phút · giây (DMS)
                     </span>
                     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.15fr) 64px', gap: 6 }}>
                       <input
@@ -2339,7 +2637,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   {/* DMS Lng Row */}
                   <div>
                     <span className="form-label" style={{ display: 'block', marginBottom: 6 }}>
-                      Kinh độ DMS (Độ ° / Phút &apos; / Giây &quot;)
+                      Kinh độ dạng độ · phút · giây (DMS)
                     </span>
                     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.15fr) 64px', gap: 6 }}>
                       <input
@@ -2429,7 +2727,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       fontVariantNumeric: 'tabular-nums',
                     }}
                   >
-                    Chuẩn DMS: {formattedDmsPair}
+                    Tọa độ DMS: {formattedDmsPair}
                   </div>
                 </div>
               </div>
@@ -2440,10 +2738,10 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
                 <div>
                   <h2 style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 4 }}>
-                    Tính Phương Vị & Khoảng Cách Đường Chim Bay (A → B)
+                    Đo hướng đi & khoảng cách chim bay (A → B)
                   </h2>
                   <p style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)' }}>
-                    Chọn đỉnh núi LOST làm đích để hiển thị trực tiếp mũi tên phương vị lên mặt La bàn phía trên.
+                    Chọn đỉnh đích bên dưới, mũi tên xanh trên mặt la bàn sẽ tự xoay chỉ thẳng về hướng đó.
                   </p>
                 </div>
                 {gpsLock && (
@@ -2456,14 +2754,14 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       setOriginLng(gpsLock.lng.toFixed(6));
                     }}
                   >
-                    Dùng GPS hiện tại làm Điểm A
+                    Lấy vị trí GPS làm điểm A
                   </button>
                 )}
               </div>
 
               <div className="hub-grid-2">
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  <span className="badge badge-info" style={{ alignSelf: 'flex-start' }}>Điểm Xuất Phát (A)</span>
+                  <span className="badge badge-info" style={{ alignSelf: 'flex-start' }}>Điểm đứng (A)</span>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                     <div>
                       <label className="form-label" htmlFor="origin-lat" style={{ display: 'block', marginBottom: 4 }}>
@@ -2511,9 +2809,9 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  <span className="badge badge-success" style={{ alignSelf: 'flex-start' }}>Điểm Đích / Đỉnh Mục Tiêu (B)</span>
+                  <span className="badge badge-success" style={{ alignSelf: 'flex-start' }}>Đỉnh / điểm đích (B)</span>
                   <select
-                    aria-label="Chọn đỉnh núi LOST làm mục tiêu"
+                    aria-label="Chọn đỉnh núi làm đích"
                     value={targetTrailId}
                     onChange={(e) => handleSelectTargetTrail(e.target.value)}
                     style={{
@@ -2526,7 +2824,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       fontSize: '0.84rem',
                     }}
                   >
-                    <option value="custom">Tọa độ tùy chỉnh</option>
+                    <option value="custom">Tự nhập tọa độ</option>
                     {trails.map((tr) => (
                       <option key={tr.id} value={tr.id}>
                         Đỉnh {tr.name} ({tr.maxAltitudeM}m — {tr.province})
@@ -2579,7 +2877,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               <div className="editorial-stat-strip">
                 <div className="editorial-stat-cell">
                   <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                    Khoảng Cách Haversine
+                    Khoảng cách chim bay
                   </span>
                   <strong style={{ fontSize: '1.2rem', color: 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
                     {bearingMetrics.distanceKm.toFixed(2)} km
@@ -2590,7 +2888,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 </div>
                 <div className="editorial-stat-cell">
                   <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                    Góc Phương Vị Tới (Forward)
+                    Hướng đi tới (phương vị)
                   </span>
                   <strong style={{ fontSize: '1.2rem', color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
                     {bearingMetrics.forwardDeg}°
@@ -2601,13 +2899,13 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 </div>
                 <div className="editorial-stat-cell">
                   <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                    Phương Vị Ngược (Back Azimuth)
+                    Hướng quay về (ngược)
                   </span>
                   <strong style={{ fontSize: '1.2rem', color: 'var(--color-sky)', fontVariantNumeric: 'tabular-nums' }}>
                     {bearingMetrics.backDeg}°
                   </strong>
                   <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)' }}>
-                    Hướng quay về điểm xuất phát
+                    Đi theo góc này để quay lại điểm A
                   </span>
                 </div>
               </div>
@@ -2618,10 +2916,10 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
                 <div>
                   <h2 style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 4 }}>
-                    Cao Độ Kế & Vật Lý Khí Quyển Núi Cao (Chuẩn ISA)
+                    Độ cao, nhiệt độ đỉnh & điểm sôi nước (chuẩn ISA)
                   </h2>
                   <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
-                    Tính toán ngoại tuyến 100% độ giảm nhiệt theo cao độ (-6,5°C/1.000m), áp suất khí quyển, phân áp oxy hiệu dụng và điểm sôi nước thực tế để nấu ăn & phòng chống AMS.
+                    Ước tính ngay khi không có mạng: lên cao cứ 1.000m nhiệt độ giảm khoảng 6,5°C, áp suất và lượng oxy loãng đi bao nhiêu, nước sôi ở mấy độ để nấu cơm và canh say độ cao (AMS).
                   </p>
                 </div>
                 <span
@@ -2642,7 +2940,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
                 <div style={{ flex: '1 1 240px' }}>
                   <label className="form-label" htmlFor="isa-peak-select" style={{ display: 'block', marginBottom: 4 }}>
-                    Chọn nhanh đỉnh núi LOST ({trails.length} cung thực địa)
+                    Chọn nhanh đỉnh núi ({trails.length} cung)
                   </label>
                   <select
                     id="isa-peak-select"
@@ -2666,7 +2964,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       fontVariantNumeric: 'tabular-nums',
                     }}
                   >
-                    <option value="">-- Nhập tay / Cao độ GPS --</option>
+                    <option value="">-- Tự kéo cao độ hoặc lấy từ GPS --</option>
                     {trails.map((t) => (
                       <option key={t.id} value={t.id}>
                         {t.name} ({t.maxAltitudeM.toLocaleString('vi-VN')}m • {t.province})
@@ -2687,7 +2985,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       setPhysicsAltM(clamped);
                       setPhysicsSourceLabel('Cao độ GPS thực tế');
                       onShowToast?.(
-                        `Đã đồng bộ cao độ GPS ${clamped.toLocaleString('vi-VN')}m vào bảng vật lý ISA.`,
+                        `Đã lấy cao độ GPS ${clamped.toLocaleString('vi-VN')}m vào bảng tính.`,
                         'success'
                       );
                     } else {
@@ -2698,10 +2996,10 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 >
                   <IconCrosshairSvg size={14} />
                   {gpsLoading
-                    ? 'Đang đọc GPS...'
+                    ? 'Đang lấy GPS...'
                     : gpsLock?.altitudeM !== null && gpsLock?.altitudeM !== undefined
                       ? `Dùng cao độ GPS (${Math.max(0, Math.min(3200, gpsLock.altitudeM)).toLocaleString('vi-VN')}m)`
-                      : 'Đọc cao độ GPS'}
+                      : 'Lấy cao độ từ GPS'}
                 </button>
 
                 <button
@@ -2715,7 +3013,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   }}
                 >
                   <IconMountain size={14} />
-                  Mốc Fansipan (3.143m)
+                  Thử mốc Fansipan (3.143m)
                 </button>
               </div>
 
@@ -2734,7 +3032,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: '0.8rem' }}>
                     <label htmlFor="isa-alt-slider" style={{ color: 'var(--color-text-muted)', fontWeight: 600 }}>
-                      Cao độ mục tiêu (mực nước biển → đỉnh)
+                      Độ cao cần tính (từ mặt biển lên đỉnh)
                     </label>
                     <strong style={{ color: 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
                       {altitudePhysics.altitudeM.toLocaleString('vi-VN')} m
@@ -2756,9 +3054,9 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     style={{ width: '100%', accentColor: 'var(--color-primary)' }}
                   />
                   <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6, fontSize: '0.7rem', color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
-                    <span>0 m (Biển)</span>
+                    <span>0 m (mặt biển)</span>
                     <span>1.500 m</span>
-                    <span>2.500 m (AMS)</span>
+                    <span>2.500 m (ngưỡng AMS)</span>
                     <span>3.143 m (Fansipan)</span>
                   </div>
                 </div>
@@ -2776,7 +3074,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: '0.8rem' }}>
                     <label htmlFor="isa-base-temp-slider" style={{ color: 'var(--color-text-muted)', fontWeight: 600 }}>
-                      Nền nhiệt mực nước biển (0m)
+                      Nhiệt độ vùng đồng bằng (0m)
                     </label>
                     <strong style={{ color: 'var(--color-sun)', fontVariantNumeric: 'tabular-nums' }}>
                       {altitudePhysics.seaLevelTempC.toFixed(0)}°C
@@ -2793,10 +3091,10 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     style={{ width: '100%', accentColor: 'var(--color-sun)' }}
                   />
                   <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6, fontSize: '0.7rem', color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
-                    <span>10°C (Đông lạnh)</span>
-                    <span>15°C (Chuẩn ISA)</span>
-                    <span>26°C (Bình thường)</span>
-                    <span>38°C (Hè nóng)</span>
+                    <span>10°C (rét đậm)</span>
+                    <span>15°C (chuẩn ISA)</span>
+                    <span>26°C (mát mẻ)</span>
+                    <span>38°C (nắng gắt)</span>
                   </div>
                 </div>
               </div>
@@ -2805,7 +3103,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               <div className="editorial-stat-strip">
                 <div className="editorial-stat-cell">
                   <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                    Nhiệt Độ Đỉnh Ước Tính
+                    Nhiệt độ đỉnh ước tính
                   </span>
                   <strong
                     style={{
@@ -2817,13 +3115,13 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     {altitudePhysics.summitTempC.toFixed(1)}°C
                   </strong>
                   <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                    Chênh lệch {altitudePhysics.tempLapseDropC.toFixed(1)}°C (-6,5°C/1.000m)
+                    Lạnh hơn chân núi khoảng {Math.abs(altitudePhysics.tempLapseDropC).toFixed(1)}°C (-6,5°C/1.000m)
                   </span>
                 </div>
 
                 <div className="editorial-stat-cell">
                   <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                    Áp Suất Khí Quyển
+                    Áp suất khí quyển
                   </span>
                   <strong style={{ fontSize: '1.25rem', color: 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
                     {altitudePhysics.pressureHpa.toFixed(1)} hPa
@@ -2835,19 +3133,19 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
 
                 <div className="editorial-stat-cell">
                   <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                    Điểm Sôi Nước Thực Tế
+                    Điểm sôi nước
                   </span>
                   <strong style={{ fontSize: '1.25rem', color: 'var(--color-earth)', fontVariantNumeric: 'tabular-nums' }}>
                     {altitudePhysics.boilingPointC.toFixed(1)}°C
                   </strong>
                   <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                    Đun sôi tối thiểu {altitudePhysics.recommendedBoilMinutes} phút (WHO/CDC)
+                    Nên đun sôi ít nhất {altitudePhysics.recommendedBoilMinutes} phút (WHO/CDC)
                   </span>
                 </div>
 
                 <div className="editorial-stat-cell">
                   <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                    Oxy Hiệu Dụng (pO₂)
+                    Oxy hiệu dụng (pO₂)
                   </span>
                   <strong
                     style={{
@@ -2880,7 +3178,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
                   <span style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                    Biểu Đồ Đối Chiếu Cao Độ Việt Nam (0m → 3.143m Fansipan)
+                    Đối chiếu theo cao độ núi Việt Nam (0m → 3.143m Fansipan)
                   </span>
                   <div style={{ display: 'flex', gap: 14, fontSize: '0.72rem', color: 'var(--color-text-muted)', flexWrap: 'wrap' }}>
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
@@ -3059,7 +3357,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontWeight: 700 }}>
                   <IconFlame size={15} />
-                  Khuyến Nghị Đun Nước & Sinh Lý Độ Cao ({altitudePhysics.altitudeM.toLocaleString('vi-VN')}m)
+                  Lưu ý nấu nướng & thở ở độ cao {altitudePhysics.altitudeM.toLocaleString('vi-VN')}m
                 </div>
                 <p style={{ margin: 0 }}>{altitudePhysics.cookingGuidance}</p>
                 <p style={{ margin: 0, opacity: 0.92 }}>{altitudePhysics.amsGuidance}</p>
@@ -3078,7 +3376,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               <div className="hub-grid-4">
                 <div>
                   <label className="form-label" htmlFor="solar-peak-select" style={{ display: 'block', marginBottom: 5 }}>
-                    Chọn đỉnh núi LOST ({trails.length} đỉnh)
+                    Chọn đỉnh cần xem ({trails.length} đỉnh)
                   </label>
                   <select
                     id="solar-peak-select"
@@ -3094,7 +3392,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       fontSize: '0.84rem',
                     }}
                   >
-                    <option value="custom">Tọa độ tùy chỉnh</option>
+                    <option value="custom">Tự nhập tọa độ</option>
                     {trails.map((tr) => (
                       <option key={tr.id} value={tr.id}>
                         {tr.name} ({tr.maxAltitudeM}m)
@@ -3104,7 +3402,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 </div>
                 <div>
                   <label className="form-label" htmlFor="solar-date" style={{ display: 'block', marginBottom: 5 }}>
-                    Ngày săn mây (UTC+7)
+                    Ngày dự kiến đi (UTC+7)
                   </label>
                   <input
                     id="solar-date"
@@ -3176,64 +3474,64 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               <div className="editorial-stat-strip">
                 <div className="editorial-stat-cell">
                   <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                    Bình Minh Dân Dụng (Blue)
+                    Trời hửng sáng (Blue hour)
                   </span>
                   <strong style={{ fontSize: '1.18rem', color: 'var(--color-sky)', fontVariantNumeric: 'tabular-nums' }}>
                     {solarData.civilDawn}
                   </strong>
-                  <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)' }}>Có mặt đỉnh trước giờ này</span>
+                  <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)' }}>Nên lên đỉnh trước giờ này</span>
                 </div>
                 <div className="editorial-stat-cell">
                   <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                    Mặt Trời Mọc (Sunrise)
+                    Mặt trời mọc
                   </span>
                   <strong style={{ fontSize: '1.18rem', color: 'var(--color-sun)', fontVariantNumeric: 'tabular-nums' }}>
                     {solarData.sunrise}
                   </strong>
                   <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                    Phương vị {solarData.sunriseAzimuthDeg}° ({getCardinalDirectionLabel(solarData.sunriseAzimuthDeg).split(' ')[0]})
+                    Hướng {solarData.sunriseAzimuthDeg}° ({formatVietnameseCardinal(solarData.sunriseAzimuthDeg)})
                   </span>
                 </div>
                 <div className="editorial-stat-cell">
                   <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                    Giờ Vàng Sáng (Golden)
+                    Nắng vàng buổi sáng
                   </span>
                   <strong style={{ fontSize: '1.12rem', color: 'var(--color-earth)', fontVariantNumeric: 'tabular-nums' }}>
                     {solarData.sunrise} – {solarData.goldenHourMorningEnd}
                   </strong>
-                  <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)' }}>Ánh sáng vàng săn mây</span>
+                  <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)' }}>Khung giờ đẹp nhất săn mây</span>
                 </div>
                 <div className="editorial-stat-cell">
                   <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                    Đỉnh Trưa (Solar Noon)
+                    Đứng bóng buổi trưa
                   </span>
                   <strong style={{ fontSize: '1.18rem', color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
                     {solarData.solarNoon}
                   </strong>
                   <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                    Góc cao cực đại {solarData.solarNoonAltitudeDeg}°
+                    Mặt trời lên cao nhất {solarData.solarNoonAltitudeDeg}°
                   </span>
                 </div>
                 <div className="editorial-stat-cell">
                   <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                    Giờ Vàng Chiều & Hoàng Hôn
+                    Nắng chiều & hoàng hôn
                   </span>
                   <strong style={{ fontSize: '1.12rem', color: 'var(--color-earth)', fontVariantNumeric: 'tabular-nums' }}>
                     {solarData.goldenHourEveningStart} – {solarData.sunset}
                   </strong>
                   <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                    Lặn tại {solarData.sunsetAzimuthDeg}°
+                    Lặn ở hướng {solarData.sunsetAzimuthDeg}°
                   </span>
                 </div>
                 <div className="editorial-stat-cell">
                   <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                    Chạng Vạng / Thời Lượng Ngày
+                    Tối hẳn / Thời lượng ngày
                   </span>
                   <strong style={{ fontSize: '1.12rem', color: 'var(--color-sky)', fontVariantNumeric: 'tabular-nums' }}>
                     {solarData.civilDusk}
                   </strong>
                   <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                    Ban ngày {formatDayLengthVi(solarData.dayLengthMinutes)}
+                    Trời sáng {formatDayLengthVi(solarData.dayLengthMinutes)}
                   </span>
                 </div>
               </div>
@@ -3245,10 +3543,10 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <div>
                     <h2 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                      Biểu Đồ Cung Quỹ Đạo Mặt Trời (NOAA)
+                      Đường đi mặt trời trong ngày (NOAA)
                     </h2>
                     <p style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                      Tại {formatHoursToHHMM(solarInspectHour)} (UTC+7): Góc cao {solarData.currentSunAltitudeDeg}° • Phương vị {solarData.currentSunAzimuthDeg}°
+                      Lúc {formatHoursToHHMM(solarInspectHour)} (UTC+7): góc cao {solarData.currentSunAltitudeDeg}° · hướng {solarData.currentSunAzimuthDeg}°
                     </p>
                   </div>
                   <button
@@ -3266,7 +3564,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   viewBox={`0 0 ${solarSvgGeometry.W} ${solarSvgGeometry.H}`}
                   width="100%"
                   role="img"
-                  aria-label="Biểu đồ quỹ đạo Mặt Trời trong ngày theo giờ Việt Nam"
+                  aria-label="Biểu đồ đường đi mặt trời trong ngày theo giờ Việt Nam"
                   style={{ display: 'block', width: '100%', height: 'auto', borderRadius: 4, background: 'var(--color-bg-main)', border: '1px solid var(--color-border)' }}
                 >
                   <defs>
@@ -3432,7 +3730,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 {/* Time Scrubber */}
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--color-text-muted)', marginBottom: 4 }}>
-                    <span>Kéo thanh giờ để mô phỏng vị trí Mặt Trời</span>
+                    <span>Kéo để xem mặt trời nằm ở đâu theo từng khung giờ</span>
                     <strong style={{ color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
                       {formatHoursToHHMM(solarInspectHour)} UTC+7
                     </strong>
@@ -3443,7 +3741,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     max={23.75}
                     step={0.25}
                     value={solarInspectHour}
-                    aria-label="Giờ kiểm tra quỹ đạo Mặt Trời"
+                    aria-label="Giờ kiểm tra vị trí mặt trời"
                     onChange={(e) => setSolarInspectHour(Number(e.target.value))}
                     style={{ width: '100%', accentColor: 'var(--color-sun)' }}
                   />
@@ -3455,7 +3753,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
                   <div>
                     <h2 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 4 }}>
-                      Kiểm Tra Điều Kiện Săn Biển Mây
+                      Chấm điểm khả năng gặp biển mây
                     </h2>
                     <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
                       {sunriseCountdownLabel}
@@ -3471,7 +3769,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     style={{ fontVariantNumeric: 'tabular-nums' }}
                   >
                     <IconCloud size={13} />
-                    Khả năng {cloudReadinessScore}%
+                    Cơ hội mây {cloudReadinessScore}%
                   </span>
                 </div>
 
@@ -3489,21 +3787,21 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
-                    <span style={{ color: 'var(--color-text-muted)' }}>Cao độ đỉnh mục tiêu:</span>
+                    <span style={{ color: 'var(--color-text-muted)' }}>Độ cao đỉnh ngắm:</span>
                     <strong style={{ color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
                       {solarAltitudeM.toLocaleString('vi-VN')} m (
                       {solarAltitudeM >= 1800
-                        ? 'Đai săn mây lý tưởng >1.800m'
+                        ? 'tầm cao dễ gặp biển mây >1.800m'
                         : solarAltitudeM >= 1200
-                          ? 'Đai sương mù thung lũng'
-                          : 'Núi thấp — ưu tiên đón bình minh'}
+                          ? 'tầm sương mù thung lũng'
+                          : 'núi thấp — hợp đón bình minh hơn'}
                       )
                     </strong>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
-                    <span style={{ color: 'var(--color-text-muted)' }}>Khung giờ xuất phát từ lán:</span>
+                    <span style={{ color: 'var(--color-text-muted)' }}>Nên rời lán muộn nhất:</span>
                     <strong style={{ color: 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
-                      Trước {formatHoursToHHMM(Math.max(0, solarData.civilDawnHours - 0.75))} (tới đỉnh trước {solarData.civilDawn})
+                      Trước {formatHoursToHHMM(Math.max(0, solarData.civilDawnHours - 0.75))} để lên đỉnh kịp {solarData.civilDawn}
                     </strong>
                   </div>
                 </div>
@@ -3569,6 +3867,531 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* Mountain Safety Instrument Card: Giờ quay đầu & Cảm giác nhiệt (Lạnh gió / Sốc nhiệt) */}
+            <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10 }}>
+                <div>
+                  <div style={{ fontSize: '0.7rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-primary)', marginBottom: 4 }}>
+                    Công cụ tính an toàn thực địa · 100% ngoại tuyến
+                  </div>
+                  <h2 style={{ fontSize: '1.08rem', fontWeight: 800, color: 'var(--color-text-main)', margin: 0 }}>
+                    Giờ quay đầu &amp; Cảm giác nhiệt (Lạnh gió / Sốc nhiệt)
+                  </h2>
+                  <p style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', margin: '4px 0 0', lineHeight: 1.5 }}>
+                    Chốt mốc quay đầu trước giờ tối hẳn ({solarData.civilDusk}, tính theo NOAA) để không bị kẹt đêm trên núi, kèm đánh giá gió rét NWS và chỉ số nóng ẩm.
+                  </p>
+                </div>
+              </div>
+
+              <div className="hub-grid-2" style={{ gap: 16 }}>
+                {/* Left Instrument: Turnaround Time Calculator */}
+                {(() => {
+                  const riskAccent =
+                    turnaroundResult.riskLevel === 'late'
+                      ? 'var(--color-error)'
+                      : turnaroundResult.riskLevel === 'tight'
+                        ? 'var(--color-sun)'
+                        : 'var(--color-primary)';
+                  const riskText =
+                    turnaroundResult.riskLevel === 'late'
+                      ? 'var(--color-error-text, var(--color-error))'
+                      : turnaroundResult.riskLevel === 'tight'
+                        ? 'var(--color-sun)'
+                        : 'var(--color-primary)';
+                  const riskLabel =
+                    turnaroundResult.riskLevel === 'late'
+                      ? 'Quá muộn — nguy cơ xuống núi trong đêm'
+                      : turnaroundResult.riskLevel === 'tight'
+                        ? 'Quỹ thời gian khá sát'
+                        : 'An toàn — đủ ánh sáng xuống núi';
+                  const hasNoAscentBudget = turnaroundStartMinutes >= turnaroundResult.turnaroundMinutes;
+                  const spanMin = Math.max(60, civilDuskMinutes - turnaroundStartMinutes);
+                  const turnPct = hasNoAscentBudget
+                    ? 0
+                    : Math.max(
+                        0,
+                        Math.min(100, ((turnaroundResult.turnaroundMinutes - turnaroundStartMinutes) / spanMin) * 100)
+                      );
+                  const remainingPct = Math.max(0, 100 - turnPct);
+                  const marginPct = hasNoAscentBudget
+                    ? 0
+                    : Math.min(remainingPct, Math.max(Math.min(4, remainingPct), (turnaroundMarginMin / spanMin) * 100));
+                  const descentPct = Math.max(0, remainingPct - marginPct);
+                  const turnPx = Math.round((turnPct / 100) * 400);
+                  const descentPx = Math.round((descentPct / 100) * 400);
+                  const marginPx = Math.max(0, 400 - turnPx - descentPx);
+
+                  return (
+                    <div
+                      style={{
+                        padding: 14,
+                        borderRadius: 6,
+                        background: 'var(--color-bg-main)',
+                        border: '1px solid var(--color-border)',
+                        borderTop: `3px solid ${riskAccent}`,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 12,
+                        fontVariantNumeric: 'tabular-nums',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                          <IconClock size={15} color={riskText} />
+                          <span>Giờ quay đầu bắt buộc</span>
+                        </span>
+                        <span
+                          style={{
+                            fontSize: '0.68rem',
+                            fontWeight: 800,
+                            padding: '2px 7px',
+                            borderRadius: 4,
+                            color: riskText,
+                            background: `color-mix(in srgb, ${riskAccent} 14%, transparent)`,
+                            border: `1px solid color-mix(in srgb, ${riskAccent} 36%, transparent)`,
+                          }}
+                        >
+                          {riskLabel}
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 8 }}>
+                        <div style={{ padding: '10px 12px', borderRadius: 4, background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
+                          <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>
+                            Quay đầu muộn nhất
+                          </div>
+                          <div style={{ fontSize: '1.45rem', fontWeight: 800, color: riskText, marginTop: 2 }}>
+                            {turnaroundResult.turnaroundLabel}
+                          </div>
+                          <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>
+                            Tối hẳn lúc {formatMinutesToHHMM(civilDuskMinutes)}
+                          </div>
+                        </div>
+
+                        <div style={{ padding: '10px 12px', borderRadius: 4, background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
+                          <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>
+                            Quỹ giờ leo tối đa
+                          </div>
+                          <div style={{ fontSize: '1.45rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 2 }}>
+                            {turnaroundResult.maxAscentHours} giờ
+                          </div>
+                          <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>
+                            Lên ~{formatDayLengthVi(turnaroundResult.estimatedAscentMinutes)} · Xuống ~{formatDayLengthVi(turnaroundResult.estimatedDescentMinutes)}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Pure Inline SVG Daylight Timeline Bar */}
+                      <div>
+                        <svg
+                          viewBox="0 0 400 18"
+                          width="100%"
+                          height="18"
+                          preserveAspectRatio="none"
+                          role="img"
+                          aria-label={`Thanh thời gian giờ quay đầu ${turnaroundResult.turnaroundLabel} trước giờ tối hẳn ${formatMinutesToHHMM(civilDuskMinutes)}`}
+                          style={{ display: 'block', borderRadius: 4, overflow: 'hidden' }}
+                        >
+                          <rect x="0" y="0" width="400" height="18" fill="var(--color-surface-elevated)" />
+                          {hasNoAscentBudget ? (
+                            <rect x="0" y="0" width="400" height="18" fill="var(--color-error)" fillOpacity="0.72" />
+                          ) : (
+                            <>
+                              <rect
+                                x="0"
+                                y="0"
+                                width={turnPx}
+                                height="18"
+                                fill="var(--color-primary)"
+                                fillOpacity="0.82"
+                              />
+                              <rect
+                                x={turnPx}
+                                y="0"
+                                width={descentPx}
+                                height="18"
+                                fill="var(--color-sky)"
+                                fillOpacity="0.72"
+                              />
+                              <rect
+                                x={turnPx + descentPx}
+                                y="0"
+                                width={marginPx}
+                                height="18"
+                                fill="var(--color-earth)"
+                                fillOpacity="0.8"
+                              />
+                            </>
+                          )}
+                        </svg>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6, fontSize: '0.68rem', color: 'var(--color-text-dim)', marginTop: 4 }}>
+                          <span>Xuất phát {turnaroundStartStr}</span>
+                          <span style={{ color: riskText, fontWeight: 700 }}>Quay đầu {turnaroundResult.turnaroundLabel}</span>
+                          <span>Tối hẳn {formatMinutesToHHMM(civilDuskMinutes)}</span>
+                        </div>
+                      </div>
+
+                      {/* Turnaround Inputs */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 8 }}>
+                        <div>
+                          <label className="form-label" htmlFor="turnaround-start-time" style={{ display: 'block', fontSize: '0.72rem', marginBottom: 4 }}>
+                            Giờ xuất phát
+                          </label>
+                          <input
+                            id="turnaround-start-time"
+                            type="time"
+                            value={turnaroundStartStr}
+                            onChange={(e) => setTurnaroundStartStr(e.target.value || '06:00')}
+                            style={{
+                              width: '100%',
+                              padding: '6px 8px',
+                              borderRadius: 4,
+                              border: '1px solid var(--color-border-strong)',
+                              background: 'var(--color-bg-card)',
+                              color: 'var(--color-text-main)',
+                              fontSize: '0.8rem',
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label className="form-label" htmlFor="turnaround-ascent-km" style={{ display: 'block', fontSize: '0.72rem', marginBottom: 4 }}>
+                            Leo lên (km)
+                          </label>
+                          <input
+                            id="turnaround-ascent-km"
+                            type="number"
+                            min={0.5}
+                            max={60}
+                            step={0.5}
+                            value={turnaroundAscentKm}
+                            onChange={(e) =>
+                              setTurnaroundAscentKm(Math.min(60, Math.max(0.5, Number(e.target.value) || 0.5)))
+                            }
+                            style={{
+                              width: '100%',
+                              padding: '6px 8px',
+                              borderRadius: 4,
+                              border: '1px solid var(--color-border-strong)',
+                              background: 'var(--color-bg-card)',
+                              color: 'var(--color-text-main)',
+                              fontSize: '0.8rem',
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label className="form-label" htmlFor="turnaround-gain-m" style={{ display: 'block', fontSize: '0.72rem', marginBottom: 4 }}>
+                            Độ cao leo (+m)
+                          </label>
+                          <input
+                            id="turnaround-gain-m"
+                            type="number"
+                            min={0}
+                            max={4500}
+                            step={50}
+                            value={turnaroundGainM}
+                            onChange={(e) =>
+                              setTurnaroundGainM(Math.min(4500, Math.max(0, Number(e.target.value) || 0)))
+                            }
+                            style={{
+                              width: '100%',
+                              padding: '6px 8px',
+                              borderRadius: 4,
+                              border: '1px solid var(--color-border-strong)',
+                              background: 'var(--color-bg-card)',
+                              color: 'var(--color-text-main)',
+                              fontSize: '0.8rem',
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label className="form-label" htmlFor="turnaround-descent-km" style={{ display: 'block', fontSize: '0.72rem', marginBottom: 4 }}>
+                            Xuống núi (km)
+                          </label>
+                          <input
+                            id="turnaround-descent-km"
+                            type="number"
+                            min={0.5}
+                            max={60}
+                            step={0.5}
+                            value={turnaroundDescentKm}
+                            onChange={(e) =>
+                              setTurnaroundDescentKm(Math.min(60, Math.max(0.5, Number(e.target.value) || 0.5)))
+                            }
+                            style={{
+                              width: '100%',
+                              padding: '6px 8px',
+                              borderRadius: 4,
+                              border: '1px solid var(--color-border-strong)',
+                              background: 'var(--color-bg-card)',
+                              color: 'var(--color-text-main)',
+                              fontSize: '0.8rem',
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                        <span style={{ fontSize: '0.73rem', color: 'var(--color-text-muted)' }}>
+                          Dự phòng trước khi tối hẳn:
+                        </span>
+                        <div style={{ display: 'inline-flex', gap: 5 }}>
+                          {[30, 45, 60].map((minOpt) => (
+                            <button
+                              key={minOpt}
+                              type="button"
+                              aria-pressed={turnaroundMarginMin === minOpt}
+                              onClick={() => setTurnaroundMarginMin(minOpt)}
+                              style={{
+                                padding: '3px 8px',
+                                borderRadius: 4,
+                                fontSize: '0.72rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                                border:
+                                  turnaroundMarginMin === minOpt
+                                    ? '1px solid var(--color-primary)'
+                                    : '1px solid var(--color-border)',
+                                background:
+                                  turnaroundMarginMin === minOpt
+                                    ? 'color-mix(in srgb, var(--color-primary) 15%, var(--color-bg-card))'
+                                    : 'var(--color-bg-card)',
+                                color:
+                                  turnaroundMarginMin === minOpt
+                                    ? 'var(--color-primary)'
+                                    : 'var(--color-text-muted)',
+                              }}
+                            >
+                              {minOpt} phút
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Right Instrument: Wind Chill & Heat Index */}
+                {(() => {
+                  const isColdRegime = thermalTempC <= 10;
+                  const isCoolRegime = thermalTempC <= 14;
+                  const isHeatRegime = thermalTempC >= 27;
+                  const isWindChillActive = isColdRegime && thermalWindKmh >= 4.8;
+                  const isHeatIndexActive = isHeatRegime && thermalHumidityPct >= 40;
+                  const activeAccent = isCoolRegime
+                    ? coldRisk.level === 'severe_frost'
+                      ? 'var(--color-error)'
+                      : coldRisk.level === 'hypothermia_risk'
+                        ? 'var(--color-sky)'
+                        : coldRisk.level === 'chilly'
+                          ? 'var(--color-sky)'
+                          : 'var(--color-primary)'
+                    : isHeatRegime
+                      ? heatRisk.level === 'heatstroke_danger'
+                        ? 'var(--color-error)'
+                        : heatRisk.level === 'heat_exhaustion'
+                          ? 'var(--color-earth)'
+                          : 'var(--color-sun)'
+                      : 'var(--color-primary)';
+                  const activeText =
+                    activeAccent === 'var(--color-error)'
+                      ? 'var(--color-error-text, var(--color-error))'
+                      : activeAccent;
+
+                  return (
+                    <div
+                      style={{
+                        padding: 14,
+                        borderRadius: 6,
+                        background: 'var(--color-bg-main)',
+                        border: '1px solid var(--color-border)',
+                        borderTop: `3px solid ${activeAccent}`,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 12,
+                        fontVariantNumeric: 'tabular-nums',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                          {isHeatRegime ? (
+                            <IconFlame size={15} color={activeText} />
+                          ) : (
+                            <IconSnowflake size={15} color={activeText} />
+                          )}
+                          <span>Cảm giác nhiệt (Lạnh gió / Sốc nhiệt)</span>
+                        </span>
+                        <span
+                          style={{
+                            fontSize: '0.68rem',
+                            fontWeight: 800,
+                            padding: '2px 7px',
+                            borderRadius: 4,
+                            color: activeText,
+                            background: `color-mix(in srgb, ${activeAccent} 14%, transparent)`,
+                            border: `1px solid color-mix(in srgb, ${activeAccent} 36%, transparent)`,
+                          }}
+                        >
+                          {isCoolRegime ? coldRisk.label : isHeatRegime ? heatRisk.label : 'Nhiệt độ ôn hòa'}
+                        </span>
+                      </div>
+
+                      {/* Quick Vietnam Mountain Climate Presets */}
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {[
+                          { label: 'Fansipan rạng sáng', t: 2, w: 35, h: 85 },
+                          { label: 'Tà Xùa sống lưng', t: 6, w: 40, h: 80 },
+                          { label: 'Mũi Đôi giữa trưa', t: 36, w: 12, h: 65 },
+                        ].map((preset) => (
+                          <button
+                            key={preset.label}
+                            type="button"
+                            onClick={() => {
+                              setThermalTempC(preset.t);
+                              setThermalWindKmh(preset.w);
+                              setThermalHumidityPct(preset.h);
+                            }}
+                            style={{
+                              padding: '4px 8px',
+                              borderRadius: 4,
+                              fontSize: '0.7rem',
+                              fontWeight: 700,
+                              border: '1px solid var(--color-border)',
+                              background: 'var(--color-bg-card)',
+                              color: 'var(--color-text-muted)',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {/* Dual Readout Tiles */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+                        <div style={{ padding: '10px 12px', borderRadius: 4, background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
+                          <div style={{ fontSize: '0.67rem', color: 'var(--color-text-dim)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <IconWind size={11} color="var(--color-sky)" />
+                            <span>Lạnh gió (NWS)</span>
+                          </div>
+                          <div style={{ fontSize: '1.35rem', fontWeight: 800, color: isCoolRegime ? activeText : 'var(--color-sky)', marginTop: 2 }}>
+                            {windChillC}°C
+                          </div>
+                          <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>
+                            {isWindChillActive
+                              ? coldRisk.label
+                              : isColdRegime
+                                ? 'Gió < 4,8 km/h (dùng nhiệt thực)'
+                                : 'Áp dụng khi ≤ 10°C'}
+                          </div>
+                        </div>
+
+                        <div style={{ padding: '10px 12px', borderRadius: 4, background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
+                          <div style={{ fontSize: '0.67rem', color: 'var(--color-text-dim)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <IconSun size={11} color="var(--color-earth)" />
+                            <span>Chỉ số nóng ẩm</span>
+                          </div>
+                          <div style={{ fontSize: '1.35rem', fontWeight: 800, color: isHeatRegime ? activeText : 'var(--color-earth)', marginTop: 2 }}>
+                            {heatIndexC}°C
+                          </div>
+                          <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>
+                            {isHeatIndexActive
+                              ? heatRisk.label
+                              : isHeatRegime
+                                ? 'Ẩm < 40% (dùng nhiệt thực)'
+                                : 'Áp dụng khi ≥ 27°C'}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Sliders */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.74rem', color: 'var(--color-text-muted)', marginBottom: 2 }}>
+                            <label htmlFor="thermal-temp-range">Nhiệt độ không khí đo được</label>
+                            <strong style={{ color: 'var(--color-text-main)' }}>{thermalTempC}°C</strong>
+                          </div>
+                          <input
+                            id="thermal-temp-range"
+                            type="range"
+                            min={-5}
+                            max={42}
+                            step={1}
+                            value={thermalTempC}
+                            onChange={(e) => setThermalTempC(Number(e.target.value))}
+                            style={{ width: '100%', accentColor: 'var(--color-primary)' }}
+                          />
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+                          <div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.74rem', color: 'var(--color-text-muted)', marginBottom: 2 }}>
+                              <label htmlFor="thermal-wind-range">Tốc độ gió</label>
+                              <strong style={{ color: 'var(--color-text-main)' }}>{thermalWindKmh} km/h</strong>
+                            </div>
+                            <input
+                              id="thermal-wind-range"
+                              type="range"
+                              min={0}
+                              max={70}
+                              step={1}
+                              value={thermalWindKmh}
+                              onChange={(e) => setThermalWindKmh(Number(e.target.value))}
+                              style={{ width: '100%', accentColor: 'var(--color-sky)' }}
+                            />
+                          </div>
+                          <div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.74rem', color: 'var(--color-text-muted)', marginBottom: 2 }}>
+                              <label htmlFor="thermal-humid-range">Độ ẩm</label>
+                              <strong style={{ color: 'var(--color-text-main)' }}>{thermalHumidityPct}%</strong>
+                            </div>
+                            <input
+                              id="thermal-humid-range"
+                              type="range"
+                              min={20}
+                              max={100}
+                              step={1}
+                              value={thermalHumidityPct}
+                              onChange={(e) => setThermalHumidityPct(Number(e.target.value))}
+                              style={{ width: '100%', accentColor: 'var(--color-earth)' }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Practical Field Guidance */}
+                      <div
+                        style={{
+                          padding: '9px 11px',
+                          borderRadius: 4,
+                          background: 'var(--color-bg-card)',
+                          border: '1px solid var(--color-border)',
+                          borderLeft: `3px solid ${activeAccent}`,
+                          fontSize: '0.75rem',
+                          color: 'var(--color-text-muted)',
+                          lineHeight: 1.5,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 4,
+                        }}
+                      >
+                        <div>
+                          <strong style={{ color: 'var(--color-text-main)' }}>
+                            {isCoolRegime ? 'Khuyến nghị giữ ấm: ' : isHeatRegime ? 'Khuyến nghị phòng sốc nhiệt: ' : 'Khuyến nghị thực địa: '}
+                          </strong>
+                          {isCoolRegime ? coldRisk.guidance : isHeatRegime ? heatRisk.guidance : coldRisk.guidance}
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)' }}>
+                          <strong style={{ color: 'var(--color-text-main)' }}>
+                            {isHeatRegime ? 'Bù nước: ' : 'Lớp áo gợi ý: '}
+                          </strong>
+                          {isHeatRegime ? heatRisk.hydrationNote : coldRisk.recommendedLayers}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
           </div>
         )}
 
@@ -3581,20 +4404,20 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
             <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                 <h2 style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                  Thông Số Chuyến Đi & Thể Trạng
+                  Thông số cung đường & thể trạng của bạn
                 </h2>
                 <span className={`badge ${bioSource === 'server' ? 'badge-success' : 'badge-info'}`}>
                   {bioSyncing
-                    ? 'Đang đồng bộ...'
+                    ? 'Đang tính...'
                     : bioSource === 'server'
-                      ? 'Máy chủ LOST (/api/ai/bio-calc)'
-                      : 'Tính toán Offline 0ms'}
+                      ? 'Đã tính từ máy chủ'
+                      : 'Tính ngay trên máy'}
                 </span>
               </div>
 
               <div>
                 <label className="form-label" htmlFor="bio-trail-preset" style={{ display: 'block', marginBottom: 5 }}>
-                  Nạp thông số từ {trails.length} cung LOST (hoặc tùy chỉnh tự do)
+                  Điền nhanh từ {trails.length} cung có sẵn (hoặc tự kéo bên dưới)
                 </label>
                 <select
                   id="bio-trail-preset"
@@ -3610,7 +4433,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     fontSize: '0.84rem',
                   }}
                 >
-                  <option value="custom">Tự nhập thông số thực tế</option>
+                  <option value="custom">Tự chỉnh thông số</option>
                   {trails.map((tr) => (
                     <option key={tr.id} value={tr.id}>
                       {tr.name} — {tr.distanceKm} km / +{tr.elevationGainM}m / {tr.maxAltitudeM}m
@@ -3623,7 +4446,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               <div className="hub-grid-2" style={{ gap: 14 }}>
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: 4 }}>
-                    <span style={{ color: 'var(--color-text-muted)' }}>Cự ly cung đường</span>
+                    <span style={{ color: 'var(--color-text-muted)' }}>Chiều dài quãng đường</span>
                     <strong style={{ color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>{bioDistanceKm} km</strong>
                   </div>
                   <input
@@ -3632,7 +4455,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     max={80}
                     step={0.5}
                     value={bioDistanceKm}
-                    aria-label="Cự ly cung đường (km)"
+                    aria-label="Chiều dài quãng đường (km)"
                     onChange={(e) => {
                       setBioTrailId('custom');
                       setBioDistanceKm(Number(e.target.value));
@@ -3643,7 +4466,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
 
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: 4 }}>
-                    <span style={{ color: 'var(--color-text-muted)' }}>Độ cao leo tích lũy</span>
+                    <span style={{ color: 'var(--color-text-muted)' }}>Tổng độ dốc phải leo</span>
                     <strong style={{ color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>+{bioGainM} m</strong>
                   </div>
                   <input
@@ -3652,7 +4475,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     max={4000}
                     step={50}
                     value={bioGainM}
-                    aria-label="Độ cao leo tích lũy (m)"
+                    aria-label="Tổng độ dốc phải leo (m)"
                     onChange={(e) => {
                       setBioTrailId('custom');
                       setBioGainM(Number(e.target.value));
@@ -3663,7 +4486,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
 
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: 4 }}>
-                    <span style={{ color: 'var(--color-text-muted)' }}>Cao độ đỉnh tối đa</span>
+                    <span style={{ color: 'var(--color-text-muted)' }}>Độ cao đỉnh</span>
                     <strong style={{ color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>{bioMaxAltM} m</strong>
                   </div>
                   <input
@@ -3672,7 +4495,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     max={3200}
                     step={50}
                     value={bioMaxAltM}
-                    aria-label="Cao độ đỉnh (m)"
+                    aria-label="Độ cao đỉnh (m)"
                     onChange={(e) => {
                       setBioTrailId('custom');
                       setBioMaxAltM(Number(e.target.value));
@@ -3683,7 +4506,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
 
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: 4 }}>
-                    <span style={{ color: 'var(--color-text-muted)' }}>Số ngày di chuyển</span>
+                    <span style={{ color: 'var(--color-text-muted)' }}>Số ngày đi</span>
                     <strong style={{ color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>{bioDays} ngày</strong>
                   </div>
                   <input
@@ -3692,7 +4515,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     max={7}
                     step={1}
                     value={bioDays}
-                    aria-label="Số ngày di chuyển"
+                    aria-label="Số ngày đi"
                     onChange={(e) => setBioDays(Number(e.target.value))}
                     style={{ width: '100%', accentColor: 'var(--color-primary)' }}
                   />
@@ -3700,7 +4523,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
 
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: 4 }}>
-                    <span style={{ color: 'var(--color-text-muted)' }}>Cân nặng cơ thể</span>
+                    <span style={{ color: 'var(--color-text-muted)' }}>Cân nặng của bạn</span>
                     <strong style={{ color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>{bioBodyWeightKg} kg</strong>
                   </div>
                   <input
@@ -3709,7 +4532,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     max={120}
                     step={1}
                     value={bioBodyWeightKg}
-                    aria-label="Cân nặng cơ thể (kg)"
+                    aria-label="Cân nặng của bạn (kg)"
                     onChange={(e) => setBioBodyWeightKg(Number(e.target.value))}
                     style={{ width: '100%', accentColor: 'var(--color-sky)' }}
                   />
@@ -3717,7 +4540,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
 
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: 4 }}>
-                    <span style={{ color: 'var(--color-text-muted)' }}>Trọng lượng balo</span>
+                    <span style={{ color: 'var(--color-text-muted)' }}>Cân nặng balo (gồm nước & đồ)</span>
                     <strong style={{ color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>{bioPackWeightKg} kg</strong>
                   </div>
                   <input
@@ -3726,7 +4549,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     max={28}
                     step={0.5}
                     value={bioPackWeightKg}
-                    aria-label="Trọng lượng balo (kg)"
+                    aria-label="Cân nặng balo (kg)"
                     onChange={(e) => setBioPackWeightKg(Number(e.target.value))}
                     style={{ width: '100%', accentColor: 'var(--color-earth)' }}
                   />
@@ -3734,7 +4557,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
 
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', marginBottom: 4 }}>
-                    <span style={{ color: 'var(--color-text-muted)' }}>Nhiệt độ môi trường</span>
+                    <span style={{ color: 'var(--color-text-muted)' }}>Nhiệt độ dự kiến trên núi</span>
                     <strong style={{ color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>{bioTempC}°C</strong>
                   </div>
                   <input
@@ -3743,7 +4566,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     max={40}
                     step={1}
                     value={bioTempC}
-                    aria-label="Nhiệt độ môi trường"
+                    aria-label="Nhiệt độ dự kiến trên núi"
                     onChange={(e) => setBioTempC(Number(e.target.value))}
                     style={{ width: '100%', accentColor: 'var(--color-sun)' }}
                   />
@@ -3751,14 +4574,14 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
 
                 <div>
                   <span className="form-label" style={{ display: 'block', marginBottom: 6 }}>
-                    Trình độ thể lực
+                    Nhịp đi & thể lực
                   </span>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
                     {(
                       [
-                        { id: 'beginner', label: 'Mới đi' },
-                        { id: 'intermediate', label: 'Trung bình' },
-                        { id: 'advanced', label: 'Chuyên sâu' },
+                        { id: 'beginner', label: 'Mới tập đi' },
+                        { id: 'intermediate', label: 'Đi đều' },
+                        { id: 'advanced', label: 'Quen đường rừng' },
                       ] as const
                     ).map((lvl) => (
                       <button
@@ -3783,46 +4606,46 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 <div className="editorial-stat-cell">
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.72rem', color: 'var(--color-sky)', textTransform: 'uppercase', fontWeight: 700 }}>
                     <IconDroplet size={13} />
-                    Nước Uống / Ngày
+                    Nước uống mỗi ngày
                   </span>
                   <strong style={{ fontSize: '1.3rem', color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
                     {activeBioMetrics.waterLitersPerDay} L/ngày
                   </strong>
                   <span style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                    Tổng chuyến: {activeBioMetrics.waterLitersTotal}L
+                    Cả chuyến: {activeBioMetrics.waterLitersTotal}L
                   </span>
                 </div>
                 <div className="editorial-stat-cell">
                   <span style={{ fontSize: '0.72rem', color: 'var(--color-primary)', textTransform: 'uppercase', fontWeight: 700 }}>
-                    Điện Giải Oresol
+                    Bù khoáng Oresol
                   </span>
                   <strong style={{ fontSize: '1.3rem', color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
                     {activeBioMetrics.oresolPackets} gói
                   </strong>
-                  <span style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)' }}>Pha đúng tỷ lệ chống chuột rút</span>
+                  <span style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)' }}>Pha đúng hướng dẫn để tránh chuột rút</span>
                 </div>
                 <div className="editorial-stat-cell">
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.72rem', color: 'var(--color-earth)', textTransform: 'uppercase', fontWeight: 700 }}>
                     <IconFlame size={13} />
-                    Năng Lượng / Ngày
+                    Năng lượng mỗi ngày
                   </span>
                   <strong style={{ fontSize: '1.3rem', color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
                     {activeBioMetrics.caloriesDailyTotalKcal.toLocaleString('vi-VN')} kcal
                   </strong>
                   <span style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                    Vận động: {activeBioMetrics.caloriesActiveKcal.toLocaleString('vi-VN')} kcal
+                    Tiêu hao khi leo: {activeBioMetrics.caloriesActiveKcal.toLocaleString('vi-VN')} kcal
                   </span>
                 </div>
                 <div className="editorial-stat-cell">
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.72rem', color: 'var(--color-sun)', textTransform: 'uppercase', fontWeight: 700 }}>
                     <IconClock size={13} />
-                    Thời Gian Di Chuyển
+                    Thời gian đi dự kiến
                   </span>
                   <strong style={{ fontSize: '1.3rem', color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
                     {activeBioMetrics.recommendedMovingHours} giờ
                   </strong>
                   <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                    Naismith {activeBioMetrics.naismithHours}h | Tobler {activeBioMetrics.toblerHours}h
+                    Naismith {activeBioMetrics.naismithHours}h · Tobler {activeBioMetrics.toblerHours}h
                   </span>
                 </div>
               </div>
@@ -3831,7 +4654,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <h3 style={{ fontSize: '0.98rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                    Đồng Hồ An Toàn Tỷ Lệ Tải Balo / Thể Trọng
+                    Đánh giá độ nặng balo so với cân nặng
                   </h3>
                   <span
                     className={`badge ${activeBioMetrics.packStatus === 'optimal'
@@ -3842,9 +4665,9 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       }`}
                   >
                     {activeBioMetrics.packStatus === 'optimal'
-                      ? 'Tối ưu (<= 18%)'
+                      ? 'Nhẹ vừa sức (<= 18%)'
                       : activeBioMetrics.packStatus === 'caution'
-                        ? 'Cảnh báo (18–22%)'
+                        ? 'Hơi nặng (18–22%)'
                         : 'Quá tải (> 22%)'}
                   </span>
                 </div>
@@ -3898,7 +4721,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       {activeBioMetrics.packAdvice}
                     </p>
                     <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                      Ngưỡng khuyến nghị tối ưu cho cơ thể {bioBodyWeightKg} kg: <strong>&lt;= {(bioBodyWeightKg * 0.18).toFixed(1)} kg</strong> (tối đa an toàn {(bioBodyWeightKg * 0.22).toFixed(1)} kg).
+                      Với cân nặng {bioBodyWeightKg} kg, balo đẹp nhất nên giữ <strong>&lt;= {(bioBodyWeightKg * 0.18).toFixed(1)} kg</strong> (tối đa khoảng {(bioBodyWeightKg * 0.22).toFixed(1)} kg để giữ khớp gối).
                     </p>
                     <ul style={{ paddingLeft: 18, margin: 0, display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
                       {activeBioMetrics.snackPlan.map((tip) => (
@@ -3925,13 +4748,13 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: '0.92rem' }}>
                     <IconAlertTriangle size={18} />
-                    Cảnh Báo Độ Cao & Phòng Chống Sốc Độ Cao AMS ({bioMaxAltM.toLocaleString('vi-VN')}m)
+                    Lưu ý say độ cao (AMS) khi lên mốc {bioMaxAltM.toLocaleString('vi-VN')}m
                   </div>
                   <p style={{ fontSize: '0.84rem', lineHeight: 1.55 }}>{activeBioMetrics.amsAdvice}</p>
                   <ul style={{ paddingLeft: 18, margin: 0, fontSize: '0.8rem', lineHeight: 1.55 }}>
-                    <li>Duy trì nhịp thở đều 2:2 và bước nghỉ (Rest Step) khi vượt dốc trên 2.500m.</li>
-                    <li>Uống nước ấm pha điện giải từng ngụm nhỏ, tuyệt đối không dùng rượu bia tại lán đêm.</li>
-                    <li>Nếu xuất hiện đau đầu dữ dội kèm buồn nôn, choáng váng hoặc khó thở khi nghỉ: lập tức HẠ CAO ĐỘ 300m–500m.</li>
+                    <li>Trên 2.500m nên giữ nhịp thở đều 2:2, đi chậm chắc và dùng bước nghỉ (rest step) ở các con dốc gắt.</li>
+                    <li>Nhấp từng ngụm nhỏ nước ấm pha điện giải suốt đường đi; tuyệt đối tránh uống rượu bia ở lán đêm.</li>
+                    <li>Nếu đau đầu dữ dội, buồn nôn, đi loạng choạng hoặc nằm nghỉ vẫn khó thở: lập tức hạ độ cao ngay 300m–500m.</li>
                   </ul>
                 </div>
               ) : (
@@ -3982,7 +4805,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   >
                     <div>
                       <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-error-text, var(--color-error))', textTransform: 'uppercase' }}>
-                        Khẩn Cấp 24/7
+                        Gọi khẩn cấp 24/7
                       </div>
                       <div style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
                         {hotline.hotlinePhone}
@@ -4017,7 +4840,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                     <h2 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                      1. Khóa GPS & Soạn Tin Nhắn SOS 2G (Không Cần Mạng)
+                      1. Gửi tin nhắn SOS 2G kèm tọa độ (không cần 4G)
                     </h2>
                     <span className={`badge ${gpsAccuracyMeta.badgeClass}`}>{gpsAccuracyMeta.label}</span>
                   </div>
@@ -4030,24 +4853,57 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       disabled={gpsLoading}
                     >
                       <IconCrosshairSvg size={15} />
-                      {gpsLoading ? 'Đang định vị vệ tinh...' : 'Cập nhật GPS Hiện Tại'}
+                      {gpsLoading ? 'Đang bắt sóng GPS...' : gpsLock ? 'Lấy lại tọa độ GPS' : 'Lấy tọa độ GPS thực tế'}
                     </button>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                      Đang dùng: <strong>{referenceSosCoords.lat.toFixed(5)}, {referenceSosCoords.lng.toFixed(5)}</strong> ({referenceSosCoords.label})
-                    </span>
+                    {gpsLock ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--color-primary)', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+                          Đã khóa GPS thật: <strong>{gpsLock.lat.toFixed(5)}, {gpsLock.lng.toFixed(5)}</strong>
+                          {gpsLock.altitudeM !== null ? ` • ${gpsLock.altitudeM}m` : ''}
+                        </span>
+                        {sosPlusCode && (
+                          <button
+                            type="button"
+                            onClick={() => handleCopyText(sosPlusCode, `mã Plus Code ${sosPlusCode}`)}
+                            title="Sao chép mã Plus Code ngoại tuyến (chuẩn 10 chữ số)"
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 5,
+                              padding: '3px 8px',
+                              borderRadius: 4,
+                              border: '1px solid color-mix(in srgb, var(--color-sky) 42%, var(--color-border))',
+                              background: 'color-mix(in srgb, var(--color-sky) 12%, var(--color-bg-card))',
+                              color: 'var(--color-sky)',
+                              fontSize: '0.74rem',
+                              fontWeight: 800,
+                              fontVariantNumeric: 'tabular-nums',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <span>Plus Code: {sosPlusCode}</span>
+                            <IconCopy size={12} color="var(--color-sky)" />
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <span style={{ fontSize: '0.78rem', color: 'var(--color-error-text, var(--color-error))', fontWeight: 600 }}>
+                        Chưa khóa được GPS thực tế — không điền tọa độ mẫu vào tin SOS.
+                      </span>
+                    )}
                   </div>
 
                   <div className="hub-grid-2" style={{ gap: 10 }}>
                     <div>
                       <label className="form-label" htmlFor="sos-phone-input" style={{ display: 'block', marginBottom: 4 }}>
-                        Số điện thoại nhận SOS (2G SMS)
+                        Số di động nhận tin nhắn SOS (sóng 2G)
                       </label>
                       <input
                         id="sos-phone-input"
                         type="tel"
                         value={sosPhone}
                         onChange={(e) => setSosPhone(e.target.value)}
-                        placeholder="112 hoặc số Trạm Kiểm lâm / Người thân"
+                        placeholder="Nhập SĐT di động người thân hoặc kiểm lâm (09x/08x/03x)"
                         style={{
                           width: '100%',
                           padding: '8px 10px',
@@ -4061,14 +4917,14 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     </div>
                     <div>
                       <label className="form-label" htmlFor="sos-trail-input" style={{ display: 'block', marginBottom: 4 }}>
-                        Cung đường / Khu vực hiện tại
+                        Tên cung đường hoặc mốc đang đứng
                       </label>
                       <input
                         id="sos-trail-input"
                         type="text"
                         value={sosTrailName}
                         onChange={(e) => setSosTrailName(e.target.value)}
-                        placeholder="VD: Fansipan - Lán 2.800m"
+                        placeholder="Ví dụ: Fansipan – Lán 2.800m"
                         style={{
                           width: '100%',
                           padding: '8px 10px',
@@ -4081,10 +4937,46 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     </div>
                   </div>
 
+                  {(sosRecipientKind === 'voice_only' || sosRecipientKind === 'landline') && (
+                    <div
+                      role="alert"
+                      style={{
+                        padding: '9px 12px',
+                        borderRadius: 4,
+                        background: 'var(--banner-danger-bg)',
+                        border: '1px solid var(--banner-danger-border)',
+                        color: 'var(--banner-danger-text)',
+                        fontSize: '0.78rem',
+                        lineHeight: 1.45,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 10,
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      <span>
+                        {sosRecipientKind === 'voice_only'
+                          ? `Cảnh báo: Đầu số ${cleanSosDial} tại Việt Nam chỉ nhận GỌI THOẠI, nhà mạng sẽ từ chối tin nhắn SMS. Hãy bấm gọi ngay hoặc nhập số di động người thân / kiểm lâm.`
+                          : `Cảnh báo: Số máy bàn (${sosPhone}) thường không nhận được tin nhắn SMS 2G. Hãy ưu tiên gọi trực tiếp hoặc dùng số di động (09x/08x/03x).`}
+                      </span>
+                      {cleanSosDial && (
+                        <a
+                          href={`tel:${cleanSosDial}`}
+                          className="btn btn-danger"
+                          style={{ padding: '5px 10px', fontSize: '0.75rem', textDecoration: 'none' }}
+                        >
+                          <IconPhoneCall size={13} />
+                          Gọi trực tiếp {cleanSosDial}
+                        </a>
+                      )}
+                    </div>
+                  )}
+
                   {/* Quick Incident Chips */}
                   <div>
                     <span className="form-label" style={{ display: 'block', marginBottom: 6 }}>
-                      Chọn nhanh tình trạng khẩn cấp
+                      Chọn nhanh tình huống
                     </span>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                       {SOS_QUICK_NOTES.map((noteOpt) => (
@@ -4103,7 +4995,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
 
                   <div>
                     <label className="form-label" htmlFor="sos-note-area" style={{ display: 'block', marginBottom: 4 }}>
-                      Ghi chú tình trạng (không dấu để tương thích tốt nhất trên sóng 2G)
+                      Mô tả ngắn tình trạng (nên gõ không dấu để gửi SMS 2G không lỗi chữ)
                     </label>
                     <textarea
                       id="sos-note-area"
@@ -4145,7 +5037,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                     <a href={smsPayload.uri} className="btn btn-danger" style={{ flex: 1, minWidth: 190 }}>
                       <IconSend size={15} />
-                      Mở Ứng Dụng SMS 2G Gửi Ngay
+                      Mở tin nhắn SMS gửi ngay
                     </a>
                     <button
                       type="button"
@@ -4153,7 +5045,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       onClick={() => handleCopyText(smsPayload.body, 'nội dung tin nhắn SOS')}
                     >
                       <IconCopy size={15} />
-                      Sao chép nội dung
+                      Chép nội dung tin
                     </button>
                   </div>
                 </div>
@@ -4161,7 +5053,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 {/* Visual SOS Strobe & 3.1kHz Rescue Whistle */}
                 <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                   <h2 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                    2. Tín Hiệu Ánh Sáng & Còi Cứu Hộ 3.1 kHz (Morse SOS)
+                    2. Đèn chớp & còi cứu hộ 3.1 kHz (nhịp Morse SOS)
                   </h2>
 
                   {/* Visual Morse Indicator Bars (Pure SVG, zero emojis) */}
@@ -4179,7 +5071,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     }}
                   >
                     <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', fontWeight: 600 }}>
-                      Nhịp Morse Quốc Tế (S - O - S)
+                      Nhịp cầu cứu Morse (S · O · S)
                     </span>
                     <svg viewBox="0 0 216 16" width="216" height="16" aria-hidden="true">
                       {[
@@ -4225,10 +5117,10 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, fontSize: '0.88rem', color: 'var(--color-text-main)' }}>
                         <IconFlashlightSvg size={16} />
-                        Đèn Chớp Màn Hình SOS
+                        Đèn chớp màn hình SOS
                       </div>
                       <p style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', lineHeight: 1.45 }}>
-                        Phát sáng toàn màn hình nhịp Morse SOS để đội tìm kiếm phát hiện trong đêm. Bấm Dừng hoặc phím Esc để tắt ngay.
+                        Chớp sáng toàn màn hình theo nhịp Morse để đội cứu hộ nhận ra từ xa trong đêm. Bấm Tắt đèn hoặc phím Esc để dừng.
                       </p>
                       <button
                         type="button"
@@ -4236,7 +5128,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                         onClick={() => setStrobeActive((prev) => !prev)}
                       >
                         <IconFlashlightSvg size={15} />
-                        {strobeActive ? 'Dừng Đèn SOS' : 'Bật Đèn Chớp SOS Toàn Màn Hình'}
+                        {strobeActive ? 'Tắt đèn SOS' : 'Bật đèn chớp toàn màn hình'}
                       </button>
                     </div>
 
@@ -4254,7 +5146,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, fontSize: '0.88rem', color: 'var(--color-text-main)' }}>
                         <IconVolumeSvg size={16} />
-                        Còi Cứu Hộ 3.1 kHz (Web Audio)
+                        Còi cứu hộ 3.1 kHz
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
                         <span>Âm lượng còi</span>
@@ -4279,7 +5171,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                         }}
                       >
                         <IconWaveform size={15} />
-                        {whistleActive ? 'Dừng Còi SOS Ngay' : 'Phát Còi Cứu Hộ 3.1 kHz'}
+                        {whistleActive ? 'Tắt còi SOS' : 'Thổi còi cứu hộ 3.1 kHz'}
                       </button>
                     </div>
                   </div>
@@ -4291,21 +5183,22 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <div>
                     <h2 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 3 }}>
-                      Trạm Kiểm Lâm & VQG Xác Thực Gần Nhất
+                      Trạm kiểm lâm & VQG gần vị trí của bạn
                     </h2>
                     <p style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
-                      Tự động sắp xếp theo khoảng cách Haversine từ {referenceSosCoords.label}.
+                      Xếp theo khoảng cách đường chim bay từ {referenceSosCoords.label}.
                     </p>
                   </div>
                   <span className="badge badge-success">
                     <IconCheckCircle size={13} />
-                    100% Số Xác Thực
+                    Số trực thực tế
                   </span>
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   {nearestRangerStations.map(({ station, distanceKm }) => {
                     const primaryDial = extractPrimaryDialNumber(station.hotlinePhone);
+                    const mobileDial = extractVietnamMobileNumber(station.emergencyPhone, station.hotlinePhone);
                     return (
                       <div
                         key={station.slug}
@@ -4342,23 +5235,40 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                             <IconPhone size={14} />
                             Gọi {station.hotlinePhone}
                           </a>
-                          <button
-                            type="button"
-                            className="btn btn-secondary"
-                            style={{ padding: '6px 10px', fontSize: '0.76rem' }}
-                            onClick={() => {
-                              setSosPhone(primaryDial);
-                              onShowToast?.(`Đã chọn ${station.name} làm số nhận SMS 2G.`, 'info');
-                            }}
-                          >
-                            <IconRadio size={14} />
-                            Chọn nhận SMS
-                          </button>
+                          {mobileDial ? (
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              style={{ padding: '6px 10px', fontSize: '0.76rem', fontVariantNumeric: 'tabular-nums' }}
+                              onClick={() => {
+                                setSosPhone(mobileDial);
+                                onShowToast?.(`Đã điền số di động ${mobileDial} (${station.name}) vào ô nhận tin SOS.`, 'success');
+                              }}
+                            >
+                              <IconRadio size={14} />
+                              Gửi SMS ({mobileDial})
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="btn btn-outline"
+                              style={{ padding: '6px 10px', fontSize: '0.76rem' }}
+                              onClick={() => {
+                                onShowToast?.(
+                                  `${station.name} chỉ công bố số máy bàn (${station.hotlinePhone}) nên không nhận SMS 2G — hãy bấm Gọi trực tiếp hoặc gửi SMS cho số di động người thân.`,
+                                  'info'
+                                );
+                              }}
+                            >
+                              <IconAlertTriangle size={14} />
+                              Số bàn (chỉ gọi)
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="btn btn-outline"
                             style={{ padding: '6px 10px', fontSize: '0.76rem' }}
-                            onClick={() => handleCopyText(primaryDial, station.name)}
+                            onClick={() => handleCopyText(mobileDial || primaryDial, station.name)}
                           >
                             <IconCheck size={14} />
                             Chép số
@@ -4396,20 +5306,20 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     }}
                   >
                     <IconShieldAlert size={18} color="var(--color-error-text, var(--color-error))" />
-                    3. Thẻ Màn Hình Khóa Y Tế Khẩn Cấp (ICE Lockscreen PNG 1080×1920)
+                    3. Ảnh màn hình khóa y tế khẩn cấp (ICE 1080×1920)
                   </h2>
                   <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
-                    Tạo ảnh hình nền khóa điện thoại hiển thị Nhóm máu, Dị ứng, Bệnh nền, Người thân khẩn cấp & Trạm Kiểm lâm để lực lượng cứu hộ đọc ngay không cần mở mật khẩu máy. Chừa khoảng trống cho đồng hồ khóa iOS/Android.
+                    Tạo sẵn hình nền khóa máy ghi nhóm máu, dị ứng, bệnh nền, số người thân và trạm kiểm lâm — lỡ có chuyện ngoài rừng, đội cứu hộ nhìn màn hình khóa là biết ngay mà không cần mở khóa điện thoại. Khung ảnh đã chừa sẵn chỗ cho đồng hồ iOS/Android.
                   </p>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span className={iceStorageError ? 'badge badge-error' : 'badge badge-success'}>
                     <IconLock size={13} />
-                    {iceStorageError ? 'Chỉ giữ tạm trong phiên' : 'Lưu cục bộ trên thiết bị'}
+                    {iceStorageError ? 'Chỉ giữ tạm lúc này' : 'Lưu ngay trên máy bạn'}
                   </span>
                   {iceSavedAt && !iceStorageError && (
                     <span style={{ fontSize: '0.73rem', color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
-                      Đã tự lưu lúc {iceSavedAt}
+                      Tự lưu lúc {iceSavedAt}
                     </span>
                   )}
                 </div>
@@ -4442,7 +5352,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   <div className="hub-grid-2" style={{ gap: 10 }}>
                     <div>
                       <label className="form-label" htmlFor="ice-fullname-input" style={{ display: 'block', marginBottom: 4 }}>
-                        Họ và tên người leo núi
+                        Họ và tên
                       </label>
                       <input
                         id="ice-fullname-input"
@@ -4452,7 +5362,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                         onChange={(e) =>
                           updateIceProfile((prev) => ({ ...prev, fullName: e.target.value }))
                         }
-                        placeholder="VD: Nguyễn Minh Hoàng"
+                        placeholder="Ví dụ: Nguyễn Minh Hoàng"
                         style={{
                           width: '100%',
                           padding: '8px 10px',
@@ -4476,7 +5386,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                         onChange={(e) =>
                           updateIceProfile((prev) => ({ ...prev, birthYear: e.target.value }))
                         }
-                        placeholder="VD: 1996"
+                        placeholder="Ví dụ: 1996"
                         style={{
                           width: '100%',
                           padding: '8px 10px',
@@ -4493,7 +5403,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   {/* Blood Type Quick Pills */}
                   <div>
                     <span className="form-label" style={{ display: 'block', marginBottom: 6 }}>
-                      Nhóm máu (hiển thị cỡ lớn góc trên thẻ ICE)
+                      Nhóm máu (in chữ lớn góc trên ảnh khóa)
                     </span>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                       {ICE_BLOOD_TYPES.map((bt) => {
@@ -4525,7 +5435,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                       <label className="form-label" htmlFor="ice-allergies-input" style={{ margin: 0 }}>
-                        Dị ứng thuốc / thức ăn / nọc ong rừng
+                        Dị ứng thuốc, thức ăn hoặc nọc ong
                       </label>
                       <span
                         style={{
@@ -4548,7 +5458,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       onChange={(e) =>
                         updateIceProfile((prev) => ({ ...prev, allergies: e.target.value }))
                       }
-                      placeholder="VD: Dị ứng Penicillin, dị ứng ong vò vẽ (mang bút tiêm Epinephrine)"
+                      placeholder="Ví dụ: Dị ứng Penicillin, ong vò vẽ (có bút tiêm Epinephrine)"
                       style={{
                         width: '100%',
                         padding: '8px 10px',
@@ -4563,7 +5473,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                       <label className="form-label" htmlFor="ice-conditions-input" style={{ margin: 0 }}>
-                        Bệnh nền / Thuốc đang dùng / Lưu ý y tế
+                        Bệnh nền, thuốc đang dùng hoặc lưu ý y tế
                       </label>
                       <span
                         style={{
@@ -4586,7 +5496,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       onChange={(e) =>
                         updateIceProfile((prev) => ({ ...prev, medicalConditions: e.target.value }))
                       }
-                      placeholder="VD: Hen suyễn nhẹ (ống hít Ventolin trong túi hông trái balo)"
+                      placeholder="Ví dụ: Hen nhẹ — ống xịt Ventolin ở ngăn hông trái balo"
                       style={{
                         width: '100%',
                         padding: '8px 10px',
@@ -4612,7 +5522,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     }}
                   >
                     <strong style={{ fontSize: '0.8rem', color: 'var(--color-primary)' }}>
-                      Người Liên Hệ Khẩn Cấp #1 (Ưu tiên gọi đầu tiên)
+                      Người liên hệ khẩn cấp #1 (gọi trước tiên)
                     </strong>
                     <div className="hub-grid-3" style={{ gap: 8 }}>
                       <input
@@ -4647,7 +5557,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                             contact1: { ...prev.contact1, relation: e.target.value },
                           }))
                         }
-                        placeholder="Quan hệ (Bố/Mẹ/Vợ...)"
+                        placeholder="Quan hệ (Bố, Mẹ, Vợ...)"
                         style={{
                           width: '100%',
                           padding: '7px 9px',
@@ -4695,7 +5605,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     }}
                   >
                     <strong style={{ fontSize: '0.8rem', color: 'var(--color-sky)' }}>
-                      Người Liên Hệ Khẩn Cấp #2 (Trưởng đoàn / Porter / Dự phòng)
+                      Người liên hệ khẩn cấp #2 (trưởng đoàn, porter hoặc người nhà)
                     </strong>
                     <div className="hub-grid-3" style={{ gap: 8 }}>
                       <input
@@ -4730,7 +5640,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                             contact2: { ...prev.contact2, relation: e.target.value },
                           }))
                         }
-                        placeholder="Quan hệ (Leader/Bạn...)"
+                        placeholder="Quan hệ (Trưởng đoàn, bạn...)"
                         style={{
                           width: '100%',
                           padding: '7px 9px',
@@ -4769,7 +5679,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   <div className="hub-grid-2" style={{ gap: 10 }}>
                     <div>
                       <label className="form-label" htmlFor="ice-peak-select" style={{ display: 'block', marginBottom: 4 }}>
-                        Chọn cung đường LOST ({trails.length} đỉnh)
+                        Chọn cung sắp đi ({trails.length} đỉnh)
                       </label>
                       <select
                         id="ice-peak-select"
@@ -4784,7 +5694,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                           color: 'var(--color-text-main)',
                         }}
                       >
-                        <option value="">-- Chọn cung để tự điền Trạm Kiểm lâm --</option>
+                        <option value="">-- Chọn cung để điền sẵn trạm kiểm lâm --</option>
                         {trails.map((t) => (
                           <option key={t.id} value={t.id}>
                             {t.name} ({t.maxAltitudeM.toLocaleString('vi-VN')}m)
@@ -4795,7 +5705,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
 
                     <div>
                       <label className="form-label" htmlFor="ice-deadline-input" style={{ display: 'block', marginBottom: 4 }}>
-                        Dự kiến hạ sơn (tùy chọn)
+                        Giờ dự kiến xuống núi (nếu có)
                       </label>
                       <input
                         id="ice-deadline-input"
@@ -4805,7 +5715,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                         onChange={(e) =>
                           updateIceProfile((prev) => ({ ...prev, returnDeadline: e.target.value }))
                         }
-                        placeholder="VD: 17:00 CN 26/11"
+                        placeholder="Ví dụ: 17:00 CN 26/11"
                         style={{
                           width: '100%',
                           padding: '8px 10px',
@@ -4822,7 +5732,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   <div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                       <label className="form-label" htmlFor="ice-planned-peak-input" style={{ margin: 0 }}>
-                        Tên cung đường / Đỉnh núi hiển thị trên thẻ (có thể chỉnh tay)
+                        Tên cung / đỉnh ghi trên ảnh (sửa tay được)
                       </label>
                       <span
                         style={{
@@ -4846,7 +5756,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                         setIcePeakTrailId('');
                         updateIceProfile((prev) => ({ ...prev, plannedPeak: e.target.value }));
                       }}
-                      placeholder="VD: Đỉnh Fansipan (3.143m) - Hướng Trạm Tôn"
+                      placeholder="Ví dụ: Đỉnh Fansipan (3.143m) – hướng Trạm Tôn"
                       style={{
                         width: '100%',
                         padding: '8px 10px',
@@ -4861,7 +5771,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   <div className="hub-grid-2" style={{ gap: 10 }}>
                     <div>
                       <label className="form-label" htmlFor="ice-ranger-name" style={{ display: 'block', marginBottom: 4 }}>
-                        Trạm Kiểm lâm / BQL VQG phụ trách
+                        Trạm kiểm lâm / BQL VQG phụ trách
                       </label>
                       <input
                         id="ice-ranger-name"
@@ -4871,7 +5781,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                         onChange={(e) =>
                           updateIceProfile((prev) => ({ ...prev, rangerStationName: e.target.value }))
                         }
-                        placeholder="VD: BQL VQG Hoàng Liên (Sa Pa)"
+                        placeholder="Ví dụ: BQL VQG Hoàng Liên (Sa Pa)"
                         style={{
                           width: '100%',
                           padding: '8px 10px',
@@ -4884,7 +5794,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     </div>
                     <div>
                       <label className="form-label" htmlFor="ice-ranger-phone" style={{ display: 'block', marginBottom: 4 }}>
-                        Hotline Kiểm lâm xác thực
+                        Số trực kiểm lâm
                       </label>
                       <input
                         id="ice-ranger-phone"
@@ -4894,7 +5804,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                         onChange={(e) =>
                           updateIceProfile((prev) => ({ ...prev, rangerHotline: e.target.value }))
                         }
-                        placeholder="VD: 0214 3871 330 hoặc 112"
+                        placeholder="Ví dụ: 02143.871.494 hoặc 112"
                         style={{
                           width: '100%',
                           padding: '8px 10px',
@@ -4922,11 +5832,11 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                             rangerStationName: nearest.name,
                             rangerHotline: nearest.hotlinePhone,
                           }));
-                          onShowToast?.(`Đã gắn trạm gần nhất: ${nearest.name}.`, 'info');
+                          onShowToast?.(`Đã điền trạm gần nhất: ${nearest.name}.`, 'info');
                         }}
                       >
                         <IconRadio size={14} />
-                        Gắn trạm gần vị trí hiện tại
+                        Điền trạm gần chỗ mình nhất
                       </button>
                     )}
                     {iceConfirmClear ? (
@@ -4938,7 +5848,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                           onClick={handleClearIceProfile}
                         >
                           <IconTrash size={14} />
-                          Xác nhận xóa
+                          Xóa luôn
                         </button>
                         <button
                           type="button"
@@ -4946,7 +5856,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                           style={{ padding: '6px 10px', fontSize: '0.77rem' }}
                           onClick={() => setIceConfirmClear(false)}
                         >
-                          Hủy
+                          Để lại
                         </button>
                       </div>
                     ) : (
@@ -4957,7 +5867,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                         onClick={() => setIceConfirmClear(true)}
                       >
                         <IconTrash size={14} />
-                        Xóa hồ sơ ICE cục bộ
+                        Xóa thông tin ICE trên máy
                       </button>
                     )}
                   </div>
@@ -4989,7 +5899,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                         style={{ padding: '4px 10px', fontSize: '0.74rem' }}
                         onClick={() => setIceTheme('dark')}
                       >
-                        Nền Tối
+                        Nền tối
                       </button>
                       <button
                         type="button"
@@ -4998,7 +5908,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                         style={{ padding: '4px 10px', fontSize: '0.74rem' }}
                         onClick={() => setIceTheme('light')}
                       >
-                        Nền Sáng
+                        Nền sáng
                       </button>
                     </div>
                   </div>
@@ -5036,7 +5946,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       />
                     ) : (
                       <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', padding: 16, textAlign: 'center' }}>
-                        {iceError || 'Đang dựng ảnh màn hình khóa ICE 1080×1920...'}
+                        {iceError || 'Đang tạo ảnh màn hình khóa 1080×1920...'}
                       </span>
                     )}
                   </div>
@@ -5061,12 +5971,12 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                         lineHeight: 1.45,
                       }}
                     >
-                      <strong>Cảnh báo cắt gọn trên ảnh:</strong> Mục {iceTruncatedFields.join(', ')} hơi dài so với khung 1080×1920 — hãy rút gọn để đội cứu hộ đọc đầy đủ thông tin y tế.
+                      <strong>Một vài dòng hơi dài:</strong> Mục {iceTruncatedFields.join(', ')} đang bị cắt bớt trên khung 1080×1920 — bạn rút ngắn lại một chút để đội cứu hộ đọc trọn nhé.
                     </div>
                   )}
 
                   <span style={{ fontSize: '0.73rem', color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums', textAlign: 'center' }}>
-                    1080 × 1920 px • Định dạng PNG sắc nét • 100% xử lý trên trình duyệt, không tải dữ liệu y tế lên mạng
+                    Ảnh PNG 1080 × 1920 px · tạo hoàn toàn trên máy bạn, thông tin y tế không gửi lên mạng
                   </span>
 
                   <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -5080,7 +5990,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       }}
                     >
                       <IconDownload size={16} />
-                      {iceExporting ? 'Đang xuất ảnh PNG...' : 'Tải Ảnh Màn Hình Khóa PNG (1080×1920)'}
+                      {iceExporting ? 'Đang xuất ảnh...' : 'Tải ảnh màn hình khóa PNG'}
                     </button>
                     <button
                       type="button"
@@ -5092,7 +6002,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                       }}
                     >
                       <IconShare size={15} />
-                      {iceExporting ? 'Đang chuẩn bị tệp...' : 'Chia Sẻ / Lưu Vào Thư Viện Ảnh'}
+                      {iceExporting ? 'Đang chuẩn bị...' : 'Chia sẻ hoặc lưu vào thư viện ảnh'}
                     </button>
                   </div>
                 </div>
@@ -5102,7 +6012,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
         )}
 
         {/* ================================================================= */}
-        {/* TAB 5: HỌC VIỆN SINH TỒN & SƠ CỨU THỰC ĐỊA VIỆT NAM (8 TÌNH HUỐNG) */}
+        {/* TAB 5: TÌNH HUỐNG SINH TỒN & SƠ CỨU RỪNG NÚI VIỆT NAM (8 TÌNH HUỐNG) */}
         {/* ================================================================= */}
         {activeTab === 'academy' && (
           <div className="tab-content-slide" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -5111,10 +6021,10 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
                 <div>
                   <h2 style={{ fontSize: '1.08rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 4 }}>
-                    Học Viện Sinh Tồn & Sơ Cứu Thực Địa Việt Nam (Chuẩn WFA)
+                    Tình huống xử lý khẩn cấp & sơ cứu rừng núi (chuẩn WFA)
                   </h2>
                   <p style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)' }}>
-                    Luyện tập xử lý 8 tình huống khẩn cấp có thật trên địa hình rừng núi Việt Nam. Tiến độ tự động lưu ngoại tuyến.
+                    Ôn trước 8 tình huống dễ gặp trên các cung đường Việt Nam để lúc vào rừng không bị cuống. Bài làm tự lưu trên máy, không cần mạng.
                   </p>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -5128,7 +6038,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     style={{ fontVariantNumeric: 'tabular-nums' }}
                   >
                     <IconShieldCheck size={13} />
-                    Thành thạo {drillStats.correct}/{drillStats.total} ({drillStats.percent}%)
+                    Đúng {drillStats.correct}/{drillStats.total} tình huống ({drillStats.percent}%)
                   </span>
                   <button
                     type="button"
@@ -5137,7 +6047,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     onClick={handleResetDrills}
                   >
                     <IconRotateCw size={14} />
-                    Làm lại bài tập
+                    Làm lại từ đầu
                   </button>
                 </div>
               </div>
@@ -5229,7 +6139,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
                     <span className={activeDrill.severity === 'critical' ? 'badge badge-error' : 'badge badge-warning'}>
-                      {activeDrill.severity === 'critical' ? 'Nguy Kịch — Ưu Tiên P0' : 'Khẩn Cấp Thực Địa'}
+                      {activeDrill.severity === 'critical' ? 'Nguy kịch — xử lý ngay' : 'Tình huống khẩn cấp'}
                     </span>
                     <span className="badge badge-info">
                       <IconMapPin size={12} />
@@ -5361,15 +6271,15 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     >
                       {activeIsCorrect ? <IconCheckCircle size={18} /> : <IconAlertTriangle size={18} />}
                       {activeIsCorrect
-                        ? `Chính xác! Đáp án ${activeDrill.correctOptionId} đạt chuẩn Sơ Cứu Hoang Dã (WFA).`
-                        : `Chưa an toàn — Đáp án chuẩn WFA là phương án ${activeDrill.correctOptionId}.`}
+                        ? `Chuẩn rồi! Phương án ${activeDrill.correctOptionId} đúng phác đồ sơ cứu dã ngoại (WFA).`
+                        : `Cách này còn rủi ro — phương án đúng chuẩn WFA là ${activeDrill.correctOptionId}.`}
                     </div>
                     <p style={{ fontSize: '0.86rem', color: 'var(--color-text-main)', lineHeight: 1.6 }}>
                       {activeDrill.clinicalExplanation}
                     </p>
                   </div>
 
-                  {/* Highlighted CẤM KỴ Mistake Box */}
+                  {/* Highlighted Forbidden Mistake Box */}
                   <div
                     style={{
                       padding: '12px 15px',
@@ -5405,7 +6315,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                     }}
                   >
                     <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
-                      Đầu mối cứu hộ xác thực khu vực: <strong style={{ color: 'var(--color-text-main)' }}>{activeDrill.hotlineLabel}</strong>
+                      Số cứu hộ khu vực này: <strong style={{ color: 'var(--color-text-main)' }}>{activeDrill.hotlineLabel}</strong>
                     </span>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       <a href="tel:112" className="btn btn-danger" style={{ padding: '5px 10px', fontSize: '0.76rem' }}>
@@ -5452,7 +6362,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
                   Tình huống trước
                 </button>
                 <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                  Bài {activeDrillIdx + 1} / {VIETNAM_SURVIVAL_DRILLS.length}
+                  Tình huống {activeDrillIdx + 1} / {VIETNAM_SURVIVAL_DRILLS.length}
                 </span>
                 <button
                   type="button"
@@ -5491,12 +6401,13 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
         )}
       </div>
 
-      {/* Full-Screen Visual SOS Strobe Portal */}
+      {/* Full-Screen Visual SOS Strobe Portal (forced dark theme so off-phase is truly dark in both light & dark app modes) */}
       {strobeActive &&
         typeof document !== 'undefined' &&
         createPortal(
           <div
             ref={strobeDialogRef}
+            data-theme="dark"
             role="dialog"
             aria-modal="true"
             aria-label="Đèn chớp tín hiệu SOS khẩn cấp"
@@ -5505,8 +6416,8 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               position: 'fixed',
               inset: 0,
               zIndex: 'var(--z-lightbox, 4000)',
-              background: strobeLit ? 'var(--color-on-danger)' : 'var(--color-error)',
-              color: strobeLit ? 'var(--color-error)' : 'var(--color-on-danger)',
+              background: strobeLit ? 'var(--color-on-media)' : 'var(--color-bg-main)',
+              color: strobeLit ? 'var(--color-bg-main)' : 'var(--color-on-media)',
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
@@ -5529,7 +6440,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               S O S
             </div>
             <p style={{ fontSize: '0.95rem', fontWeight: 600, maxWidth: 420 }}>
-              Đang phát nhịp Morse Quốc tế (3 ngắn • 3 dài • 3 ngắn). Hướng màn hình về phía đội cứu hộ hoặc trực thăng.
+              Đang chớp nhịp SOS (3 ngắn · 3 dài · 3 ngắn). Giơ cao màn hình hướng về phía đội cứu hộ hoặc khoảng thoáng.
             </p>
             <button
               ref={strobeStopBtnRef}
@@ -5539,7 +6450,7 @@ export const FieldToolkitView: React.FC<FieldToolkitViewProps> = ({
               style={{ padding: '14px 28px', fontSize: '1rem', fontWeight: 800 }}
             >
               <IconX size={18} />
-              DỪNG ĐÈN SOS (Esc)
+              Tắt đèn SOS (Esc)
             </button>
           </div>,
           document.body

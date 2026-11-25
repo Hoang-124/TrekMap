@@ -22,9 +22,13 @@ const cleanupInterval = setInterval(() => {
 }, 60_000);
 cleanupInterval.unref();
 
+export const stopCacheCleanupTimer = (): void => {
+  clearInterval(cleanupInterval);
+};
+
 /**
- * Builds a canonical cache key with sorted query parameters and bounded key length
- * so reordered parameters or cache-busting junk cannot duplicate or flush the LRU.
+ * Builds a canonical cache key with sorted query parameters and collision-free SHA-256 hashing
+ * for long queries (>200 chars) so distinct queries never collide and junk cannot flush the LRU.
  */
 function buildCanonicalCacheKey(req: Request): string {
   const rawUrl = req.originalUrl || req.url || '/';
@@ -38,7 +42,11 @@ function buildCanonicalCacheKey(req: Request): string {
     .sort(([a], [b]) => a.localeCompare(b));
 
   if (entries.length === 0) return `cache:${pathPart}`;
-  const canonicalQuery = entries.map(([k, v]) => `${k}=${v}`).join('&').slice(0, 300);
+  const canonicalQuery = entries.map(([k, v]) => `${k}=${v}`).join('&');
+  if (canonicalQuery.length > 200) {
+    const queryHash = crypto.createHash('sha256').update(canonicalQuery).digest('base64url').slice(0, 32);
+    return `cache:${pathPart}?h=${queryHash}`;
+  }
   return `cache:${pathPart}?${canonicalQuery}`;
 }
 
@@ -131,35 +139,35 @@ export const routeCache = (ttlSeconds: number = 300) => {
           // Non-serializable fallback handled by Express
         }
 
-        if (memoryCache.size >= MAX_CACHE_ENTRIES) {
-          // Purge expired entries first before evicting LRU item
-          const nowTs = Date.now();
-          for (const [k, v] of memoryCache.entries()) {
-            if (v.expiry <= nowTs) memoryCache.delete(k);
-          }
+        const serializedBytes = serialized ? Buffer.byteLength(serialized, 'utf8') : Infinity;
+        const canCachePayload = Boolean(serialized && serializedBytes <= MAX_SERIALIZED_CACHE_BYTES);
+
+        if (canCachePayload) {
           if (memoryCache.size >= MAX_CACHE_ENTRIES) {
-            const oldestKey = memoryCache.keys().next().value;
-            if (oldestKey) memoryCache.delete(oldestKey);
+            // Purge expired entries first before evicting LRU item
+            const nowTs = Date.now();
+            for (const [k, v] of memoryCache.entries()) {
+              if (v.expiry <= nowTs) memoryCache.delete(k);
+            }
+            if (memoryCache.size >= MAX_CACHE_ENTRIES) {
+              const oldestKey = memoryCache.keys().next().value;
+              if (oldestKey) memoryCache.delete(oldestKey);
+            }
           }
+
+          memoryCache.set(key, {
+            data: body,
+            etag,
+            serialized,
+            expiry: Date.now() + ttlSeconds * 1000,
+          });
         }
-
-        const cacheableSerialized =
-          serialized && Buffer.byteLength(serialized, 'utf8') <= MAX_SERIALIZED_CACHE_BYTES
-            ? serialized
-            : undefined;
-
-        memoryCache.set(key, {
-          data: body,
-          etag,
-          serialized: cacheableSerialized,
-          expiry: Date.now() + ttlSeconds * 1000,
-        });
 
         res.setHeader(
           'Cache-Control',
           `public, max-age=${Math.min(60, ttlSeconds)}, stale-while-revalidate=${ttlSeconds}`
         );
-        res.setHeader('X-Cache', 'MISS');
+        res.setHeader('X-Cache', canCachePayload ? 'MISS' : 'BYPASS');
 
         if (etag) {
           res.setHeader('ETag', etag);

@@ -52,12 +52,12 @@ export function computeClientBioMetrics(params: {
   durationDays?: number;
   toblerHoursDirect?: number;
 }): BioCalcResult {
-  const distanceKm = Math.max(0.5, Math.min(250, params.distanceKm || 12));
-  const elevationGainM = Math.max(0, Math.min(10000, params.elevationGainM || 700));
-  const elevationLossM = Math.max(0, Math.min(10000, params.elevationLossM ?? elevationGainM));
-  const maxAltitudeM = Math.max(50, Math.min(4000, params.maxAltitudeM || 1800));
-  const bodyWeightKg = Math.max(35, Math.min(160, params.bodyWeightKg || 62));
-  const packWeightKg = Math.max(0, Math.min(40, params.packWeightKg || 8));
+  const distanceKm = Math.max(0.5, Math.min(250, Number.isFinite(params.distanceKm) && params.distanceKm > 0 ? params.distanceKm : 12));
+  const elevationGainM = Math.max(0, Math.min(10000, Number.isFinite(params.elevationGainM) ? params.elevationGainM : 700));
+  const elevationLossM = Math.max(0, Math.min(10000, Number.isFinite(params.elevationLossM ?? elevationGainM) ? (params.elevationLossM ?? elevationGainM) : elevationGainM));
+  const maxAltitudeM = Math.max(50, Math.min(4000, Number.isFinite(params.maxAltitudeM) && params.maxAltitudeM > 0 ? params.maxAltitudeM : 1800));
+  const bodyWeightKg = Math.max(35, Math.min(160, Number.isFinite(params.bodyWeightKg) && params.bodyWeightKg > 0 ? params.bodyWeightKg : 62));
+  const packWeightKg = Math.max(0, Math.min(40, Number.isFinite(params.packWeightKg) ? params.packWeightKg : 8));
   const fitnessLevel = params.fitnessLevel || 'intermediate';
   const ambientTempC =
     params.ambientTempC !== undefined
@@ -76,7 +76,8 @@ export function computeClientBioMetrics(params: {
 
   const baseSpeed = fitnessLevel === 'beginner' ? 3.5 : fitnessLevel === 'advanced' ? 5.4 : 4.5;
   const avgDescentGrade = distanceKm > 0 ? elevationLossM / (distanceKm * 500) : 0;
-  const steepDescentHrs = avgDescentGrade > 0.12 ? elevationLossM / 1800 : 0;
+  // Langmuir steep descent penalty applies beyond 12 degrees (tan(12°) ≈ 0.2126)
+  const steepDescentHrs = avgDescentGrade > 0.2126 ? elevationLossM / 1800 : 0;
   const naismithHours = Math.round((distanceKm / baseSpeed + elevationGainM / 600 + steepDescentHrs) * packFatigue * 10) / 10;
 
   let toblerRaw: number;
@@ -101,7 +102,10 @@ export function computeClientBioMetrics(params: {
   const climbRate = recommendedMovingHours > 0 ? elevationGainM / recommendedMovingHours : 0;
   const met = 5.8 + (climbRate / 300) * 1.1 + (packWeightKg / bodyWeightKg) * 3.5;
   const caloriesActiveKcal = Math.round(met * bodyWeightKg * recommendedMovingHours);
-  const caloriesDailyTotalKcal = Math.round(caloriesActiveKcal / durationDays + 1550);
+  // Avoid double-counting BMR during active hiking hours (already included inside gross MET)
+  const activeHoursPerDay = Math.min(18, recommendedMovingHours / durationDays);
+  const restingKcalPerDay = Math.round(bodyWeightKg * 24 * Math.max(0.25, (24 - activeHoursPerDay) / 24));
+  const caloriesDailyTotalKcal = Math.round(caloriesActiveKcal / durationDays + restingKcalPerDay);
 
   const maxRecKg = Math.round(bodyWeightKg * 0.18 * 10) / 10;
   const packAdvice =
@@ -294,7 +298,7 @@ export async function parseGpxFileClient(file: File): Promise<ParsedClientGpx> {
 
   const safetyWarnings: string[] = [];
   if (!hasElevation) {
-    safetyWarnings.push('File GPX gốc thiếu trường cao độ <ele> — hệ thống đang bổ sung dữ liệu DEM từ Open-Meteo.');
+    safetyWarnings.push('File GPX gốc thiếu trường cao độ <ele> — hệ thống sẽ bổ sung dữ liệu DEM từ AWS Open Data Terrarium.');
   }
   if (maxAlt >= 2500) {
     safetyWarnings.push(`Độ cao đỉnh ${maxAlt.toLocaleString()}m: chú ý sốc độ cao AMS và trang phục giữ nhiệt 3 lớp.`);

@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { createPortal } from 'react-dom';
 import type { UserProfile } from '../../types.js';
 import {
   IconPin,
@@ -15,8 +14,20 @@ import {
   IconMail,
   IconCalendar,
   IconPlus,
+  IconArrowLeft,
+  IconCheckCircle,
+  IconEye,
+  IconShieldCheck,
+  IconAlertTriangle,
+  IconUsers,
+  IconMessageSquare,
+  IconClock,
+  IconCompass,
+  IconSearch,
+  IconRotateCw,
+  IconRadio,
 } from '../common/SvgIcons.js';
-import { useSocket } from '../../context/SocketContext.js';
+import { useSocketConnection } from '../../context/SocketContext.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import { searchMatchVietnamese } from '../../utils/textUtils.js';
 import { isTopmostFocusTrap, useFocusTrap } from '../../hooks/useFocusTrap.js';
@@ -25,8 +36,11 @@ import type {
   AdminCockpitSectionId,
   CockpitBeaconPoint,
   CockpitContributionPoint,
+  CockpitCoordListener,
+  CockpitCoordPoint,
   CockpitIncidentPoint,
   CockpitInspectorSelection,
+  CockpitOverdueTimerPoint,
   CockpitTrailPoint,
   CockpitTriageItem,
   CockpitUserPoint,
@@ -34,9 +48,40 @@ import type {
 import { AdminCommandDeck, type AdminCommandDeckStats } from './AdminCommandDeck.js';
 import { AdminSpatialInspector } from './AdminSpatialInspector.js';
 import { AdminStatusBar, type AdminReadinessLevel } from './AdminStatusBar.js';
+import {
+  AdminAuthorModal,
+  AdminConfirmDialog,
+  ContributionDetailModal,
+  CreateTrailModal,
+  EditTrailModal,
+  type AdminAuthorModalState,
+  type AdminContributionItem,
+  type AdminTrailItem,
+  type AdminUserItem,
+  type ConfirmDialogState,
+  type EntityRef,
+  type TrailFormState,
+  type ValidRegion,
+} from './AdminModals.js';
+import { safeLocalStorageSet } from '../../utils/storageScope.js';
 
 const DEFAULT_TRAIL_COVER = '/covers/trail-fansipan.svg';
 const DEFAULT_AVATAR = '/covers/avatar-default.svg';
+const activeAdminActionLocks = new Set<string>();
+const adminFetchControllers = new Map<string, AbortController>();
+
+const createAdminFetchSignal = (key: string): AbortSignal => {
+  const existing = adminFetchControllers.get(key);
+  if (existing) existing.abort();
+  const controller = new AbortController();
+  adminFetchControllers.set(key, controller);
+  return controller.signal;
+};
+
+const abortAllAdminFetches = () => {
+  adminFetchControllers.forEach((ctrl) => ctrl.abort());
+  adminFetchControllers.clear();
+};
 
 const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
   return ({
@@ -67,43 +112,26 @@ const createSvgIcon = (d: React.ReactNode, defaultSize = 18) => {
   );
 };
 
-const ArrowLeft = createSvgIcon(
-  <>
-    <line x1="19" y1="12" x2="5" y2="12" />
-    <polyline points="12 19 5 12 12 5" />
-  </>
-);
-const CheckCircle2 = createSvgIcon(
-  <>
-    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-    <polyline points="22 4 12 14.01 9 11.01" />
-  </>
-);
+// Reuse shared icons from SvgIcons.tsx to avoid duplicate inline SVG declarations
+const ArrowLeft = IconArrowLeft;
+const CheckCircle2 = IconCheckCircle;
+const Trash2 = IconTrash;
+const Eye = IconEye;
+const ShieldCheck = IconShieldCheck;
+const AlertTriangle = IconAlertTriangle;
+const Users = IconUsers;
+const MessageSquare = IconMessageSquare;
+const Clock = IconClock;
+const Compass = IconCompass;
+const Search = IconSearch;
+const RefreshCw = IconRotateCw;
+const Radio = IconRadio;
+
 const XCircle = createSvgIcon(
   <>
     <circle cx="12" cy="12" r="10" />
     <line x1="15" y1="9" x2="9" y2="15" />
     <line x1="9" y1="9" x2="15" y2="15" />
-  </>
-);
-const Trash2 = createSvgIcon(
-  <>
-    <polyline points="3 6 5 6 21 6" />
-    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-    <line x1="10" y1="11" x2="10" y2="17" />
-    <line x1="14" y1="11" x2="14" y2="17" />
-  </>
-);
-const Eye = createSvgIcon(
-  <>
-    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-    <circle cx="12" cy="12" r="3" />
-  </>
-);
-const ShieldCheck = createSvgIcon(
-  <>
-    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-    <polyline points="9 12 11 14 15 10" />
   </>
 );
 const Inbox = createSvgIcon(
@@ -119,35 +147,11 @@ const Layers = createSvgIcon(
     <polyline points="2 12 12 17 22 12" />
   </>
 );
-const AlertTriangle = createSvgIcon(
-  <>
-    <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
-    <line x1="12" y1="9" x2="12" y2="13" />
-    <line x1="12" y1="17" x2="12.01" y2="17" />
-  </>
-);
-const Users = createSvgIcon(
-  <>
-    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-    <circle cx="9" cy="7" r="4" />
-    <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
-    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-  </>
-);
-const MessageSquare = createSvgIcon(
-  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-);
 const BarChart3 = createSvgIcon(
   <>
     <line x1="18" y1="20" x2="18" y2="10" />
     <line x1="12" y1="20" x2="12" y2="4" />
     <line x1="6" y1="20" x2="6" y2="14" />
-  </>
-);
-const Clock = createSvgIcon(
-  <>
-    <circle cx="12" cy="12" r="10" />
-    <polyline points="12 6 12 12 16 14" />
   </>
 );
 const Database = createSvgIcon(
@@ -157,31 +161,6 @@ const Database = createSvgIcon(
     <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
   </>
 );
-const Compass = createSvgIcon(
-  <>
-    <circle cx="12" cy="12" r="10" />
-    <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" />
-  </>
-);
-const Search = createSvgIcon(
-  <>
-    <circle cx="11" cy="11" r="8" />
-    <line x1="21" y1="21" x2="16.65" y2="16.65" />
-  </>
-);
-const RefreshCw = createSvgIcon(
-  <>
-    <polyline points="23 4 23 10 17 10" />
-    <polyline points="1 20 1 14 7 14" />
-    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-  </>
-);
-const Radio = createSvgIcon(
-  <>
-    <circle cx="12" cy="12" r="2" />
-    <path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14" />
-  </>
-);
 const ExternalLinkIcon = createSvgIcon(
   <>
     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
@@ -189,7 +168,6 @@ const ExternalLinkIcon = createSvgIcon(
     <line x1="10" y1="14" x2="21" y2="3" />
   </>
 );
-
 const MenuIcon = createSvgIcon(
   <>
     <line x1="4" y1="7" x2="20" y2="7" />
@@ -197,7 +175,6 @@ const MenuIcon = createSvgIcon(
     <line x1="4" y1="17" x2="20" y2="17" />
   </>
 );
-
 const PanelLeftClose = createSvgIcon(
   <>
     <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
@@ -205,7 +182,6 @@ const PanelLeftClose = createSvgIcon(
     <polyline points="16 15 13 12 16 9" />
   </>
 );
-
 const PanelLeftOpen = createSvgIcon(
   <>
     <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
@@ -227,68 +203,35 @@ const formatDateVi = (value?: string): string => {
   });
 };
 
-type ValidRegion = 'Miền Bắc' | 'Miền Trung' | 'Miền Nam';
-
 const normalizeRegion = (value?: string): ValidRegion => {
   if (value === 'Miền Bắc' || value === 'Miền Trung' || value === 'Miền Nam') {
     return value;
   }
+  const norm = (value || '').trim().toLowerCase();
+  if (
+    norm.includes('tây nguyên') ||
+    norm.includes('tay nguyen') ||
+    norm.includes('trung') ||
+    norm.includes('lâm đồng') ||
+    norm.includes('đà lạt') ||
+    norm.includes('đắk') ||
+    norm.includes('gia lai') ||
+    norm.includes('kon tum')
+  ) {
+    return 'Miền Trung';
+  }
+  if (norm.includes('nam') || norm.includes('cửu long')) {
+    return 'Miền Nam';
+  }
   return 'Miền Bắc';
 };
 
-type EntityRef = string | { _id?: string; id?: string } | null | undefined;
-
-interface AdminContributionItem {
-  _id?: string;
-  id?: string;
-  name?: string;
-  province?: string;
-  district?: string;
-  hamlet?: string;
-  region?: string;
-  distanceKm?: number;
-  elevationGainM?: number;
-  maxAltitudeM?: number;
-  difficultyLevel?: number;
-  durationHoursNote?: string;
-  description?: string;
-  transportationInfo?: string;
-  coverImage?: string;
-  permitRequired?: boolean;
-  permitInfo?: string;
-  hasCampsite?: boolean;
-  hasWaterSource?: boolean;
-  kidFriendly?: boolean;
-  startLat?: number;
-  startLng?: number;
-  endLat?: number;
-  endLng?: number;
-  status?: string;
-  authorName?: string;
-  authorEmail?: string;
-  authorAvatar?: string;
-  userId?: EntityRef;
-  createdBy?: EntityRef;
-  createdAt?: string;
-  submittedAt?: string;
-}
-
-interface AdminAuthorModalState {
-  name?: string;
-  email?: string;
-  avatar?: string;
-  userId?: string;
-  role?: string;
-  reputationScore?: number;
-  contribCount?: number;
-  approvedCount?: number;
-  pendingCount?: number;
-  authorContribs?: AdminContributionItem[];
-  expeditionId?: string;
-  isVerified?: boolean;
-  authProvider?: string;
-  date?: string;
-}
+const extractEntityId = (ref: EntityRef): string => {
+  if (!ref) return '';
+  if (typeof ref === 'string') return ref;
+  if (typeof ref === 'object') return String(ref._id || ref.id || '');
+  return String(ref);
+};
 
 type AdminSectionId = AdminCockpitSectionId;
 
@@ -327,78 +270,6 @@ const resolveInitialFieldSubTab = (): 'pois' | 'reviews' => {
   return rawTab === 'reviews' ? 'reviews' : 'pois';
 };
 
-interface AdminTrailItem {
-  _id?: string;
-  id?: string;
-  name?: string;
-  altNames?: string[];
-  province?: string;
-  district?: string;
-  region?: string;
-  distanceKm?: number;
-  elevationGainM?: number;
-  maxAltitudeM?: number;
-  durationDays?: number;
-  difficultyLevel?: number;
-  difficultyNote?: string;
-  durationHoursNote?: string;
-  description?: string;
-  transportationInfo?: string;
-  coverImage?: string;
-  startLat?: number;
-  startLng?: number;
-  endLat?: number;
-  endLng?: number;
-  bestMonths?: number[];
-  avoidMonths?: number[];
-  permitRequired?: boolean;
-  permitInfo?: string;
-  rescueContact?: {
-    name?: string;
-    phone?: string;
-    rangerContact?: string;
-  };
-  hasCampsite?: boolean;
-  hasWaterSource?: boolean;
-  kidFriendly?: boolean;
-  status?: 'approved' | 'pending' | 'rejected';
-  rating?: number;
-  reviewCount?: number;
-}
-
-interface TrailFormState {
-  name: string;
-  altNames: string;
-  province: string;
-  district: string;
-  region: ValidRegion;
-  distanceKm: string;
-  elevationGainM: string;
-  maxAltitudeM: string;
-  durationDays: string;
-  durationHoursNote: string;
-  difficultyLevel: string;
-  difficultyNote: string;
-  startLat: string;
-  startLng: string;
-  endLat: string;
-  endLng: string;
-  coverImage: string;
-  bestMonths: string;
-  avoidMonths: string;
-  description: string;
-  transportationInfo: string;
-  permitRequired: boolean;
-  permitInfo: string;
-  hasCampsite: boolean;
-  hasWaterSource: boolean;
-  kidFriendly: boolean;
-  rescueContactName: string;
-  rescueContactPhone: string;
-  rescueContactRanger: string;
-  status: 'approved' | 'pending' | 'rejected';
-}
-
 const createEmptyTrailForm = (): TrailFormState => ({
   name: '',
   altNames: '',
@@ -428,7 +299,7 @@ const createEmptyTrailForm = (): TrailFormState => ({
   kidFriendly: false,
   rescueContactName: '',
   rescueContactPhone: '112 / 114',
-  rescueContactRanger: '115',
+  rescueContactRanger: '',
   status: 'approved',
 });
 
@@ -451,7 +322,19 @@ const parseMonthList = (raw: string): number[] =>
 const hasValidVnCoords = (item: { startLat?: number; startLng?: number }): boolean => {
   const lat = Number(item.startLat);
   const lng = Number(item.startLng);
-  return Number.isFinite(lat) && Number.isFinite(lng) && lat >= 8 && lat <= 24 && lng >= 102 && lng <= 110;
+  return Number.isFinite(lat) && Number.isFinite(lng) && lat >= 7.0 && lat <= 24.0 && lng >= 101.8 && lng <= 115.5;
+};
+
+const DUPLICATE_PEAK_RADIUS_KM = 2.0;
+
+const haversineKm = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
 
 interface AdminIncidentDispute {
@@ -489,25 +372,6 @@ const isSyntheticIncident = (inc: AdminIncidentItem): boolean => {
   const idStr = String(inc.id || inc._id || '');
   return Boolean(inc.isSynthetic || idStr.startsWith('weather-live-') || idStr.startsWith('nasa-'));
 };
-
-interface AdminUserItem {
-  _id?: string;
-  id?: string;
-  fullName?: string;
-  name?: string;
-  username?: string;
-  email?: string;
-  avatarUrl?: string;
-  avatar?: string;
-  role?: string;
-  reputationScore?: number;
-  badges?: string[];
-  isBanned?: boolean;
-  banReason?: string;
-  isEmailVerified?: boolean;
-  authProvider?: string;
-  createdAt?: string;
-}
 
 interface AdminForumThreadItem {
   _id?: string;
@@ -739,6 +603,23 @@ const INQUIRY_STATUS_META: Record<
   cancelled: { label: 'Đã hủy', badgeClass: 'badge badge-error' },
 };
 
+const getRoleLabelVi = (role?: string): string => {
+  const norm = (role || 'user').toLowerCase();
+  if (norm === 'admin') return 'Quản trị viên';
+  if (norm === 'moderator') return 'Điều hành viên';
+  if (norm === 'guide') return 'Hướng dẫn viên';
+  return 'Thành viên';
+};
+
+const getSeverityLabelVi = (severity?: string): string => {
+  const norm = (severity || '').toLowerCase();
+  if (norm === 'critical' || norm === 'nghiêm trọng') return 'Nghiêm trọng';
+  if (norm === 'high' || norm === 'cao') return 'Cao';
+  if (norm === 'medium' || norm === 'moderate' || norm === 'trung bình') return 'Trung bình';
+  if (norm === 'low' || norm === 'thấp') return 'Thấp';
+  return severity || 'Cao';
+};
+
 const formatDateOnlyVi = (value?: string): string => {
   if (!value) return 'Chưa rõ';
   const parsed = new Date(value);
@@ -749,24 +630,6 @@ const formatDateOnlyVi = (value?: string): string => {
     year: 'numeric',
   });
 };
-
-const extractEntityId = (ref: EntityRef): string => {
-  if (!ref) return '';
-  if (typeof ref === 'string') return ref;
-  if (typeof ref === 'object') return String(ref._id || ref.id || '');
-  return String(ref);
-};
-
-interface ConfirmDialogState {
-  title: string;
-  message: string;
-  confirmLabel: string;
-  danger?: boolean;
-  reasonInputLabel?: string;
-  reasonPlaceholder?: string;
-  defaultReason?: string;
-  onConfirm: (reason?: string) => Promise<void> | void;
-}
 
 interface AdminDashboardViewProps {
   onBack: () => void;
@@ -782,7 +645,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   onOpenCommandPalette,
 }) => {
   const isStrictAdmin = currentUser?.role === 'admin';
-  const { isConnected: isSocketConnected } = useSocket();
+  const currentUserId = String(currentUser?._id || currentUser?.id || '').trim();
+  const { socket, isConnected: isSocketConnected } = useSocketConnection();
   const [mobileRailOpen, setMobileRailOpen] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState<boolean>(() => {
     try {
@@ -792,7 +656,18 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     }
   });
   const [inspectorSelection, setInspectorSelection] = useState<CockpitInspectorSelection | null>(null);
-  const [hoverCoords, setHoverCoords] = useState<{ lat: number; lng: number } | null>(null);
+
+  // Zero-re-render coordinate pub-sub channel so mousemove over radar never cascades root state
+  const hoverCoordListenersRef = useRef<Set<CockpitCoordListener>>(new Set());
+  const emitHoverCoords = useCallback((coords: CockpitCoordPoint | null) => {
+    hoverCoordListenersRef.current.forEach((listener) => listener(coords));
+  }, []);
+  const subscribeHoverCoords = useCallback((listener: CockpitCoordListener) => {
+    hoverCoordListenersRef.current.add(listener);
+    return () => {
+      hoverCoordListenersRef.current.delete(listener);
+    };
+  }, []);
 
   const toggleRailCollapsed = useCallback(() => {
     setRailCollapsed((prev) => {
@@ -815,19 +690,24 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   }, []);
 
   const [adminSection, setAdminSection] = useState<AdminSectionId>(resolveInitialAdminSection);
+  const [fieldSubTab, setFieldSubTab] = useState<'pois' | 'reviews'>(resolveInitialFieldSubTab);
   const effectiveSection: AdminSectionId =
     !isStrictAdmin && (adminSection === 'users' || adminSection === 'audit')
       ? 'overview'
       : adminSection;
 
   const handleSelectSection = useCallback(
-    (next: AdminSectionId) => {
+    (next: AdminSectionId, nextFieldSubTab?: 'pois' | 'reviews') => {
       if (!isStrictAdmin && (next === 'users' || next === 'audit')) return;
+      if (next === 'field' && nextFieldSubTab) {
+        setFieldSubTab(nextFieldSubTab);
+      }
       setAdminSection(next);
       setMobileRailOpen(false);
       try {
         if (typeof window !== 'undefined' && window.location.pathname === '/admin') {
-          const nextUrl = `/admin?tab=${encodeURIComponent(next)}`;
+          const urlTab = next === 'field' && nextFieldSubTab === 'reviews' ? 'reviews' : next;
+          const nextUrl = `/admin?tab=${encodeURIComponent(urlTab)}`;
           window.history.replaceState(null, '', nextUrl);
         }
       } catch {
@@ -839,6 +719,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
   const [activeTab, setActiveTab] = useState<'pending' | 'approved' | 'rejected' | 'all'>('pending');
   const [incidentFilter, setIncidentFilter] = useState<'active' | 'resolved' | 'all'>('active');
+  const [incidentSearchQuery, setIncidentSearchQuery] = useState<string>('');
+  const [forumSearchQuery, setForumSearchQuery] = useState<string>('');
+  const [auditSearchQuery, setAuditSearchQuery] = useState<string>('');
   const [userSearchQuery, setUserSearchQuery] = useState<string>('');
   const [userRoleFilter, setUserRoleFilter] = useState<
     'all' | 'admin' | 'moderator' | 'guide' | 'user' | 'banned'
@@ -849,7 +732,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [inquirySearchQuery, setInquirySearchQuery] = useState<string>('');
   const [updatingInquiryId, setUpdatingInquiryId] = useState<string | null>(null);
   const [safetyTimerView, setSafetyTimerView] = useState<'live' | 'checked_in_safe' | 'cancelled'>('live');
-  const [fieldSubTab, setFieldSubTab] = useState<'pois' | 'reviews'>(resolveInitialFieldSubTab);
   const [fieldSearchQuery, setFieldSearchQuery] = useState<string>('');
   const [togglingPoiId, setTogglingPoiId] = useState<string | null>(null);
 
@@ -857,8 +739,35 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [selectedAuthorModal, setSelectedAuthorModal] = useState<AdminAuthorModalState | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [trailSearchQuery, setTrailSearchQuery] = useState<string>('');
+  const [recentlyHiddenTrails, setRecentlyHiddenTrails] = useState<AdminTrailItem[]>([]);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [accessNotice, setAccessNotice] = useState<string>('');
+  const [sectionErrors, setSectionErrors] = useState<Partial<Record<AdminSectionId, string>>>({});
+  const [busyActions, setBusyActions] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    return () => {
+      activeAdminActionLocks.clear();
+    };
+  }, []);
+
+  const acquireActionLock = useCallback((key: string): boolean => {
+    if (activeAdminActionLocks.has(key)) return false;
+    activeAdminActionLocks.add(key);
+    setBusyActions((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
+    return true;
+  }, []);
+
+  const releaseActionLock = useCallback((key: string) => {
+    activeAdminActionLocks.delete(key);
+    setBusyActions((prev) => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [confirmReason, setConfirmReason] = useState<string>('');
   const [isConfirmExecuting, setIsConfirmExecuting] = useState<boolean>(false);
@@ -874,6 +783,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const editTrailModalRef = useRef<HTMLDivElement>(null);
   const createTrailModalRef = useRef<HTMLDivElement>(null);
   const confirmModalRef = useRef<HTMLDivElement>(null);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMountedRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (refreshTimerRef.current !== null) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const [trailsList, setTrailsList] = useState<AdminTrailItem[]>([]);
   const [incidentsList, setIncidentsList] = useState<AdminIncidentItem[]>([]);
@@ -882,10 +804,28 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [adminStats, setAdminStats] = useState<AdminStatsSummary | null>(null);
   const [auditLogs, setAuditLogs] = useState<AdminAuditLogItem[]>([]);
   const [inquiriesList, setInquiriesList] = useState<AdminGuideInquiryItem[]>([]);
-  const [safetyTimersList, setSafetyTimersList] = useState<AdminSafetyTimerItem[]>([]);
+  // Keep live safety timers isolated from historical archive views so KHẨN CẤP readiness never drops falsely
+  const [liveSafetyTimers, setLiveSafetyTimers] = useState<AdminSafetyTimerItem[]>([]);
+  const [archivedSafetyTimers, setArchivedSafetyTimers] = useState<
+    Record<'checked_in_safe' | 'cancelled', AdminSafetyTimerItem[]>
+  >({
+    checked_in_safe: [],
+    cancelled: [],
+  });
   const [liveBeaconsList, setLiveBeaconsList] = useState<AdminLiveBeaconItem[]>([]);
   const [loadedSections, setLoadedSections] = useState<Set<AdminSectionId>>(() => new Set());
+  const loadedSectionsRef = useRef<Set<AdminSectionId>>(loadedSections);
+  useEffect(() => {
+    loadedSectionsRef.current = loadedSections;
+  }, [loadedSections]);
+
   const markSectionLoaded = useCallback((section: AdminSectionId) => {
+    setSectionErrors((prev) => {
+      if (!prev[section]) return prev;
+      const next = { ...prev };
+      delete next[section];
+      return next;
+    });
     setLoadedSections((prev) => {
       if (prev.has(section)) return prev;
       const next = new Set(prev);
@@ -893,6 +833,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       return next;
     });
   }, []);
+
+  const markSectionError = useCallback((section: AdminSectionId, message: string) => {
+    setSectionErrors((prev) => (prev[section] === message ? prev : { ...prev, [section]: message }));
+  }, []);
+
   const [poisList, setPoisList] = useState<AdminTrailPoiItem[]>([]);
   const [poisTotal, setPoisTotal] = useState<number>(0);
   const [reviewsList, setReviewsList] = useState<AdminReviewItem[]>([]);
@@ -906,12 +851,27 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [createTrailForm, setCreateTrailForm] = useState<TrailFormState>(createEmptyTrailForm);
   const [isCreatingTrail, setIsCreatingTrail] = useState(false);
 
-  const openConfirmDialog = (dialog: ConfirmDialogState) => {
+  const createFetchSignal = useCallback((key: string): AbortSignal => {
+    return createAdminFetchSignal(key);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      abortAllAdminFetches();
+    };
+  }, []);
+
+  const isAbortError = (err: unknown): boolean =>
+    err instanceof DOMException
+      ? err.name === 'AbortError'
+      : Boolean(err && typeof err === 'object' && (err as { name?: string }).name === 'AbortError');
+
+  const openConfirmDialog = useCallback((dialog: ConfirmDialogState) => {
     setConfirmReason(dialog.defaultReason || '');
     setConfirmDialog(dialog);
-  };
+  }, []);
 
-  const handleOpenContributeWizard = () => {
+  const handleOpenContributeWizard = useCallback(() => {
     try {
       localStorage.removeItem('lost_editing_contribution');
     } catch {
@@ -919,44 +879,48 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     }
     setIsCreateTrailOpen(false);
     window.location.hash = '#contribute';
-  };
+  }, []);
 
-  const openEditTrailModal = (trail: AdminTrailItem) => {
-    setEditingTrailModal(trail);
-    setEditTrailForm({
-      name: trail.name || '',
-      altNames: Array.isArray(trail.altNames) ? trail.altNames.join(', ') : '',
-      province: trail.province || '',
-      district: trail.district || '',
-      region: normalizeRegion(trail.region),
-      distanceKm: String(trail.distanceKm ?? 0),
-      elevationGainM: String(trail.elevationGainM ?? 0),
-      maxAltitudeM: String(trail.maxAltitudeM ?? 0),
-      durationDays: String(trail.durationDays ?? 1),
-      durationHoursNote: trail.durationHoursNote || '',
-      difficultyLevel: String(trail.difficultyLevel ?? 3),
-      difficultyNote: trail.difficultyNote || '',
-      startLat: trail.startLat !== undefined && trail.startLat !== null ? String(trail.startLat) : '',
-      startLng: trail.startLng !== undefined && trail.startLng !== null ? String(trail.startLng) : '',
-      endLat: trail.endLat !== undefined && trail.endLat !== null ? String(trail.endLat) : '',
-      endLng: trail.endLng !== undefined && trail.endLng !== null ? String(trail.endLng) : '',
-      coverImage: trail.coverImage || '',
-      bestMonths: Array.isArray(trail.bestMonths) ? trail.bestMonths.join(', ') : '',
-      avoidMonths: Array.isArray(trail.avoidMonths) ? trail.avoidMonths.join(', ') : '',
-      description: trail.description || '',
-      transportationInfo: trail.transportationInfo || '',
-      permitRequired: Boolean(trail.permitRequired),
-      permitInfo: trail.permitInfo || '',
-      hasCampsite: Boolean(trail.hasCampsite),
-      hasWaterSource: Boolean(trail.hasWaterSource),
-      kidFriendly: Boolean(trail.kidFriendly),
-      rescueContactName: trail.rescueContact?.name || '',
-      rescueContactPhone: trail.rescueContact?.phone || '',
-      rescueContactRanger: trail.rescueContact?.rangerContact || '',
-      status:
-        trail.status === 'pending' || trail.status === 'rejected' ? trail.status : 'approved',
-    });
-  };
+  const openEditTrailModal = useCallback(
+    (trail: AdminTrailItem) => {
+      if (!isStrictAdmin) return;
+      setEditingTrailModal(trail);
+      setEditTrailForm({
+        name: trail.name || '',
+        altNames: Array.isArray(trail.altNames) ? trail.altNames.join(', ') : '',
+        province: trail.province || '',
+        district: trail.district || '',
+        region: normalizeRegion(trail.region),
+        distanceKm: String(trail.distanceKm ?? 0),
+        elevationGainM: String(trail.elevationGainM ?? 0),
+        maxAltitudeM: String(trail.maxAltitudeM ?? 0),
+        durationDays: String(trail.durationDays ?? 1),
+        durationHoursNote: trail.durationHoursNote || '',
+        difficultyLevel: String(trail.difficultyLevel ?? 3),
+        difficultyNote: trail.difficultyNote || '',
+        startLat: trail.startLat !== undefined && trail.startLat !== null ? String(trail.startLat) : '',
+        startLng: trail.startLng !== undefined && trail.startLng !== null ? String(trail.startLng) : '',
+        endLat: trail.endLat !== undefined && trail.endLat !== null ? String(trail.endLat) : '',
+        endLng: trail.endLng !== undefined && trail.endLng !== null ? String(trail.endLng) : '',
+        coverImage: trail.coverImage || '',
+        bestMonths: Array.isArray(trail.bestMonths) ? trail.bestMonths.join(', ') : '',
+        avoidMonths: Array.isArray(trail.avoidMonths) ? trail.avoidMonths.join(', ') : '',
+        description: trail.description || '',
+        transportationInfo: trail.transportationInfo || '',
+        permitRequired: Boolean(trail.permitRequired),
+        permitInfo: trail.permitInfo || '',
+        hasCampsite: Boolean(trail.hasCampsite),
+        hasWaterSource: Boolean(trail.hasWaterSource),
+        kidFriendly: Boolean(trail.kidFriendly),
+        rescueContactName: trail.rescueContact?.name || '',
+        rescueContactPhone: trail.rescueContact?.phone || '',
+        rescueContactRanger: trail.rescueContact?.rangerContact || '',
+        status:
+          trail.status === 'pending' || trail.status === 'rejected' ? trail.status : 'approved',
+      });
+    },
+    [isStrictAdmin]
+  );
 
   useFocusTrap(Boolean(selectedContribution), contribModalRef);
   useFocusTrap(Boolean(selectedAuthorModal), authorModalRef);
@@ -1006,36 +970,48 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const handleForbiddenStatus = useCallback((res: Response, areaLabel: string): boolean => {
     if (res.status === 403) {
       setAccessNotice(
-        `Tài khoản hiện tại không đủ quyền truy cập mục "${areaLabel}" (yêu cầu quyền Quản trị viên cấp cao).`
+        `Tài khoản này chưa có quyền mở mục "${areaLabel}" (cần quyền quản trị viên).`
       );
       return true;
     }
     return false;
   }, []);
 
-  const fetchHealthStatus = useCallback(async () => {
+  const fetchHealthStatus = useCallback(async (): Promise<boolean> => {
+    const signal = createFetchSignal('health');
     try {
-      const res = await fetch('/api/health', { cache: 'no-store' });
+      const res = await fetch('/api/health', { cache: 'no-store', signal });
       const data = await res.json().catch(() => ({}));
       const dbStr = String(data?.database || '');
       if (res.ok && dbStr === 'Connected') {
-        setDbHealth({ status: 'online', label: 'Trực Tuyến' });
+        setDbHealth({ status: 'online', label: 'Trực tuyến' });
+        return true;
       } else if (dbStr === 'Connecting') {
-        setDbHealth({ status: 'connecting', label: 'Đang Kết Nối' });
+        setDbHealth({ status: 'connecting', label: 'Đang kết nối' });
+        return false;
       } else {
-        setDbHealth({ status: 'degraded', label: 'Gián Đoạn' });
+        setDbHealth({ status: 'degraded', label: 'Gián đoạn' });
+        return false;
       }
-    } catch {
-      setDbHealth({ status: 'offline', label: 'Ngoại Tuyến' });
+    } catch (err) {
+      if (isAbortError(err)) return true;
+      setDbHealth({ status: 'offline', label: 'Ngoại tuyến' });
+      return false;
     }
-  }, []);
+  }, [createFetchSignal]);
 
-  const fetchFromMongo = useCallback(async () => {
+  const fetchFromMongo = useCallback(async (): Promise<boolean> => {
+    const signal = createFetchSignal('contributions');
     try {
       const res = await fetch('/api/contributions', {
         headers: getApiHeaders(),
+        signal,
       });
-      if (handleForbiddenStatus(res, 'Duyệt đóng góp')) return;
+      if (handleForbiddenStatus(res, 'Duyệt đóng góp')) return false;
+      if (!res.ok) {
+        markSectionError('contributions', 'Không thể tải danh sách bài đóng góp.');
+        return false;
+      }
       const data = await res.json();
       if (data.success && Array.isArray(data.data)) {
         setContributions(data.data);
@@ -1047,64 +1023,109 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           );
           return found || null;
         });
+        return true;
       }
+      markSectionError('contributions', 'Dữ liệu bài đóng góp chưa hợp lệ.');
+      return false;
     } catch (err) {
-      console.warn('[MongoDB Admin Fetch Notice]: Using local cache.', err);
+      if (isAbortError(err)) return true;
+      markSectionError('contributions', 'Không kết nối được máy chủ khi tải bài đóng góp.');
+      return false;
     }
-  }, [handleForbiddenStatus, markSectionLoaded]);
+  }, [createFetchSignal, handleForbiddenStatus, markSectionLoaded, markSectionError]);
 
-  const fetchAdminUsers = useCallback(async () => {
-    if (!isStrictAdmin) return;
+  const fetchAdminUsers = useCallback(async (): Promise<boolean> => {
+    if (!isStrictAdmin) return false;
+    const signal = createFetchSignal('users');
     try {
       const res = await fetch('/api/admin/users', {
         headers: getApiHeaders(),
+        signal,
       });
-      if (handleForbiddenStatus(res, 'Người dùng & phân quyền')) return;
+      if (handleForbiddenStatus(res, 'Thành viên & phân quyền')) return false;
+      if (!res.ok) {
+        markSectionError('users', 'Không thể tải danh sách thành viên.');
+        return false;
+      }
       const data = await res.json();
       if (data.success && Array.isArray(data.data)) {
         setUsersList(data.data);
         markSectionLoaded('users');
+        return true;
       }
-    } catch {
-      // fail gracefully
+      markSectionError('users', 'Dữ liệu thành viên chưa hợp lệ.');
+      return false;
+    } catch (err) {
+      if (isAbortError(err)) return true;
+      markSectionError('users', 'Không kết nối được máy chủ khi tải danh sách thành viên.');
+      return false;
     }
-  }, [isStrictAdmin, handleForbiddenStatus, markSectionLoaded]);
+  }, [isStrictAdmin, createFetchSignal, handleForbiddenStatus, markSectionLoaded, markSectionError]);
 
-  const fetchAdminTrails = useCallback(async () => {
+  const fetchAdminTrails = useCallback(async (): Promise<boolean> => {
+    const signal = createFetchSignal('trails');
     try {
+      // Live server exposes public catalog on GET /api/trails (no GET /api/admin/trails route)
       const res = await fetch('/api/trails', {
         headers: getApiHeaders(),
+        signal,
       });
+      if (!res.ok) {
+        markSectionError('trails', 'Không thể tải danh sách cung đường.');
+        return false;
+      }
       const data = await res.json();
       if (data.success && Array.isArray(data.data)) {
         setTrailsList(data.data);
         markSectionLoaded('trails');
+        return true;
       }
-    } catch {
-      // fail gracefully
+      markSectionError('trails', 'Dữ liệu cung đường chưa hợp lệ.');
+      return false;
+    } catch (err) {
+      if (isAbortError(err)) return true;
+      markSectionError('trails', 'Không kết nối được máy chủ khi tải cung đường.');
+      return false;
     }
-  }, [markSectionLoaded]);
+  }, [createFetchSignal, markSectionLoaded, markSectionError]);
 
-  const fetchAdminIncidents = useCallback(async () => {
+  const fetchAdminIncidents = useCallback(async (): Promise<boolean> => {
+    const signal = createFetchSignal('incidents');
     try {
       const res = await fetch('/api/incidents?includeResolved=true', {
         headers: getApiHeaders(),
+        signal,
       });
+      if (!res.ok) {
+        markSectionError('incidents', 'Không thể tải danh sách sự cố & cảnh báo.');
+        return false;
+      }
       const data = await res.json();
       if (data.success && Array.isArray(data.data)) {
         setIncidentsList(data.data);
         markSectionLoaded('incidents');
+        return true;
       }
-    } catch {
-      // fail gracefully
+      markSectionError('incidents', 'Dữ liệu sự cố chưa hợp lệ.');
+      return false;
+    } catch (err) {
+      if (isAbortError(err)) return true;
+      markSectionError('incidents', 'Không kết nối được máy chủ khi tải sự cố.');
+      return false;
     }
-  }, [markSectionLoaded]);
+  }, [createFetchSignal, markSectionLoaded, markSectionError]);
 
-  const fetchAdminThreads = useCallback(async () => {
+  const fetchAdminThreads = useCallback(async (): Promise<boolean> => {
+    const signal = createFetchSignal('forum');
     try {
       const res = await fetch('/api/forum', {
         headers: getApiHeaders(),
+        signal,
       });
+      if (!res.ok) {
+        markSectionError('forum', 'Không thể tải danh sách bài viết diễn đàn.');
+        return false;
+      }
       const data = await res.json();
       if (data.success && Array.isArray(data.data)) {
         const sorted = [...(data.data as AdminForumThreadItem[])].sort(
@@ -1112,142 +1133,297 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         );
         setThreadsList(sorted);
         markSectionLoaded('forum');
+        return true;
       }
-    } catch {
-      // fail gracefully
+      markSectionError('forum', 'Dữ liệu diễn đàn chưa hợp lệ.');
+      return false;
+    } catch (err) {
+      if (isAbortError(err)) return true;
+      markSectionError('forum', 'Không kết nối được máy chủ khi tải diễn đàn.');
+      return false;
     }
-  }, [markSectionLoaded]);
+  }, [createFetchSignal, markSectionLoaded, markSectionError]);
 
-  const fetchAdminStats = useCallback(async () => {
+  const fetchAdminStats = useCallback(async (): Promise<boolean> => {
+    const signal = createFetchSignal('stats');
     try {
       const res = await fetch('/api/admin/stats', {
         headers: getApiHeaders(),
+        signal,
       });
-      if (handleForbiddenStatus(res, 'Thống kê hệ thống')) return;
+      if (handleForbiddenStatus(res, 'Thống kê')) return false;
+      if (!res.ok) {
+        markSectionError('stats', 'Không thể tải thống kê hệ thống.');
+        return false;
+      }
       const data = await res.json();
-      if (data.success) setAdminStats(data.data);
-    } catch {
-      // fail gracefully
+      if (data.success) {
+        setAdminStats(data.data);
+        markSectionLoaded('stats');
+        return true;
+      }
+      return false;
+    } catch (err) {
+      if (isAbortError(err)) return true;
+      markSectionError('stats', 'Không kết nối được máy chủ khi tải thống kê.');
+      return false;
     }
-  }, [handleForbiddenStatus]);
+  }, [createFetchSignal, handleForbiddenStatus, markSectionLoaded, markSectionError]);
 
-  const fetchAuditLogs = useCallback(async () => {
-    if (!isStrictAdmin) return;
+  const fetchAuditLogs = useCallback(async (): Promise<boolean> => {
+    if (!isStrictAdmin) return false;
+    const signal = createFetchSignal('audit');
     try {
       const res = await fetch('/api/admin/audit-logs?limit=60', {
         headers: getApiHeaders(),
+        signal,
       });
-      if (handleForbiddenStatus(res, 'Nhật ký kiểm toán')) return;
+      if (handleForbiddenStatus(res, 'Nhật ký thao tác')) return false;
+      if (!res.ok) {
+        markSectionError('audit', 'Không thể tải nhật ký thao tác.');
+        return false;
+      }
       const data = await res.json();
       if (data.success && Array.isArray(data.data)) {
         setAuditLogs(data.data);
         markSectionLoaded('audit');
+        return true;
       }
-    } catch {
-      // fail gracefully
+      markSectionError('audit', 'Dữ liệu nhật ký chưa hợp lệ.');
+      return false;
+    } catch (err) {
+      if (isAbortError(err)) return true;
+      markSectionError('audit', 'Không kết nối được máy chủ khi tải nhật ký.');
+      return false;
     }
-  }, [isStrictAdmin, handleForbiddenStatus, markSectionLoaded]);
+  }, [isStrictAdmin, createFetchSignal, handleForbiddenStatus, markSectionLoaded, markSectionError]);
 
-  const fetchAdminInquiries = useCallback(async () => {
+  const fetchAdminInquiries = useCallback(async (): Promise<boolean> => {
+    const signal = createFetchSignal('inquiries');
     try {
       const res = await fetch('/api/directory/inquiries?limit=100', {
         headers: getApiHeaders(),
+        signal,
       });
-      if (handleForbiddenStatus(res, 'Đơn đặt Porter/Guide')) return;
+      if (handleForbiddenStatus(res, 'Yêu cầu Porter & HDV')) return false;
+      if (!res.ok) {
+        markSectionError('inquiries', 'Không thể tải yêu cầu Porter & HDV.');
+        return false;
+      }
       const data = await res.json();
       if (data.success && Array.isArray(data.data)) {
         setInquiriesList(data.data);
         markSectionLoaded('inquiries');
+        return true;
       }
-    } catch {
-      // fail gracefully
+      markSectionError('inquiries', 'Dữ liệu yêu cầu chưa hợp lệ.');
+      return false;
+    } catch (err) {
+      if (isAbortError(err)) return true;
+      markSectionError('inquiries', 'Không kết nối được máy chủ khi tải yêu cầu Porter & HDV.');
+      return false;
     }
-  }, [handleForbiddenStatus, markSectionLoaded]);
+  }, [createFetchSignal, handleForbiddenStatus, markSectionLoaded, markSectionError]);
 
   const fetchAdminSafetyTimers = useCallback(
-    async (mode: 'live' | 'checked_in_safe' | 'cancelled' = 'live') => {
+    async (mode: 'live' | 'checked_in_safe' | 'cancelled' = 'live'): Promise<boolean> => {
+      const signal = createFetchSignal(`safety-timers-${mode}`);
       try {
         const query = mode === 'live' ? '?limit=100' : `?status=${mode}&limit=60`;
         const res = await fetch(`/api/safety-timers/admin${query}`, {
           headers: getApiHeaders(),
+          signal,
         });
-        if (handleForbiddenStatus(res, 'Hẹn giờ an toàn')) return;
+        if (handleForbiddenStatus(res, 'Hẹn giờ báo bình an')) return false;
+        if (!res.ok) {
+          markSectionError('safety', 'Không thể tải danh sách hẹn giờ báo bình an.');
+          return false;
+        }
         const data = await res.json();
         if (data.success && Array.isArray(data.data)) {
-          setSafetyTimersList(data.data);
+          if (mode === 'live') {
+            setLiveSafetyTimers(data.data);
+          } else {
+            setArchivedSafetyTimers((prev) => ({ ...prev, [mode]: data.data }));
+          }
           markSectionLoaded('safety');
+          return true;
         }
-      } catch {
-        // fail gracefully
+        return false;
+      } catch (err) {
+        if (isAbortError(err)) return true;
+        markSectionError('safety', 'Không kết nối được máy chủ khi tải hẹn giờ an toàn.');
+        return false;
       }
     },
-    [handleForbiddenStatus, markSectionLoaded]
+    [createFetchSignal, handleForbiddenStatus, markSectionLoaded, markSectionError]
   );
 
-  const fetchAdminLiveBeacons = useCallback(async () => {
+  const fetchAdminLiveBeacons = useCallback(async (): Promise<boolean> => {
+    const signal = createFetchSignal('live-beacons');
     try {
       const res = await fetch('/api/admin/live-beacons?limit=100', {
         headers: getApiHeaders(),
+        signal,
       });
-      if (handleForbiddenStatus(res, 'Đèn hiệu trực tiếp')) return;
+      if (handleForbiddenStatus(res, 'Điểm phát tín hiệu trực tiếp')) return false;
+      if (!res.ok) {
+        markSectionError('safety', 'Không thể tải tín hiệu định vị trực tiếp.');
+        return false;
+      }
       const data = await res.json();
       if (data.success && Array.isArray(data.data)) {
         setLiveBeaconsList(data.data);
         markSectionLoaded('safety');
+        return true;
       }
-    } catch {
-      // fail gracefully
+      return false;
+    } catch (err) {
+      if (isAbortError(err)) return true;
+      markSectionError('safety', 'Không kết nối được máy chủ khi tải tín hiệu định vị.');
+      return false;
     }
-  }, [handleForbiddenStatus, markSectionLoaded]);
+  }, [createFetchSignal, handleForbiddenStatus, markSectionLoaded, markSectionError]);
 
-  const fetchAdminPois = useCallback(async () => {
+  const fetchAdminPois = useCallback(async (): Promise<boolean> => {
+    const signal = createFetchSignal('pois');
     try {
       const res = await fetch('/api/admin/pois?limit=100', {
         headers: getApiHeaders(),
+        signal,
       });
-      if (handleForbiddenStatus(res, 'Kiểm duyệt điểm thực địa')) return;
+      if (handleForbiddenStatus(res, 'Điểm mốc trên tuyến')) return false;
+      if (!res.ok) {
+        markSectionError('field', 'Không thể tải điểm mốc thực địa.');
+        return false;
+      }
       const data = await res.json();
       if (data.success && Array.isArray(data.data)) {
         setPoisList(data.data);
         setPoisTotal(Number(data.total) || data.data.length);
         markSectionLoaded('field');
+        return true;
       }
-    } catch {
-      // fail gracefully
+      return false;
+    } catch (err) {
+      if (isAbortError(err)) return true;
+      markSectionError('field', 'Không kết nối được máy chủ khi tải điểm mốc.');
+      return false;
     }
-  }, [handleForbiddenStatus, markSectionLoaded]);
+  }, [createFetchSignal, handleForbiddenStatus, markSectionLoaded, markSectionError]);
 
-  const fetchAdminReviews = useCallback(async () => {
+  const fetchAdminReviews = useCallback(async (): Promise<boolean> => {
+    const signal = createFetchSignal('reviews');
     try {
       const res = await fetch('/api/admin/reviews?limit=100', {
         headers: getApiHeaders(),
+        signal,
       });
-      if (handleForbiddenStatus(res, 'Kiểm duyệt đánh giá')) return;
+      if (handleForbiddenStatus(res, 'Đánh giá cung đường')) return false;
+      if (!res.ok) {
+        markSectionError('field', 'Không thể tải đánh giá cung đường.');
+        return false;
+      }
       const data = await res.json();
       if (data.success && Array.isArray(data.data)) {
         setReviewsList(data.data);
         setReviewsTotal(Number(data.total) || data.data.length);
         markSectionLoaded('field');
+        return true;
       }
-    } catch {
-      // fail gracefully
+      return false;
+    } catch (err) {
+      if (isAbortError(err)) return true;
+      markSectionError('field', 'Không kết nối được máy chủ khi tải đánh giá.');
+      return false;
     }
-  }, [handleForbiddenStatus, markSectionLoaded]);
+  }, [createFetchSignal, handleForbiddenStatus, markSectionLoaded, markSectionError]);
 
-  const requestedSectionsRef = useRef<Set<AdminSectionId>>(new Set());
-  const lastSafetyTimerViewRef = useRef<'live' | 'checked_in_safe' | 'cancelled'>(safetyTimerView);
+  const inFlightSectionsRef = useRef<Set<AdminSectionId>>(new Set());
+  const loadedArchiveViewsRef = useRef<Set<'checked_in_safe' | 'cancelled'>>(new Set());
 
-  const fetchSafetyMonitoring = useCallback(async () => {
-    lastSafetyTimerViewRef.current = safetyTimerView;
-    await Promise.all([
-      fetchAdminSafetyTimers(safetyTimerView),
+  const fetchSafetyMonitoring = useCallback(async (): Promise<boolean> => {
+    const tasks: Promise<boolean>[] = [
+      fetchAdminSafetyTimers('live'),
       fetchAdminLiveBeacons(),
-    ]);
+    ];
+    if (safetyTimerView !== 'live') {
+      tasks.push(fetchAdminSafetyTimers(safetyTimerView));
+    }
+    const results = await Promise.all(tasks);
+    return results.every(Boolean);
   }, [fetchAdminSafetyTimers, fetchAdminLiveBeacons, safetyTimerView]);
+
+  const loadSectionById = useCallback(
+    async (sec: AdminSectionId): Promise<boolean> => {
+      switch (sec) {
+        case 'contributions':
+          return fetchFromMongo();
+        case 'users':
+          return isStrictAdmin ? fetchAdminUsers() : false;
+        case 'trails':
+          return fetchAdminTrails();
+        case 'incidents':
+          return fetchAdminIncidents();
+        case 'inquiries':
+          return fetchAdminInquiries();
+        case 'safety':
+          return fetchSafetyMonitoring();
+        case 'field': {
+          const [pOk, rOk] = await Promise.all([fetchAdminPois(), fetchAdminReviews()]);
+          return pOk && rOk;
+        }
+        case 'forum':
+          return fetchAdminThreads();
+        case 'stats':
+          return fetchAdminStats();
+        case 'audit':
+          return isStrictAdmin ? fetchAuditLogs() : false;
+        case 'overview': {
+          const results = await Promise.all([
+            fetchFromMongo(),
+            fetchAdminTrails(),
+            fetchAdminIncidents(),
+            fetchSafetyMonitoring(),
+            fetchAdminInquiries(),
+          ]);
+          return results.every(Boolean);
+        }
+      }
+    },
+    [
+      isStrictAdmin,
+      fetchFromMongo,
+      fetchAdminUsers,
+      fetchAdminTrails,
+      fetchAdminIncidents,
+      fetchAdminInquiries,
+      fetchSafetyMonitoring,
+      fetchAdminPois,
+      fetchAdminReviews,
+      fetchAdminThreads,
+      fetchAdminStats,
+      fetchAuditLogs,
+    ]
+  );
+
+  const retrySection = useCallback(
+    (sec: AdminSectionId) => {
+      setSectionErrors((prev) => {
+        if (!prev[sec]) return prev;
+        const next = { ...prev };
+        delete next[sec];
+        return next;
+      });
+      void loadSectionById(sec);
+    },
+    [loadSectionById]
+  );
 
   const refreshAllData = async () => {
     setIsRefreshing(true);
     setAccessNotice('');
+    setSectionErrors({});
     const sectionsToSync = new Set<AdminSectionId>(loadedSections);
     sectionsToSync.add(effectiveSection);
     if (effectiveSection === 'overview') {
@@ -1257,7 +1433,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       sectionsToSync.add('safety');
       sectionsToSync.add('inquiries');
     }
-    const tasks: Promise<void>[] = [fetchHealthStatus(), fetchAdminStats()];
+    const tasks: Promise<unknown>[] = [fetchHealthStatus(), fetchAdminStats()];
     if (sectionsToSync.has('contributions')) tasks.push(fetchFromMongo());
     if (sectionsToSync.has('trails')) tasks.push(fetchAdminTrails());
     if (sectionsToSync.has('incidents')) tasks.push(fetchAdminIncidents());
@@ -1274,13 +1450,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       if (sectionsToSync.has('audit')) tasks.push(fetchAuditLogs());
     }
     await Promise.allSettled(tasks);
-    setTimeout(() => {
+    if (!isMountedRef.current) return;
+    if (refreshTimerRef.current !== null) {
+      clearTimeout(refreshTimerRef.current);
+    }
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null;
+      if (!isMountedRef.current) return;
       setIsRefreshing(false);
-      onShowToast?.('Đã đồng bộ dữ liệu với máy chủ!', 'success');
+      onShowToast?.('Đã cập nhật dữ liệu mới nhất.', 'success');
     }, 350);
   };
 
-  // On mount: fetch lightweight health + summary stats (section datasets load on demand via guard below)
+  // On mount: fetch lightweight health + summary stats
   useEffect(() => {
     let active = true;
     void Promise.resolve().then(() => {
@@ -1293,17 +1475,20 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     };
   }, [fetchHealthStatus, fetchAdminStats]);
 
-  // Load rich live datasets for 'overview' and lazy-load inactive tabs once via requestedSectionsRef guard
+  // Lazy-load sections on demand; failed sections are NOT permanently locked and can retry cleanly
   useEffect(() => {
     let active = true;
     void Promise.resolve().then(() => {
       if (!active) return;
-      const requested = requestedSectionsRef.current;
+      const inFlight = inFlightSectionsRef.current;
+      const loaded = loadedSectionsRef.current;
 
-      const ensureSection = (sec: AdminSectionId, loader: () => Promise<void>) => {
-        if (requested.has(sec)) return;
-        requested.add(sec);
-        void loader();
+      const ensureSection = (sec: AdminSectionId, loader: () => Promise<boolean>) => {
+        if (loaded.has(sec) || inFlight.has(sec)) return;
+        inFlight.add(sec);
+        void loader().finally(() => {
+          inFlight.delete(sec);
+        });
       };
 
       if (effectiveSection === 'overview') {
@@ -1315,23 +1500,30 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         return;
       }
 
-      if (effectiveSection === 'contributions') ensureSection('contributions', fetchFromMongo);
+      if (effectiveSection === 'contributions') {
+        ensureSection('contributions', fetchFromMongo);
+        ensureSection('trails', fetchAdminTrails);
+      }
       if (effectiveSection === 'users' && isStrictAdmin) ensureSection('users', fetchAdminUsers);
       if (effectiveSection === 'trails') ensureSection('trails', fetchAdminTrails);
       if (effectiveSection === 'incidents') ensureSection('incidents', fetchAdminIncidents);
       if (effectiveSection === 'inquiries') ensureSection('inquiries', fetchAdminInquiries);
       if (effectiveSection === 'safety') {
-        if (!requested.has('safety')) {
-          requested.add('safety');
-          void fetchSafetyMonitoring();
-        } else if (lastSafetyTimerViewRef.current !== safetyTimerView) {
-          lastSafetyTimerViewRef.current = safetyTimerView;
-          void fetchAdminSafetyTimers(safetyTimerView);
+        ensureSection('safety', fetchSafetyMonitoring);
+        if (
+          safetyTimerView !== 'live' &&
+          !loadedArchiveViewsRef.current.has(safetyTimerView)
+        ) {
+          loadedArchiveViewsRef.current.add(safetyTimerView);
+          void fetchAdminSafetyTimers(safetyTimerView).then((ok) => {
+            if (!ok) loadedArchiveViewsRef.current.delete(safetyTimerView);
+          });
         }
       }
       if (effectiveSection === 'field') {
         ensureSection('field', async () => {
-          await Promise.all([fetchAdminPois(), fetchAdminReviews()]);
+          const [pOk, rOk] = await Promise.all([fetchAdminPois(), fetchAdminReviews()]);
+          return pOk && rOk;
         });
       }
       if (effectiveSection === 'forum') ensureSection('forum', fetchAdminThreads);
@@ -1357,6 +1549,76 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     fetchAdminThreads,
     fetchAdminStats,
     fetchAuditLogs,
+  ]);
+
+  // Subscribe to live Socket.IO safety/SOS/incident push events to refresh cockpit immediately
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleLiveSafetyPush = (payload?: { trailName?: string; message?: string; status?: string }) => {
+      void fetchAdminSafetyTimers('live');
+      void fetchAdminLiveBeacons();
+      void fetchAdminStats();
+      const isResolvedEvent =
+        payload?.status === 'safe' ||
+        payload?.status === 'ended' ||
+        payload?.status === 'checked_in_safe' ||
+        payload?.status === 'active';
+      if (!isResolvedEvent && (payload?.message || payload?.trailName)) {
+        onShowToast?.(
+          payload.message || `Cảnh báo an toàn mới tại ${payload.trailName}.`,
+          'error'
+        );
+      }
+    };
+
+    const handleLiveIncidentPush = () => {
+      void fetchAdminIncidents();
+      void fetchAdminStats();
+    };
+
+    const handleAdminNotification = (payload?: { category?: string; type?: string }) => {
+      if (
+        payload?.category === 'safety' ||
+        payload?.type === 'sos' ||
+        payload?.type === 'safety_overdue'
+      ) {
+        void fetchAdminSafetyTimers('live');
+        void fetchAdminLiveBeacons();
+        void fetchAdminStats();
+      } else if (payload?.category === 'moderation') {
+        void fetchFromMongo();
+        void fetchAdminStats();
+      }
+    };
+
+    socket.on('safetyTimerOverdue', handleLiveSafetyPush);
+    socket.on('safetyTimerUpdated', handleLiveSafetyPush);
+    socket.on('sosAlert', handleLiveSafetyPush);
+    socket.on('liveBeaconSos', handleLiveSafetyPush);
+    socket.on('liveBeaconUpdated', handleLiveSafetyPush);
+    socket.on('newIncident', handleLiveIncidentPush);
+    socket.on('incidentUpdated', handleLiveIncidentPush);
+    socket.on('newNotification', handleAdminNotification);
+
+    return () => {
+      socket.off('safetyTimerOverdue', handleLiveSafetyPush);
+      socket.off('safetyTimerUpdated', handleLiveSafetyPush);
+      socket.off('sosAlert', handleLiveSafetyPush);
+      socket.off('liveBeaconSos', handleLiveSafetyPush);
+      socket.off('liveBeaconUpdated', handleLiveSafetyPush);
+      socket.off('newIncident', handleLiveIncidentPush);
+      socket.off('incidentUpdated', handleLiveIncidentPush);
+      socket.off('newNotification', handleAdminNotification);
+    };
+  }, [
+    socket,
+    fetchAdminSafetyTimers,
+    fetchAdminLiveBeacons,
+    fetchAdminIncidents,
+    fetchFromMongo,
+    fetchAdminStats,
+    onShowToast,
   ]);
 
   // Lazily enrich contribution author card with user metadata only when an admin opens a contribution modal
@@ -1388,7 +1650,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       sLng < -180 ||
       sLng > 180
     ) {
-      onShowToast?.('Vui lòng nhập tọa độ GPS xuất phát (Start Lat/Lng) hợp lệ.', 'error');
+      onShowToast?.('Nhập tọa độ xuất phát hợp lệ (vĩ độ và kinh độ).', 'error');
       return;
     }
 
@@ -1397,7 +1659,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     const eLat = hasEndLat ? Number(createTrailForm.endLat) : sLat;
     const eLng = hasEndLng ? Number(createTrailForm.endLng) : sLng;
     if (!Number.isFinite(eLat) || !Number.isFinite(eLng) || eLat < -90 || eLat > 90 || eLng < -180 || eLng > 180) {
-      onShowToast?.('Tọa độ GPS điểm đích (End Lat/Lng) không hợp lệ.', 'error');
+      onShowToast?.('Tọa độ điểm đích chưa hợp lệ.', 'error');
       return;
     }
 
@@ -1434,9 +1696,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         rescueContact: {
           name:
             createTrailForm.rescueContactName.trim() ||
-            `Cứu nạn Khẩn cấp ${createTrailForm.province.trim()}`,
+            `Cứu nạn khẩn cấp ${createTrailForm.province.trim()}`,
           phone: createTrailForm.rescueContactPhone.trim() || '112 / 114',
-          rangerContact: createTrailForm.rescueContactRanger.trim() || '115',
+          rangerContact: createTrailForm.rescueContactRanger.trim(),
         },
       };
       if (createTrailForm.coverImage.trim()) {
@@ -1454,7 +1716,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       }
 
       onShowToast?.(
-        `Đã tạo và công khai cung đường "${createTrailForm.name.trim()}" lên bản đồ LOST!`,
+        `Đã thêm cung đường "${createTrailForm.name.trim()}" lên bản đồ LOST.`,
         'success'
       );
       setCreateTrailForm(createEmptyTrailForm());
@@ -1464,7 +1726,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       if (isStrictAdmin) void fetchAuditLogs();
     } catch (err: unknown) {
       onShowToast?.(
-        err instanceof Error ? err.message : 'Lỗi máy chủ khi tạo cung đường mới.',
+        err instanceof Error ? err.message : 'Không kết nối được máy chủ khi tạo cung đường.',
         'error'
       );
     } finally {
@@ -1515,7 +1777,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       const sLat = Number(editTrailForm.startLat);
       const sLng = Number(editTrailForm.startLng);
       if (!Number.isFinite(sLat) || !Number.isFinite(sLng) || sLat < -90 || sLat > 90 || sLng < -180 || sLng > 180) {
-        onShowToast?.('Tọa độ GPS xuất phát (Start Lat/Lng) không hợp lệ.', 'error');
+        onShowToast?.('Tọa độ xuất phát chưa hợp lệ.', 'error');
         return;
       }
       payload.startLat = sLat;
@@ -1525,61 +1787,155 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       const eLat = Number(editTrailForm.endLat);
       const eLng = Number(editTrailForm.endLng);
       if (!Number.isFinite(eLat) || !Number.isFinite(eLng) || eLat < -90 || eLat > 90 || eLng < -180 || eLng > 180) {
-        onShowToast?.('Tọa độ GPS đích (End Lat/Lng) không hợp lệ.', 'error');
+        onShowToast?.('Tọa độ điểm đích chưa hợp lệ.', 'error');
         return;
       }
       payload.endLat = eLat;
       payload.endLng = eLng;
     }
 
-    setIsSavingTrail(true);
-    try {
-      const res = await fetch(`/api/admin/trails/${targetId}`, {
-        method: 'PUT',
-        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.message || 'Không thể cập nhật thông tin cung đường.');
-      }
-      onShowToast?.(`Đã cập nhật cung đường "${editTrailForm.name.trim()}" thành công!`, 'success');
-      setEditingTrailModal(null);
-      void fetchAdminTrails();
-      void fetchAdminStats();
-      if (isStrictAdmin) void fetchAuditLogs();
-    } catch (err: unknown) {
-      onShowToast?.(
-        err instanceof Error ? err.message : 'Lỗi máy chủ khi cập nhật cung đường.',
-        'error'
-      );
-    } finally {
-      setIsSavingTrail(false);
-    }
-  };
+    const targetTrailSnapshot = editingTrailModal;
+    const prevStatus = targetTrailSnapshot.status || 'approved';
+    const nextStatus = editTrailForm.status;
+    const isHidingFromPublicCatalog = prevStatus === 'approved' && nextStatus !== 'approved';
 
-  const handleUpdateRole = async (userId: string, newRole: string, userName: string) => {
-    try {
-      const res = await fetch(`/api/admin/users/${userId}/role`, {
-        method: 'PUT',
-        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ role: newRole }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        onShowToast?.(`Đã đổi vai trò của ${userName} thành "${newRole}"!`, 'success');
-        void fetchAdminUsers();
+    const executeTrailSave = async () => {
+      setIsSavingTrail(true);
+      try {
+        const res = await fetch(`/api/admin/trails/${targetId}`, {
+          method: 'PUT',
+          headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.message || 'Không thể cập nhật thông tin cung đường.');
+        }
+
+        const updatedSnapshot: AdminTrailItem = {
+          ...targetTrailSnapshot,
+          ...(data.data && typeof data.data === 'object' ? data.data : {}),
+          name: editTrailForm.name.trim(),
+          province: editTrailForm.province.trim(),
+          district: editTrailForm.district.trim(),
+          region: normalizeRegion(editTrailForm.region),
+          distanceKm: Number(payload.distanceKm),
+          elevationGainM: Number(payload.elevationGainM),
+          maxAltitudeM: Number(payload.maxAltitudeM),
+          status: nextStatus,
+        };
+
+        if (nextStatus !== 'approved') {
+          setRecentlyHiddenTrails((prev) => {
+            const filtered = prev.filter(
+              (item) => String(item._id || item.id || '') !== String(targetId)
+            );
+            return [updatedSnapshot, ...filtered];
+          });
+          setInspectorSelection((prev) =>
+            prev?.kind === 'trail' && prev.data.id === String(targetId) ? null : prev
+          );
+          onShowToast?.(
+            `Đã ẩn cung đường "${editTrailForm.name.trim()}" khỏi danh mục công khai. Có thể công khai lại trong danh sách "Vừa ẩn" bên trên.`,
+            'info'
+          );
+        } else {
+          setRecentlyHiddenTrails((prev) =>
+            prev.filter((item) => String(item._id || item.id || '') !== String(targetId))
+          );
+          onShowToast?.(`Đã lưu thay đổi cho cung đường "${editTrailForm.name.trim()}".`, 'success');
+        }
+
+        setEditingTrailModal(null);
+        void fetchAdminTrails();
         void fetchAdminStats();
         if (isStrictAdmin) void fetchAuditLogs();
-      } else {
-        onShowToast?.(data.message || 'Lỗi khi cập nhật vai trò', 'error');
+      } catch (err: unknown) {
+        onShowToast?.(
+          err instanceof Error ? err.message : 'Không kết nối được máy chủ khi lưu cung đường.',
+          'error'
+        );
+      } finally {
+        setIsSavingTrail(false);
       }
-    } catch {
-      onShowToast?.('Lỗi kết nối máy chủ', 'error');
+    };
+
+    if (isHidingFromPublicCatalog) {
+      const targetStatusLabel = nextStatus === 'rejected' ? 'Từ chối' : 'Chờ duyệt (ẩn)';
+      openConfirmDialog({
+        title: 'Ẩn cung đường khỏi danh mục công khai?',
+        message: `Chuyển "${editTrailForm.name.trim()}" sang "${targetStatusLabel}" sẽ gỡ cung đường này khỏi bản đồ công khai và danh sách cung công khai. Hệ thống sẽ giữ lối tắt trong mục "Vừa ẩn khỏi danh mục công khai" của phiên làm việc này để bạn có thể khôi phục khi cần.`,
+        confirmLabel: 'Xác nhận ẩn cung đường',
+        danger: true,
+        onConfirm: executeTrailSave,
+      });
+      return;
     }
+
+    await executeTrailSave();
+  };
+
+  const handleUpdateRole = (
+    userId: string,
+    newRole: string,
+    userName: string,
+    currentRole = 'user'
+  ) => {
+    if (!isStrictAdmin) return;
+    if (!userId || newRole === currentRole) return;
+    if (currentUserId && userId === currentUserId && newRole !== 'admin') {
+      onShowToast?.('Không thể tự hạ quyền Quản trị viên của chính bạn.', 'error');
+      return;
+    }
+
+    const lockKey = `role:${userId}`;
+    const nextRoleLabel = getRoleLabelVi(newRole);
+    const prevRoleLabel = getRoleLabelVi(currentRole);
+
+    openConfirmDialog({
+      title: 'Xác nhận thay đổi vai trò',
+      message: `Chuyển vai trò của "${userName}" từ "${prevRoleLabel}" sang "${nextRoleLabel}"? Phiên đăng nhập của tài khoản này sẽ tự động làm mới theo quyền mới.`,
+      confirmLabel: 'Xác nhận đổi quyền',
+      danger: newRole === 'admin',
+      reasonInputLabel: 'Lý do thay đổi phân quyền',
+      reasonPlaceholder: 'VD: Phân công phụ trách kiểm duyệt khu vực miền Bắc...',
+      defaultReason: `Điều chỉnh phân quyền sang ${nextRoleLabel}`,
+      onConfirm: async (reasonInput?: string) => {
+        if (!isStrictAdmin) return;
+        if (!acquireActionLock(lockKey)) return;
+        try {
+          const finalReason = (reasonInput || '').trim();
+          const res = await fetch(`/api/admin/users/${userId}/role`, {
+            method: 'PUT',
+            headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ role: newRole, reason: finalReason || undefined }),
+          });
+          const data = await res.json();
+          if (res.ok && data.success) {
+            onShowToast?.(`Đã chuyển vai trò của ${userName} sang "${nextRoleLabel}".`, 'success');
+            setUsersList((prev) =>
+              prev.map((u) =>
+                String(u._id || u.id || '') === userId ? { ...u, role: newRole } : u
+              )
+            );
+            void fetchAdminUsers();
+            void fetchAdminStats();
+            if (isStrictAdmin) void fetchAuditLogs();
+          } else {
+            onShowToast?.(data.message || 'Không thể cập nhật vai trò.', 'error');
+          }
+        } catch {
+          onShowToast?.('Không kết nối được máy chủ.', 'error');
+        } finally {
+          releaseActionLock(lockKey);
+        }
+      },
+    });
   };
 
   const handlePinThread = async (threadId: string) => {
+    const lockKey = `pin:${threadId}`;
+    if (!acquireActionLock(lockKey)) return;
     try {
       const res = await fetch(`/api/admin/threads/${threadId}/pin`, {
         method: 'PUT',
@@ -1606,10 +1962,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       }
     } catch {
       onShowToast?.('Lỗi kết nối máy chủ khi ghim bài viết.', 'error');
+    } finally {
+      releaseActionLock(lockKey);
     }
   };
 
   const handleLockThread = async (threadId: string) => {
+    const lockKey = `lock:${threadId}`;
+    if (!acquireActionLock(lockKey)) return;
     try {
       const res = await fetch(`/api/admin/threads/${threadId}/lock`, {
         method: 'PUT',
@@ -1634,13 +1994,15 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       }
     } catch {
       onShowToast?.('Lỗi kết nối máy chủ khi khóa bài viết.', 'error');
+    } finally {
+      releaseActionLock(lockKey);
     }
   };
 
   const handleDeleteThread = (threadId: string, title: string) => {
     openConfirmDialog({
       title: 'Xóa bài viết diễn đàn',
-      message: `Bạn có chắc chắn muốn xóa vĩnh viễn bài viết "${title}" khỏi diễn đàn LOST?`,
+      message: `Xóa vĩnh viễn bài viết "${title}" khỏi diễn đàn LOST? Thao tác này không thể hoàn tác.`,
       confirmLabel: 'Xóa bài viết',
       danger: true,
       onConfirm: async () => {
@@ -1650,7 +2012,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         });
         const data = await res.json();
         if (res.ok && data.success) {
-          onShowToast?.(data.message || 'Đã xóa bài viết!', 'info');
+          onShowToast?.(data.message || 'Đã xóa bài viết.', 'info');
           setThreadsList((prev) => prev.filter((t) => t.id !== threadId && t._id !== threadId));
           void fetchAdminThreads();
           void fetchAdminStats();
@@ -1662,28 +2024,43 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     });
   };
 
-  const handleResolveDispute = async (
+  const handleResolveDispute = (
     incidentId: string,
     action: 'dismiss_incident' | 'reject_dispute'
   ) => {
-    try {
-      const res = await fetch(`/api/admin/incidents/${incidentId}/dispute-resolve`, {
-        method: 'PUT',
-        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ action }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        onShowToast?.(data.message || 'Đã xử lý khiếu nại thành công!', 'success');
-        void fetchAdminIncidents();
-        void fetchAdminStats();
-        if (isStrictAdmin) void fetchAuditLogs();
-      } else {
-        onShowToast?.(data.message || 'Không thể xử lý khiếu nại.', 'error');
-      }
-    } catch {
-      onShowToast?.('Lỗi kết nối máy chủ khi xử lý khiếu nại.', 'error');
-    }
+    const isDismiss = action === 'dismiss_incident';
+    const lockKey = `dispute:${incidentId}`;
+    openConfirmDialog({
+      title: isDismiss ? 'Gỡ cảnh báo theo phản hồi' : 'Giữ cảnh báo và bác bỏ phản hồi',
+      message: isDismiss
+        ? 'Xác nhận gỡ cảnh báo sự cố này vì phản hồi từ cộng đồng cho thấy tuyến đường đã ổn?'
+        : 'Xác nhận giữ nguyên cảnh báo sự cố này và xóa các phản hồi trái chiều hiện có?',
+      confirmLabel: isDismiss ? 'Gỡ cảnh báo' : 'Giữ cảnh báo',
+      danger: !isDismiss,
+      onConfirm: async () => {
+        if (!acquireActionLock(lockKey)) return;
+        try {
+          const res = await fetch(`/api/admin/incidents/${incidentId}/dispute-resolve`, {
+            method: 'PUT',
+            headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ action }),
+          });
+          const data = await res.json();
+          if (res.ok && data.success) {
+            onShowToast?.(data.message || 'Đã xử lý khiếu nại.', 'success');
+            void fetchAdminIncidents();
+            void fetchAdminStats();
+            if (isStrictAdmin) void fetchAuditLogs();
+          } else {
+            onShowToast?.(data.message || 'Không thể xử lý khiếu nại.', 'error');
+          }
+        } catch {
+          onShowToast?.('Lỗi kết nối máy chủ khi xử lý khiếu nại.', 'error');
+        } finally {
+          releaseActionLock(lockKey);
+        }
+      },
+    });
   };
 
   const handleUpdateInquiryStatus = async (
@@ -1700,7 +2077,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       const data = await res.json();
       if (res.ok && data.success) {
         const label = INQUIRY_STATUS_META[nextStatus].label;
-        onShowToast?.(`Đã chuyển trạng thái đơn đặt Porter/Guide sang "${label}".`, 'success');
+        onShowToast?.(`Đã chuyển yêu cầu Porter & HDV sang "${label}".`, 'success');
         setInquiriesList((prev) =>
           prev.map((item) => (item._id === inquiryId ? { ...item, status: nextStatus } : item))
         );
@@ -1729,18 +2106,18 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         onShowToast?.(
           data.message ||
             (nextStatus === 'active'
-              ? 'Đã chuyển trạng thái POI sang Đang hoạt động.'
-              : 'Đã đánh dấu POI: Đã cạn / Đóng.'),
+              ? 'Đã mở lại trạng thái hoạt động cho điểm mốc.'
+              : 'Đã đánh dấu điểm mốc là cạn hoặc đóng.'),
           'success'
         );
         setPoisList((prev) =>
           prev.map((p) => (p._id === poi._id ? { ...p, status: nextStatus } : p))
         );
       } else {
-        onShowToast?.(data.message || 'Không thể cập nhật trạng thái điểm thực địa.', 'error');
+        onShowToast?.(data.message || 'Không thể cập nhật trạng thái điểm mốc.', 'error');
       }
     } catch {
-      onShowToast?.('Lỗi kết nối máy chủ khi cập nhật điểm thực địa.', 'error');
+      onShowToast?.('Lỗi kết nối máy chủ khi cập nhật điểm mốc.', 'error');
     } finally {
       setTogglingPoiId(null);
     }
@@ -1748,9 +2125,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
   const handleDeletePoi = (poi: AdminTrailPoiItem) => {
     openConfirmDialog({
-      title: 'Xóa điểm thực địa (POI)',
-      message: `Xác nhận xóa vĩnh viễn điểm thực địa "${poi.title}" khỏi tuyến ${poi.trail?.name || poi.trailName || poi.trailId || ''}?`,
-      confirmLabel: 'Xóa POI',
+      title: 'Xóa điểm mốc trên tuyến',
+      message: `Xóa vĩnh viễn điểm mốc "${poi.title}" khỏi tuyến ${poi.trail?.name || poi.trailName || poi.trailId || ''}?`,
+      confirmLabel: 'Xóa điểm mốc',
       danger: true,
       onConfirm: async () => {
         const res = await fetch(`/api/trail-pois/${poi._id}`, {
@@ -1759,11 +2136,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         });
         const data = await res.json();
         if (res.ok && data.success) {
-          onShowToast?.(data.message || 'Đã xóa điểm thực địa thành công!', 'info');
+          onShowToast?.(data.message || 'Đã xóa điểm mốc.', 'info');
           setPoisList((prev) => prev.filter((p) => p._id !== poi._id));
           setPoisTotal((prev) => Math.max(0, prev - 1));
         } else {
-          onShowToast?.(data.message || 'Không thể xóa điểm thực địa.', 'error');
+          onShowToast?.(data.message || 'Không thể xóa điểm mốc.', 'error');
         }
       },
     });
@@ -1776,7 +2153,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       'Thành viên';
     openConfirmDialog({
       title: 'Xóa đánh giá cung đường',
-      message: `Bạn có chắc chắn muốn xóa vĩnh viễn đánh giá của "${reviewerLabel}"? Điểm trung bình của cung đường sẽ được tính lại tự động.`,
+      message: `Xóa vĩnh viễn đánh giá của "${reviewerLabel}"? Điểm trung bình của cung đường sẽ tự cập nhật lại.`,
       confirmLabel: 'Xóa đánh giá',
       danger: true,
       onConfirm: async () => {
@@ -1786,7 +2163,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         });
         const data = await res.json();
         if (res.ok && data.success) {
-          onShowToast?.(data.message || 'Đã xóa đánh giá thành công!', 'info');
+          onShowToast?.(data.message || 'Đã xóa đánh giá.', 'info');
           setReviewsList((prev) => prev.filter((r) => r._id !== review._id));
           setReviewsTotal((prev) => Math.max(0, prev - 1));
           void fetchAdminTrails();
@@ -1831,245 +2208,618 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     );
   }, [activeTab, pendingContributions, approvedContributions, rejectedContributions, contributions, searchQuery]);
 
-  const handleApprove = async (id: string, name: string) => {
-    try {
-      const res = await fetch(`/api/contributions/${id}`, {
-        method: 'PUT',
-        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          status: 'approved',
-          approvedAt: new Date().toLocaleDateString('vi-VN'),
-        }),
+  const handleApprove = useCallback(
+    (id: string, name: string) => {
+      const lockKey = `approve:${id}`;
+      openConfirmDialog({
+        title: 'Duyệt và công khai cung đường',
+        message: `Phê duyệt đóng góp "${name}" và đưa lên bản đồ LOST công khai? Tác giả sẽ được cộng +50 điểm uy tín.`,
+        confirmLabel: 'Duyệt & công khai',
+        onConfirm: async () => {
+          if (!acquireActionLock(lockKey)) return;
+          try {
+            const approvedAt = new Date().toLocaleDateString('vi-VN');
+            const res = await fetch(`/api/contributions/${id}`, {
+              method: 'PUT',
+              headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+              body: JSON.stringify({
+                status: 'approved',
+                approvedAt,
+              }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+              throw new Error(data.message || 'Lỗi khi duyệt bài đóng góp');
+            }
+
+            setContributions((prev) =>
+              prev.map((c) =>
+                c.id === id || c._id === id ? { ...c, status: 'approved', approvedAt } : c
+              )
+            );
+            onShowToast?.(
+              `Đã duyệt và đưa cung đường "${name}" lên bản đồ LOST.`,
+              'success'
+            );
+            setSelectedContribution((prev) =>
+              prev && (prev.id === id || prev._id === id) ? null : prev
+            );
+            void fetchFromMongo();
+            void fetchAdminTrails();
+            void fetchAdminStats();
+            if (isStrictAdmin) void fetchAuditLogs();
+          } catch (e: unknown) {
+            onShowToast?.(
+              e instanceof Error ? e.message : 'Không thể duyệt bài đóng góp, vui lòng thử lại.',
+              'error'
+            );
+          } finally {
+            releaseActionLock(lockKey);
+          }
+        },
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.message || 'Lỗi khi duyệt bài đóng góp');
+    },
+    [
+      openConfirmDialog,
+      acquireActionLock,
+      releaseActionLock,
+      onShowToast,
+      fetchFromMongo,
+      fetchAdminTrails,
+      fetchAdminStats,
+      isStrictAdmin,
+      fetchAuditLogs,
+    ]
+  );
+
+  const handleReject = useCallback(
+    (id: string, name: string) => {
+      const target = contributions.find((c) => c.id === id || c._id === id);
+      if (target && target.status === 'approved') {
+        onShowToast?.(
+          'Không thể từ chối bài đóng góp đã công khai. Hãy chỉnh sửa hoặc xóa cung đường trong mục Cung đường.',
+          'error'
+        );
+        return;
       }
 
-      const updated = contributions.map((c) =>
-        c.id === id || c._id === id
-          ? { ...c, status: 'approved', approvedAt: new Date().toLocaleDateString('vi-VN') }
-          : c
-      );
-      setContributions(updated);
-      onShowToast?.(
-        `Đã duyệt & công khai cung đường "${name}" vào bản đồ 3D thành công!`,
-        'success'
-      );
-      if (selectedContribution?.id === id || selectedContribution?._id === id) {
-        setSelectedContribution(null);
-      }
-      void fetchFromMongo();
-      void fetchAdminTrails();
-      void fetchAdminStats();
-      if (isStrictAdmin) void fetchAuditLogs();
-    } catch (e: unknown) {
-      onShowToast?.(
-        e instanceof Error ? e.message : 'Không thể duyệt bài đóng góp, vui lòng thử lại.',
-        'error'
-      );
-    }
-  };
+      const lockKey = `reject:${id}`;
+      openConfirmDialog({
+        title: 'Từ chối bài đóng góp',
+        message: `Từ chối đóng góp "${name}"? Tác giả sẽ nhận được thông báo để kiểm tra lại tọa độ và thông số tuyến.`,
+        confirmLabel: 'Xác nhận từ chối',
+        danger: true,
+        reasonInputLabel: 'Ghi chú lý do từ chối (tùy chọn)',
+        reasonPlaceholder: 'VD: Thiếu tọa độ điểm đích hoặc thông tin giấy phép chưa rõ...',
+        onConfirm: async (reasonInput?: string) => {
+          if (!acquireActionLock(lockKey)) return;
+          try {
+            const rejectedAt = new Date().toLocaleDateString('vi-VN');
+            const reasonText = (reasonInput || '').trim();
+            const res = await fetch(`/api/contributions/${id}`, {
+              method: 'PUT',
+              headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+              body: JSON.stringify({
+                status: 'rejected',
+                rejectedAt,
+                ...(reasonText ? { rejectionReason: reasonText } : {}),
+              }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+              throw new Error(data.message || 'Lỗi khi từ chối bài đóng góp');
+            }
 
-  const handleReject = async (id: string, name: string) => {
-    try {
-      const res = await fetch(`/api/contributions/${id}`, {
-        method: 'PUT',
-        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          status: 'rejected',
-          rejectedAt: new Date().toLocaleDateString('vi-VN'),
-        }),
+            setContributions((prev) =>
+              prev.map((c) =>
+                c.id === id || c._id === id ? { ...c, status: 'rejected', rejectedAt } : c
+              )
+            );
+            onShowToast?.(`Đã từ chối bài đóng góp "${name}".`, 'info');
+            setSelectedContribution((prev) =>
+              prev && (prev.id === id || prev._id === id) ? null : prev
+            );
+            void fetchFromMongo();
+            void fetchAdminStats();
+            if (isStrictAdmin) void fetchAuditLogs();
+          } catch (e: unknown) {
+            onShowToast?.(
+              e instanceof Error ? e.message : 'Không thể từ chối bài đóng góp.',
+              'error'
+            );
+          } finally {
+            releaseActionLock(lockKey);
+          }
+        },
       });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.message || 'Lỗi khi từ chối bài đóng góp');
+    },
+    [
+      contributions,
+      openConfirmDialog,
+      acquireActionLock,
+      releaseActionLock,
+      onShowToast,
+      fetchFromMongo,
+      fetchAdminStats,
+      isStrictAdmin,
+      fetchAuditLogs,
+    ]
+  );
+
+  const handleDeleteContribution = useCallback(
+    (id: string, name: string, statusHint?: string) => {
+      const target = contributions.find((c) => c.id === id || c._id === id);
+      const effectiveStatus = (statusHint || target?.status || 'pending').toLowerCase();
+      const isApprovedContrib = effectiveStatus === 'approved';
+
+      if (isApprovedContrib && !isStrictAdmin) {
+        onShowToast?.(
+          'Chỉ Quản trị viên mới được xóa bài đóng góp đã công khai (vì thao tác sẽ gỡ luôn cung đường khỏi bản đồ).',
+          'error'
+        );
+        return;
       }
 
-      const updated = contributions.map((c) =>
-        c.id === id || c._id === id
-          ? { ...c, status: 'rejected', rejectedAt: new Date().toLocaleDateString('vi-VN') }
-          : c
-      );
-      setContributions(updated);
-      onShowToast?.(`Đã từ chối bài đóng góp "${name}".`, 'info');
-      if (selectedContribution?.id === id || selectedContribution?._id === id) {
-        setSelectedContribution(null);
-      }
-      void fetchFromMongo();
-      void fetchAdminStats();
-      if (isStrictAdmin) void fetchAuditLogs();
-    } catch (e: unknown) {
-      onShowToast?.(
-        e instanceof Error ? e.message : 'Không thể từ chối bài đóng góp.',
-        'error'
-      );
-    }
-  };
-
-  const handleDeleteContribution = (id: string, name: string) => {
-    openConfirmDialog({
-      title: 'Xóa bài đóng góp',
-      message: `Bạn có chắc chắn muốn xóa vĩnh viễn bài đóng góp "${name}" khỏi hệ thống MongoDB không?`,
-      confirmLabel: 'Xóa vĩnh viễn',
-      danger: true,
-      onConfirm: async () => {
-        const res = await fetch(`/api/contributions/${id}`, {
-          method: 'DELETE',
-          headers: getApiHeaders(),
-        });
-        const data = await res.json();
-        if (!res.ok || !data.success) {
-          onShowToast?.(data.message || 'Không thể xóa bài đóng góp.', 'error');
-          return;
-        }
-        const updated = contributions.filter((c) => c.id !== id && c._id !== id);
-        setContributions(updated);
-        onShowToast?.(`Đã xóa bài đóng góp "${name}" khỏi hệ thống!`, 'info');
-        if (selectedContribution?.id === id || selectedContribution?._id === id) {
-          setSelectedContribution(null);
-        }
-        setInspectorSelection((prev) => (prev?.kind === 'contribution' && prev.data.id === id ? null : prev));
-        void fetchFromMongo();
-        void fetchAdminStats();
-        if (isStrictAdmin) void fetchAuditLogs();
-      },
-    });
-  };
-
-  const handleDeleteTrail = (id: string, name: string) => {
-    openConfirmDialog({
-      title: 'Xóa cung đường khỏi bản đồ',
-      message: `Bạn có chắc chắn muốn xóa cung đường "${name}" khỏi kho dữ liệu bản đồ LOST? Thao tác này không thể hoàn tác.`,
-      confirmLabel: 'Xóa cung đường',
-      danger: true,
-      onConfirm: async () => {
-        const res = await fetch(`/api/admin/trails/${id}`, {
-          method: 'DELETE',
-          headers: getApiHeaders(),
-        });
-        const data = await res.json();
-        if (res.ok && data.success) {
-          onShowToast?.(`Đã xóa cung đường "${name}"!`, 'info');
-          setInspectorSelection((prev) => (prev?.kind === 'trail' && prev.data.id === id ? null : prev));
-          void fetchAdminTrails();
-          void fetchAdminStats();
-          if (isStrictAdmin) void fetchAuditLogs();
-        } else {
-          onShowToast?.(data.message || 'Không thể xóa cung đường.', 'error');
-        }
-      },
-    });
-  };
-
-  const handleResolveIncident = async (id: string) => {
-    try {
-      const res = await fetch(`/api/incidents/${id}/resolve`, {
-        method: 'PUT',
-        headers: getApiHeaders(),
+      const lockKey = `delete-contrib:${id}`;
+      openConfirmDialog({
+        title: isApprovedContrib ? 'Xóa đóng góp đã công khai & cung đường' : 'Xóa bài đóng góp',
+        message: isApprovedContrib
+          ? `CẢNH BÁO: Bài đóng góp "${name}" đã được công khai. Xóa bài đóng góp này sẽ ĐỒNG THỜI gỡ bỏ cung đường "${name}" khỏi bản đồ LOST công khai! Thao tác này không thể hoàn tác.`
+          : `Xóa vĩnh viễn bài đóng góp "${name}" khỏi hệ thống? Thao tác này không thể hoàn tác.`,
+        confirmLabel: isApprovedContrib ? 'Xóa cả đóng góp & cung đường' : 'Xóa vĩnh viễn',
+        danger: true,
+        onConfirm: async () => {
+          if (isApprovedContrib && !isStrictAdmin) return;
+          if (!acquireActionLock(lockKey)) return;
+          try {
+            const res = await fetch(`/api/contributions/${id}`, {
+              method: 'DELETE',
+              headers: getApiHeaders(),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+              onShowToast?.(data.message || 'Không thể xóa bài đóng góp.', 'error');
+              return;
+            }
+            setContributions((prev) => prev.filter((c) => c.id !== id && c._id !== id));
+            onShowToast?.(
+              isApprovedContrib
+                ? `Đã xóa bài đóng góp và gỡ cung đường "${name}" khỏi bản đồ.`
+                : `Đã xóa bài đóng góp "${name}".`,
+              'info'
+            );
+            setSelectedContribution((prev) =>
+              prev && (prev.id === id || prev._id === id) ? null : prev
+            );
+            setInspectorSelection((prev) =>
+              prev?.kind === 'contribution' && prev.data.id === id ? null : prev
+            );
+            void fetchFromMongo();
+            if (isApprovedContrib) void fetchAdminTrails();
+            void fetchAdminStats();
+            if (isStrictAdmin) void fetchAuditLogs();
+          } finally {
+            releaseActionLock(lockKey);
+          }
+        },
       });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        onShowToast?.('Đã đánh dấu xử lý xong sự cố (Đã gỡ cảnh báo)!', 'success');
-        void fetchAdminIncidents();
-        void fetchAdminStats();
-        if (isStrictAdmin) void fetchAuditLogs();
-      } else {
-        onShowToast?.(data.message || 'Không thể gỡ cảnh báo sự cố.', 'error');
-      }
-    } catch {
-      onShowToast?.('Lỗi kết nối máy chủ khi xử lý sự cố.', 'error');
-    }
-  };
+    },
+    [
+      contributions,
+      isStrictAdmin,
+      openConfirmDialog,
+      acquireActionLock,
+      releaseActionLock,
+      onShowToast,
+      fetchFromMongo,
+      fetchAdminTrails,
+      fetchAdminStats,
+      fetchAuditLogs,
+    ]
+  );
 
-  const handleDeleteIncident = (id: string) => {
-    openConfirmDialog({
-      title: 'Xóa báo cáo sự cố',
-      message: 'Bạn có chắc chắn muốn xóa vĩnh viễn báo cáo sự cố thực địa này khỏi hệ thống?',
-      confirmLabel: 'Xóa sự cố',
-      danger: true,
-      onConfirm: async () => {
-        const res = await fetch(`/api/incidents/${id}`, {
-          method: 'DELETE',
-          headers: getApiHeaders(),
-        });
-        const data = await res.json();
-        if (res.ok && data.success) {
-          onShowToast?.('Đã xóa sự cố khỏi hệ thống!', 'info');
-          setInspectorSelection((prev) => (prev?.kind === 'incident' && prev.data.id === id ? null : prev));
-          void fetchAdminIncidents();
-          void fetchAdminStats();
-          if (isStrictAdmin) void fetchAuditLogs();
-        } else {
-          onShowToast?.(data.message || 'Không thể xóa sự cố.', 'error');
-        }
-      },
-    });
-  };
+  const handleDeleteTrail = useCallback(
+    (id: string, name: string) => {
+      if (!isStrictAdmin) return;
+      const lockKey = `delete-trail:${id}`;
+      openConfirmDialog({
+        title: 'Xóa cung đường khỏi bản đồ',
+        message: `Xóa cung đường "${name}" khỏi bản đồ LOST? Thao tác này không thể hoàn tác.`,
+        confirmLabel: 'Xóa cung đường',
+        danger: true,
+        onConfirm: async () => {
+          if (!isStrictAdmin) return;
+          if (!acquireActionLock(lockKey)) return;
+          try {
+            const res = await fetch(`/api/admin/trails/${id}`, {
+              method: 'DELETE',
+              headers: getApiHeaders(),
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+              onShowToast?.(`Đã xóa cung đường "${name}".`, 'info');
+              setInspectorSelection((prev) =>
+                prev?.kind === 'trail' && prev.data.id === id ? null : prev
+              );
+              setRecentlyHiddenTrails((prev) =>
+                prev.filter((item) => String(item._id || item.id || '') !== id)
+              );
+              void fetchAdminTrails();
+              void fetchAdminStats();
+              if (isStrictAdmin) void fetchAuditLogs();
+            } else {
+              onShowToast?.(data.message || 'Không thể xóa cung đường.', 'error');
+            }
+          } finally {
+            releaseActionLock(lockKey);
+          }
+        },
+      });
+    },
+    [
+      isStrictAdmin,
+      openConfirmDialog,
+      acquireActionLock,
+      releaseActionLock,
+      onShowToast,
+      fetchAdminTrails,
+      fetchAdminStats,
+      fetchAuditLogs,
+    ]
+  );
+
+  const handleResolveIncident = useCallback(
+    (id: string) => {
+      const lockKey = `resolve:${id}`;
+      openConfirmDialog({
+        title: 'Gỡ cảnh báo sự cố',
+        message: 'Xác nhận đã kiểm tra thực địa và gỡ cảnh báo sự cố này khỏi bản đồ LOST?',
+        confirmLabel: 'Gỡ cảnh báo',
+        onConfirm: async () => {
+          if (!acquireActionLock(lockKey)) return;
+          try {
+            const res = await fetch(`/api/incidents/${id}/resolve`, {
+              method: 'PUT',
+              headers: getApiHeaders(),
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+              onShowToast?.('Đã gỡ cảnh báo sự cố.', 'success');
+              void fetchAdminIncidents();
+              void fetchAdminStats();
+              if (isStrictAdmin) void fetchAuditLogs();
+            } else {
+              onShowToast?.(data.message || 'Không thể gỡ cảnh báo sự cố.', 'error');
+            }
+          } catch {
+            onShowToast?.('Lỗi kết nối máy chủ khi xử lý sự cố.', 'error');
+          } finally {
+            releaseActionLock(lockKey);
+          }
+        },
+      });
+    },
+    [
+      openConfirmDialog,
+      acquireActionLock,
+      releaseActionLock,
+      onShowToast,
+      fetchAdminIncidents,
+      fetchAdminStats,
+      isStrictAdmin,
+      fetchAuditLogs,
+    ]
+  );
+
+  const handleDeleteIncident = useCallback(
+    (id: string) => {
+      const lockKey = `delete-incident:${id}`;
+      openConfirmDialog({
+        title: 'Xóa báo cáo sự cố',
+        message: 'Xóa vĩnh viễn báo cáo sự cố này? Thao tác này không thể hoàn tác.',
+        confirmLabel: 'Xóa sự cố',
+        danger: true,
+        onConfirm: async () => {
+          if (!acquireActionLock(lockKey)) return;
+          try {
+            const res = await fetch(`/api/incidents/${id}`, {
+              method: 'DELETE',
+              headers: getApiHeaders(),
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+              onShowToast?.('Đã xóa báo cáo sự cố.', 'info');
+              setInspectorSelection((prev) =>
+                prev?.kind === 'incident' && prev.data.id === id ? null : prev
+              );
+              void fetchAdminIncidents();
+              void fetchAdminStats();
+              if (isStrictAdmin) void fetchAuditLogs();
+            } else {
+              onShowToast?.(data.message || 'Không thể xóa sự cố.', 'error');
+            }
+          } finally {
+            releaseActionLock(lockKey);
+          }
+        },
+      });
+    },
+    [
+      openConfirmDialog,
+      acquireActionLock,
+      releaseActionLock,
+      onShowToast,
+      fetchAdminIncidents,
+      fetchAdminStats,
+      isStrictAdmin,
+      fetchAuditLogs,
+    ]
+  );
 
   const handleBanUser = (rawUserId: EntityRef, label: string) => {
+    if (!isStrictAdmin) return;
     const id = extractEntityId(rawUserId);
     if (!id) {
       onShowToast?.('Không xác định được mã tài khoản cần khóa.', 'error');
       return;
     }
+    if (currentUserId && id === currentUserId) {
+      onShowToast?.('Không thể tự khóa tài khoản của chính bạn.', 'error');
+      return;
+    }
+    const lockKey = `ban:${id}`;
     openConfirmDialog({
       title: 'Khóa tài khoản thành viên',
-      message: `Xác nhận khóa tài khoản "${label}"? Người dùng này sẽ bị đăng xuất ngay lập tức và không thể truy cập LOST.`,
+      message: `Khóa tài khoản "${label}"? Tài khoản này sẽ bị đăng xuất ngay và không thể vào LOST.`,
       confirmLabel: 'Khóa tài khoản',
       danger: true,
-      reasonInputLabel: 'Lý do khóa tài khoản (lưu vào hồ sơ & nhật ký kiểm toán)',
-      reasonPlaceholder: 'VD: Báo động giả sự cố nhiều lần, spam nội dung vi phạm...',
+      reasonInputLabel: 'Lý do khóa tài khoản (lưu trong hồ sơ & nhật ký thao tác)',
+      reasonPlaceholder: 'VD: Báo tin giả nhiều lần, gửi nội dung vi phạm...',
       defaultReason: 'Vi phạm quy định cộng đồng LOST',
       onConfirm: async (reasonInput?: string) => {
-        const finalReason = (reasonInput || '').trim() || 'Vi phạm quy định cộng đồng LOST';
-        const res = await fetch(`/api/admin/users/${id}/ban`, {
-          method: 'PUT',
-          headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ reason: finalReason, banReason: finalReason }),
-        });
-        const data = await res.json();
-        if (res.ok && data.success) {
-          onShowToast?.(`Đã khóa tài khoản ${label}`, 'info');
-          setUsersList((prev) =>
-            prev.map((u) =>
-              u._id === id || u.id === id ? { ...u, isBanned: true, banReason: finalReason } : u
-            )
-          );
-          void fetchAdminUsers();
-          void fetchAdminStats();
-          if (isStrictAdmin) void fetchAuditLogs();
-        } else {
-          onShowToast?.(data.message || 'Không thể khóa tài khoản.', 'error');
+        if (!isStrictAdmin) return;
+        if (!acquireActionLock(lockKey)) return;
+        try {
+          const finalReason = (reasonInput || '').trim() || 'Vi phạm quy định cộng đồng LOST';
+          const res = await fetch(`/api/admin/users/${id}/ban`, {
+            method: 'PUT',
+            headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ reason: finalReason, banReason: finalReason }),
+          });
+          const data = await res.json();
+          if (res.ok && data.success) {
+            onShowToast?.(`Đã khóa tài khoản ${label}`, 'info');
+            setUsersList((prev) =>
+              prev.map((u) =>
+                u._id === id || u.id === id ? { ...u, isBanned: true, banReason: finalReason } : u
+              )
+            );
+            void fetchAdminUsers();
+            void fetchAdminStats();
+            if (isStrictAdmin) void fetchAuditLogs();
+          } else {
+            onShowToast?.(data.message || 'Không thể khóa tài khoản.', 'error');
+          }
+        } finally {
+          releaseActionLock(lockKey);
         }
       },
     });
   };
 
-  const handleUnbanUser = async (id: string, email: string) => {
-    try {
-      const res = await fetch(`/api/admin/users/${id}/unban`, {
-        method: 'PUT',
-        headers: getApiHeaders(),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        onShowToast?.(`Đã mở khóa tài khoản ${email}`, 'success');
-        setUsersList((prev) =>
-          prev.map((u) =>
-            u._id === id || u.id === id ? { ...u, isBanned: false, banReason: '' } : u
-          )
-        );
-        void fetchAdminUsers();
-        void fetchAdminStats();
-        if (isStrictAdmin) void fetchAuditLogs();
-      } else {
-        onShowToast?.(data.message || 'Không thể mở khóa tài khoản.', 'error');
-      }
-    } catch {
-      onShowToast?.('Lỗi kết nối máy chủ khi mở khóa tài khoản.', 'error');
-    }
+  const handleUnbanUser = (id: string, email: string) => {
+    if (!isStrictAdmin) return;
+    const lockKey = `unban:${id}`;
+    openConfirmDialog({
+      title: 'Mở khóa tài khoản thành viên',
+      message: `Mở khóa cho tài khoản "${email}"? Thành viên này sẽ có thể đăng nhập và hoạt động lại trên LOST.`,
+      confirmLabel: 'Mở khóa tài khoản',
+      onConfirm: async () => {
+        if (!isStrictAdmin) return;
+        if (!acquireActionLock(lockKey)) return;
+        try {
+          const res = await fetch(`/api/admin/users/${id}/unban`, {
+            method: 'PUT',
+            headers: getApiHeaders(),
+          });
+          const data = await res.json();
+          if (res.ok && data.success) {
+            onShowToast?.(`Đã mở khóa tài khoản ${email}`, 'success');
+            setUsersList((prev) =>
+              prev.map((u) =>
+                u._id === id || u.id === id ? { ...u, isBanned: false, banReason: '' } : u
+              )
+            );
+            void fetchAdminUsers();
+            void fetchAdminStats();
+            if (isStrictAdmin) void fetchAuditLogs();
+          } else {
+            onShowToast?.(data.message || 'Không thể mở khóa tài khoản.', 'error');
+          }
+        } catch {
+          onShowToast?.('Lỗi kết nối máy chủ khi mở khóa tài khoản.', 'error');
+        } finally {
+          releaseActionLock(lockKey);
+        }
+      },
+    });
   };
+
+  const handleAdminMarkTimerSafe = useCallback(
+    (timerId: string, userName: string, trailName: string) => {
+      const lockKey = `timer-safe:${timerId}`;
+      openConfirmDialog({
+        title: 'Xác nhận trekker đã an toàn?',
+        message: `Đánh dấu lịch hẹn báo bình an của "${userName}" trên cung "${trailName}" ở trạng thái đã về an toàn và tắt cảnh báo quá hạn?`,
+        confirmLabel: 'Đánh dấu đã an toàn',
+        danger: false,
+        reasonInputLabel: 'Ghi chú xác minh của điều phối viên (tùy chọn)',
+        reasonPlaceholder: 'VD: Đã gọi điện xác nhận trekker đã ra khỏi rừng an toàn...',
+        defaultReason: '',
+        onConfirm: async (reasonInput?: string) => {
+          if (!acquireActionLock(lockKey)) return;
+          try {
+            const finalReason = (reasonInput || '').trim();
+            const res = await fetch(
+              `/api/safety-timers/admin/${encodeURIComponent(timerId)}/mark-safe`,
+              {
+                method: 'PATCH',
+                headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ reason: finalReason || undefined }),
+              }
+            );
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.success) {
+              onShowToast?.(
+                data.message || 'Đã đánh dấu lịch hẹn báo bình an ở trạng thái an toàn.',
+                'success'
+              );
+              setLiveSafetyTimers((prev) => prev.filter((t) => t._id !== timerId));
+              setInspectorSelection((prev) =>
+                prev?.kind === 'timer' && prev.data.id === timerId ? null : prev
+              );
+              void fetchAdminSafetyTimers('live');
+              void fetchAdminSafetyTimers('checked_in_safe');
+              void fetchAdminStats();
+              if (isStrictAdmin) void fetchAuditLogs();
+            } else {
+              onShowToast?.(data.message || 'Không thể đánh dấu an toàn lịch hẹn.', 'error');
+            }
+          } catch {
+            onShowToast?.('Lỗi kết nối máy chủ khi cập nhật lịch hẹn an toàn.', 'error');
+          } finally {
+            releaseActionLock(lockKey);
+          }
+        },
+      });
+    },
+    [
+      openConfirmDialog,
+      acquireActionLock,
+      releaseActionLock,
+      onShowToast,
+      fetchAdminSafetyTimers,
+      fetchAdminStats,
+      isStrictAdmin,
+      fetchAuditLogs,
+    ]
+  );
+
+  const handleAdminExtendTimer = useCallback(
+    (timerId: string, userName: string, trailName: string) => {
+      const lockKey = `timer-extend:${timerId}`;
+      openConfirmDialog({
+        title: 'Gia hạn hẹn giờ báo bình an thêm 2 giờ?',
+        message: `Gia hạn thời điểm dự kiến ra khỏi rừng của "${userName}" trên cung "${trailName}" thêm 2 giờ (+120 phút)? Nếu lịch đang quá hạn, hệ thống sẽ chuyển lại trạng thái đang theo dõi.`,
+        confirmLabel: 'Gia hạn +2 giờ',
+        danger: false,
+        reasonInputLabel: 'Ghi chú gia hạn (tùy chọn)',
+        reasonPlaceholder: 'VD: Đoàn báo di chuyển chậm do mưa, dự kiến xuống muộn 2 tiếng...',
+        defaultReason: '',
+        onConfirm: async (reasonInput?: string) => {
+          if (!acquireActionLock(lockKey)) return;
+          try {
+            const finalReason = (reasonInput || '').trim();
+            const res = await fetch(
+              `/api/safety-timers/admin/${encodeURIComponent(timerId)}/extend`,
+              {
+                method: 'PATCH',
+                headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ extendMinutes: 120, reason: finalReason || undefined }),
+              }
+            );
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.success) {
+              onShowToast?.(data.message || 'Đã gia hạn lịch hẹn báo bình an thêm 2 giờ.', 'success');
+              setInspectorSelection((prev) =>
+                prev?.kind === 'timer' && prev.data.id === timerId ? null : prev
+              );
+              void fetchAdminSafetyTimers('live');
+              void fetchAdminStats();
+              if (isStrictAdmin) void fetchAuditLogs();
+            } else {
+              onShowToast?.(data.message || 'Không thể gia hạn lịch hẹn.', 'error');
+            }
+          } catch {
+            onShowToast?.('Lỗi kết nối máy chủ khi gia hạn lịch hẹn.', 'error');
+          } finally {
+            releaseActionLock(lockKey);
+          }
+        },
+      });
+    },
+    [
+      openConfirmDialog,
+      acquireActionLock,
+      releaseActionLock,
+      onShowToast,
+      fetchAdminSafetyTimers,
+      fetchAdminStats,
+      isStrictAdmin,
+      fetchAuditLogs,
+    ]
+  );
+
+  const handleAdminResolveBeacon = useCallback(
+    (beaconId: string, displayName: string, trailName: string) => {
+      const lockKey = `beacon-resolve:${beaconId}`;
+      openConfirmDialog({
+        title: 'Kết thúc phiên phát tín hiệu trực tiếp?',
+        message: `Đóng tín hiệu định vị của "${displayName}" trên cung "${trailName}" và chuyển sang trạng thái đã kết thúc? Người theo dõi sẽ nhận được cập nhật ngay lập tức.`,
+        confirmLabel: 'Kết thúc tín hiệu',
+        danger: true,
+        reasonInputLabel: 'Ghi chú đóng tín hiệu (tùy chọn)',
+        reasonPlaceholder: 'VD: Đã liên hệ xác nhận trekker an toàn, quên tắt chia sẻ GPS...',
+        defaultReason: '',
+        onConfirm: async (reasonInput?: string) => {
+          if (!acquireActionLock(lockKey)) return;
+          try {
+            const finalReason = (reasonInput || '').trim();
+            const res = await fetch(
+              `/api/live-beacons/admin/${encodeURIComponent(beaconId)}/resolve`,
+              {
+                method: 'PATCH',
+                headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ reason: finalReason || undefined }),
+              }
+            );
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.success) {
+              onShowToast?.(
+                data.message || 'Đã kết thúc phiên phát tín hiệu trực tiếp.',
+                'success'
+              );
+              setLiveBeaconsList((prev) =>
+                prev.filter((b) => String(b._id || b.token || '') !== beaconId)
+              );
+              setInspectorSelection((prev) =>
+                prev?.kind === 'beacon' && prev.data.id === beaconId ? null : prev
+              );
+              void fetchAdminLiveBeacons();
+              void fetchAdminStats();
+              if (isStrictAdmin) void fetchAuditLogs();
+            } else {
+              onShowToast?.(data.message || 'Không thể kết thúc tín hiệu trực tiếp.', 'error');
+            }
+          } catch {
+            onShowToast?.('Lỗi kết nối máy chủ khi kết thúc tín hiệu.', 'error');
+          } finally {
+            releaseActionLock(lockKey);
+          }
+        },
+      });
+    },
+    [
+      openConfirmDialog,
+      acquireActionLock,
+      releaseActionLock,
+      onShowToast,
+      fetchAdminLiveBeacons,
+      fetchAdminStats,
+      isStrictAdmin,
+      fetchAuditLogs,
+    ]
+  );
 
   const executeConfirmDialog = async () => {
     if (!confirmDialog || isConfirmExecuting) return;
@@ -2098,15 +2848,50 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   }, [incidentsList]);
 
   const activeIncidentsCount = activeIncidents.length;
-  const displayedIncidents = useMemo(
-    () =>
+  const displayedIncidents = useMemo(() => {
+    const base =
       incidentFilter === 'active'
         ? activeIncidents
         : incidentFilter === 'resolved'
           ? resolvedIncidents
-          : incidentsList,
-    [incidentFilter, activeIncidents, resolvedIncidents, incidentsList]
-  );
+          : incidentsList;
+    const q = incidentSearchQuery.trim();
+    if (!q) return base;
+    return base.filter(
+      (inc) =>
+        searchMatchVietnamese(inc.trailName || '', q) ||
+        searchMatchVietnamese(inc.description || '', q) ||
+        searchMatchVietnamese(inc.locationNote || '', q) ||
+        searchMatchVietnamese(inc.reporterName || inc.userName || inc.verifiedBy || '', q) ||
+        searchMatchVietnamese(inc.reporterEmail || '', q) ||
+        searchMatchVietnamese(getSeverityLabelVi(inc.severity), q)
+    );
+  }, [incidentFilter, activeIncidents, resolvedIncidents, incidentsList, incidentSearchQuery]);
+
+  const filteredThreads = useMemo(() => {
+    const q = forumSearchQuery.trim();
+    if (!q) return threadsList;
+    return threadsList.filter(
+      (t) =>
+        searchMatchVietnamese(t.title || '', q) ||
+        searchMatchVietnamese(t.category || '', q) ||
+        searchMatchVietnamese(t.authorName || '', q)
+    );
+  }, [threadsList, forumSearchQuery]);
+
+  const filteredAuditLogs = useMemo(() => {
+    const q = auditSearchQuery.trim();
+    if (!q) return auditLogs;
+    return auditLogs.filter(
+      (log) =>
+        searchMatchVietnamese(log.action || '', q) ||
+        searchMatchVietnamese(log.targetCollection || '', q) ||
+        searchMatchVietnamese(log.details || '', q) ||
+        searchMatchVietnamese(log.userId?.fullName || '', q) ||
+        searchMatchVietnamese(log.userId?.email || '', q) ||
+        searchMatchVietnamese(log.ipAddress || '', q)
+    );
+  }, [auditLogs, auditSearchQuery]);
 
   const { inquiryStatusCounts, pendingInquiriesCount, filteredInquiries } = useMemo(() => {
     const counts = { all: inquiriesList.length, pending: 0, contacted: 0, confirmed: 0, cancelled: 0 };
@@ -2140,14 +2925,16 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     return { inquiryStatusCounts: counts, pendingInquiriesCount: counts.pending, filteredInquiries: matched };
   }, [inquiriesList, inquiryStatusFilter, inquirySearchQuery]);
 
-  const { overdueTimersCount, sosBeaconsCount, liveSafetyTotal } = useMemo(() => {
+  const { overdueTimersCount, activeTimersLiveCount, sosBeaconsCount, liveSafetyTotal } = useMemo(() => {
     let overdue = 0;
+    let activeOnly = 0;
     let activeOrOverdue = 0;
-    for (const t of safetyTimersList) {
+    for (const t of liveSafetyTimers) {
       if (t.status === 'overdue_alerted') {
         overdue++;
         activeOrOverdue++;
       } else if (t.status === 'active') {
+        activeOnly++;
         activeOrOverdue++;
       }
     }
@@ -2155,8 +2942,15 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     for (const b of liveBeaconsList) {
       if (b.status === 'sos') sos++;
     }
-    return { overdueTimersCount: overdue, sosBeaconsCount: sos, liveSafetyTotal: activeOrOverdue + liveBeaconsList.length };
-  }, [safetyTimersList, liveBeaconsList]);
+    return {
+      overdueTimersCount: overdue,
+      activeTimersLiveCount: activeOnly,
+      sosBeaconsCount: sos,
+      liveSafetyTotal: activeOrOverdue + liveBeaconsList.length,
+    };
+  }, [liveSafetyTimers, liveBeaconsList]);
+  const displayedSafetyTimers =
+    safetyTimerView === 'live' ? liveSafetyTimers : archivedSafetyTimers[safetyTimerView];
   const urgentSafetyCount = overdueTimersCount + sosBeaconsCount;
   const fieldModerationTotal = poisList.length + reviewsList.length;
 
@@ -2234,6 +3028,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       const lng = Number(t.startLng);
       const point: CockpitTrailPoint = {
         id,
+        slug: t.id,
         name: t.name || 'Cung đường trekking',
         province: t.province || 'Việt Nam',
         district: t.district,
@@ -2254,6 +3049,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         hasWaterSource: t.hasWaterSource,
         kidFriendly: t.kidFriendly,
         status: t.status,
+        gpxTrack: t.gpxTrack,
       };
       mapped.push(point);
       byId.set(id, point);
@@ -2301,8 +3097,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     };
   }, [trailsList]);
 
-  const { cockpitContributions, cockpitContributionsById } = useMemo(() => {
+  const { cockpitContributions, cockpitPendingContributions, cockpitContributionsById } = useMemo(() => {
     const mapped: CockpitContributionPoint[] = [];
+    const pendingOnly: CockpitContributionPoint[] = [];
     const byId = new Map<string, CockpitContributionPoint>();
     for (const c of contributions) {
       const id = String(c.id || c._id || '');
@@ -2327,12 +3124,51 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         permitRequired: c.permitRequired,
         hasCampsite: c.hasCampsite,
         hasWaterSource: c.hasWaterSource,
+        gpxTrack: c.gpxTrack,
       };
       mapped.push(point);
       byId.set(id, point);
+      if (point.status !== 'approved' && point.status !== 'rejected') {
+        pendingOnly.push(point);
+      }
     }
-    return { cockpitContributions: mapped, cockpitContributionsById: byId };
+    return {
+      cockpitContributions: mapped,
+      cockpitPendingContributions: pendingOnly,
+      cockpitContributionsById: byId,
+    };
   }, [contributions]);
+
+  const nearbyTrailByContributionId = useMemo(() => {
+    const map = new Map<string, { trailName: string; distanceKm: number }>();
+    const publishedTrails = trailsList.filter(
+      (t) => (!t.status || t.status === 'approved') && hasValidVnCoords(t)
+    );
+    if (publishedTrails.length === 0) return map;
+
+    for (const contrib of contributions) {
+      const statusNorm = (contrib.status || 'pending').toLowerCase();
+      if (statusNorm !== 'pending' || !hasValidVnCoords(contrib)) continue;
+      const contribId = String(contrib.id || contrib._id || '');
+      if (!contribId) continue;
+      const cLat = Number(contrib.startLat);
+      const cLng = Number(contrib.startLng);
+      let closest: { trailName: string; distanceKm: number } | null = null;
+      for (const trail of publishedTrails) {
+        const distKm = haversineKm(cLat, cLng, Number(trail.startLat), Number(trail.startLng));
+        if (distKm <= DUPLICATE_PEAK_RADIUS_KM && (!closest || distKm < closest.distanceKm)) {
+          closest = {
+            trailName: trail.name || 'Cung đường hiện có',
+            distanceKm: distKm,
+          };
+        }
+      }
+      if (closest) {
+        map.set(contribId, closest);
+      }
+    }
+    return map;
+  }, [contributions, trailsList]);
 
   const { cockpitIncidents, cockpitIncidentsById } = useMemo(() => {
     const mapped: CockpitIncidentPoint[] = [];
@@ -2407,6 +3243,39 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     return { cockpitBeacons: mapped, cockpitBeaconsById: byId };
   }, [liveBeaconsList, resolveTrailCoords]);
 
+  const { cockpitOverdueTimers, cockpitOverdueTimersById } = useMemo(() => {
+    const mapped: CockpitOverdueTimerPoint[] = [];
+    const byId = new Map<string, CockpitOverdueTimerPoint>();
+    for (const timer of liveSafetyTimers) {
+      if (timer.status !== 'overdue_alerted') continue;
+      const userObj = typeof timer.userId === 'object' ? timer.userId : null;
+      const explicitValid = hasValidVnCoords({
+        startLat: timer.lastKnownLat,
+        startLng: timer.lastKnownLng,
+      });
+      const fallback = explicitValid
+        ? { lat: Number(timer.lastKnownLat), lng: Number(timer.lastKnownLng) }
+        : resolveTrailCoords(timer.trailName, timer.trailSlug);
+      const point: CockpitOverdueTimerPoint = {
+        id: timer._id,
+        userName: userObj?.fullName || userObj?.username || 'Thành viên LOST',
+        trailName: timer.trailName || 'Cung đường trekking',
+        expectedReturnAt: timer.expectedReturnAt,
+        alertedAt: timer.alertedAt,
+        emergencyContactName: timer.emergencyContactName,
+        emergencyContactPhone: timer.emergencyContactPhone,
+        emergencyContactEmail: timer.emergencyContactEmail,
+        trekkerPhone: userObj?.phone,
+        notes: timer.notes,
+        lat: fallback?.lat,
+        lng: fallback?.lng,
+      };
+      mapped.push(point);
+      byId.set(point.id, point);
+    }
+    return { cockpitOverdueTimers: mapped, cockpitOverdueTimersById: byId };
+  }, [liveSafetyTimers, resolveTrailCoords]);
+
   const cockpitUsersById = useMemo(() => {
     const byId = new Map<string, CockpitUserPoint>();
     for (const u of usersList) {
@@ -2449,27 +3318,20 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       }
     }
 
-    // P1: Overdue Safety Timers
-    for (const timer of safetyTimersList) {
-      if (timer.status === 'overdue_alerted') {
-        const userObj = typeof timer.userId === 'object' ? timer.userId : null;
-        const trekkerName = userObj?.fullName || userObj?.username || 'Thành viên LOST';
-        const fallback =
-          typeof timer.lastKnownLat === 'number' && typeof timer.lastKnownLng === 'number'
-            ? { lat: timer.lastKnownLat, lng: timer.lastKnownLng }
-            : resolveTrailCoords(timer.trailName, timer.trailSlug);
-        items.push({
-          id: `overdue-${timer._id}`,
-          kind: 'overdue',
-          priority: 1,
-          title: `Quá hạn báo bình an · ${trekkerName}`,
-          subtitle: `${timer.trailName || 'Tuyến thực địa'} · Hạn ${formatDateVi(timer.expectedReturnAt)}`,
-          meta: timer.emergencyContactPhone ? `Liên hệ: ${timer.emergencyContactPhone}` : 'Cần kiểm tra ngay',
-          targetSection: 'safety',
-          lat: fallback?.lat,
-          lng: fallback?.lng,
-        });
-      }
+    // P1: Overdue Safety Timers (always driven by liveSafetyTimers)
+    for (const timer of cockpitOverdueTimers) {
+      items.push({
+        id: `overdue-${timer.id}`,
+        kind: 'overdue',
+        priority: 1,
+        title: `Quá hạn báo bình an · ${timer.userName}`,
+        subtitle: `${timer.trailName} · Hạn ${formatDateVi(timer.expectedReturnAt)}`,
+        meta: timer.emergencyContactPhone ? `Liên hệ: ${timer.emergencyContactPhone}` : 'Cần kiểm tra ngay',
+        targetSection: 'safety',
+        lat: timer.lat,
+        lng: timer.lng,
+        selection: { kind: 'timer', data: timer },
+      });
     }
 
     // P1: Community-disputed incidents & critical active incidents
@@ -2480,9 +3342,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           id: `dispute-${inc.id}`,
           kind: 'dispute',
           priority: 1,
-          title: `Khiếu nại tin giả · ${inc.trailName}`,
+          title: `Báo tin chưa đúng · ${inc.trailName}`,
           subtitle: inc.description,
-          meta: `${inc.disputesCount} báo cáo tranh chấp`,
+          meta: `${inc.disputesCount} phản hồi trái chiều`,
           targetSection: 'incidents',
           lat: inc.lat,
           lng: inc.lng,
@@ -2496,7 +3358,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           priority: 1,
           title: `Khẩn cấp · ${inc.trailName}`,
           subtitle: inc.description,
-          meta: inc.isSynthetic ? 'Nguồn vệ tinh' : formatDateVi(inc.reportedAt),
+          meta: inc.isSynthetic ? 'Dữ liệu vệ tinh' : formatDateVi(inc.reportedAt),
           targetSection: 'incidents',
           lat: inc.lat,
           lng: inc.lng,
@@ -2533,7 +3395,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           id: `inq-${inq._id}`,
           kind: 'inquiry',
           priority: 2,
-          title: `Đơn Porter/Guide · ${trailLabel}`,
+          title: `Thuê Porter & HDV · ${trailLabel}`,
           subtitle: `${trekkerObj?.fullName || trekkerObj?.username || 'Trekker'} · ${inq.groupSize || 1} người · ${inq.durationDays || 1} ngày`,
           meta: formatDateOnlyVi(inq.plannedStartDate),
           targetSection: 'inquiries',
@@ -2550,7 +3412,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           priority: 3,
           title: inc.trailName,
           subtitle: inc.description,
-          meta: inc.isSynthetic ? 'Vệ tinh · Chỉ đọc' : formatDateVi(inc.reportedAt),
+          meta: inc.isSynthetic ? 'Vệ tinh · chỉ đọc' : formatDateVi(inc.reportedAt),
           targetSection: 'incidents',
           lat: inc.lat,
           lng: inc.lng,
@@ -2560,10 +3422,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     }
 
     return items.sort((a, b) => a.priority - b.priority);
-  }, [cockpitBeacons, safetyTimersList, resolveTrailCoords, cockpitIncidents, cockpitContributions, inquiriesList]);
+  }, [cockpitBeacons, cockpitOverdueTimers, cockpitIncidents, cockpitContributions, inquiriesList]);
 
   const commandDeckStats = useMemo<AdminCommandDeckStats>(() => {
-    const activeTimersCount = safetyTimersList.filter(
+    const activeTimersCount = liveSafetyTimers.filter(
       (t) => t.status === 'active' || t.status === 'overdue_alerted'
     ).length;
     return {
@@ -2598,50 +3460,62 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     trailsList.length,
     pendingContributions.length,
     activeIncidentsCount,
-    safetyTimersList,
+    liveSafetyTimers,
     reviewsTotal,
     threadsList.length,
     adminStats,
     urgentSafetyCount,
   ]);
 
-  // Keep docked Spatial Inspector synced with live state mutations (approve, reject, resolve, role/ban)
+  // Keep docked Spatial Inspector synced with live state; return null when an item was deleted (no ghost data)
   const liveInspectorSelection = useMemo<CockpitInspectorSelection | null>(() => {
     if (!inspectorSelection) return null;
     switch (inspectorSelection.kind) {
       case 'trail': {
         const fresh = cockpitTrailsById.get(inspectorSelection.data.id);
-        return fresh ? { kind: 'trail', data: fresh } : inspectorSelection;
+        if (fresh) return { kind: 'trail', data: fresh };
+        return loadedSections.has('trails') ? null : inspectorSelection;
       }
       case 'contribution': {
         const fresh = cockpitContributionsById.get(inspectorSelection.data.id);
-        return fresh ? { kind: 'contribution', data: fresh } : inspectorSelection;
+        if (fresh) return { kind: 'contribution', data: fresh };
+        return loadedSections.has('contributions') ? null : inspectorSelection;
       }
       case 'incident': {
         const fresh = cockpitIncidentsById.get(inspectorSelection.data.id);
-        return fresh ? { kind: 'incident', data: fresh } : inspectorSelection;
+        if (fresh) return { kind: 'incident', data: fresh };
+        return loadedSections.has('incidents') ? null : inspectorSelection;
       }
       case 'beacon': {
         const fresh = cockpitBeaconsById.get(inspectorSelection.data.id);
-        return fresh ? { kind: 'beacon', data: fresh } : inspectorSelection;
+        if (fresh) return { kind: 'beacon', data: fresh };
+        return loadedSections.has('safety') ? null : inspectorSelection;
+      }
+      case 'timer': {
+        const fresh = cockpitOverdueTimersById.get(inspectorSelection.data.id);
+        if (fresh) return { kind: 'timer', data: fresh };
+        return loadedSections.has('safety') ? null : inspectorSelection;
       }
       case 'user': {
         const fresh = cockpitUsersById.get(inspectorSelection.data.id);
-        return fresh ? { kind: 'user', data: fresh } : inspectorSelection;
+        if (fresh) return { kind: 'user', data: fresh };
+        return loadedSections.has('users') ? null : inspectorSelection;
       }
     }
   }, [
     inspectorSelection,
+    loadedSections,
     cockpitTrailsById,
     cockpitContributionsById,
     cockpitIncidentsById,
     cockpitBeaconsById,
+    cockpitOverdueTimersById,
     cockpitUsersById,
   ]);
 
   const selectedInspectorId = liveInspectorSelection ? liveInspectorSelection.data.id : null;
 
-  const lockedCoords = useMemo<{ lat: number; lng: number } | null>(() => {
+  const lockedCoords = useMemo<CockpitCoordPoint | null>(() => {
     if (!liveInspectorSelection) return null;
     if (liveInspectorSelection.kind === 'trail') {
       const { startLat, startLng } = liveInspectorSelection.data;
@@ -2653,7 +3527,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         ? { lat: Number(startLat), lng: Number(startLng) }
         : null;
     }
-    if (liveInspectorSelection.kind === 'incident' || liveInspectorSelection.kind === 'beacon') {
+    if (
+      liveInspectorSelection.kind === 'incident' ||
+      liveInspectorSelection.kind === 'beacon' ||
+      liveInspectorSelection.kind === 'timer'
+    ) {
       const { lat, lng } = liveInspectorSelection.data;
       return hasValidVnCoords({ startLat: lat, startLng: lng })
         ? { lat: Number(lat), lng: Number(lng) }
@@ -2677,14 +3555,15 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       ? `${urgentSafetyCount} cảnh báo SOS / quá hạn`
       : statusReadiness === 'attention'
         ? `${commandDeckStats.activeIncidents} sự cố · ${commandDeckStats.pendingContributions} chờ duyệt`
-        : `${commandDeckStats.totalTrails} tuyến VN`;
+        : `${commandDeckStats.totalTrails} cung đường`;
 
   const handleInspectorEditTrail = useCallback(
     (trailId: string) => {
+      if (!isStrictAdmin) return;
       const found = trailsList.find((t) => (t._id || t.id) === trailId);
       if (found) openEditTrailModal(found);
     },
-    [trailsList]
+    [isStrictAdmin, trailsList, openEditTrailModal]
   );
 
   const handleInspectorOpenContribModal = useCallback(
@@ -2715,9 +3594,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   }
 
   const navGroupLabels: Record<AdminNavGroupId, string> = {
-    command: 'Chỉ huy',
+    command: 'Trực vận hành',
     moderation: 'Kiểm duyệt',
-    operations: 'Vận hành',
+    operations: 'Điều phối',
     system: 'Hệ thống',
   };
 
@@ -2755,7 +3634,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       {
         id: 'overview',
         group: 'command',
-        label: 'Trung tâm Điều hành',
+        label: 'Trực vận hành',
         icon: Compass,
         count: urgentSafetyCount > 0 ? urgentSafetyCount : undefined,
         alertTone: urgentSafetyCount > 0 ? 'danger' : undefined,
@@ -2772,16 +3651,16 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       {
         id: 'incidents',
         group: 'moderation',
-        label: 'Quản lý sự cố',
+        label: 'Sự cố & cảnh báo',
         icon: AlertTriangle,
         count: incidentsCount,
         alertTone: pendingDisputesCount > 0 || incidentsCount > 0 ? 'danger' : undefined,
-        urgentTooltip: pendingDisputesCount > 0 ? `${pendingDisputesCount} khiếu nại tin giả` : undefined,
+        urgentTooltip: pendingDisputesCount > 0 ? `${pendingDisputesCount} cảnh báo bị phản bác` : undefined,
       },
       {
         id: 'field',
         group: 'moderation',
-        label: 'Thực địa & Đánh giá',
+        label: 'Điểm mốc & đánh giá',
         icon: IconMapPin,
         count: fieldCount,
       },
@@ -2795,14 +3674,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       {
         id: 'trails',
         group: 'operations',
-        label: 'Kho cung đường',
+        label: 'Cung đường',
         icon: Layers,
         count: totalTrailsCount,
       },
       {
         id: 'inquiries',
         group: 'operations',
-        label: 'Đơn Porter / Guide',
+        label: 'Porter & HDV',
         icon: IconBackpack,
         count: inquiriesCount,
         alertTone: pendingInquiriesCount > 0 ? 'warn' : undefined,
@@ -2810,7 +3689,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       {
         id: 'safety',
         group: 'operations',
-        label: 'An toàn & Đèn hiệu',
+        label: 'An toàn & tín hiệu',
         icon: IconShieldAlert,
         count: safetyCount,
         alertTone: urgentSafetyCount > 0 ? 'danger' : undefined,
@@ -2819,13 +3698,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       {
         id: 'stats',
         group: 'system',
-        label: 'Thống kê hệ thống',
+        label: 'Thống kê',
         icon: BarChart3,
       },
       {
         id: 'users',
         group: 'system',
-        label: 'Thành viên & Quyền',
+        label: 'Thành viên & quyền',
         icon: Users,
         count: usersCount,
         adminOnly: true,
@@ -2833,7 +3712,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       {
         id: 'audit',
         group: 'system',
-        label: 'Nhật ký kiểm toán',
+        label: 'Nhật ký thao tác',
         icon: ShieldCheck,
         count: auditLogs.length > 0 ? auditLogs.length : undefined,
         adminOnly: true,
@@ -2869,7 +3748,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     );
 
     const handleShortcut = (e: KeyboardEvent) => {
+      // Never conflict with global Command Palette (Ctrl+K / Cmd+K) or any open modal/drawer dialog
       if (e.isComposing || e.ctrlKey || e.metaKey || e.altKey || hasOpenModal) return;
+      if (typeof document !== 'undefined' && document.querySelector('[aria-modal="true"]')) {
+        return;
+      }
       const target = e.target as HTMLElement | null;
       if (
         target &&
@@ -2943,48 +3826,48 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
   const sectionTitles: Record<AdminSectionId, { title: string; subtitle: string }> = {
     overview: {
-      title: 'Trung tâm Điều hành',
-      subtitle: 'Bản đồ tác chiến thực địa Việt Nam, hàng đợi ưu tiên và chỉ số vận hành thời gian thực.',
+      title: 'Trực vận hành',
+      subtitle: 'Bản đồ cung đường Việt Nam, việc cần xử lý trước và tình trạng an toàn hiện tại.',
     },
     contributions: {
       title: 'Duyệt đóng góp cung đường',
-      subtitle: 'Thẩm định tọa độ GPS, thông số địa hình và phê duyệt đóng góp cộng đồng lên bản đồ LOST.',
+      subtitle: 'Kiểm tra tọa độ GPS, thông số tuyến và duyệt cung đường mới từ cộng đồng lên bản đồ LOST.',
     },
     trails: {
-      title: 'Kho cung đường trekking',
-      subtitle: 'Quản lý danh mục tuyến thực địa Việt Nam, cập nhật cao độ, giấy phép và dữ liệu bản đồ.',
+      title: 'Danh sách cung đường',
+      subtitle: 'Quản lý dữ liệu các cung trekking Việt Nam: cao độ, cự ly, giấy phép và liên hệ cứu hộ.',
     },
     incidents: {
-      title: 'Sự cố thực địa & Cứu hộ',
-      subtitle: 'Theo dõi cảnh báo sạt lở, lũ quét, nguồn vệ tinh Open-Meteo / NASA và xử lý khiếu nại.',
+      title: 'Sự cố & cảnh báo trên tuyến',
+      subtitle: 'Theo dõi sạt lở, lũ quét, dữ liệu thời tiết & vệ tinh NASA và rà soát phản hồi từ cộng đồng.',
     },
     inquiries: {
-      title: 'Đơn đặt Porter & Hướng dẫn viên',
-      subtitle: 'Điều phối yêu cầu thuê Porter/Guide bản địa, theo dõi dự toán và trạng thái xác nhận.',
+      title: 'Yêu cầu thuê Porter & HDV',
+      subtitle: 'Theo dõi đơn đặt người dẫn đường bản địa, dự toán chi phí và trạng thái xác nhận.',
     },
     safety: {
-      title: 'An toàn & Đèn hiệu trực tiếp',
-      subtitle: 'Giám sát Live Beacon GPS và Hẹn giờ báo bình an (Dead-Man Switch) theo thời gian thực.',
+      title: 'An toàn & tín hiệu trực tiếp',
+      subtitle: 'Theo dõi điểm phát tín hiệu trực tiếp và lịch hẹn giờ báo bình an của trekker trên núi.',
     },
     field: {
-      title: 'Kiểm duyệt thực địa (POIs & Đánh giá)',
-      subtitle: 'Cập nhật tình trạng nguồn nước, bãi trại, điểm nguy hiểm và xử lý đánh giá vi phạm.',
+      title: 'Điểm mốc & đánh giá',
+      subtitle: 'Cập nhật tình trạng nguồn nước, bãi cắm trại, điểm nguy hiểm và kiểm duyệt đánh giá tuyến.',
     },
     users: {
-      title: 'Thành viên & Phân quyền',
-      subtitle: 'Quản lý tài khoản, cấp vai trò Hướng dẫn viên (Guide), Điều hành viên (Mod) và xử lý vi phạm.',
+      title: 'Thành viên & phân quyền',
+      subtitle: 'Quản lý tài khoản, cấp quyền hướng dẫn viên hoặc điều hành viên và xử lý vi phạm.',
     },
     forum: {
       title: 'Kiểm duyệt diễn đàn',
-      subtitle: 'Ghim thông báo quan trọng, khóa bình luận hoặc gỡ bài viết vi phạm chuẩn mực cộng đồng.',
+      subtitle: 'Ghim thông báo quan trọng, khóa bình luận hoặc gỡ bài viết vi phạm quy định cộng đồng.',
     },
     stats: {
-      title: 'Thống kê hệ thống',
-      subtitle: '12 chỉ số vận hành thời gian thực đồng bộ trực tiếp từ cơ sở dữ liệu MongoDB.',
+      title: 'Thống kê vận hành',
+      subtitle: '12 chỉ số chính về bản đồ, cộng đồng và an toàn cập nhật trực tiếp từ hệ thống.',
     },
     audit: {
-      title: 'Nhật ký kiểm toán',
-      subtitle: 'Lưu vết minh bạch thao tác phân quyền, khóa tài khoản và thay đổi dữ liệu trong 180 ngày.',
+      title: 'Nhật ký thao tác',
+      subtitle: 'Lưu lịch sử phân quyền, khóa tài khoản và chỉnh sửa dữ liệu trong 180 ngày gần nhất.',
     },
   };
 
@@ -3030,13 +3913,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             type="button"
             className="admin-brand-mark"
             onClick={() => handleSelectSection('overview')}
-            title="Trung tâm Điều hành LOST OPS"
+            title="Trực vận hành LOST"
           >
             <span className="admin-brand-glyph" aria-hidden="true">
               <Compass size={13} color="var(--color-primary)" />
             </span>
             <span className="admin-brand-title">LOST</span>
-            <span className="admin-brand-env">OPS</span>
+            <span className="admin-brand-env">QT</span>
           </button>
 
           <button
@@ -3119,7 +4002,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               loading="lazy"
               decoding="async"
               src={currentUser?.avatarUrl || currentUser?.avatar || DEFAULT_AVATAR}
-              alt="Ảnh đại diện Quản trị viên"
+              alt="Ảnh đại diện quản trị viên"
               className="admin-operator-avatar"
             />
             <div className="admin-operator-meta" style={{ flex: 1, minWidth: 0 }}>
@@ -3158,12 +4041,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               <MenuIcon size={16} />
             </button>
             <div className="admin-breadcrumb">
-              <span>LOST Ops</span>
+              <span>LOST</span>
               <span className="admin-breadcrumb-sep">/</span>
               <span>{activeNavItem ? navGroupLabels[activeNavItem.group] : 'Quản trị'}</span>
               <span className="admin-breadcrumb-sep">/</span>
               <span className="admin-breadcrumb-current">
-                {activeNavItem?.label || 'Bảng điều khiển'}
+                {activeNavItem?.label || 'Trực vận hành'}
               </span>
             </div>
           </div>
@@ -3171,12 +4054,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           <div className="admin-topbar-right">
             <div
               className="admin-health-pill"
-              title={`Cơ sở dữ liệu: ${dbHealth.label} · Kênh realtime: ${isSocketConnected ? 'Socket.IO đang kết nối' : 'Đang kết nối lại'}`}
+              title={`Dữ liệu: ${dbHealth.label} · Kết nối trực tiếp: ${isSocketConnected ? 'Đang hoạt động' : 'Đang kết nối lại'}`}
             >
               <span className="admin-health-item">
                 <span className={dbDotClass} aria-hidden="true" />
                 <Database size={12} color="var(--color-text-dim)" />
-                <span>DB</span>
+                <span>CSDL</span>
               </span>
               <span style={{ opacity: 0.3 }} aria-hidden="true">·</span>
               <span className="admin-health-item">
@@ -3185,7 +4068,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   aria-hidden="true"
                 />
                 <Radio size={12} color="var(--color-text-dim)" />
-                <span>{isSocketConnected ? 'Live' : 'Sync'}</span>
+                <span>{isSocketConnected ? 'Trực tiếp' : 'Đang nối'}</span>
               </span>
             </div>
 
@@ -3194,7 +4077,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 type="button"
                 className="admin-kbd-trigger"
                 onClick={onOpenCommandPalette}
-                title="Mở bảng lệnh nhanh (Ctrl+K)"
+                title="Tìm nhanh mục quản trị (Ctrl+K)"
               >
                 <Search size={13} color="var(--color-text-dim)" />
                 <span>Tìm nhanh</span>
@@ -3209,8 +4092,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               className="admin-icon-btn"
               onClick={refreshAllData}
               disabled={isRefreshing}
-              title="Làm mới dữ liệu từ máy chủ"
-              aria-label="Làm mới dữ liệu từ máy chủ"
+              title="Làm mới dữ liệu"
+              aria-label="Làm mới dữ liệu"
             >
               <RefreshCw size={14} className={isRefreshing ? 'spin-animation' : ''} />
             </button>
@@ -3283,21 +4166,40 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 </div>
               )}
 
+              {sectionErrors[effectiveSection] && (
+                <div className="admin-notice" role="alert">
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                    <AlertTriangle size={15} color="var(--color-error-text, var(--color-error))" />
+                    {sectionErrors[effectiveSection]}
+                  </span>
+                  <button
+                    type="button"
+                    className="admin-btn admin-btn--sm"
+                    onClick={() => retrySection(effectiveSection)}
+                  >
+                    <RefreshCw size={12} />
+                    <span>Thử tải lại</span>
+                  </button>
+                </div>
+              )}
+
               <div key={effectiveSection} className="tab-content-slide admin-section-block">
                 {/* =========================================================================
-                 * SECTION 0: TRUNG TÂM ĐIỀU HÀNH (GEO-OPS COMMAND DECK)
+                 * SECTION 0: TRỰC VẬN HÀNH (COMMAND DECK)
                  * ========================================================================= */}
                 {effectiveSection === 'overview' && (
                   <AdminCommandDeck
                     trails={cockpitTrails}
                     incidents={cockpitIncidents}
                     beacons={cockpitBeacons}
+                    pendingContributions={cockpitPendingContributions}
+                    overdueTimers={cockpitOverdueTimers}
                     triageItems={cockpitTriageItems}
                     stats={commandDeckStats}
                     selectedId={selectedInspectorId}
                     onSelect={handleSelectInspector}
                     onNavigateSection={handleSelectSection}
-                    onPointerCoordChange={setHoverCoords}
+                    onPointerCoordChange={emitHoverCoords}
                     onOpenContributeWizard={handleOpenContributeWizard}
                     onOpenCreateTrail={isStrictAdmin ? handleOpenCreateTrail : undefined}
                     isStrictAdmin={isStrictAdmin}
@@ -3321,7 +4223,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 <>
                   <div className="admin-metric-ribbon">
                     <div className="admin-metric-cell">
-                      <span className="admin-metric-label">Chờ phê duyệt</span>
+                      <span className="admin-metric-label">Chờ duyệt</span>
                       <div className="admin-metric-value-row">
                         <span
                           className={`admin-metric-value ${pendingContributions.length > 0 ? 'admin-metric-value--warn' : ''}`}
@@ -3330,31 +4232,31 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         </span>
                         <span className="admin-metric-unit">hồ sơ</span>
                       </div>
-                      <span className="admin-metric-caption">Cần thẩm định tọa độ &amp; thông số</span>
+                      <span className="admin-metric-caption">Cần kiểm tra tọa độ &amp; thông số</span>
                     </div>
 
                     <div className="admin-metric-cell">
-                      <span className="admin-metric-label">Đã duyệt công khai</span>
+                      <span className="admin-metric-label">Đã duyệt</span>
                       <div className="admin-metric-value-row">
                         <span className="admin-metric-value admin-metric-value--primary">
                           {approvedContributions.length}
                         </span>
                         <span className="admin-metric-unit">/ {contributions.length} đóng góp</span>
                       </div>
-                      <span className="admin-metric-caption">Đã đồng bộ lên bản đồ 3D</span>
+                      <span className="admin-metric-caption">Đang hiển thị trên bản đồ</span>
                     </div>
 
                     <div className="admin-metric-cell">
-                      <span className="admin-metric-label">Kho cung hoạt động</span>
+                      <span className="admin-metric-label">Cung đường hiện có</span>
                       <div className="admin-metric-value-row">
                         <span className="admin-metric-value">{catalogTrailsCount}</span>
-                        <span className="admin-metric-unit">tuyến VN</span>
+                        <span className="admin-metric-unit">cung đường</span>
                       </div>
                       <span className="admin-metric-caption">Đang hiển thị công khai trên LOST</span>
                     </div>
 
                     <div className="admin-metric-cell">
-                      <span className="admin-metric-label">Độ chuẩn tọa độ đóng góp</span>
+                      <span className="admin-metric-label">Tọa độ hợp lệ</span>
                       <div className="admin-metric-value-row">
                         <span className="admin-metric-value">
                           {validContribPercent !== null ? `${validContribPercent}%` : '—'}
@@ -3420,8 +4322,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     </div>
                   </div>
 
-                  {/* Contributions Ledger */}
-                  <div key={`${activeTab}-${searchQuery}`} className="admin-ledger tab-content-slide">
+                  {/* Contributions Ledger (stable key avoids remounting on every search keystroke) */}
+                  <div key={activeTab} className="admin-ledger tab-content-slide">
                     {displayedContributions.length === 0 ? (
                       <div className="admin-empty">
                         <div className="admin-empty-icon" aria-hidden="true">
@@ -3465,7 +4367,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                               className="admin-btn admin-btn--ghost"
                               onClick={handleOpenContributeWizard}
                             >
-                              Mở trình đóng góp
+                              Gửi cung đường mới
                             </button>
                           )}
                         </div>
@@ -3473,6 +4375,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     ) : (
                       displayedContributions.map((contrib) => {
                         const contribId = String(contrib.id || contrib._id || '');
+                        const nearbyPublished = nearbyTrailByContributionId.get(contribId);
                         const isRowSelected =
                           liveInspectorSelection?.kind === 'contribution' &&
                           liveInspectorSelection.data.id === contribId;
@@ -3504,7 +4407,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                 alignItems: 'center',
                                 gap: 14,
                                 flex: 1,
-                                minWidth: 260,
+                                minWidth: 'min(260px, 100%)',
                               }}
                             >
                               <img
@@ -3528,6 +4431,16 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                     {statusLabel}
                                   </span>
                                 </div>
+                                {nearbyPublished && (
+                                  <div style={{ marginTop: 4 }}>
+                                    <span className="admin-tag admin-tag--warn">
+                                      <AlertTriangle size={11} />
+                                      <span>
+                                        {`Gần tuyến ${nearbyPublished.trailName} (~${nearbyPublished.distanceKm.toFixed(1)} km) — kiểm tra trùng lặp`}
+                                      </span>
+                                    </span>
+                                  </div>
+                                )}
                                 <div className="admin-ledger-meta">
                                   <span>
                                     {contrib.hamlet ? `${contrib.hamlet}, ` : ''}
@@ -3571,9 +4484,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                 <button
                                   type="button"
                                   className="admin-btn admin-btn--sm admin-btn--primary"
+                                  disabled={Boolean(busyActions[`approve:${contribId}`])}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    void handleApprove(contribId, contrib.name || '');
+                                    handleApprove(contribId, contrib.name || '');
                                   }}
                                 >
                                   <CheckCircle2 size={13} />
@@ -3584,9 +4498,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                 <button
                                   type="button"
                                   className="admin-btn admin-btn--sm admin-btn--warn-ghost"
+                                  disabled={Boolean(busyActions[`reject:${contribId}`])}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    void handleReject(contribId, contrib.name || '');
+                                    handleReject(contribId, contrib.name || '');
                                   }}
                                   title="Từ chối bài đóng góp"
                                   aria-label="Từ chối bài đóng góp"
@@ -3594,18 +4509,29 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                   <XCircle size={13} />
                                 </button>
                               )}
-                              <button
-                                type="button"
-                                className="admin-btn admin-btn--sm admin-btn--danger-ghost"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteContribution(contribId, contrib.name || '');
-                                }}
-                                title="Xóa vĩnh viễn khỏi MongoDB"
-                                aria-label="Xóa bài đóng góp"
-                              >
-                                <Trash2 size={13} />
-                              </button>
+                              {(contrib.status !== 'approved' || isStrictAdmin) && (
+                                <button
+                                  type="button"
+                                  className="admin-btn admin-btn--sm admin-btn--danger-ghost"
+                                  disabled={Boolean(busyActions[`delete-contrib:${contribId}`])}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteContribution(
+                                      contribId,
+                                      contrib.name || '',
+                                      contrib.status
+                                    );
+                                  }}
+                                  title={
+                                    contrib.status === 'approved'
+                                      ? 'Xóa đóng góp đã công khai (đồng thời gỡ cung đường khỏi bản đồ)'
+                                      : 'Xóa vĩnh viễn bài đóng góp'
+                                  }
+                                  aria-label="Xóa bài đóng góp"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              )}
                             </div>
                           </article>
                         );
@@ -3624,14 +4550,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 <div className="admin-toolbar">
                   <div className="admin-subhead" style={{ paddingBottom: 9 }}>
                     <h2 className="admin-subhead-title">
-                      <span>Danh mục tuyến thực địa</span>
+                      <span>Danh sách cung đường</span>
                       <span className="admin-subhead-count">
                         {filteredTrails.length} / {trailsList.length}
                       </span>
                     </h2>
                     {!isStrictAdmin && (
                       <span className="admin-tag admin-tag--info">
-                        Chỉ xem · Cần quyền Admin để sửa
+                        Chỉ xem · cần quyền quản trị để sửa
                       </span>
                     )}
                   </div>
@@ -3640,7 +4566,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     <Search size={14} color="var(--color-text-dim)" />
                     <input
                       type="text"
-                      placeholder="Lọc theo tên cung, tỉnh thành, huyện..."
+                      placeholder="Tìm theo tên cung, tỉnh hoặc huyện..."
                       value={trailSearchQuery}
                       onChange={(e) => setTrailSearchQuery(e.target.value)}
                     />
@@ -3663,6 +4589,81 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     )}
                   </div>
                 </div>
+
+                {recentlyHiddenTrails.length > 0 && (
+                  <div className="admin-note-box admin-note-box--warn" style={{ marginBottom: 14 }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 8,
+                        flexWrap: 'wrap',
+                        marginBottom: 8,
+                      }}
+                    >
+                      <strong style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <AlertTriangle size={14} color="var(--color-earth)" />
+                        <span>
+                          Vừa ẩn khỏi danh mục công khai trong phiên này ({recentlyHiddenTrails.length})
+                        </span>
+                      </strong>
+                      <button
+                        type="button"
+                        className="admin-btn admin-btn--sm admin-btn--ghost"
+                        onClick={() => setRecentlyHiddenTrails([])}
+                      >
+                        Ẩn thông báo
+                      </button>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {recentlyHiddenTrails.map((hidden) => {
+                        const hid = String(hidden._id || hidden.id || '');
+                        return (
+                          <div
+                            key={hid}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: 10,
+                              flexWrap: 'wrap',
+                              padding: '6px 8px',
+                              borderRadius: 4,
+                              background: 'var(--color-bg-card)',
+                              border: '1px solid var(--color-border)',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <strong style={{ color: 'var(--color-text-main)' }}>{hidden.name}</strong>
+                              <span className="admin-tag">
+                                {hidden.province} · {hidden.region}
+                              </span>
+                              <span
+                                className={
+                                  hidden.status === 'rejected'
+                                    ? 'admin-tag admin-tag--danger'
+                                    : 'admin-tag admin-tag--warn'
+                                }
+                              >
+                                {hidden.status === 'rejected' ? 'Từ chối' : 'Chờ duyệt (ẩn)'}
+                              </span>
+                            </div>
+                            {isStrictAdmin && (
+                              <button
+                                type="button"
+                                className="admin-btn admin-btn--sm admin-btn--primary"
+                                onClick={() => openEditTrailModal(hidden)}
+                              >
+                                Chỉnh sửa / Công khai lại
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 <div className="admin-ledger">
                   {filteredTrails.length === 0 ? (
@@ -3697,7 +4698,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                             alignItems: 'center',
                             gap: 14,
                             flex: 1,
-                            minWidth: 260,
+                            minWidth: 'min(260px, 100%)',
                           }}
                         >
                           <img
@@ -3745,7 +4746,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                   gap: 3,
                                 }}
                               >
-                                <IconStar size={11} color="var(--color-sun)" />
+                                <IconStar size={11} color="var(--color-earth)" />
                                 <strong>
                                   {trail.reviewCount ? Number(trail.rating || 0).toFixed(1) : 'Mới'}
                                 </strong>
@@ -3817,6 +4818,33 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       </button>
                     ))}
                   </div>
+
+                  <div className="admin-search">
+                    <Search size={14} color="var(--color-text-dim)" />
+                    <input
+                      type="text"
+                      placeholder="Tìm theo cung đường, mô tả, vị trí, người báo..."
+                      value={incidentSearchQuery}
+                      onChange={(e) => setIncidentSearchQuery(e.target.value)}
+                    />
+                    {incidentSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setIncidentSearchQuery('')}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--color-text-dim)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          padding: 2,
+                        }}
+                        aria-label="Xóa tìm kiếm sự cố"
+                      >
+                        <IconX size={13} />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="admin-ledger">
@@ -3862,7 +4890,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                           <div className="admin-ledger-main">
                             <div className="admin-ledger-title-line">
                               <span className={sevTagClass}>
-                                {inc.severity?.toUpperCase() || 'HIGH'}
+                                {getSeverityLabelVi(inc.severity)}
                               </span>
                               <span className="admin-ledger-title">
                                 {inc.trailName ||
@@ -3878,11 +4906,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                       other: 'Sự cố thực địa',
                                     } as Record<string, string>
                                   )[String(inc.type || '')] ||
-                                  'Cảnh báo thực địa'}
+                                  'Cảnh báo trên tuyến'}
                               </span>
                               {synthetic ? (
                                 <span className="admin-tag admin-tag--info">
-                                  <IconSatellite size={11} /> Vệ tinh · Chỉ đọc
+                                  <IconSatellite size={11} /> Vệ tinh · chỉ đọc
                                 </span>
                               ) : inc.resolved ? (
                                 <span className="admin-status">
@@ -3901,7 +4929,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
                             <div className="admin-ledger-meta">
                               <span>
-                                {synthetic ? 'Nguồn đo:' : 'Người phát:'}{' '}
+                                {synthetic ? 'Nguồn dữ liệu:' : 'Người báo tin:'}{' '}
                                 <strong>
                                   {inc.reporterName || inc.userName || inc.verifiedBy || 'Trekker'}
                                 </strong>
@@ -3932,7 +4960,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                 >
                                   <AlertTriangle size={13} />
                                   <span>
-                                    Khiếu nại cộng đồng: {inc.disputes.length} báo cáo tin giả
+                                    Phản hồi từ cộng đồng: {inc.disputes.length} ý kiến cho rằng tin chưa đúng
                                   </span>
                                 </div>
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -3954,22 +4982,24 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                   <button
                                     type="button"
                                     className="admin-btn admin-btn--sm admin-btn--primary"
+                                    disabled={Boolean(busyActions[`dispute:${incId}`])}
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      void handleResolveDispute(incId, 'dismiss_incident');
+                                      handleResolveDispute(incId, 'dismiss_incident');
                                     }}
                                   >
-                                    <CheckCircle2 size={13} /> Chấp nhận khiếu nại (Gỡ cảnh báo)
+                                    <CheckCircle2 size={13} /> Gỡ cảnh báo
                                   </button>
                                   <button
                                     type="button"
                                     className="admin-btn admin-btn--sm admin-btn--danger-ghost"
+                                    disabled={Boolean(busyActions[`dispute:${incId}`])}
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      void handleResolveDispute(incId, 'reject_dispute');
+                                      handleResolveDispute(incId, 'reject_dispute');
                                     }}
                                   >
-                                    <XCircle size={13} /> Bác bỏ khiếu nại (Nguy hiểm thật)
+                                    <XCircle size={13} /> Giữ cảnh báo
                                   </button>
                                 </div>
                               </div>
@@ -3985,9 +5015,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                 <button
                                   type="button"
                                   className="admin-btn admin-btn--sm admin-btn--primary"
+                                  disabled={Boolean(busyActions[`resolve:${incId}`])}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    void handleResolveIncident(incId);
+                                    handleResolveIncident(incId);
                                   }}
                                 >
                                   Gỡ cảnh báo
@@ -4001,12 +5032,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                     e.stopPropagation();
                                     handleBanUser(
                                       reporterId,
-                                      inc.reporterEmail || inc.reporterName || 'Tài khoản báo giả'
+                                      inc.reporterEmail || inc.reporterName || 'Tài khoản báo tin'
                                     );
                                   }}
-                                  title="Khóa tài khoản nếu phát hiện báo động giả"
+                                  title="Khóa tài khoản nếu cố tình báo tin giả"
                                 >
-                                  Khóa nick
+                                  Khóa tài khoản
                                 </button>
                               )}
                               <button
@@ -4036,10 +5067,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               const roleCounts = userRoleCounts;
               const userFilterTabs: { id: typeof userRoleFilter; label: string; count: number }[] = [
                 { id: 'all', label: 'Tất cả', count: roleCounts.all },
-                { id: 'admin', label: 'Admin', count: roleCounts.admin },
-                { id: 'moderator', label: 'Mod', count: roleCounts.moderator },
-                { id: 'guide', label: 'Guide', count: roleCounts.guide },
-                { id: 'user', label: 'Trekker', count: roleCounts.user },
+                { id: 'admin', label: 'Quản trị', count: roleCounts.admin },
+                { id: 'moderator', label: 'Điều hành', count: roleCounts.moderator },
+                { id: 'guide', label: 'HDV', count: roleCounts.guide },
+                { id: 'user', label: 'Thành viên', count: roleCounts.user },
                 { id: 'banned', label: 'Đã khóa', count: roleCounts.banned },
               ];
 
@@ -4066,7 +5097,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       <Search size={14} color="var(--color-text-dim)" />
                       <input
                         type="text"
-                        placeholder="Tìm theo tên, username, email..."
+                        placeholder="Tìm theo tên, tên đăng nhập, email..."
                         value={userSearchQuery}
                         onChange={(e) => setUserSearchQuery(e.target.value)}
                       />
@@ -4104,6 +5135,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     ) : (
                       filteredUsers.map((u) => {
                         const uid = String(u._id || u.id || '');
+                        const isSelf = Boolean(
+                          (currentUserId && uid && uid === currentUserId) ||
+                            (!currentUserId &&
+                              currentUser?.email &&
+                              u.email &&
+                              currentUser.email.trim().toLowerCase() ===
+                                u.email.trim().toLowerCase())
+                        );
                         const isRowSelected =
                           liveInspectorSelection?.kind === 'user' &&
                           liveInspectorSelection.data.id === uid;
@@ -4122,7 +5161,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                 alignItems: 'center',
                                 gap: 12,
                                 flex: 1,
-                                minWidth: 260,
+                                minWidth: 'min(260px, 100%)',
                               }}
                             >
                               <img
@@ -4138,14 +5177,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                     {u.fullName || u.username}
                                   </span>
                                   {u.role === 'admin' && (
-                                    <span className="admin-tag admin-tag--warn">Admin</span>
+                                    <span className="admin-tag admin-tag--warn">Quản trị</span>
                                   )}
                                   {u.role === 'moderator' && (
-                                    <span className="admin-tag admin-tag--info">Mod</span>
+                                    <span className="admin-tag admin-tag--info">Điều hành</span>
                                   )}
                                   {u.role === 'guide' && (
                                     <span className="admin-tag admin-tag--ok">
-                                      <ShieldCheck size={10} /> Guide
+                                      <ShieldCheck size={10} /> HDV
                                     </span>
                                   )}
                                   {u.isBanned && (
@@ -4156,10 +5195,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                   <span>{u.email}</span>
                                   <span>·</span>
                                   <span>
-                                    Uy tín <strong>{u.reputationScore ?? 0}</strong> pts
+                                    Uy tín <strong>{u.reputationScore ?? 0}</strong> điểm
                                   </span>
                                   <span>·</span>
-                                  <span>{u.badges?.join(', ') || 'Trekker mới'}</span>
+                                  <span>{u.badges?.join(', ') || 'Thành viên mới'}</span>
                                 </div>
                                 {u.isBanned && (
                                   <div className="admin-note-box admin-note-box--danger">
@@ -4182,9 +5221,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                 value={u.role || 'user'}
                                 onClick={(e) => e.stopPropagation()}
                                 onChange={(e) =>
-                                  void handleUpdateRole(uid, e.target.value, u.fullName || u.email || '')
+                                  handleUpdateRole(
+                                    uid,
+                                    e.target.value,
+                                    u.fullName || u.email || '',
+                                    u.role || 'user'
+                                  )
                                 }
-                                disabled={u.email === currentUser?.email}
+                                disabled={isSelf || Boolean(busyActions[`role:${uid}`])}
+                                title={
+                                  isSelf
+                                    ? 'Không thể tự thay đổi quyền tài khoản đang đăng nhập'
+                                    : undefined
+                                }
                                 style={{
                                   height: 28,
                                   padding: '0 8px',
@@ -4193,27 +5242,29 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                   borderRadius: 5,
                                 }}
                               >
-                                <option value="user">Trekker</option>
-                                <option value="guide">Verified Guide</option>
-                                <option value="moderator">Moderator</option>
-                                <option value="admin">Admin</option>
+                                <option value="user">Thành viên</option>
+                                <option value="guide">Hướng dẫn viên</option>
+                                <option value="moderator">Điều hành viên</option>
+                                <option value="admin">Quản trị viên</option>
                               </select>
 
                               {u.isBanned ? (
                                 <button
                                   type="button"
                                   className="admin-btn admin-btn--sm admin-btn--primary"
+                                  disabled={Boolean(busyActions[`unban:${uid}`])}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    void handleUnbanUser(uid, u.email || '');
+                                    handleUnbanUser(uid, u.email || '');
                                   }}
                                 >
                                   Mở khóa
                                 </button>
-                              ) : u.role !== 'admin' ? (
+                              ) : !isSelf && u.role !== 'admin' ? (
                                 <button
                                   type="button"
                                   className="admin-btn admin-btn--sm admin-btn--danger-ghost"
+                                  disabled={Boolean(busyActions[`ban:${uid}`])}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     handleBanUser(uid, u.email || u.fullName || '');
@@ -4237,34 +5288,71 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
              * ========================================================================= */}
             {effectiveSection === 'forum' && (
               <>
-                <div className="admin-subhead">
-                  <h2 className="admin-subhead-title">
-                    <span>Bài viết diễn đàn</span>
-                    <span className="admin-subhead-count">{threadsList.length}</span>
-                  </h2>
+                <div className="admin-toolbar">
+                  <div className="admin-subhead" style={{ paddingBottom: 9 }}>
+                    <h2 className="admin-subhead-title">
+                      <span>Bài viết diễn đàn</span>
+                      <span className="admin-subhead-count">
+                        {filteredThreads.length} / {threadsList.length}
+                      </span>
+                    </h2>
+                  </div>
+
+                  <div className="admin-search">
+                    <Search size={14} color="var(--color-text-dim)" />
+                    <input
+                      type="text"
+                      placeholder="Tìm tiêu đề, chuyên mục, tác giả..."
+                      value={forumSearchQuery}
+                      onChange={(e) => setForumSearchQuery(e.target.value)}
+                    />
+                    {forumSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setForumSearchQuery('')}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--color-text-dim)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          padding: 2,
+                        }}
+                        aria-label="Xóa tìm kiếm diễn đàn"
+                      >
+                        <IconX size={13} />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="admin-ledger">
-                  {threadsList.length === 0 ? (
+                  {filteredThreads.length === 0 ? (
                     <div className="admin-empty">
                       <div className="admin-empty-icon" aria-hidden="true">
                         <MessageSquare size={18} />
                       </div>
-                      <h3 className="admin-empty-title">Chưa có bài viết nào trên diễn đàn</h3>
+                      <h3 className="admin-empty-title">
+                        {forumSearchQuery
+                          ? 'Không tìm thấy bài viết phù hợp'
+                          : 'Chưa có bài viết nào trên diễn đàn'}
+                      </h3>
                       <p className="admin-empty-desc">
-                        Bài thảo luận và tìm bạn đồng hành mới sẽ hiển thị tại đây để kiểm duyệt.
+                        {forumSearchQuery
+                          ? `Không có bài viết nào khớp với "${forumSearchQuery}".`
+                          : 'Bài thảo luận và tìm bạn đồng hành mới sẽ hiển thị tại đây để kiểm duyệt.'}
                       </p>
                     </div>
                   ) : (
-                    threadsList.map((t) => {
-                      const tid = t.id || t._id;
+                    filteredThreads.map((t) => {
+                      const tid = String(t.id || t._id || '');
                       return (
                         <div key={tid} className="admin-ledger-row admin-ledger-row--center">
                           <div className="admin-ledger-main">
                             <div className="admin-ledger-title-line">
                               {t.isPinned && (
                                 <span className="admin-tag admin-tag--warn">
-                                  <IconPin size={10} color="var(--color-sun)" /> Ghim
+                                  <IconPin size={10} color="var(--color-earth)" /> Ghim
                                 </span>
                               )}
                               {t.isLocked && (
@@ -4289,7 +5377,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                             <button
                               type="button"
                               className={`admin-btn admin-btn--sm ${t.isPinned ? 'admin-btn--primary' : ''}`}
-                              onClick={() => handlePinThread(tid || '')}
+                              disabled={Boolean(busyActions[`pin:${tid}`])}
+                              onClick={() => void handlePinThread(tid)}
                             >
                               <IconPin size={12} color="currentColor" />
                               <span>{t.isPinned ? 'Bỏ ghim' : 'Ghim'}</span>
@@ -4297,7 +5386,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                             <button
                               type="button"
                               className="admin-btn admin-btn--sm admin-btn--warn-ghost"
-                              onClick={() => handleLockThread(tid || '')}
+                              disabled={Boolean(busyActions[`lock:${tid}`])}
+                              onClick={() => void handleLockThread(tid)}
                             >
                               {!t.isLocked && <IconLock size={12} color="currentColor" />}
                               <span>{t.isLocked ? 'Mở khóa' : 'Khóa'}</span>
@@ -4305,7 +5395,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                             <button
                               type="button"
                               className="admin-btn admin-btn--sm admin-btn--danger-ghost"
-                              onClick={() => handleDeleteThread(tid || '', t.title || '')}
+                              onClick={() => handleDeleteThread(tid, t.title || '')}
                             >
                               <IconTrash size={12} color="currentColor" />
                               <span>Xóa</span>
@@ -4334,26 +5424,26 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 }[];
               }[] = [
                 {
-                  title: 'Dữ liệu bản đồ & Thực địa',
+                  title: 'Bản đồ & cung đường',
                   items: [
                     {
                       key: 'totalTrails',
                       label: 'Cung đường công khai',
                       value: adminStats?.totalTrails ?? trailsList.length,
-                      subtitle: 'Tuyến thực địa đã duyệt bản đồ',
+                      subtitle: 'Đang hiển thị trên bản đồ LOST',
                       tone: 'primary',
                     },
                     {
                       key: 'totalContributions',
-                      label: 'Tổng bài đóng góp',
+                      label: 'Bài đóng góp',
                       value: adminStats?.totalContributions ?? contributions.length,
-                      subtitle: 'Hồ sơ đóng góp từ cộng đồng',
+                      subtitle: 'Tất cả cung đường cộng đồng gửi lên',
                     },
                     {
                       key: 'pendingContributions',
-                      label: 'Chờ kiểm duyệt',
+                      label: 'Chờ duyệt',
                       value: adminStats?.pendingContributions ?? pendingContributions.length,
-                      subtitle: 'Cần BQT xác thực tọa độ GPS',
+                      subtitle: 'Cần kiểm tra tọa độ và thông số',
                       tone:
                         (adminStats?.pendingContributions ?? pendingContributions.length) > 0
                           ? 'warn'
@@ -4363,47 +5453,47 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       key: 'totalCheckins',
                       label: 'Lượt check-in đỉnh',
                       value: adminStats?.totalCheckins ?? 0,
-                      subtitle: 'Hộ chiếu chinh phục thực địa',
+                      subtitle: 'Số lần thành viên ghi dấu qua đỉnh',
                     },
                   ],
                 },
                 {
-                  title: 'Cộng đồng & Nội dung',
+                  title: 'Cộng đồng & chia sẻ',
                   items: [
                     {
                       key: 'totalUsers',
-                      label: 'Tổng thành viên',
+                      label: 'Thành viên',
                       value: adminStats?.totalUsers ?? usersList.length,
-                      subtitle: 'Tài khoản đăng ký trên LOST',
+                      subtitle: 'Tài khoản đã đăng ký trên LOST',
                     },
                     {
                       key: 'totalThreads',
-                      label: 'Chủ đề diễn đàn',
+                      label: 'Bài viết diễn đàn',
                       value: adminStats?.totalThreads ?? threadsList.length,
-                      subtitle: 'Thảo luận cộng đồng trekking',
+                      subtitle: 'Chủ đề trao đổi của cộng đồng',
                     },
                     {
                       key: 'totalReviews',
-                      label: 'Đánh giá cung đường',
+                      label: 'Đánh giá tuyến',
                       value: adminStats?.totalReviews ?? reviewsTotal,
-                      subtitle: 'Nhận xét & chấm điểm thực địa',
+                      subtitle: 'Nhận xét sau chuyến đi',
                     },
                     {
                       key: 'totalTripReports',
-                      label: 'Nhật ký hành trình',
+                      label: 'Nhật ký chuyến đi',
                       value: adminStats?.totalTripReports ?? 0,
-                      subtitle: 'Ký sự & ảnh chuyến đi chia sẻ',
+                      subtitle: 'Bài kể chuyện và ảnh thực tế',
                     },
                   ],
                 },
                 {
-                  title: 'An toàn & Điều phối',
+                  title: 'An toàn & hỗ trợ',
                   items: [
                     {
                       key: 'totalIncidents',
-                      label: 'Sự cố đang cảnh báo',
+                      label: 'Sự cố đang mở',
                       value: adminStats?.totalIncidents ?? activeIncidentsCount,
-                      subtitle: 'Cảnh báo thực địa chưa gỡ',
+                      subtitle: 'Cảnh báo chưa được gỡ',
                       tone:
                         (adminStats?.totalIncidents ?? activeIncidentsCount) > 0
                           ? 'danger'
@@ -4411,25 +5501,27 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     },
                     {
                       key: 'activeSafetyTimers',
-                      label: 'Hẹn giờ an toàn chạy',
+                      label: 'Hẹn giờ báo bình an',
                       value:
                         adminStats?.activeSafetyTimers ??
-                        safetyTimersList.filter((t) => t.status === 'active').length,
-                      subtitle: 'Dead-Man Switch đang giám sát',
+                        activeTimersLiveCount,
+                      subtitle: 'Lịch hẹn đang được theo dõi',
                       tone:
-                        (adminStats?.activeSafetyTimers ?? 0) > 0 ? 'warn' : 'default',
+                        (adminStats?.activeSafetyTimers ?? activeTimersLiveCount) > 0
+                          ? 'warn'
+                          : 'default',
                     },
                     {
                       key: 'totalGuides',
-                      label: 'Porter & HDV hoạt động',
+                      label: 'Porter & HDV',
                       value: adminStats?.totalGuides ?? 0,
-                      subtitle: 'Hướng dẫn viên bản địa xác thực',
+                      subtitle: 'Người dẫn đường bản địa đã xác thực',
                     },
                     {
                       key: 'totalTripPlans',
-                      label: 'Kế hoạch ghép đoàn',
+                      label: 'Chuyến ghép đoàn',
                       value: adminStats?.totalTripPlans ?? 0,
-                      subtitle: 'Lịch trình tìm bạn đồng hành',
+                      subtitle: 'Lịch trình đang tìm bạn đồng hành',
                     },
                   ],
                 },
@@ -4474,26 +5566,63 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
              * ========================================================================= */}
             {effectiveSection === 'audit' && isStrictAdmin && (
               <>
-                <div className="admin-subhead">
-                  <h2 className="admin-subhead-title">
-                    <span>Lịch sử thao tác quản trị</span>
-                    <span className="admin-subhead-count">{auditLogs.length}</span>
-                  </h2>
+                <div className="admin-toolbar">
+                  <div className="admin-subhead" style={{ paddingBottom: 9 }}>
+                    <h2 className="admin-subhead-title">
+                      <span>Lịch sử thao tác quản trị</span>
+                      <span className="admin-subhead-count">
+                        {filteredAuditLogs.length} / {auditLogs.length}
+                      </span>
+                    </h2>
+                  </div>
+
+                  <div className="admin-search">
+                    <Search size={14} color="var(--color-text-dim)" />
+                    <input
+                      type="text"
+                      placeholder="Tìm mã thao tác, chi tiết, người thực hiện, IP..."
+                      value={auditSearchQuery}
+                      onChange={(e) => setAuditSearchQuery(e.target.value)}
+                    />
+                    {auditSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setAuditSearchQuery('')}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--color-text-dim)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          padding: 2,
+                        }}
+                        aria-label="Xóa tìm kiếm nhật ký"
+                      >
+                        <IconX size={13} />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="admin-ledger">
-                  {auditLogs.length === 0 ? (
+                  {filteredAuditLogs.length === 0 ? (
                     <div className="admin-empty">
                       <div className="admin-empty-icon" aria-hidden="true">
                         <ShieldCheck size={18} />
                       </div>
-                      <h3 className="admin-empty-title">Chưa có bản ghi kiểm toán</h3>
+                      <h3 className="admin-empty-title">
+                        {auditSearchQuery
+                          ? 'Không tìm thấy nhật ký thao tác phù hợp'
+                          : 'Chưa có nhật ký thao tác'}
+                      </h3>
                       <p className="admin-empty-desc">
-                        Mọi thao tác sửa/xóa cung đường, khóa tài khoản và đổi quyền sẽ được lưu vết tự động tại đây.
+                        {auditSearchQuery
+                          ? `Không có bản ghi nào khớp với "${auditSearchQuery}".`
+                          : 'Các thao tác sửa, xóa cung đường, đổi quyền hoặc khóa tài khoản sẽ tự động lưu tại đây.'}
                       </p>
                     </div>
                   ) : (
-                    auditLogs.map((log: AdminAuditLogItem) => (
+                    filteredAuditLogs.map((log: AdminAuditLogItem) => (
                       <div key={log._id} className="admin-ledger-row admin-ledger-row--center">
                         <div className="admin-ledger-main">
                           <div className="admin-ledger-title-line">
@@ -4540,7 +5669,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               return (
                 <>
                   <div className="admin-toolbar">
-                    <div className="admin-tabs" role="tablist" aria-label="Trạng thái đơn Porter/Guide">
+                    <div className="admin-tabs" role="tablist" aria-label="Trạng thái yêu cầu Porter và HDV">
                       {inquiryTabs.map((tab) => (
                         <button
                           key={tab.id}
@@ -4560,7 +5689,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       <Search size={14} color="var(--color-text-dim)" />
                       <input
                         type="text"
-                        placeholder="Tìm khách, SĐT, Guide, cung đường..."
+                        placeholder="Tìm khách, SĐT, HDV, cung đường..."
                         value={inquirySearchQuery}
                         onChange={(e) => setInquirySearchQuery(e.target.value)}
                       />
@@ -4590,9 +5719,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         <div className="admin-empty-icon" aria-hidden="true">
                           <IconBackpack size={18} />
                         </div>
-                        <h3 className="admin-empty-title">Chưa có đơn đặt Porter / Guide phù hợp</h3>
+                        <h3 className="admin-empty-title">Chưa có yêu cầu thuê Porter &amp; HDV nào</h3>
                         <p className="admin-empty-desc">
-                          Yêu cầu thuê hướng dẫn viên bản địa từ người dùng sẽ hiển thị tại đây.
+                          Yêu cầu thuê người dẫn đường bản địa từ thành viên sẽ hiển thị tại đây.
                         </p>
                       </div>
                     ) : (
@@ -4650,7 +5779,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                   </a>
                                 )}
                                 <span>
-                                  · Guide: <strong>{guideObj?.name || 'HDV bản địa'}</strong>
+                                  · HDV: <strong>{guideObj?.name || 'HDV bản địa'}</strong>
                                   {guideObj?.phone ? ` (${guideObj.phone})` : ''}
                                 </span>
                               </div>
@@ -4662,13 +5791,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                 </span>
                                 <span>· {inq.durationDays || 1} ngày</span>
                                 <span>· {inq.groupSize || 1} người</span>
-                                <span>· {inq.needPortersCount || 0} Porter thêm</span>
+                                <span>· {inq.needPortersCount || 0} porter thêm</span>
                                 <span>· Gửi {formatDateVi(inq.createdAt)}</span>
                               </div>
 
                               {inq.notes && (
                                 <div className="admin-note-box">
-                                  Ghi chú khách hàng: &ldquo;{inq.notes}&rdquo;
+                                  Ghi chú: &ldquo;{inq.notes}&rdquo;
                                 </div>
                               )}
                             </div>
@@ -4741,18 +5870,18 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             })()}
 
             {/* =========================================================================
-             * SECTION 9: AN TOÀN & ĐÈN HIỆU (SAFETY TIMERS + LIVE BEACONS)
+             * SECTION 9: AN TOÀN & TÍN HIỆU ĐỊNH VỊ (SAFETY TIMERS + LIVE BEACONS)
              * ========================================================================= */}
             {effectiveSection === 'safety' && (() => {
               const activeBeaconsCount = liveBeaconsList.filter((b) => b.status === 'active').length;
-              const activeTimersCount = safetyTimersList.filter((t) => t.status === 'active').length;
+              const activeTimersCount = activeTimersLiveCount;
 
               return (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
                   {/* Hairline Safety Telemetry Ribbon */}
                   <div className="admin-metric-ribbon">
                     <div className="admin-metric-cell">
-                      <span className="admin-metric-label">Đèn hiệu SOS khẩn cấp</span>
+                      <span className="admin-metric-label">Tín hiệu SOS khẩn cấp</span>
                       <div className="admin-metric-value-row">
                         <span
                           className={`admin-metric-value ${sosBeaconsCount > 0 ? 'admin-metric-value--danger' : ''}`}
@@ -4760,7 +5889,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                           {sosBeaconsCount}
                         </span>
                       </div>
-                      <span className="admin-metric-caption">Ưu tiên phối hợp cứu nạn ngay</span>
+                      <span className="admin-metric-caption">Cần liên hệ hỗ trợ ngay</span>
                     </div>
 
                     <div className="admin-metric-cell">
@@ -4776,21 +5905,21 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     </div>
 
                     <div className="admin-metric-cell">
-                      <span className="admin-metric-label">Live Beacon đang phát</span>
+                      <span className="admin-metric-label">Tín hiệu trực tiếp đang bật</span>
                       <div className="admin-metric-value-row">
                         <span className="admin-metric-value">{activeBeaconsCount}</span>
                       </div>
-                      <span className="admin-metric-caption">Tín hiệu GPS chia sẻ trực tiếp</span>
+                      <span className="admin-metric-caption">Trekker đang chia sẻ vị trí GPS</span>
                     </div>
 
                     <div className="admin-metric-cell">
-                      <span className="admin-metric-label">Hẹn giờ an toàn chạy</span>
+                      <span className="admin-metric-label">Hẹn giờ đang theo dõi</span>
                       <div className="admin-metric-value-row">
                         <span className="admin-metric-value admin-metric-value--primary">
                           {activeTimersCount}
                         </span>
                       </div>
-                      <span className="admin-metric-caption">Dead-Man Switch trong hạn an toàn</span>
+                      <span className="admin-metric-caption">Vẫn trong khung giờ dự kiến về</span>
                     </div>
                   </div>
 
@@ -4802,7 +5931,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                           size={15}
                           color={sosBeaconsCount > 0 ? 'var(--color-error)' : 'var(--color-text-dim)'}
                         />
-                        <span>Đèn hiệu GPS trực tiếp (Live Beacons)</span>
+                        <span>Điểm phát tín hiệu trực tiếp</span>
                         <span className="admin-subhead-count">{liveBeaconsList.length}</span>
                       </h2>
                     </div>
@@ -4813,9 +5942,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                           <div className="admin-empty-icon" aria-hidden="true">
                             <Radio size={18} />
                           </div>
-                          <h3 className="admin-empty-title">Không có phiên Live Beacon đang phát</h3>
+                          <h3 className="admin-empty-title">Chưa có điểm phát tín hiệu trực tiếp nào</h3>
                           <p className="admin-empty-desc">
-                            Tín hiệu SOS hoặc chia sẻ hành trình GPS trực tiếp sẽ tự động ghim lên đầu danh sách.
+                            Khi có người bật chia sẻ GPS trực tiếp hoặc gửi SOS, tín hiệu sẽ hiện lên đầu danh sách.
                           </p>
                         </div>
                       ) : (
@@ -4841,7 +5970,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                 <div className="admin-ledger-title-line">
                                   {isSos ? (
                                     <span className="admin-tag admin-tag--danger">
-                                      <IconShieldAlert size={11} /> SOS Khẩn cấp
+                                      <IconShieldAlert size={11} /> SOS khẩn cấp
                                     </span>
                                   ) : (
                                     <span className="admin-status">
@@ -4855,7 +5984,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                   <span className="admin-tag">{beacon.trailName}</span>
                                   {beacon.isSignalStale && (
                                     <span className="admin-tag admin-tag--warn">
-                                      Mất ping {beacon.minutesSinceLastPing} phút
+                                      Mất tín hiệu {beacon.minutesSinceLastPing} phút
                                     </span>
                                   )}
                                 </div>
@@ -4899,7 +6028,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                       </span>
                                     )}
                                   <span>· {beacon.distanceKm ?? 0} km</span>
-                                  <span>· Ping cuối {formatDateVi(beacon.lastPingAt)}</span>
+                                  <span>· Cập nhật {formatDateVi(beacon.lastPingAt)}</span>
                                 </div>
 
                                 <div className="admin-ledger-meta">
@@ -4967,8 +6096,26 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                   className={`admin-btn admin-btn--sm ${isSos ? 'admin-btn--danger' : 'admin-btn--primary'}`}
                                 >
                                   <ExternalLinkIcon size={12} />
-                                  <span>Mở bản đồ</span>
+                                  <span>Xem trên bản đồ</span>
                                 </a>
+                                {beacon._id && beacon.status !== 'safe' && (
+                                  <button
+                                    type="button"
+                                    className="admin-btn admin-btn--sm admin-btn--danger-ghost"
+                                    disabled={Boolean(busyActions[`beacon-resolve:${beaconId}`])}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleAdminResolveBeacon(
+                                        String(beacon._id),
+                                        beacon.displayName || userObj?.fullName || 'Trekker LOST',
+                                        beacon.trailName || 'Hành trình thực địa'
+                                      );
+                                    }}
+                                  >
+                                    <ShieldCheck size={12} />
+                                    <span>Kết thúc tín hiệu</span>
+                                  </button>
+                                )}
                               </div>
                             </div>
                           );
@@ -4988,15 +6135,15 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                               overdueTimersCount > 0 ? 'var(--color-error)' : 'var(--color-text-dim)'
                             }
                           />
-                          <span>Hẹn giờ báo bình an (Safety Timers)</span>
-                          <span className="admin-subhead-count">{safetyTimersList.length}</span>
+                          <span>Hẹn giờ báo bình an</span>
+                          <span className="admin-subhead-count">{displayedSafetyTimers.length}</span>
                         </h2>
                       </div>
 
-                      <div className="admin-tabs" role="tablist" aria-label="Trạng thái hẹn giờ an toàn">
+                      <div className="admin-tabs" role="tablist" aria-label="Trạng thái hẹn giờ báo bình an">
                         {(
                           [
-                            { id: 'live', label: 'Đang chạy & Quá hạn' },
+                            { id: 'live', label: 'Đang theo dõi & quá hạn' },
                             { id: 'checked_in_safe', label: 'Đã báo bình an' },
                             { id: 'cancelled', label: 'Đã hủy' },
                           ] as const
@@ -5016,28 +6163,42 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     </div>
 
                     <div className="admin-ledger">
-                      {safetyTimersList.length === 0 ? (
+                      {displayedSafetyTimers.length === 0 ? (
                         <div className="admin-empty">
                           <div className="admin-empty-icon" aria-hidden="true">
                             <Clock size={18} />
                           </div>
-                          <h3 className="admin-empty-title">Không có lịch hẹn trong trạng thái này</h3>
+                          <h3 className="admin-empty-title">Không có lịch hẹn trong mục này</h3>
                           <p className="admin-empty-desc">
                             Các lịch hẹn báo bình an đang hoạt động hoặc quá hạn sẽ hiển thị tại đây.
                           </p>
                         </div>
                       ) : (
-                        safetyTimersList.map((timer) => {
+                        displayedSafetyTimers.map((timer) => {
                           const isOverdue = timer.status === 'overdue_alerted';
+                          const isActionableTimer =
+                            timer.status === 'active' || timer.status === 'overdue_alerted';
                           const userObj = typeof timer.userId === 'object' ? timer.userId : null;
+                          const timerUserName =
+                            userObj?.fullName || userObj?.username || 'Thành viên LOST';
+                          const timerTrailName = timer.trailName || 'Cung đường trekking';
                           const hasCoords =
                             typeof timer.lastKnownLat === 'number' &&
                             typeof timer.lastKnownLng === 'number';
+                          const mappedOverdue = isOverdue ? cockpitOverdueTimersById.get(timer._id) : undefined;
+                          const isRowSelected =
+                            liveInspectorSelection?.kind === 'timer' &&
+                            liveInspectorSelection.data.id === timer._id;
 
                           return (
                             <div
                               key={timer._id}
-                              className={`admin-ledger-row ${isOverdue ? 'admin-ledger-row--urgent' : ''}`}
+                              className={`admin-ledger-row ${isOverdue ? 'admin-ledger-row--urgent' : ''} ${mappedOverdue ? 'admin-ledger-row--selectable' : ''} ${isRowSelected ? 'is-selected' : ''}`}
+                              onClick={
+                                mappedOverdue
+                                  ? () => setInspectorSelection({ kind: 'timer', data: mappedOverdue })
+                                  : undefined
+                              }
                             >
                               <div className="admin-ledger-main">
                                 <div className="admin-ledger-title-line">
@@ -5048,7 +6209,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                   ) : timer.status === 'active' ? (
                                     <span className="admin-status">
                                       <span className="admin-dot admin-dot--info" aria-hidden="true" />
-                                      Đang giám sát
+                                      Đang theo dõi
                                     </span>
                                   ) : timer.status === 'checked_in_safe' ? (
                                     <span className="admin-status">
@@ -5129,7 +6290,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                       <IconMail size={11} /> {timer.emergencyContactEmail}
                                     </a>
                                   )}
-                                  {userObj?.phone && <span>· SĐT Trekker: {userObj.phone}</span>}
+                                  {userObj?.phone && <span>· SĐT trekker: {userObj.phone}</span>}
                                 </div>
 
                                 {timer.notes && (
@@ -5137,21 +6298,63 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                 )}
                               </div>
 
-                              {hasCoords && (
-                                <div className="admin-ledger-actions">
-                                  <a
-                                    href={`https://www.google.com/maps?q=${timer.lastKnownLat},${timer.lastKnownLng}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="admin-btn admin-btn--sm"
-                                  >
-                                    <IconMapPin size={12} />
-                                    <span>
-                                      {timer.lastKnownLat!.toFixed(4)},{' '}
-                                      {timer.lastKnownLng!.toFixed(4)}
-                                    </span>
-                                    <ExternalLinkIcon size={11} />
-                                  </a>
+                              {(isActionableTimer || hasCoords) && (
+                                <div
+                                  className="admin-ledger-actions"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  {isActionableTimer && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className="admin-btn admin-btn--sm admin-btn--primary"
+                                        disabled={Boolean(busyActions[`timer-safe:${timer._id}`])}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleAdminMarkTimerSafe(
+                                            timer._id,
+                                            timerUserName,
+                                            timerTrailName
+                                          );
+                                        }}
+                                      >
+                                        <CheckCircle2 size={12} />
+                                        <span>Đánh dấu đã an toàn</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="admin-btn admin-btn--sm"
+                                        disabled={Boolean(busyActions[`timer-extend:${timer._id}`])}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleAdminExtendTimer(
+                                            timer._id,
+                                            timerUserName,
+                                            timerTrailName
+                                          );
+                                        }}
+                                      >
+                                        <Clock size={12} />
+                                        <span>Gia hạn +2 giờ</span>
+                                      </button>
+                                    </>
+                                  )}
+                                  {hasCoords && (
+                                    <a
+                                      href={`https://www.google.com/maps?q=${timer.lastKnownLat},${timer.lastKnownLng}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="admin-btn admin-btn--sm"
+                                    >
+                                      <IconMapPin size={12} />
+                                      <span>
+                                        {timer.lastKnownLat!.toFixed(4)},{' '}
+                                        {timer.lastKnownLng!.toFixed(4)}
+                                      </span>
+                                      <ExternalLinkIcon size={11} />
+                                    </a>
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -5170,7 +6373,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             {effectiveSection === 'field' && (
               <>
                 <div className="admin-toolbar">
-                  <div className="admin-tabs" role="tablist" aria-label="Phân loại dữ liệu thực địa">
+                  <div className="admin-tabs" role="tablist" aria-label="Phân loại nội dung kiểm duyệt">
                     <button
                       type="button"
                       role="tab"
@@ -5178,7 +6381,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       className={`admin-tab-btn ${fieldSubTab === 'pois' ? 'active' : ''}`}
                       onClick={() => setFieldSubTab('pois')}
                     >
-                      <span>Điểm thực địa (POIs)</span>
+                      <span>Điểm mốc trên tuyến</span>
                       <span className="admin-tab-count">{poisTotal || poisList.length}</span>
                     </button>
                     <button
@@ -5199,8 +6402,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                       type="text"
                       placeholder={
                         fieldSubTab === 'pois'
-                          ? 'Lọc tên POI, cung đường, tác giả...'
-                          : 'Lọc cung đường, người đánh giá, nội dung...'
+                          ? 'Tìm tên điểm mốc, cung đường, người gửi...'
+                          : 'Tìm cung đường, người đánh giá, nội dung...'
                       }
                       value={fieldSearchQuery}
                       onChange={(e) => setFieldSearchQuery(e.target.value)}
@@ -5217,7 +6420,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                           display: 'flex',
                           padding: 2,
                         }}
-                        aria-label="Xóa lọc kiểm duyệt thực địa"
+                        aria-label="Xóa lọc tìm kiếm"
                       >
                         <IconX size={13} />
                       </button>
@@ -5233,7 +6436,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         <div className="admin-empty-icon" aria-hidden="true">
                           <IconMapPin size={18} />
                         </div>
-                        <h3 className="admin-empty-title">Không tìm thấy điểm thực địa phù hợp</h3>
+                        <h3 className="admin-empty-title">Không có điểm mốc phù hợp</h3>
                         <p className="admin-empty-desc">
                           Các điểm nguồn nước, bãi trại và cảnh báo do cộng đồng đánh dấu sẽ hiển thị tại đây.
                         </p>
@@ -5267,7 +6470,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                     }
                                     aria-hidden="true"
                                   />
-                                  {isClosed ? 'Đã cạn / Đóng' : 'Đang hoạt động'}
+                                  {isClosed ? 'Đã cạn hoặc đóng' : 'Đang hoạt động'}
                                 </span>
                               </div>
 
@@ -5309,7 +6512,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                 disabled={isBusy}
                                 onClick={() => void handleTogglePoiStatus(poi)}
                               >
-                                {isClosed ? 'Mở hoạt động' : 'Đánh dấu cạn/đóng'}
+                                {isClosed ? 'Mở lại' : 'Báo cạn / đóng'}
                               </button>
                               <button
                                 type="button"
@@ -5337,7 +6540,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         </div>
                         <h3 className="admin-empty-title">Không tìm thấy đánh giá phù hợp</h3>
                         <p className="admin-empty-desc">
-                          Đánh giá thực địa của người dùng sẽ hiển thị tại đây để kiểm duyệt.
+                          Đánh giá của thành viên sau chuyến đi sẽ hiển thị tại đây.
                         </p>
                       </div>
                     ) : (
@@ -5374,7 +6577,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                     display: 'inline-flex',
                                     alignItems: 'center',
                                     gap: 2,
-                                    color: 'var(--color-sun)',
+                                    color: 'var(--color-earth)',
                                     fontSize: '0.75rem',
                                     fontWeight: 600,
                                     fontVariantNumeric: 'tabular-nums',
@@ -5385,8 +6588,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                                     <IconStar
                                       key={star}
                                       size={11}
-                                      color="var(--color-sun)"
-                                      fill={star <= Math.round(rev.rating) ? 'var(--color-sun)' : 'none'}
+                                      color="var(--color-earth)"
+                                      fill={star <= Math.round(rev.rating) ? 'var(--color-earth)' : 'none'}
                                     />
                                   ))}
                                   <span style={{ marginLeft: 3 }}>{rev.rating}/5</span>
@@ -5442,2293 +6645,100 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             <AdminSpatialInspector
               selection={liveInspectorSelection}
               isStrictAdmin={isStrictAdmin}
+              publishedTrails={cockpitTrails}
               onClose={handleCloseInspector}
               onEditTrail={handleInspectorEditTrail}
               onDeleteTrail={handleDeleteTrail}
               onApproveContribution={handleApprove}
               onRejectContribution={handleReject}
+              onDeleteContribution={handleDeleteContribution}
               onInspectContributionModal={handleInspectorOpenContribModal}
               onResolveIncident={handleResolveIncident}
+              onMarkTimerSafe={handleAdminMarkTimerSafe}
+              onExtendTimer={handleAdminExtendTimer}
+              onResolveBeacon={handleAdminResolveBeacon}
               onNavigateSection={handleSelectSection}
             />
           )}
         </div>
 
-        {/* Bottom 30px Tactile Instrument Status Bar (isolated 1Hz Vietnam ICT clock) */}
+        {/* Bottom 30px Instrument Status Bar (isolated 1Hz UTC+7 clock & hover readout) */}
         <AdminStatusBar
           readiness={statusReadiness}
           readinessDetail={statusReadinessDetail}
-          activeCoords={hoverCoords ?? lockedCoords}
-          isCoordLocked={!hoverCoords && Boolean(lockedCoords)}
+          lockedCoords={lockedCoords}
+          subscribeHoverCoords={subscribeHoverCoords}
           dbStatus={dbHealth.status}
           dbLabel={dbHealth.label}
           isSocketConnected={isSocketConnected}
         />
       </div>
 
-      {/* =========================================================================
-       * CONTRIBUTION DETAIL INSPECTION MODAL
-       * ========================================================================= */}
-      {selectedContribution &&
-        createPortal(
-          <div
-            className="modal-overlay"
-            onClick={() => setSelectedContribution(null)}
-            style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}
-          >
-            <div
-              ref={contribModalRef}
-              tabIndex={-1}
-              className="modal-content"
-              role="dialog"
-              aria-modal="true"
-              aria-label="Kiểm duyệt hồ sơ đóng góp cung đường"
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                maxWidth: 780,
-                width: '95%',
-                maxHeight: '90vh',
-                overflowY: 'auto',
-                padding: 24,
-                borderRadius: 6,
-                background: 'var(--color-bg-card)',
-                border: '1px solid var(--color-border-strong)',
-                boxShadow: 'var(--shadow-3d)',
-                outline: 'none',
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'flex-start',
-                  marginBottom: 18,
-                  borderBottom: '1px solid var(--color-border)',
-                  paddingBottom: 14,
-                  gap: 12,
-                  flexWrap: 'wrap',
-                }}
-              >
-                <div>
-                  <span
-                    style={{
-                      fontSize: '0.74rem',
-                      color: 'var(--color-primary)',
-                      fontWeight: 800,
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.06em',
-                    }}
-                  >
-                    Hồ sơ đóng góp cung đường #<code>{selectedContribution.id || selectedContribution._id}</code>
-                  </span>
-                  <h3
-                    style={{
-                      fontSize: '1.35rem',
-                      color: 'var(--color-text-main)',
-                      fontWeight: 800,
-                      margin: '4px 0 0 0',
-                    }}
-                  >
-                    {selectedContribution.name || 'Cung đường Trekking mới'}
-                  </h3>
-                </div>
-                <span
-                  style={{
-                    background:
-                      selectedContribution.status === 'approved'
-                        ? 'var(--color-primary)'
-                        : selectedContribution.status === 'rejected'
-                          ? 'var(--color-error)'
-                          : 'var(--color-sun)',
-                    color:
-                      selectedContribution.status === 'rejected'
-                        ? 'var(--color-on-danger)'
-                        : 'var(--color-on-primary)',
-                    fontSize: '0.75rem',
-                    fontWeight: 800,
-                    padding: '5px 12px',
-                    borderRadius: 4,
-                  }}
-                >
-                  {selectedContribution.status === 'approved'
-                    ? 'Đã Duyệt & Công Khai'
-                    : selectedContribution.status === 'rejected'
-                      ? 'Đã Từ Chối'
-                      : 'Chờ BQT Duyệt (+50 PTS)'}
-                </span>
-              </div>
+      <ContributionDetailModal
+        contribution={selectedContribution}
+        contributions={contributions}
+        usersList={usersList}
+        currentUser={currentUser}
+        nearbyTrailMatch={
+          selectedContribution
+            ? nearbyTrailByContributionId.get(
+                String(selectedContribution.id || selectedContribution._id || '')
+              ) || null
+            : null
+        }
+        busyActions={busyActions}
+        dialogRef={contribModalRef}
+        onClose={() => setSelectedContribution(null)}
+        onOpenAuthorModal={setSelectedAuthorModal}
+        onApprove={handleApprove}
+        onReject={handleReject}
+      />
 
-              {selectedContribution.coverImage && (
-                <div
-                  style={{
-                    height: 240,
-                    borderRadius: 4,
-                    overflow: 'hidden',
-                    marginBottom: 20,
-                    border: '1px solid var(--color-border)',
-                    background: 'var(--color-surface-elevated)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <img
-                    loading="lazy"
-                    decoding="async"
-                    src={selectedContribution.coverImage}
-                    alt={selectedContribution.name}
-                    style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
-                    onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).src = DEFAULT_TRAIL_COVER;
-                    }}
-                  />
-                </div>
-              )}
+      <AdminAuthorModal
+        author={selectedAuthorModal}
+        dialogRef={authorModalRef}
+        getRoleLabel={getRoleLabelVi}
+        onMessageAuthor={(userId) => {
+          safeLocalStorageSet('lost_target_chat_user', userId);
+          setSelectedAuthorModal(null);
+          setSelectedContribution(null);
+          window.location.hash = '#messages';
+        }}
+        onClose={() => setSelectedAuthorModal(null)}
+      />
 
-              {/* SECTION 1 */}
-              <div
-                style={{
-                  background: 'var(--color-bg-main)',
-                  border: '1px solid var(--color-border)',
-                  padding: 16,
-                  borderRadius: 4,
-                  marginBottom: 16,
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: '0.8rem',
-                    fontWeight: 800,
-                    color: 'var(--color-primary)',
-                    textTransform: 'uppercase',
-                    marginBottom: 10,
-                  }}
-                >
-                  1. ĐỊA ĐIỂM HÀNH CHÍNH &amp; VÙNG MIỀN
-                </div>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-                    gap: 10,
-                    fontSize: '0.82rem',
-                    color: 'var(--color-text-main)',
-                  }}
-                >
-                  <div>
-                    · <strong>Vùng miền:</strong> {selectedContribution.region || 'Chưa cập nhật'}
-                  </div>
-                  <div>
-                    · <strong>Tỉnh / Thành:</strong> {selectedContribution.province || 'Chưa cập nhật'}
-                  </div>
-                  <div>
-                    · <strong>Quận / Huyện / Xã:</strong> {selectedContribution.district || 'Chưa cập nhật'}
-                  </div>
-                  <div>
-                    · <strong>Thôn / Cửa rừng:</strong> {selectedContribution.hamlet || 'Chưa nhập'}
-                  </div>
-                </div>
-              </div>
+      <EditTrailModal
+        trail={editingTrailModal}
+        isStrictAdmin={isStrictAdmin}
+        form={editTrailForm}
+        isSaving={isSavingTrail}
+        dialogRef={editTrailModalRef}
+        onChangeForm={setEditTrailForm}
+        onSubmit={handleSaveTrailEdit}
+        onClose={() => setEditingTrailModal(null)}
+      />
 
-              {/* SECTION 2 */}
-              <div
-                style={{
-                  background: 'var(--color-bg-main)',
-                  border: '1px solid var(--color-border)',
-                  padding: 16,
-                  borderRadius: 4,
-                  marginBottom: 16,
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: '0.8rem',
-                    fontWeight: 800,
-                    color: 'var(--color-primary)',
-                    textTransform: 'uppercase',
-                    marginBottom: 10,
-                  }}
-                >
-                  2. THÔNG SỐ KỸ THUẬT CUNG ĐƯỜNG
-                </div>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
-                    gap: 10,
-                  }}
-                >
-                  <div
-                    style={{
-                      background: 'var(--color-bg-card)',
-                      padding: 10,
-                      borderRadius: 4,
-                      border: '1px solid var(--color-border)',
-                      textAlign: 'center',
-                    }}
-                  >
-                    <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Chiều dài</div>
-                    <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: 2 }}>
-                      {selectedContribution.distanceKm} km
-                    </div>
-                  </div>
-                  <div
-                    style={{
-                      background: 'var(--color-bg-card)',
-                      padding: 10,
-                      borderRadius: 4,
-                      border: '1px solid var(--color-border)',
-                      textAlign: 'center',
-                    }}
-                  >
-                    <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Độ cao nâng</div>
-                    <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-sky)', marginTop: 2 }}>
-                      +{selectedContribution.elevationGainM} m
-                    </div>
-                  </div>
-                  <div
-                    style={{
-                      background: 'var(--color-bg-card)',
-                      padding: 10,
-                      borderRadius: 4,
-                      border: '1px solid var(--color-border)',
-                      textAlign: 'center',
-                    }}
-                  >
-                    <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Đỉnh cao nhất</div>
-                    <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-earth)', marginTop: 2 }}>
-                      {selectedContribution.maxAltitudeM} m
-                    </div>
-                  </div>
-                  <div
-                    style={{
-                      background: 'var(--color-bg-card)',
-                      padding: 10,
-                      borderRadius: 4,
-                      border: '1px solid var(--color-border)',
-                      textAlign: 'center',
-                    }}
-                  >
-                    <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Mức độ khó</div>
-                    <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-sun)', marginTop: 2 }}>
-                      {selectedContribution.difficultyLevel}/5
-                    </div>
-                  </div>
-                  <div
-                    style={{
-                      background: 'var(--color-bg-card)',
-                      padding: 10,
-                      borderRadius: 4,
-                      border: '1px solid var(--color-border)',
-                      textAlign: 'center',
-                    }}
-                  >
-                    <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Thời gian đi</div>
-                    <div style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 2 }}>
-                      {selectedContribution.durationHoursNote || '1 ngày'}
-                    </div>
-                  </div>
-                </div>
-              </div>
+      <CreateTrailModal
+        isOpen={isCreateTrailOpen}
+        isStrictAdmin={isStrictAdmin}
+        form={createTrailForm}
+        isCreating={isCreatingTrail}
+        dialogRef={createTrailModalRef}
+        onChangeForm={setCreateTrailForm}
+        onSubmit={handleCreateTrailSubmit}
+        onOpenContributeWizard={handleOpenContributeWizard}
+        onClose={() => setIsCreateTrailOpen(false)}
+      />
 
-              {/* SECTION 3 */}
-              <div
-                style={{
-                  background: 'var(--color-bg-main)',
-                  border: '1px solid var(--color-border)',
-                  padding: 16,
-                  borderRadius: 4,
-                  marginBottom: 16,
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: '0.8rem',
-                    fontWeight: 800,
-                    color: 'var(--color-primary)',
-                    textTransform: 'uppercase',
-                    marginBottom: 10,
-                  }}
-                >
-                  3. TỌA ĐỘ GPS ĐÁNH DẤU TRÊN BẢN ĐỒ
-                </div>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-                    gap: 12,
-                    fontSize: '0.82rem',
-                    color: 'var(--color-text-main)',
-                  }}
-                >
-                  <div
-                    style={{
-                      background: 'var(--color-bg-card)',
-                      padding: 10,
-                      borderRadius: 4,
-                      border: '1px solid var(--color-border)',
-                    }}
-                  >
-                    <strong style={{ color: 'var(--color-primary)' }}>· Tọa độ Xuất Phát (Start):</strong>
-                    <div style={{ marginTop: 4 }}>
-                      <code>
-                        Lat: {selectedContribution.startLat}, Lng: {selectedContribution.startLng}
-                      </code>
-                    </div>
-                  </div>
-                  <div
-                    style={{
-                      background: 'var(--color-bg-card)',
-                      padding: 10,
-                      borderRadius: 4,
-                      border: '1px solid var(--color-border)',
-                    }}
-                  >
-                    <strong style={{ color: 'var(--color-error-text, var(--color-error))' }}>· Tọa độ Kết Thúc (End):</strong>
-                    <div style={{ marginTop: 4 }}>
-                      <code>
-                        Lat: {selectedContribution.endLat}, Lng: {selectedContribution.endLng}
-                      </code>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* SECTION 4 */}
-              <div
-                style={{
-                  background: 'var(--color-bg-main)',
-                  border: '1px solid var(--color-border)',
-                  padding: 16,
-                  borderRadius: 4,
-                  marginBottom: 16,
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: '0.8rem',
-                    fontWeight: 800,
-                    color: 'var(--color-primary)',
-                    textTransform: 'uppercase',
-                    marginBottom: 10,
-                  }}
-                >
-                  4. MÔ TẢ CHI TIẾT &amp; HƯỚNG DẪN DI CHUYỂN
-                </div>
-
-                <div style={{ marginBottom: 12 }}>
-                  <div
-                    style={{
-                      fontSize: '0.78rem',
-                      fontWeight: 700,
-                      color: 'var(--color-text-main)',
-                      marginBottom: 4,
-                    }}
-                  >
-                    Mô tả tổng quan:
-                  </div>
-                  <p
-                    style={{
-                      color: 'var(--color-text-main)',
-                      fontSize: '0.84rem',
-                      lineHeight: 1.6,
-                      margin: 0,
-                      whiteSpace: 'pre-line',
-                      background: 'var(--color-bg-card)',
-                      padding: 12,
-                      borderRadius: 4,
-                      border: '1px solid var(--color-border)',
-                    }}
-                  >
-                    {selectedContribution.description || 'Chưa nhập nội dung mô tả.'}
-                  </p>
-                </div>
-
-                {selectedContribution.transportationInfo && (
-                  <div>
-                    <div
-                      style={{
-                        fontSize: '0.78rem',
-                        fontWeight: 700,
-                        color: 'var(--color-text-main)',
-                        marginBottom: 4,
-                      }}
-                    >
-                      Hướng dẫn di chuyển &amp; Phương tiện:
-                    </div>
-                    <p
-                      style={{
-                        color: 'var(--color-text-muted)',
-                        fontSize: '0.82rem',
-                        lineHeight: 1.5,
-                        margin: 0,
-                        whiteSpace: 'pre-line',
-                        background: 'var(--color-bg-card)',
-                        padding: 12,
-                        borderRadius: 4,
-                        border: '1px solid var(--color-border)',
-                      }}
-                    >
-                      {selectedContribution.transportationInfo}
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              {/* SECTION 5 */}
-              <div
-                style={{
-                  background: 'var(--color-bg-main)',
-                  border: '1px solid var(--color-border)',
-                  padding: 16,
-                  borderRadius: 4,
-                  marginBottom: 16,
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: '0.8rem',
-                    fontWeight: 800,
-                    color: 'var(--color-primary)',
-                    textTransform: 'uppercase',
-                    marginBottom: 10,
-                  }}
-                >
-                  5. QUY ĐỊNH GIẤY PHÉP &amp; TIỆN ÍCH
-                </div>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-                    gap: 10,
-                    fontSize: '0.82rem',
-                    color: 'var(--color-text-main)',
-                  }}
-                >
-                  <div>
-                    · <strong>Giấy phép:</strong>{' '}
-                    {selectedContribution.permitRequired
-                      ? selectedContribution.permitInfo || 'Cần xin giấy phép'
-                      : 'Không cần giấy phép'}
-                  </div>
-                  <div>
-                    · <strong>Bãi cắm trại:</strong>{' '}
-                    {selectedContribution.hasCampsite ? 'Có bãi cắm trại' : 'Không có'}
-                  </div>
-                  <div>
-                    · <strong>Nguồn nước:</strong>{' '}
-                    {selectedContribution.hasWaterSource ? 'Có nguồn nước' : 'Không có'}
-                  </div>
-                  <div>
-                    · <strong>Trẻ em:</strong>{' '}
-                    {selectedContribution.kidFriendly ? 'Phù hợp cho trẻ em' : 'Không phù hợp'}
-                  </div>
-                </div>
-              </div>
-
-              {/* SECTION 6: Thành Viên Đóng Góp */}
-              {(() => {
-                const liveContrib =
-                  contributions.find(
-                    (c) =>
-                      c.id === selectedContribution.id || c._id === selectedContribution._id
-                  ) || selectedContribution;
-                const matchedUser =
-                  usersList.find(
-                    (u) =>
-                      (liveContrib.userId &&
-                        (u._id === liveContrib.userId || u.id === liveContrib.userId)) ||
-                      (liveContrib.authorEmail &&
-                        u.email?.toLowerCase() === liveContrib.authorEmail.toLowerCase())
-                  ) ||
-                  (currentUser?.email &&
-                  liveContrib.authorEmail &&
-                  currentUser.email.toLowerCase() === liveContrib.authorEmail.toLowerCase()
-                    ? currentUser
-                    : null);
-
-                const displayAuthorName =
-                  liveContrib.authorName &&
-                  liveContrib.authorName !== 'Trekker Đóng Góp' &&
-                  liveContrib.authorName !== 'Người dùng LOST'
-                    ? liveContrib.authorName
-                    : matchedUser?.fullName ||
-                      matchedUser?.name ||
-                      liveContrib.authorName ||
-                      'Trekker Đóng Góp';
-
-                const displayAuthorEmail =
-                  liveContrib.authorEmail || matchedUser?.email || 'Chưa cập nhật email';
-
-                const displayAuthorAvatar =
-                  liveContrib.authorAvatar ||
-                  matchedUser?.avatarUrl ||
-                  matchedUser?.avatar ||
-                  DEFAULT_AVATAR;
-
-                const handleOpenAuthorProfile = () => {
-                  const authorContribs = contributions.filter(
-                    (c) =>
-                      (c.authorEmail &&
-                        displayAuthorEmail &&
-                        c.authorEmail.toLowerCase() === displayAuthorEmail.toLowerCase()) ||
-                      (c.authorName &&
-                        displayAuthorName &&
-                        c.authorName.toLowerCase() === displayAuthorName.toLowerCase())
-                  );
-
-                  const approvedCount = authorContribs.filter((c) => c.status === 'approved').length;
-                  const pendingCount = authorContribs.filter((c) => c.status === 'pending').length;
-                  const realId = String(
-                    matchedUser?._id || matchedUser?.id || liveContrib.userId || ''
-                  ).trim();
-                  const realRep = Number(matchedUser?.reputationScore ?? 0);
-                  const realRole = matchedUser?.role || 'user';
-                  const realProvider =
-                    matchedUser?.authProvider === 'google' ? 'Google OAuth 2.0' : 'Email / OTP';
-                  const isVerified = Boolean(
-                    matchedUser?.isEmailVerified || matchedUser?.authProvider === 'google'
-                  );
-
-                  setSelectedAuthorModal({
-                    userId: realId,
-                    name: displayAuthorName,
-                    email: displayAuthorEmail,
-                    avatar: displayAuthorAvatar,
-                    date: liveContrib.createdAt || 'Chưa ghi nhận',
-                    contribCount: authorContribs.length || 1,
-                    approvedCount,
-                    pendingCount,
-                    authorContribs,
-                    reputationScore: realRep,
-                    role: realRole,
-                    authProvider: realProvider,
-                    isVerified,
-                    expeditionId: realId ? `LS-${realId.slice(-6).toUpperCase()}` : 'Chưa đồng bộ ID',
-                  });
-                };
-
-                return (
-                  <div
-                    style={{
-                      background: 'var(--color-bg-main)',
-                      border: '1px solid var(--color-border)',
-                      padding: 16,
-                      borderRadius: 4,
-                      marginBottom: 20,
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        marginBottom: 12,
-                        flexWrap: 'wrap',
-                        gap: 6,
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: '0.8rem',
-                          fontWeight: 800,
-                          color: 'var(--color-primary)',
-                          textTransform: 'uppercase',
-                        }}
-                      >
-                        6. THÔNG TIN THÀNH VIÊN ĐÓNG GÓP
-                      </div>
-                      <span style={{ fontSize: '0.72rem', color: 'var(--color-sky)', fontWeight: 700 }}>
-                        Bấm vào thẻ để xem hồ sơ năng lực chi tiết
-                      </span>
-                    </div>
-
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      onClick={handleOpenAuthorProfile}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          handleOpenAuthorProfile();
-                        }
-                      }}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 14,
-                        background: 'var(--color-bg-card)',
-                        padding: 14,
-                        borderRadius: 4,
-                        border: '1px solid var(--color-border)',
-                        cursor: 'pointer',
-                        transition: 'border-color 0.2s ease',
-                      }}
-                    >
-                      <img
-                        loading="lazy"
-                        decoding="async"
-                        src={displayAuthorAvatar}
-                        alt={displayAuthorName}
-                        style={{
-                          width: 48,
-                          height: 48,
-                          borderRadius: '50%',
-                          border: '2px solid var(--color-primary)',
-                          objectFit: 'cover',
-                        }}
-                      />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                          <span
-                            style={{
-                              fontSize: '0.98rem',
-                              fontWeight: 800,
-                              color: 'var(--color-text-main)',
-                            }}
-                          >
-                            {displayAuthorName}
-                          </span>
-                          <span
-                            style={{
-                              fontSize: '0.68rem',
-                              padding: '2px 8px',
-                              borderRadius: 4,
-                              background: 'color-mix(in srgb, var(--color-primary) 15%, transparent)',
-                              color: 'var(--color-primary)',
-                              fontWeight: 800,
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 4,
-                            }}
-                          >
-                            <ShieldCheck size={11} /> Thành viên đóng góp
-                          </span>
-                        </div>
-                        <div
-                          style={{
-                            fontSize: '0.78rem',
-                            color: 'var(--color-text-muted)',
-                            marginTop: 3,
-                          }}
-                        >
-                          Email:{' '}
-                          <strong style={{ color: 'var(--color-primary)' }}>{displayAuthorEmail}</strong> ·
-                          Ngày gửi: <strong>{formatDateVi(liveContrib.createdAt)}</strong>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              <div
-                style={{
-                  display: 'flex',
-                  gap: 12,
-                  borderTop: '1px solid var(--color-border)',
-                  paddingTop: 16,
-                  flexWrap: 'wrap',
-                }}
-              >
-                <button
-                  type="button"
-                  className="btn btn-outline"
-                  onClick={() => setSelectedContribution(null)}
-                  style={{ flex: 1, justifyContent: 'center' }}
-                >
-                  Đóng
-                </button>
-
-                {selectedContribution.status === 'pending' && (
-                  <button
-                    type="button"
-                    className="btn btn-outline"
-                    onClick={() =>
-                      handleReject(
-                        selectedContribution.id || selectedContribution._id || '',
-                        selectedContribution.name || ''
-                      )
-                    }
-                    style={{
-                      flex: 1,
-                      justifyContent: 'center',
-                      color: 'var(--color-sun)',
-                      borderColor: 'color-mix(in srgb, var(--color-sun) 40%, transparent)',
-                      gap: 6,
-                    }}
-                  >
-                    <XCircle size={16} /> Từ Chối
-                  </button>
-                )}
-
-                {selectedContribution.status !== 'approved' && (
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() =>
-                      handleApprove(
-                        selectedContribution.id || selectedContribution._id || '',
-                        selectedContribution.name || ''
-                      )
-                    }
-                    style={{ flex: 1.5, justifyContent: 'center', gap: 6 }}
-                  >
-                    <CheckCircle2 size={16} /> Phê Duyệt &amp; Đưa Lên Bản Đồ
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>,
-          document.body
-        )}
-
-      {/* =========================================================================
-       * MEMBER PROFILE DOSSIER MODAL
-       * ========================================================================= */}
-      {selectedAuthorModal &&
-        createPortal(
-          <div
-            className="modal-overlay"
-            onClick={() => setSelectedAuthorModal(null)}
-            style={{ zIndex: 'var(--z-modal-nested, 3100)' as unknown as number }}
-          >
-            <div
-              ref={authorModalRef}
-              tabIndex={-1}
-              className="modal-content"
-              role="dialog"
-              aria-modal="true"
-              aria-label="Hồ sơ tác giả đóng góp"
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                maxWidth: 580,
-                width: '95%',
-                maxHeight: '90vh',
-                overflowY: 'auto',
-                border: '1px solid var(--color-border-strong)',
-                padding: 24,
-                borderRadius: 6,
-                background: 'var(--color-bg-card)',
-                boxShadow: 'var(--shadow-3d)',
-                outline: 'none',
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginBottom: 18,
-                  borderBottom: '1px solid var(--color-border)',
-                  paddingBottom: 12,
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: '1.1rem',
-                    fontWeight: 800,
-                    color: 'var(--color-primary)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                  }}
-                >
-                  <ShieldCheck size={20} /> Hồ Sơ Thám Hiểm &amp; Năng Lực Thành Viên
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setSelectedAuthorModal(null)}
-                  aria-label="Đóng hồ sơ thành viên"
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    color: 'var(--color-text-muted)',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    padding: 4,
-                  }}
-                >
-                  <IconX size={20} />
-                </button>
-              </div>
-
-              <div
-                style={{
-                  background: 'var(--color-bg-main)',
-                  border: '1px solid var(--color-primary)',
-                  padding: 18,
-                  borderRadius: 4,
-                  marginBottom: 20,
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                  <img
-                    loading="lazy"
-                    decoding="async"
-                    src={selectedAuthorModal.avatar}
-                    alt={selectedAuthorModal.name}
-                    style={{
-                      width: 72,
-                      height: 72,
-                      borderRadius: '50%',
-                      border: '2px solid var(--color-primary)',
-                      objectFit: 'cover',
-                    }}
-                  />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <span
-                        style={{
-                          fontSize: '1.25rem',
-                          fontWeight: 900,
-                          color: 'var(--color-text-main)',
-                        }}
-                      >
-                        {selectedAuthorModal.name}
-                      </span>
-                      <span
-                        style={{
-                          fontSize: '0.7rem',
-                          padding: '2px 8px',
-                          borderRadius: 4,
-                          background: selectedAuthorModal.isVerified
-                            ? 'var(--color-primary)'
-                            : 'var(--color-sun)',
-                          color: 'var(--color-on-primary)',
-                          fontWeight: 800,
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 4,
-                        }}
-                      >
-                        <ShieldCheck size={11} />{' '}
-                        {selectedAuthorModal.isVerified ? 'Đã Xác Thực' : 'Chưa Xác Thực'}
-                      </span>
-                    </div>
-                    <div
-                      style={{
-                        fontSize: '0.8rem',
-                        color: 'var(--color-primary)',
-                        fontWeight: 800,
-                        marginTop: 4,
-                      }}
-                    >
-                      Mã Thành Viên: {selectedAuthorModal.expeditionId} · Vai trò:{' '}
-                      {(selectedAuthorModal.role || 'user').toUpperCase()}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-                  gap: 10,
-                  marginBottom: 20,
-                }}
-              >
-                <div
-                  style={{
-                    background: 'var(--color-bg-main)',
-                    border: '1px solid var(--color-border)',
-                    padding: 12,
-                    borderRadius: 4,
-                  }}
-                >
-                  <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>Email</div>
-                  <div
-                    style={{
-                      fontSize: '0.82rem',
-                      fontWeight: 800,
-                      color: 'var(--color-primary)',
-                      wordBreak: 'break-all',
-                      marginTop: 2,
-                    }}
-                  >
-                    {selectedAuthorModal.email}
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    background: 'var(--color-bg-main)',
-                    border: '1px solid var(--color-border)',
-                    padding: 12,
-                    borderRadius: 4,
-                  }}
-                >
-                  <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>
-                    Số Bài Đóng Góp
-                  </div>
-                  <div
-                    style={{
-                      fontSize: '0.88rem',
-                      fontWeight: 900,
-                      color: 'var(--color-text-main)',
-                      marginTop: 2,
-                    }}
-                  >
-                    {selectedAuthorModal.contribCount} bài ({selectedAuthorModal.approvedCount} đã duyệt)
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    background: 'var(--color-bg-main)',
-                    border: '1px solid var(--color-border)',
-                    padding: 12,
-                    borderRadius: 4,
-                  }}
-                >
-                  <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>
-                    Điểm Uy Tín Hệ Thống
-                  </div>
-                  <div
-                    style={{
-                      fontSize: '0.88rem',
-                      fontWeight: 900,
-                      color: 'var(--color-primary)',
-                      marginTop: 2,
-                    }}
-                  >
-                    {selectedAuthorModal.reputationScore ?? 0} PTS
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    background: 'var(--color-bg-main)',
-                    border: '1px solid var(--color-border)',
-                    padding: 12,
-                    borderRadius: 4,
-                  }}
-                >
-                  <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>
-                    Phương Thức Xác Thực
-                  </div>
-                  <div
-                    style={{
-                      fontSize: '0.82rem',
-                      fontWeight: 800,
-                      color: 'var(--color-sky)',
-                      marginTop: 2,
-                    }}
-                  >
-                    {selectedAuthorModal.authProvider || 'Email / OTP'}
-                  </div>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  display: 'flex',
-                  gap: 10,
-                  borderTop: '1px solid var(--color-border)',
-                  paddingTop: 16,
-                }}
-              >
-                {selectedAuthorModal.userId && (
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() => {
-                      localStorage.setItem('lost_target_chat_user', selectedAuthorModal.userId || '');
-                      setSelectedAuthorModal(null);
-                      setSelectedContribution(null);
-                      window.location.hash = '#messages';
-                    }}
-                    style={{
-                      flex: 1,
-                      justifyContent: 'center',
-                      padding: '10px 16px',
-                      fontSize: '0.85rem',
-                      fontWeight: 800,
-                    }}
-                  >
-                    Nhắn Tin Trực Tiếp
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="btn btn-outline"
-                  onClick={() => setSelectedAuthorModal(null)}
-                  style={{
-                    flex: 1,
-                    justifyContent: 'center',
-                    padding: '10px 16px',
-                    fontSize: '0.85rem',
-                    fontWeight: 800,
-                  }}
-                >
-                  Đóng
-                </button>
-              </div>
-            </div>
-          </div>,
-          document.body
-        )}
-
-      {/* =========================================================================
-       * EXPANDED INLINE EDIT TRAIL MODAL (ALL BACKEND EDITABLE FIELDS)
-       * ========================================================================= */}
-      {editingTrailModal &&
-        isStrictAdmin &&
-        createPortal(
-          <div
-            className="modal-overlay"
-            onClick={() => !isSavingTrail && setEditingTrailModal(null)}
-            style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}
-          >
-            <div
-              ref={editTrailModalRef}
-              tabIndex={-1}
-              className="modal-content"
-              role="dialog"
-              aria-modal="true"
-              aria-label="Chỉnh sửa đầy đủ thông số cung đường"
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                maxWidth: 780,
-                width: '95%',
-                maxHeight: '90vh',
-                overflowY: 'auto',
-                padding: 24,
-                borderRadius: 6,
-                outline: 'none',
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  marginBottom: 16,
-                  paddingBottom: 12,
-                  borderBottom: '1px solid var(--color-border)',
-                }}
-              >
-                <h3
-                  style={{
-                    fontSize: '1.15rem',
-                    fontWeight: 800,
-                    color: 'var(--color-text-main)',
-                    margin: 0,
-                  }}
-                >
-                  Chỉnh Sửa Cung Đường: {editingTrailModal.name}
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => !isSavingTrail && setEditingTrailModal(null)}
-                  aria-label="Đóng cửa sổ chỉnh sửa"
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    color: 'var(--color-text-muted)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <IconX size={20} />
-                </button>
-              </div>
-
-              <form
-                onSubmit={handleSaveTrailEdit}
-                style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
-              >
-                <div
-                  style={{
-                    fontSize: '0.74rem',
-                    fontWeight: 800,
-                    color: 'var(--color-primary)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.06em',
-                  }}
-                >
-                  1. Định danh &amp; Địa lý hành chính
-                </div>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
-                    gap: 12,
-                  }}
-                >
-                  <div className="form-group">
-                    <label className="form-label">Tên cung đường *</label>
-                    <input
-                      className="form-input"
-                      value={editTrailForm.name}
-                      onChange={(e) => setEditTrailForm({ ...editTrailForm, name: e.target.value })}
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Tên gọi khác (cách nhau bằng dấu phẩy)</label>
-                    <input
-                      className="form-input"
-                      placeholder="VD: Bạch Mộc Lương Tử, Ky Quan San"
-                      value={editTrailForm.altNames}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, altNames: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Tỉnh / Thành phố *</label>
-                    <input
-                      className="form-input"
-                      value={editTrailForm.province}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, province: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Quận / Huyện / Thị xã</label>
-                    <input
-                      className="form-input"
-                      value={editTrailForm.district}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, district: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Vùng miền *</label>
-                    <select
-                      className="form-select"
-                      value={editTrailForm.region}
-                      onChange={(e) =>
-                        setEditTrailForm({
-                          ...editTrailForm,
-                          region: normalizeRegion(e.target.value),
-                        })
-                      }
-                    >
-                      <option value="Miền Bắc">Miền Bắc</option>
-                      <option value="Miền Trung">Miền Trung</option>
-                      <option value="Miền Nam">Miền Nam</option>
-                    </select>
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Trạng thái hiển thị</label>
-                    <select
-                      className="form-select"
-                      value={editTrailForm.status}
-                      onChange={(e) =>
-                        setEditTrailForm({
-                          ...editTrailForm,
-                          status:
-                            e.target.value === 'pending' || e.target.value === 'rejected'
-                              ? e.target.value
-                              : 'approved',
-                        })
-                      }
-                    >
-                      <option value="approved">Đã duyệt (Công khai)</option>
-                      <option value="pending">Chờ duyệt (Ẩn công khai)</option>
-                      <option value="rejected">Từ chối</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    fontSize: '0.74rem',
-                    fontWeight: 800,
-                    color: 'var(--color-primary)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.06em',
-                    marginTop: 4,
-                  }}
-                >
-                  2. Thông số kỹ thuật &amp; Mùa đẹp
-                </div>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
-                    gap: 12,
-                  }}
-                >
-                  <div className="form-group">
-                    <label className="form-label">Cự ly (km) *</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      min="0.1"
-                      className="form-input"
-                      value={editTrailForm.distanceKm}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, distanceKm: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Độ cao tích lũy (m) *</label>
-                    <input
-                      type="number"
-                      min="0"
-                      className="form-input"
-                      value={editTrailForm.elevationGainM}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, elevationGainM: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Độ cao đỉnh (m) *</label>
-                    <input
-                      type="number"
-                      min="0"
-                      className="form-input"
-                      value={editTrailForm.maxAltitudeM}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, maxAltitudeM: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Số ngày (durationDays)</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="30"
-                      className="form-input"
-                      value={editTrailForm.durationDays}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, durationDays: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Ghi chú thời lượng</label>
-                    <input
-                      className="form-input"
-                      placeholder="VD: 2 ngày 1 đêm"
-                      value={editTrailForm.durationHoursNote}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, durationHoursNote: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Độ khó (1 - 5) *</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="5"
-                      className="form-input"
-                      value={editTrailForm.difficultyLevel}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, difficultyLevel: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Tháng đẹp nhất (1–12)</label>
-                    <input
-                      className="form-input"
-                      placeholder="VD: 10, 11, 12, 1, 2, 3"
-                      value={editTrailForm.bestMonths}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, bestMonths: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Tháng nên tránh (1–12)</label>
-                    <input
-                      className="form-input"
-                      placeholder="VD: 6, 7, 8"
-                      value={editTrailForm.avoidMonths}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, avoidMonths: e.target.value })
-                      }
-                    />
-                  </div>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Ghi chú độ khó thực địa</label>
-                  <input
-                    className="form-input"
-                    placeholder="VD: Dốc đứng kéo dài, nhiều đoạn bám rễ cây trơn trượt khi mưa"
-                    value={editTrailForm.difficultyNote}
-                    onChange={(e) =>
-                      setEditTrailForm({ ...editTrailForm, difficultyNote: e.target.value })
-                    }
-                  />
-                </div>
-
-                <div
-                  style={{
-                    fontSize: '0.74rem',
-                    fontWeight: 800,
-                    color: 'var(--color-primary)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.06em',
-                    marginTop: 4,
-                  }}
-                >
-                  3. Tọa độ GPS &amp; Ảnh bìa
-                </div>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-                    gap: 12,
-                  }}
-                >
-                  <div className="form-group">
-                    <label className="form-label">Start Lat (Vĩ độ xuất phát)</label>
-                    <input
-                      type="number"
-                      step="any"
-                      className="form-input"
-                      value={editTrailForm.startLat}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, startLat: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Start Lng (Kinh độ xuất phát)</label>
-                    <input
-                      type="number"
-                      step="any"
-                      className="form-input"
-                      value={editTrailForm.startLng}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, startLng: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">End Lat (Vĩ độ đích)</label>
-                    <input
-                      type="number"
-                      step="any"
-                      className="form-input"
-                      value={editTrailForm.endLat}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, endLat: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">End Lng (Kinh độ đích)</label>
-                    <input
-                      type="number"
-                      step="any"
-                      className="form-input"
-                      value={editTrailForm.endLng}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, endLng: e.target.value })
-                      }
-                    />
-                  </div>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">URL Ảnh bìa (https://...)</label>
-                  <input
-                    className="form-input"
-                    placeholder="/covers/trail-fansipan.svg hoặc URL ảnh thực địa"
-                    value={editTrailForm.coverImage}
-                    onChange={(e) =>
-                      setEditTrailForm({ ...editTrailForm, coverImage: e.target.value })
-                    }
-                  />
-                </div>
-
-                <div
-                  style={{
-                    fontSize: '0.74rem',
-                    fontWeight: 800,
-                    color: 'var(--color-primary)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.06em',
-                    marginTop: 4,
-                  }}
-                >
-                  4. Mô tả, Di chuyển, Cứu hộ &amp; Tiện ích
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Mô tả thực địa</label>
-                  <textarea
-                    className="form-textarea"
-                    rows={3}
-                    value={editTrailForm.description}
-                    onChange={(e) =>
-                      setEditTrailForm({ ...editTrailForm, description: e.target.value })
-                    }
-                  />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Hướng dẫn di chuyển tới cửa rừng</label>
-                  <textarea
-                    className="form-textarea"
-                    rows={2}
-                    value={editTrailForm.transportationInfo}
-                    onChange={(e) =>
-                      setEditTrailForm({ ...editTrailForm, transportationInfo: e.target.value })
-                    }
-                  />
-                </div>
-
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                    gap: 12,
-                  }}
-                >
-                  <div className="form-group">
-                    <label className="form-label">Đầu mối cứu hộ / Kiểm lâm</label>
-                    <input
-                      className="form-input"
-                      placeholder="VD: Trạm Kiểm lâm VQG Hoàng Liên"
-                      value={editTrailForm.rescueContactName}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, rescueContactName: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">SĐT cứu hộ khẩn cấp</label>
-                    <input
-                      className="form-input"
-                      placeholder="VD: 112 / 114"
-                      value={editTrailForm.rescueContactPhone}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, rescueContactPhone: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Liên hệ Kiểm lâm bổ sung</label>
-                    <input
-                      className="form-input"
-                      placeholder="VD: 115 hoặc SĐT trực ban"
-                      value={editTrailForm.rescueContactRanger}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, rescueContactRanger: e.target.value })
-                      }
-                    />
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18 }}>
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      fontSize: '0.84rem',
-                      color: 'var(--color-text-main)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={editTrailForm.permitRequired}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, permitRequired: e.target.checked })
-                      }
-                    />
-                    Yêu cầu giấy phép VQG / Kiểm lâm
-                  </label>
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      fontSize: '0.84rem',
-                      color: 'var(--color-text-main)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={editTrailForm.hasCampsite}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, hasCampsite: e.target.checked })
-                      }
-                    />
-                    Có bãi cắm trại / lán nghỉ
-                  </label>
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      fontSize: '0.84rem',
-                      color: 'var(--color-text-main)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={editTrailForm.hasWaterSource}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, hasWaterSource: e.target.checked })
-                      }
-                    />
-                    Có nguồn nước dọc tuyến
-                  </label>
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      fontSize: '0.84rem',
-                      color: 'var(--color-text-main)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={editTrailForm.kidFriendly}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, kidFriendly: e.target.checked })
-                      }
-                    />
-                    Phù hợp cho trẻ em
-                  </label>
-                </div>
-
-                {editTrailForm.permitRequired && (
-                  <div className="form-group">
-                    <label className="form-label">Thông tin thủ tục cấp phép</label>
-                    <input
-                      className="form-input"
-                      value={editTrailForm.permitInfo}
-                      onChange={(e) =>
-                        setEditTrailForm({ ...editTrailForm, permitInfo: e.target.value })
-                      }
-                    />
-                  </div>
-                )}
-
-                <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
-                  <button
-                    type="submit"
-                    className="btn btn-primary"
-                    disabled={isSavingTrail}
-                    style={{ flex: 1, justifyContent: 'center' }}
-                  >
-                    {isSavingTrail ? 'Đang lưu...' : 'Lưu Thay Đổi'}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-outline"
-                    onClick={() => setEditingTrailModal(null)}
-                    disabled={isSavingTrail}
-                    style={{ flex: 1, justifyContent: 'center' }}
-                  >
-                    Hủy / Đóng
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>,
-          document.body
-        )}
-
-      {/* =========================================================================
-       * DIRECT CREATE VERIFIED TRAIL MODAL (POST /api/admin/trails) + GPX WIZARD
-       * ========================================================================= */}
-      {isCreateTrailOpen &&
-        isStrictAdmin &&
-        createPortal(
-          <div
-            className="modal-overlay"
-            onClick={() => !isCreatingTrail && setIsCreateTrailOpen(false)}
-            style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}
-          >
-            <div
-              ref={createTrailModalRef}
-              tabIndex={-1}
-              className="modal-content"
-              role="dialog"
-              aria-modal="true"
-              aria-label="Tạo trực tiếp cung đường mới"
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                maxWidth: 780,
-                width: '95%',
-                maxHeight: '90vh',
-                overflowY: 'auto',
-                padding: 24,
-                borderRadius: 6,
-                outline: 'none',
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  flexWrap: 'wrap',
-                  gap: 10,
-                  marginBottom: 16,
-                  paddingBottom: 12,
-                  borderBottom: '1px solid var(--color-border)',
-                }}
-              >
-                <div>
-                  <h3
-                    style={{
-                      fontSize: '1.15rem',
-                      fontWeight: 800,
-                      color: 'var(--color-text-main)',
-                      margin: 0,
-                    }}
-                  >
-                    Tạo Trực Tiếp Cung Đường Đã Xác Thực (BQT LOST)
-                  </h3>
-                  <p style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', margin: '3px 0 0 0' }}>
-                    Công khai trực tiếp lên kho dữ liệu bản đồ qua API Quản trị, hoặc chuyển sang Wizard 5 bước để vẽ GPX.
-                  </p>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <button
-                    type="button"
-                    className="btn btn-outline"
-                    onClick={handleOpenContributeWizard}
-                    style={{
-                      fontSize: '0.76rem',
-                      padding: '6px 12px',
-                      color: 'var(--color-sky)',
-                      borderColor: 'color-mix(in srgb, var(--color-sky) 45%, transparent)',
-                    }}
-                  >
-                    Mở Wizard GPX 5 Bước
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => !isCreatingTrail && setIsCreateTrailOpen(false)}
-                    aria-label="Đóng cửa sổ tạo cung đường"
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: 'var(--color-text-muted)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <IconX size={20} />
-                  </button>
-                </div>
-              </div>
-
-              <form
-                onSubmit={handleCreateTrailSubmit}
-                style={{ display: 'flex', flexDirection: 'column', gap: 14 }}
-              >
-                <div
-                  style={{
-                    fontSize: '0.74rem',
-                    fontWeight: 800,
-                    color: 'var(--color-primary)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.06em',
-                  }}
-                >
-                  1. Thông tin cơ bản &amp; Hành chính
-                </div>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
-                    gap: 12,
-                  }}
-                >
-                  <div className="form-group">
-                    <label className="form-label">Tên cung đường *</label>
-                    <input
-                      className="form-input"
-                      placeholder="VD: Đỉnh Lảo Thẩn (Nóc nhà Y Tý)"
-                      value={createTrailForm.name}
-                      onChange={(e) =>
-                        setCreateTrailForm({ ...createTrailForm, name: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Tỉnh / Thành phố *</label>
-                    <input
-                      className="form-input"
-                      placeholder="VD: Lào Cai"
-                      value={createTrailForm.province}
-                      onChange={(e) =>
-                        setCreateTrailForm({ ...createTrailForm, province: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Quận / Huyện / Xã</label>
-                    <input
-                      className="form-input"
-                      placeholder="VD: Huyện Bát Xát"
-                      value={createTrailForm.district}
-                      onChange={(e) =>
-                        setCreateTrailForm({ ...createTrailForm, district: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Vùng miền *</label>
-                    <select
-                      className="form-select"
-                      value={createTrailForm.region}
-                      onChange={(e) =>
-                        setCreateTrailForm({
-                          ...createTrailForm,
-                          region: normalizeRegion(e.target.value),
-                        })
-                      }
-                    >
-                      <option value="Miền Bắc">Miền Bắc</option>
-                      <option value="Miền Trung">Miền Trung</option>
-                      <option value="Miền Nam">Miền Nam</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    fontSize: '0.74rem',
-                    fontWeight: 800,
-                    color: 'var(--color-primary)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.06em',
-                    marginTop: 4,
-                  }}
-                >
-                  2. Thông số kỹ thuật &amp; Độ khó
-                </div>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(165px, 1fr))',
-                    gap: 12,
-                  }}
-                >
-                  <div className="form-group">
-                    <label className="form-label">Cự ly (km) *</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      min="0.1"
-                      className="form-input"
-                      placeholder="VD: 16"
-                      value={createTrailForm.distanceKm}
-                      onChange={(e) =>
-                        setCreateTrailForm({ ...createTrailForm, distanceKm: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Độ cao tích lũy (m) *</label>
-                    <input
-                      type="number"
-                      min="0"
-                      className="form-input"
-                      placeholder="VD: 1100"
-                      value={createTrailForm.elevationGainM}
-                      onChange={(e) =>
-                        setCreateTrailForm({ ...createTrailForm, elevationGainM: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Cao độ đỉnh (m) *</label>
-                    <input
-                      type="number"
-                      min="0"
-                      className="form-input"
-                      placeholder="VD: 2860"
-                      value={createTrailForm.maxAltitudeM}
-                      onChange={(e) =>
-                        setCreateTrailForm({ ...createTrailForm, maxAltitudeM: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Số ngày *</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="30"
-                      className="form-input"
-                      value={createTrailForm.durationDays}
-                      onChange={(e) =>
-                        setCreateTrailForm({ ...createTrailForm, durationDays: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Ghi chú thời lượng</label>
-                    <input
-                      className="form-input"
-                      placeholder="VD: 2 ngày 1 đêm"
-                      value={createTrailForm.durationHoursNote}
-                      onChange={(e) =>
-                        setCreateTrailForm({
-                          ...createTrailForm,
-                          durationHoursNote: e.target.value,
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Độ khó (1 - 5) *</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="5"
-                      className="form-input"
-                      value={createTrailForm.difficultyLevel}
-                      onChange={(e) =>
-                        setCreateTrailForm({ ...createTrailForm, difficultyLevel: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Ghi chú độ khó thực địa</label>
-                  <input
-                    className="form-input"
-                    placeholder="VD: Đường thoáng dễ định hướng, nhiều gió lớn ở sống núi"
-                    value={createTrailForm.difficultyNote}
-                    onChange={(e) =>
-                      setCreateTrailForm({ ...createTrailForm, difficultyNote: e.target.value })
-                    }
-                  />
-                </div>
-
-                <div
-                  style={{
-                    fontSize: '0.74rem',
-                    fontWeight: 800,
-                    color: 'var(--color-primary)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.06em',
-                    marginTop: 4,
-                  }}
-                >
-                  3. Tọa độ GPS thực địa (Việt Nam) &amp; Ảnh bìa
-                </div>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-                    gap: 12,
-                  }}
-                >
-                  <div className="form-group">
-                    <label className="form-label">Start Lat *</label>
-                    <input
-                      type="number"
-                      step="any"
-                      className="form-input"
-                      placeholder="VD: 22.6251"
-                      value={createTrailForm.startLat}
-                      onChange={(e) =>
-                        setCreateTrailForm({ ...createTrailForm, startLat: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Start Lng *</label>
-                    <input
-                      type="number"
-                      step="any"
-                      className="form-input"
-                      placeholder="VD: 103.6812"
-                      value={createTrailForm.startLng}
-                      onChange={(e) =>
-                        setCreateTrailForm({ ...createTrailForm, startLng: e.target.value })
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">End Lat (tùy chọn)</label>
-                    <input
-                      type="number"
-                      step="any"
-                      className="form-input"
-                      placeholder="Để trống = Start Lat"
-                      value={createTrailForm.endLat}
-                      onChange={(e) =>
-                        setCreateTrailForm({ ...createTrailForm, endLat: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">End Lng (tùy chọn)</label>
-                    <input
-                      type="number"
-                      step="any"
-                      className="form-input"
-                      placeholder="Để trống = Start Lng"
-                      value={createTrailForm.endLng}
-                      onChange={(e) =>
-                        setCreateTrailForm({ ...createTrailForm, endLng: e.target.value })
-                      }
-                    />
-                  </div>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">URL Ảnh bìa (tùy chọn, https://...)</label>
-                  <input
-                    className="form-input"
-                    placeholder="/covers/trail-fansipan.svg hoặc URL ảnh thực địa"
-                    value={createTrailForm.coverImage}
-                    onChange={(e) =>
-                      setCreateTrailForm({ ...createTrailForm, coverImage: e.target.value })
-                    }
-                  />
-                </div>
-
-                <div
-                  style={{
-                    fontSize: '0.74rem',
-                    fontWeight: 800,
-                    color: 'var(--color-primary)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.06em',
-                    marginTop: 4,
-                  }}
-                >
-                  4. Mô tả, Di chuyển, Cứu hộ &amp; Quy định
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Mô tả thực địa *</label>
-                  <textarea
-                    className="form-textarea"
-                    rows={3}
-                    placeholder="Mô tả địa hình, cảnh quan, lưu ý thời tiết và điểm nhấn của cung đường..."
-                    value={createTrailForm.description}
-                    onChange={(e) =>
-                      setCreateTrailForm({ ...createTrailForm, description: e.target.value })
-                    }
-                    required
-                  />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Hướng dẫn di chuyển tới cửa rừng</label>
-                  <textarea
-                    className="form-textarea"
-                    rows={2}
-                    placeholder="VD: Xe giường nằm lên Lào Cai/Sa Pa, tiếp tục thuê xe máy hoặc ô tô trung chuyển..."
-                    value={createTrailForm.transportationInfo}
-                    onChange={(e) =>
-                      setCreateTrailForm({
-                        ...createTrailForm,
-                        transportationInfo: e.target.value,
-                      })
-                    }
-                  />
-                </div>
-
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
-                    gap: 12,
-                  }}
-                >
-                  <div className="form-group">
-                    <label className="form-label">Đầu mối cứu hộ / Trạm kiểm lâm</label>
-                    <input
-                      className="form-input"
-                      placeholder="VD: Ban Quản lý VQG / Kiểm lâm địa phương"
-                      value={createTrailForm.rescueContactName}
-                      onChange={(e) =>
-                        setCreateTrailForm({
-                          ...createTrailForm,
-                          rescueContactName: e.target.value,
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Hotline cứu hộ</label>
-                    <input
-                      className="form-input"
-                      placeholder="112 / 114"
-                      value={createTrailForm.rescueContactPhone}
-                      onChange={(e) =>
-                        setCreateTrailForm({
-                          ...createTrailForm,
-                          rescueContactPhone: e.target.value,
-                        })
-                      }
-                    />
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18 }}>
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      fontSize: '0.84rem',
-                      color: 'var(--color-text-main)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={createTrailForm.permitRequired}
-                      onChange={(e) =>
-                        setCreateTrailForm({
-                          ...createTrailForm,
-                          permitRequired: e.target.checked,
-                        })
-                      }
-                    />
-                    Yêu cầu giấy phép Kiểm lâm / VQG
-                  </label>
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      fontSize: '0.84rem',
-                      color: 'var(--color-text-main)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={createTrailForm.hasCampsite}
-                      onChange={(e) =>
-                        setCreateTrailForm({ ...createTrailForm, hasCampsite: e.target.checked })
-                      }
-                    />
-                    Có bãi cắm trại
-                  </label>
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      fontSize: '0.84rem',
-                      color: 'var(--color-text-main)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={createTrailForm.hasWaterSource}
-                      onChange={(e) =>
-                        setCreateTrailForm({
-                          ...createTrailForm,
-                          hasWaterSource: e.target.checked,
-                        })
-                      }
-                    />
-                    Có nguồn nước
-                  </label>
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      fontSize: '0.84rem',
-                      color: 'var(--color-text-main)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={createTrailForm.kidFriendly}
-                      onChange={(e) =>
-                        setCreateTrailForm({ ...createTrailForm, kidFriendly: e.target.checked })
-                      }
-                    />
-                    Phù hợp trẻ em
-                  </label>
-                </div>
-
-                {createTrailForm.permitRequired && (
-                  <div className="form-group">
-                    <label className="form-label">Thông tin đăng ký giấy phép</label>
-                    <input
-                      className="form-input"
-                      placeholder="VD: Đăng ký tại Trạm Kiểm lâm / Đồn Biên phòng trước 3 ngày"
-                      value={createTrailForm.permitInfo}
-                      onChange={(e) =>
-                        setCreateTrailForm({ ...createTrailForm, permitInfo: e.target.value })
-                      }
-                    />
-                  </div>
-                )}
-
-                <div style={{ display: 'flex', gap: 12, marginTop: 8, flexWrap: 'wrap' }}>
-                  <button
-                    type="submit"
-                    className="btn btn-primary"
-                    disabled={isCreatingTrail}
-                    style={{ flex: 1.4, justifyContent: 'center' }}
-                  >
-                    {isCreatingTrail ? 'Đang tạo cung đường...' : 'Tạo & Công Khai Cung Đường'}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-outline"
-                    onClick={() => setIsCreateTrailOpen(false)}
-                    disabled={isCreatingTrail}
-                    style={{ flex: 1, justifyContent: 'center' }}
-                  >
-                    Hủy / Đóng
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>,
-          document.body
-        )}
-
-      {/* =========================================================================
-       * STYLED IN-APP CONFIRMATION DIALOG (With optional custom banReason input)
-       * ========================================================================= */}
-      {confirmDialog &&
-        createPortal(
-          <div
-            className="modal-overlay"
-            onClick={() => !isConfirmExecuting && setConfirmDialog(null)}
-            style={{ zIndex: 'calc(var(--z-modal-nested, 3100) + 10)' as unknown as number }}
-          >
-            <div
-              ref={confirmModalRef}
-              tabIndex={-1}
-              className="modal-content"
-              role="alertdialog"
-              aria-modal="true"
-              aria-label={confirmDialog.title}
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                maxWidth: 460,
-                width: '92%',
-                padding: 22,
-                borderRadius: 6,
-                border: `1px solid ${confirmDialog.danger ? 'var(--color-error)' : 'var(--color-border-strong)'}`,
-                outline: 'none',
-              }}
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  marginBottom: 12,
-                }}
-              >
-                <h3
-                  style={{
-                    fontSize: '1.05rem',
-                    fontWeight: 800,
-                    color: confirmDialog.danger ? 'var(--color-error-text, var(--color-error))' : 'var(--color-text-main)',
-                    margin: 0,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 8,
-                  }}
-                >
-                  <AlertTriangle
-                    size={18}
-                    color={confirmDialog.danger ? 'var(--color-error)' : 'var(--color-sun)'}
-                  />
-                  {confirmDialog.title}
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => !isConfirmExecuting && setConfirmDialog(null)}
-                  aria-label="Đóng hộp thoại xác nhận"
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    color: 'var(--color-text-muted)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <IconX size={18} />
-                </button>
-              </div>
-              <p
-                style={{
-                  fontSize: '0.84rem',
-                  color: 'var(--color-text-muted)',
-                  lineHeight: 1.55,
-                  margin: confirmDialog.reasonInputLabel ? '0 0 14px 0' : '0 0 20px 0',
-                }}
-              >
-                {confirmDialog.message}
-              </p>
-
-              {confirmDialog.reasonInputLabel && (
-                <div className="form-group" style={{ marginBottom: 18 }}>
-                  <label className="form-label">{confirmDialog.reasonInputLabel}</label>
-                  <input
-                    className="form-input"
-                    value={confirmReason}
-                    onChange={(e) => setConfirmReason(e.target.value)}
-                    placeholder={confirmDialog.reasonPlaceholder || 'Nhập lý do...'}
-                    maxLength={300}
-                    disabled={isConfirmExecuting}
-                  />
-                </div>
-              )}
-
-              <div style={{ display: 'flex', gap: 10 }}>
-                <button
-                  type="button"
-                  className="btn btn-outline"
-                  onClick={() => setConfirmDialog(null)}
-                  disabled={isConfirmExecuting}
-                  style={{ flex: 1, justifyContent: 'center' }}
-                >
-                  Hủy bỏ
-                </button>
-                <button
-                  type="button"
-                  className={confirmDialog.danger ? 'btn btn-danger' : 'btn btn-primary'}
-                  onClick={() => void executeConfirmDialog()}
-                  disabled={isConfirmExecuting}
-                  style={{ flex: 1, justifyContent: 'center' }}
-                >
-                  {isConfirmExecuting ? 'Đang xử lý...' : confirmDialog.confirmLabel}
-                </button>
-              </div>
-            </div>
-          </div>,
-          document.body
-        )}
+      <AdminConfirmDialog
+        dialog={confirmDialog}
+        reason={confirmReason}
+        isExecuting={isConfirmExecuting}
+        dialogRef={confirmModalRef}
+        onChangeReason={setConfirmReason}
+        onConfirm={executeConfirmDialog}
+        onClose={() => setConfirmDialog(null)}
+      />
     </div>
   );
 };

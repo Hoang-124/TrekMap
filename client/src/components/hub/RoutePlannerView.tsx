@@ -1,16 +1,10 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  CircleMarker,
-  FreeBasemapLayer,
-  MapContainer,
-  Marker,
-  Polyline,
-  Popup,
-  useMap,
-  useMapEvents,
-} from '../map/LeafletPrimitives.js';
-import L from 'leaflet';
+  LostVectorMap,
+  type LostMapMarkerItem,
+  type LostMapPolylineItem,
+} from '../map/LostVectorMap.js';
 import {
   FREE_BASEMAPS,
   FREE_BASEMAP_ORDER,
@@ -93,7 +87,7 @@ interface SavedCustomRouteRecord {
   province?: string;
   baseTrailId?: string;
   waypoints: PlannerWaypoint[];
-  trackPoints: [number, number][] | [number, number, number][];
+  trackPoints: Array<[number, number] | [number, number, number]>;
   elevations?: number[];
   metrics: {
     distanceKm: number;
@@ -117,6 +111,7 @@ interface LoadedRouteMeta {
   id: string;
   shareSlug: string;
   isOwner: boolean;
+  creatorId?: string;
   isLocalOnly?: boolean;
 }
 
@@ -137,7 +132,7 @@ const WAYPOINT_TYPE_META: Record<
     textColorVar: 'var(--color-primary)',
   },
   peak: {
-    label: 'Đỉnh núi (Summit)',
+    label: 'Đỉnh núi',
     shortLabel: 'Đỉnh núi',
     shortCode: 'ĐN',
     gpxSym: 'Summit',
@@ -145,7 +140,7 @@ const WAYPOINT_TYPE_META: Record<
     textColorVar: 'var(--color-sun)',
   },
   water: {
-    label: 'Nguồn nước / Suối',
+    label: 'Suối / nguồn nước',
     shortLabel: 'Nguồn nước',
     shortCode: 'NC',
     gpxSym: 'Water Source',
@@ -153,7 +148,7 @@ const WAYPOINT_TYPE_META: Record<
     textColorVar: 'var(--color-sky)',
   },
   camp: {
-    label: 'Lán / Cắm trại',
+    label: 'Lán / bãi trại',
     shortLabel: 'Lán trại',
     shortCode: 'TR',
     gpxSym: 'Campground',
@@ -161,7 +156,7 @@ const WAYPOINT_TYPE_META: Record<
     textColorVar: 'var(--color-earth)',
   },
   danger: {
-    label: 'Cảnh báo (Caution)',
+    label: 'Đoạn nguy hiểm',
     shortLabel: 'Cảnh báo',
     shortCode: 'CB',
     gpxSym: 'Danger Area',
@@ -469,36 +464,39 @@ function mapPlannerToTrailWaypointType(type: RouteWaypointType): 'campsite' | 'w
   return 'rest';
 }
 
-function createStaticVertexDivIcon(role: 'start' | 'mid' | 'end'): L.DivIcon {
-  const isStart = role === 'start';
-  const isEnd = role === 'end';
-  const fill = isStart
-    ? 'var(--color-primary)'
-    : isEnd
-      ? 'var(--color-error)'
-      : 'var(--color-bg-card)';
-  const stroke = isStart || isEnd ? 'var(--color-on-media)' : 'var(--color-primary)';
-  const size = isStart || isEnd ? 18 : 13;
-
-  return L.divIcon({
-    className: 'lost-planner-vertex-icon',
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size / 2],
-    html: `<svg width="${size}" height="${size}" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg"><circle cx="9" cy="9" r="6.5" fill="${fill}" stroke="${stroke}" stroke-width="2.4"/></svg>`,
-  });
+function mapWaypointToMarkerColor(
+  type: RouteWaypointType
+): 'primary' | 'danger' | 'warn' | 'info' | 'muted' {
+  if (type === 'danger') return 'danger';
+  if (type === 'peak' || type === 'camp') return 'warn';
+  if (type === 'water' || type === 'viewpoint') return 'info';
+  return 'primary';
 }
 
-function createWaypointDivIcon(type: RouteWaypointType): L.DivIcon {
-  const meta = WAYPOINT_TYPE_META[type] || WAYPOINT_TYPE_META.viewpoint;
-  // High-contrast WCAG AA label fill in both Dark & Light modes
-  const labelFill = type === 'danger' ? 'var(--color-on-danger)' : 'var(--color-on-primary)';
-  return L.divIcon({
-    className: 'lost-planner-wpt-icon',
-    iconSize: [28, 34],
-    iconAnchor: [14, 34],
-    popupAnchor: [0, -30],
-    html: `<svg width="28" height="34" viewBox="0 0 28 34" xmlns="http://www.w3.org/2000/svg"><path d="M14 1.5C7.2 1.5 1.8 6.9 1.8 13.7C1.8 22.1 12.6 31.8 13.5 32.6C13.8 32.9 14.2 32.9 14.5 32.6C15.4 31.8 26.2 22.1 26.2 13.7C26.2 6.9 20.8 1.5 14 1.5Z" fill="${meta.colorVar}" stroke="var(--color-on-media)" stroke-width="2"/><text x="14" y="16.5" text-anchor="middle" fill="${labelFill}" font-size="7.5" font-weight="800" font-family="Plus Jakarta Sans, sans-serif">${meta.shortCode}</text></svg>`,
-  });
+function computeRouteBounds(
+  vertices: RouteVertex[]
+): [[number, number], [number, number]] | null {
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLng = Infinity;
+  let maxLng = -Infinity;
+  let validCount = 0;
+
+  for (const v of vertices) {
+    if (!Number.isFinite(v.lat) || !Number.isFinite(v.lng)) continue;
+    if (v.lat < minLat) minLat = v.lat;
+    if (v.lat > maxLat) maxLat = v.lat;
+    if (v.lng < minLng) minLng = v.lng;
+    if (v.lng > maxLng) maxLng = v.lng;
+    validCount += 1;
+  }
+
+  if (validCount < 2) return null;
+  if (Math.abs(maxLat - minLat) < 1e-6 && Math.abs(maxLng - minLng) < 1e-6) return null;
+  return [
+    [minLat, minLng],
+    [maxLat, maxLng],
+  ];
 }
 
 function loadLocalSavedRoutes(): SavedCustomRouteRecord[] {
@@ -523,20 +521,108 @@ function saveLocalSavedRoutes(items: SavedCustomRouteRecord[]) {
 }
 
 function buildVerticesFromTrail(trail: Trail): { vertices: RouteVertex[]; waypoints: PlannerWaypoint[] } {
-  const track =
+  const track: Array<[number, number] | [number, number, number]> =
     Array.isArray(trail.gpxTrack) && trail.gpxTrack.length >= 2
-      ? trail.gpxTrack
+      ? (trail.gpxTrack as Array<[number, number] | [number, number, number]>)
       : [
         [trail.startLat, trail.startLng] as [number, number],
         [trail.endLat, trail.endLng] as [number, number],
       ];
 
   const baseAlt = Math.max(80, trail.maxAltitudeM - trail.elevationGainM);
-  const vertices: RouteVertex[] = track.map(([lat, lng], idx) => {
-    const ratio = track.length > 1 ? idx / (track.length - 1) : 0;
-    const estEle = Math.round(baseAlt + (trail.maxAltitudeM - baseAlt) * Math.sin(ratio * Math.PI * 0.5));
-    return { lat, lng, elevationM: estEle };
-  });
+  const allHaveExplicitEle = track.every((pt) => pt.length >= 3 && Number.isFinite(Number(pt[2])));
+
+  // Build cumulative distances along track for anchor projection & loop detection
+  const cumKm: number[] = [0];
+  for (let i = 1; i < track.length; i += 1) {
+    cumKm.push(
+      cumKm[i - 1] +
+      calculateHaversineKm(track[i - 1][0], track[i - 1][1], track[i][0], track[i][1])
+    );
+  }
+  const totalKm = cumKm[cumKm.length - 1] || 0;
+  const startToEndKm = calculateHaversineKm(
+    track[0][0],
+    track[0][1],
+    track[track.length - 1][0],
+    track[track.length - 1][1]
+  );
+  const isLoopLike = totalKm > 0.5 && startToEndKm < Math.min(0.8, totalKm * 0.25);
+
+  let vertices: RouteVertex[];
+  if (allHaveExplicitEle) {
+    vertices = track.map((pt) => ({
+      lat: Number(pt[0]),
+      lng: Number(pt[1]),
+      elevationM: Math.round(Number(pt[2])),
+    }));
+  } else {
+    // Use real waypoint elevations projected onto closest track indices as anchors
+    const rawAnchors: Array<{ idx: number; ele: number }> = [];
+    for (const wp of trail.waypoints || []) {
+      if (typeof wp.elevationM !== 'number' || !Number.isFinite(wp.elevationM)) continue;
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < track.length; i += 1) {
+        const d = calculateHaversineKm(track[i][0], track[i][1], wp.lat, wp.lng);
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+      rawAnchors.push({ idx: bestIdx, ele: Math.round(wp.elevationM) });
+    }
+
+    if (rawAnchors.length >= 2) {
+      rawAnchors.sort((a, b) => a.idx - b.idx);
+      const deduped: Array<{ idx: number; ele: number }> = [];
+      for (const a of rawAnchors) {
+        if (deduped.length > 0 && deduped[deduped.length - 1].idx === a.idx) {
+          deduped[deduped.length - 1] = a;
+        } else {
+          deduped.push(a);
+        }
+      }
+      if (deduped[0].idx > 0) {
+        deduped.unshift({ idx: 0, ele: baseAlt });
+      }
+      if (deduped[deduped.length - 1].idx < track.length - 1) {
+        deduped.push({
+          idx: track.length - 1,
+          ele: isLoopLike ? baseAlt : trail.maxAltitudeM,
+        });
+      }
+      vertices = track.map(([lat, lng], idx) => {
+        let lo = deduped[0];
+        let hi = deduped[deduped.length - 1];
+        for (let j = 0; j < deduped.length - 1; j += 1) {
+          if (idx >= deduped[j].idx && idx <= deduped[j + 1].idx) {
+            lo = deduped[j];
+            hi = deduped[j + 1];
+            break;
+          }
+        }
+        const span = Math.max(1, hi.idx - lo.idx);
+        const t = Math.max(0, Math.min(1, (idx - lo.idx) / span));
+        const estEle = Math.round(lo.ele + (hi.ele - lo.ele) * t);
+        return { lat, lng, elevationM: estEle };
+      });
+    } else {
+      vertices = track.map(([lat, lng], idx) => {
+        const ratio = track.length > 1 ? idx / (track.length - 1) : 0;
+        const curve = isLoopLike ? Math.sin(ratio * Math.PI) : Math.sin(ratio * Math.PI * 0.5);
+        const estEle = Math.round(baseAlt + (trail.maxAltitudeM - baseAlt) * curve);
+        return { lat, lng, elevationM: estEle };
+      });
+    }
+  }
+
+  let peakVertex = vertices[vertices.length - 1];
+  for (const v of vertices) {
+    if ((v.elevationM ?? -Infinity) > (peakVertex?.elevationM ?? -Infinity)) {
+      peakVertex = v;
+    }
+  }
 
   const waypoints: PlannerWaypoint[] = [
     {
@@ -545,7 +631,7 @@ function buildVerticesFromTrail(trail: Trail): { vertices: RouteVertex[]; waypoi
       type: 'start',
       lat: trail.startLat,
       lng: trail.startLng,
-      elevationM: baseAlt,
+      elevationM: vertices[0]?.elevationM ?? baseAlt,
     },
     ...(trail.waypoints || []).map((wp) => ({
       id: wp.id,
@@ -558,56 +644,64 @@ function buildVerticesFromTrail(trail: Trail): { vertices: RouteVertex[]; waypoi
     })),
     {
       id: `${trail.id}-summit`,
-      name: `Đích / Đỉnh ${trail.name}`,
+      name: isLoopLike ? `Điểm cao nhất — ${trail.name}` : `Đích / Đỉnh ${trail.name}`,
       type: 'peak',
-      lat: trail.endLat,
-      lng: trail.endLng,
-      elevationM: trail.maxAltitudeM,
+      lat: isLoopLike && peakVertex ? peakVertex.lat : trail.endLat,
+      lng: isLoopLike && peakVertex ? peakVertex.lng : trail.endLng,
+      elevationM: peakVertex?.elevationM ?? trail.maxAltitudeM,
     },
   ];
 
   return { vertices, waypoints };
 }
 
-interface MapInteractionControllerProps {
-  onMapClick: (lat: number, lng: number) => void;
-  fitBoundsToken: number;
-  vertices: RouteVertex[];
-}
+function projectSampledElevationsOntoVertices(
+  original: RouteVertex[],
+  sampledCoords: [number, number][],
+  sampledElevations: number[]
+): RouteVertex[] {
+  if (original.length === 0 || sampledCoords.length < 2 || sampledElevations.length < 2) {
+    return original;
+  }
+  const origCum: number[] = [0];
+  for (let i = 1; i < original.length; i += 1) {
+    origCum.push(
+      origCum[i - 1] +
+      calculateHaversineKm(original[i - 1].lat, original[i - 1].lng, original[i].lat, original[i].lng)
+    );
+  }
+  const sampCum: number[] = [0];
+  for (let i = 1; i < sampledCoords.length; i += 1) {
+    sampCum.push(
+      sampCum[i - 1] +
+      calculateHaversineKm(
+        sampledCoords[i - 1][0],
+        sampledCoords[i - 1][1],
+        sampledCoords[i][0],
+        sampledCoords[i][1]
+      )
+    );
+  }
+  const origTotal = origCum[origCum.length - 1] || 1;
+  const sampTotal = sampCum[sampCum.length - 1] || 1;
 
-const MapInteractionController: React.FC<MapInteractionControllerProps> = ({
-  onMapClick,
-  fitBoundsToken,
-  vertices,
-}) => {
-  const map = useMap();
-  const verticesRef = useRef(vertices);
-
-  useEffect(() => {
-    verticesRef.current = vertices;
-  }, [vertices]);
-
-  useMapEvents({
-    click(e) {
-      onMapClick(Number(e.latlng.lat.toFixed(6)), Number(e.latlng.lng.toFixed(6)));
-    },
+  let j = 0;
+  return original.map((v, idx) => {
+    const targetDist = (origCum[idx] / origTotal) * sampTotal;
+    while (j < sampCum.length - 2 && sampCum[j + 1] < targetDist) {
+      j += 1;
+    }
+    const segLen = sampCum[j + 1] - sampCum[j];
+    const t = segLen > 1e-9 ? Math.max(0, Math.min(1, (targetDist - sampCum[j]) / segLen)) : 0;
+    const e0 = Number.isFinite(sampledElevations[j]) ? sampledElevations[j] : 0;
+    const e1 = Number.isFinite(sampledElevations[j + 1]) ? sampledElevations[j + 1] : e0;
+    return {
+      lat: v.lat,
+      lng: v.lng,
+      elevationM: Math.round(e0 + (e1 - e0) * t),
+    };
   });
-
-  useEffect(() => {
-    const currentVertices = verticesRef.current;
-    if (fitBoundsToken === 0 || currentVertices.length === 0) return;
-    if (currentVertices.length === 1) {
-      map.setView([currentVertices[0].lat, currentVertices[0].lng], 13, { animate: true });
-      return;
-    }
-    const bounds = L.latLngBounds(currentVertices.map((v) => [v.lat, v.lng] as [number, number]));
-    if (bounds.isValid()) {
-      map.fitBounds(bounds, { padding: [36, 36], maxZoom: 15, animate: true });
-    }
-  }, [fitBoundsToken, map]);
-
-  return null;
-};
+}
 
 export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
   trails,
@@ -628,6 +722,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
   const libraryDrawerRef = useRef<HTMLDivElement | null>(null);
   const onShowToastRef = useRef(onShowToast);
   const lastInitialTrailIdRef = useRef<string | undefined>(initialTrailId);
+  const hydratedShareSlugRef = useRef<string | null>(null);
 
   useEffect(() => {
     onShowToastRef.current = onShowToast;
@@ -653,7 +748,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
   }, [preselectedTrail]);
 
   const [routeTitle, setRouteTitle] = useState<string>(
-    preselectedTrail ? `${preselectedTrail.name} (Bản Tự Thiết Kế)` : 'Cung Đường Tự Vẽ LOST'
+    preselectedTrail ? `${preselectedTrail.name} (bản tự chỉnh)` : 'Cung đường mới'
   );
   const [routeDescription, setRouteDescription] = useState<string>(
     preselectedTrail ? preselectedTrail.description.slice(0, 220) : ''
@@ -670,6 +765,10 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
   const [clickMode, setClickMode] = useState<ClickToolMode>('vertex');
   const [activeWaypointType, setActiveWaypointType] = useState<RouteWaypointType>('camp');
   const [fitBoundsToken, setFitBoundsToken] = useState<number>(initialSeed.vertices.length > 0 ? 1 : 0);
+  const [selectedPin, setSelectedPin] = useState<
+    { kind: 'vertex'; idx: number } | { kind: 'waypoint'; id: string } | null
+  >(null);
+  const [repositioningPin, setRepositioningPin] = useState<boolean>(false);
 
   // Adjustable ETA & Bio settings
   const [packWeightKg, setPackWeightKg] = useState<number>(8);
@@ -694,32 +793,11 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
   const [myRoutes, setMyRoutes] = useState<SavedCustomRouteRecord[]>(loadLocalSavedRoutes);
   const [publicRoutes, setPublicRoutes] = useState<SavedCustomRouteRecord[]>([]);
   const [libraryLoading, setLibraryLoading] = useState<boolean>(false);
+  const [confirmDeleteRouteId, setConfirmDeleteRouteId] = useState<string | null>(null);
+  const [deletingRouteId, setDeletingRouteId] = useState<string | null>(null);
   const [shareCardSnapshot, setShareCardSnapshot] = useState<
     ExpeditionShareCardModalProps['initialData'] | null
   >(null);
-
-  // Memoize waypoint & static vertex icons so 60Hz profile scrubs never thrash Leaflet DOM
-  const vertexIconMap = useMemo(
-    () => ({
-      start: createStaticVertexDivIcon('start'),
-      mid: createStaticVertexDivIcon('mid'),
-      end: createStaticVertexDivIcon('end'),
-    }),
-    []
-  );
-
-  const waypointIconMap = useMemo(() => {
-    const map: Record<RouteWaypointType, L.DivIcon> = {
-      start: createWaypointDivIcon('start'),
-      camp: createWaypointDivIcon('camp'),
-      water: createWaypointDivIcon('water'),
-      peak: createWaypointDivIcon('peak'),
-      viewpoint: createWaypointDivIcon('viewpoint'),
-      danger: createWaypointDivIcon('danger'),
-      end: createWaypointDivIcon('end'),
-    };
-    return map;
-  }, []);
 
   useFocusTrap(isSaveModalOpen, saveDialogRef);
   useFocusTrap(isLibraryOpen, libraryDrawerRef);
@@ -781,6 +859,8 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     setVertices(prev.vertices);
     setWaypoints(prev.waypoints);
     setHoverIdx(null);
+    setSelectedPin(null);
+    setRepositioningPin(false);
   };
 
   const handleReverseRoute = () => {
@@ -814,15 +894,17 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     setVertices(reversedVertices);
     setWaypoints(reversedWaypoints);
     setHoverIdx(null);
+    setSelectedPin(null);
+    setRepositioningPin(false);
     onShowToast?.(
-      `Đã đảo chiều tuyến — Leo +${recomputed.elevationGainM}m / Hạ -${recomputed.elevationLossM}m (ETA ${formatDurationHoursVi(recomputed.recommendedHours)}).`,
+      `Đã đảo chiều đi — leo +${recomputed.elevationGainM}m / xuống -${recomputed.elevationLossM}m (~${formatDurationHoursVi(recomputed.recommendedHours)}).`,
       'info'
     );
   };
 
   const handleOpenShareCard = () => {
     if (vertices.length < 2) {
-      onShowToast?.('Vui lòng vẽ hoặc nạp tối thiểu 2 điểm trước khi xuất thẻ PNG.', 'error');
+      onShowToast?.('Hãy chấm hoặc mở tối thiểu 2 điểm trước khi tạo thẻ ảnh nhé.', 'error');
       return;
     }
     const trackPoints = vertices
@@ -850,13 +932,13 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     const hasElevationMetrics = metrics.hasRealElevation && elevationSource !== 'none';
     if (!hasElevationMetrics) {
       onShowToast?.(
-        'Mẹo: Bấm "Lấy Cao Độ DEM Thật" để hiển thị chính xác độ cao đỉnh và độ dốc trên thẻ PNG.',
+        'Mẹo nhỏ: bấm "Đo cao độ địa hình" trước để thẻ ảnh hiện đủ độ cao đỉnh và độ dốc thật.',
         'info'
       );
     }
 
     setShareCardSnapshot({
-      peakName: routeTitle.trim() || 'Cung Đường Tự Vẽ LOST',
+      peakName: routeTitle.trim() || 'Cung đường mới',
       province: routeProvince.trim() || 'Việt Nam',
       region: routeRegion,
       altitudeM: hasElevationMetrics ? metrics.maxAltitudeM : 0,
@@ -868,13 +950,13 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
         month: '2-digit',
         year: 'numeric',
       }),
-      hikerName: currentUser?.fullName || currentUser?.username || 'Nhà Thám Hiểm LOST',
+      hikerName: currentUser?.fullName || currentUser?.username || 'Người đi rừng',
       verifiedGps: false,
       coordinates: focalPt ? { lat: focalPt.lat, lng: focalPt.lng } : null,
       trackPoints,
       defaultCaption: hasElevationMetrics
-        ? `Tuyến tự thiết kế ${metrics.distanceKm.toFixed(1)} km (+${metrics.elevationGainM}m · Dốc cực đại ${metrics.maxSlopePercent}%) trên LOST GIS Studio`
-        : `Tuyến tự thiết kế ${metrics.distanceKm.toFixed(1)} km trên LOST GIS Studio`,
+        ? `Cung tự vẽ ${metrics.distanceKm.toFixed(1)} km (+${metrics.elevationGainM}m · dốc gắt nhất ${metrics.maxSlopePercent}%) trên LOST`
+        : `Cung tự vẽ ${metrics.distanceKm.toFixed(1)} km trên LOST`,
     });
   };
 
@@ -888,33 +970,12 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     setLoadedRouteMeta(null);
     setElevationSource('none');
     setHoverIdx(null);
-    onShowToast?.('Đã xóa toàn bộ điểm trên bản đồ.', 'info');
+    setSelectedPin(null);
+    setRepositioningPin(false);
+    onShowToast?.('Đã xóa sạch các điểm trên bản đồ.', 'info');
   };
 
-  const handleMapClick = useCallback(
-    (lat: number, lng: number) => {
-      pushUndoSnapshot();
-      const nextVertex: RouteVertex = { lat, lng, elevationM: null };
-      setVertices((prev) => [...prev, nextVertex]);
-      if (clickMode === 'waypoint') {
-        const meta = WAYPOINT_TYPE_META[activeWaypointType];
-        const newWp: PlannerWaypoint = {
-          id: `wp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          name: `${meta.label} #${waypoints.length + 1}`,
-          type: activeWaypointType,
-          lat,
-          lng,
-        };
-        setWaypoints((prev) => [...prev, newWp]);
-      }
-      if (elevationSource === 'server-dem' || elevationSource === 'terrarium-dem') {
-        setElevationSource('interpolated');
-      }
-    },
-    [pushUndoSnapshot, clickMode, activeWaypointType, waypoints.length, elevationSource]
-  );
-
-  const handleDragVertex = useCallback(
+  const handleMoveVertex = useCallback(
     (idx: number, lat: number, lng: number) => {
       cancelPendingDem();
       pushUndoSnapshot();
@@ -933,7 +994,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     [cancelPendingDem, pushUndoSnapshot, elevationSource]
   );
 
-  const handleDragWaypoint = useCallback(
+  const handleMoveWaypoint = useCallback(
     (wpId: string, lat: number, lng: number) => {
       pushUndoSnapshot();
       setWaypoints((prev) =>
@@ -941,6 +1002,68 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
       );
     },
     [pushUndoSnapshot]
+  );
+
+  const handleMapClick = useCallback(
+    (rawLat: number, rawLng: number) => {
+      const lat = Number(rawLat.toFixed(6));
+      const lng = Number(rawLng.toFixed(6));
+      if (repositioningPin && selectedPin) {
+        if (selectedPin.kind === 'vertex') {
+          handleMoveVertex(selectedPin.idx, lat, lng);
+          onShowToastRef.current?.(`Đã dời điểm #${selectedPin.idx + 1} sang vị trí mới.`, 'info');
+        } else {
+          handleMoveWaypoint(selectedPin.id, lat, lng);
+          onShowToastRef.current?.('Đã dời vị trí mốc trên bản đồ.', 'info');
+        }
+        setRepositioningPin(false);
+        return;
+      }
+
+      pushUndoSnapshot();
+      if (clickMode === 'waypoint') {
+        // Waypoint mode ONLY drops a marker — never mutates route polyline geometry or DEM source
+        let nearestEle: number | undefined;
+        let nearestDistKm = 0.25;
+        for (const v of vertices) {
+          if (typeof v.elevationM !== 'number' || !Number.isFinite(v.elevationM)) continue;
+          const d = calculateHaversineKm(v.lat, v.lng, lat, lng);
+          if (d < nearestDistKm) {
+            nearestDistKm = d;
+            nearestEle = v.elevationM;
+          }
+        }
+        const meta = WAYPOINT_TYPE_META[activeWaypointType];
+        const newWp: PlannerWaypoint = {
+          id: `wp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          name: `${meta.label} #${waypoints.length + 1}`,
+          type: activeWaypointType,
+          lat,
+          lng,
+          ...(typeof nearestEle === 'number' ? { elevationM: nearestEle } : {}),
+        };
+        setWaypoints((prev) => [...prev, newWp]);
+        return;
+      }
+
+      const nextVertex: RouteVertex = { lat, lng, elevationM: null };
+      setVertices((prev) => [...prev, nextVertex]);
+      if (elevationSource === 'server-dem' || elevationSource === 'terrarium-dem') {
+        setElevationSource('interpolated');
+      }
+    },
+    [
+      repositioningPin,
+      selectedPin,
+      handleMoveVertex,
+      handleMoveWaypoint,
+      pushUndoSnapshot,
+      clickMode,
+      activeWaypointType,
+      vertices,
+      waypoints.length,
+      elevationSource,
+    ]
   );
 
   const handleLoadTrailTemplate = (tid: string) => {
@@ -951,15 +1074,17 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     const built = buildVerticesFromTrail(tr);
     setVertices(built.vertices);
     setWaypoints(built.waypoints);
-    setRouteTitle(`${tr.name} (Tùy chỉnh)`);
+    setRouteTitle(`${tr.name} (bản tự chỉnh)`);
     setRouteDescription(tr.description.slice(0, 220));
     setRouteRegion(tr.region);
     setRouteProvince(tr.province);
     setBaseTrailId(tr.id);
     setElevationSource('interpolated');
     setHoverIdx(null);
+    setSelectedPin(null);
+    setRepositioningPin(false);
     setFitBoundsToken((n) => n + 1);
-    onShowToast?.(`Đã nạp cung mẫu ${tr.name} (${built.vertices.length} điểm). Bấm "Lấy Cao Độ DEM Thật" để lấy địa hình 90m.`, 'success');
+    onShowToast?.(`Đã mở khung cung ${tr.name} (${built.vertices.length} điểm). Bấm "Đo cao độ địa hình" để cập nhật mặt cắt thật.`, 'success');
   };
 
   // Local GPX File Import
@@ -968,7 +1093,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     e.target.value = '';
     if (!file) return;
     if (file.size > 4 * 1024 * 1024) {
-      onShowToast?.('File GPX vượt quá giới hạn 4 MB.', 'error');
+      onShowToast?.('Tệp GPX nặng quá 4 MB, bạn chọn tệp gọn hơn nhé.', 'error');
       return;
     }
     try {
@@ -983,26 +1108,30 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
       setBaseTrailId('');
       setElevationSource(parsed.hasElevation ? 'gpx-elevation' : 'none');
       setHoverIdx(null);
+      setSelectedPin(null);
+      setRepositioningPin(false);
       setFitBoundsToken((n) => n + 1);
       onShowToast?.(
-        `Đã nhập file GPX (${parsed.vertices.length} điểm, ${parsed.waypoints.length} mốc tọa độ).`,
+        `Đã mở tệp GPX (${parsed.vertices.length} điểm đường đi, ${parsed.waypoints.length} mốc).`,
         'success'
       );
     } catch (err) {
-      onShowToast?.(err instanceof Error ? err.message : 'Không thể đọc tệp GPX.', 'error');
+      onShowToast?.(err instanceof Error ? err.message : 'Chưa đọc được tệp GPX này.', 'error');
     }
   };
 
-  // Fetch Real DEM Elevation (Backend POST /api/custom-routes/analyze -> AWS Terrarium PNG Canvas Decoder -> Client fallback)
+  // Fetch Real DEM Elevation (Backend POST /api/custom-routes/analyze -> AWS Terrarium PNG Canvas Decoder -> Honest offline error)
   const handleFetchRealDem = async () => {
     if (vertices.length < 2) {
-      onShowToast?.('Vui lòng chấm tối thiểu 2 điểm trên bản đồ trước khi lấy cao độ DEM.', 'error');
+      onShowToast?.('Hãy chấm tối thiểu 2 điểm trên bản đồ trước khi đo cao độ nhé.', 'error');
       return;
     }
 
     const reqId = ++demReqIdRef.current;
+    const sourceVertices = vertices;
+    const preserveDenseGeometry = sourceVertices.length > 64;
     setDemLoading(true);
-    const densifiedCoords = interpolateVerticesForDem(vertices, 64);
+    const densifiedCoords = interpolateVerticesForDem(sourceVertices, 64);
 
     // 1. Primary: LOST Backend POST /api/custom-routes/analyze (powered by AWS Open Data Terrarium DEM)
     try {
@@ -1041,17 +1170,28 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
           (!Array.isArray(rawProfile) ? rawProfile?.source : undefined) || json?.data?.source || '';
         const isFallbackSource = profileSource === 'interpolated-fallback';
         if (json?.success && Array.isArray(pts) && pts.length >= 2 && !isFallbackSource) {
-          const updated: RouteVertex[] = pts.map((p, idx) => ({
-            lat: typeof p.lat === 'number' ? p.lat : densifiedCoords[Math.min(idx, densifiedCoords.length - 1)][0],
-            lng: typeof p.lng === 'number' ? p.lng : densifiedCoords[Math.min(idx, densifiedCoords.length - 1)][1],
-            elevationM: typeof p.elevationM === 'number' ? Math.round(p.elevationM) : 0,
-          }));
+          const sampledCoords: [number, number][] = pts.map((p, idx) => [
+            typeof p.lat === 'number' ? p.lat : densifiedCoords[Math.min(idx, densifiedCoords.length - 1)][0],
+            typeof p.lng === 'number' ? p.lng : densifiedCoords[Math.min(idx, densifiedCoords.length - 1)][1],
+          ]);
+          const sampledElevations: number[] = pts.map((p) =>
+            typeof p.elevationM === 'number' && Number.isFinite(p.elevationM) ? Math.round(p.elevationM) : 0
+          );
+          const updated: RouteVertex[] = preserveDenseGeometry
+            ? projectSampledElevationsOntoVertices(sourceVertices, sampledCoords, sampledElevations)
+            : sampledCoords.map(([lat, lng], idx) => ({
+                lat,
+                lng,
+                elevationM: sampledElevations[idx],
+              }));
           pushUndoSnapshot();
           setVertices(updated);
           setElevationSource('server-dem');
           setDemLoading(false);
           onShowToastRef.current?.(
-            `Đã cập nhật cao độ DEM thật từ máy chủ LOST (${updated.length} mẫu).`,
+            preserveDenseGeometry
+              ? `Đã đo xong cao độ địa hình thật và áp lên đủ ${updated.length} điểm tuyến.`
+              : `Đã đo xong cao độ địa hình thực tế (${updated.length} điểm mẫu).`,
             'success'
           );
           return;
@@ -1070,40 +1210,37 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
       });
       if (!isMountedRef.current || demReqIdRef.current !== reqId) return;
       if (Array.isArray(terrariumElevations) && terrariumElevations.length === densifiedCoords.length) {
-        const updated: RouteVertex[] = densifiedCoords.map(([lat, lng], i) => ({
-          lat,
-          lng,
-          elevationM: Number.isFinite(terrariumElevations[i]) ? Math.round(terrariumElevations[i]) : 0,
-        }));
+        const cleanEles = terrariumElevations.map((e) => (Number.isFinite(e) ? Math.round(e) : 0));
+        const updated: RouteVertex[] = preserveDenseGeometry
+          ? projectSampledElevationsOntoVertices(sourceVertices, densifiedCoords, cleanEles)
+          : densifiedCoords.map(([lat, lng], i) => ({
+              lat,
+              lng,
+              elevationM: cleanEles[i],
+            }));
         pushUndoSnapshot();
         setVertices(updated);
         setElevationSource('terrarium-dem');
         setDemLoading(false);
         onShowToastRef.current?.(
-          `Đã tải cao độ DEM thực địa (AWS Terrarium, ${updated.length} điểm).`,
+          preserveDenseGeometry
+            ? `Đã đo xong cao độ AWS Terrarium và áp lên đủ ${updated.length} điểm tuyến.`
+            : `Đã đo xong cao độ từ dữ liệu AWS Terrarium (${updated.length} điểm).`,
           'success'
         );
         return;
       }
     } catch {
       if (!isMountedRef.current || demReqIdRef.current !== reqId) return;
-      // Fall through to offline interpolation
+      // Both online DEM sources failed — never invent fake mountain heights (Rule 11)
     }
 
     if (!isMountedRef.current || demReqIdRef.current !== reqId) return;
-    // 3. Offline Interpolation Fallback (never breaks offline)
-    const fallbackUpdated: RouteVertex[] = densifiedCoords.map(([lat, lng], idx) => {
-      const existingEle = vertices[Math.min(idx, vertices.length - 1)]?.elevationM;
-      return {
-        lat,
-        lng,
-        elevationM: typeof existingEle === 'number' ? existingEle : Math.round(350 + Math.sin((idx / Math.max(1, densifiedCoords.length - 1)) * Math.PI) * 520),
-      };
-    });
-    setVertices(fallbackUpdated);
-    setElevationSource('interpolated-fallback');
     setDemLoading(false);
-    onShowToastRef.current?.('Đang ngoại tuyến — sử dụng ước tính cao độ cục bộ (DEM tạm gián đoạn).', 'info');
+    onShowToastRef.current?.(
+      'Không thể kết nối dữ liệu địa hình DEM khi ngoại tuyến — vui lòng kết nối mạng hoặc tải gói bản đồ ngoại tuyến rồi đo lại.',
+      'error'
+    );
   };
 
   // Export GPX 1.1 XML file (including standard <wpt><sym>...</sym><type>...</type></wpt>)
@@ -1140,21 +1277,34 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     onShowToast?.(`Đã xuất tệp ${slug}.gpx (chuẩn GPX 1.1).`, 'success');
   };
 
+  const isLoadedRouteOwner = Boolean(
+    loadedRouteMeta &&
+    (loadedRouteMeta.isOwner ||
+      (currentUserId && loadedRouteMeta.creatorId && loadedRouteMeta.creatorId === currentUserId))
+  );
+
   const canUpdateLoadedRoute = Boolean(
     currentUser &&
-    loadedRouteMeta?.isOwner &&
-    !loadedRouteMeta.isLocalOnly &&
+    isLoadedRouteOwner &&
+    !loadedRouteMeta?.isLocalOnly &&
+    loadedRouteMeta?.id &&
     /^[a-fA-F0-9]{24}$/.test(loadedRouteMeta.id)
   );
 
   // Save & Share Custom Route (PUT /api/custom-routes/:id for owned loaded route, or POST for new / copy)
   const submitSaveCustomRoute = async (saveAsCopy: boolean) => {
     if (vertices.length < 2) {
-      onShowToast?.('Vui lòng vẽ tối thiểu 2 điểm trước khi lưu.', 'error');
+      onShowToast?.('Cần chấm tối thiểu 2 điểm trước khi lưu.', 'error');
       return;
     }
-    const cleanTitle = routeTitle.trim() || 'Cung Đường Tự Vẽ LOST';
+    const cleanTitle = routeTitle.trim() || 'Cung đường tự vẽ LOST';
     setSavingRoute(true);
+
+    const serializedTrackPoints: Array<[number, number] | [number, number, number]> = vertices.map((v) =>
+      typeof v.elevationM === 'number' && Number.isFinite(v.elevationM)
+        ? ([v.lat, v.lng, Math.round(v.elevationM)] as [number, number, number])
+        : ([v.lat, v.lng] as [number, number])
+    );
 
     const payload = {
       title: cleanTitle,
@@ -1171,7 +1321,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
         elevationM: w.elevationM,
         note: w.note,
       })),
-      trackPoints: vertices.map((v) => [v.lat, v.lng] as [number, number]),
+      trackPoints: serializedTrackPoints,
       visibility: saveVisibility,
     };
 
@@ -1227,6 +1377,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
         if (!isMountedRef.current || saveController.signal.aborted) return;
         const json = (await res.json().catch(() => null)) as {
           success?: boolean;
+          message?: string;
           data?: SavedCustomRouteRecord;
         } | null;
         if (!isMountedRef.current || saveController.signal.aborted) return;
@@ -1244,8 +1395,16 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
             id: resolvedId,
             shareSlug: savedRecord.shareSlug,
             isOwner: true,
+            creatorId: currentUserId || undefined,
             isLocalOnly: false,
           });
+        } else if (res.status >= 400 && res.status < 500) {
+          setSavingRoute(false);
+          onShowToastRef.current?.(
+            json?.message || 'Không thể lưu cung đường — vui lòng kiểm tra lại thông tin tuyến.',
+            'error'
+          );
+          return;
         }
       } catch {
         if (!isMountedRef.current || saveController.signal.aborted) return;
@@ -1276,11 +1435,11 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     onShowToastRef.current?.(
       syncedCloud
         ? shouldUpdateExisting
-          ? `Đã cập nhật cung "${cleanTitle}" trên máy chủ LOST!`
-          : `Đã lưu & đồng bộ cung "${cleanTitle}" lên máy chủ LOST!`
+          ? `Đã cập nhật cung "${cleanTitle}".`
+          : `Đã lưu cung "${cleanTitle}" lên tài khoản của bạn.`
         : currentUser
-          ? `Đã lưu cung "${cleanTitle}" vào bộ nhớ máy (chế độ Offline).`
-          : `Đã lưu cục bộ "${cleanTitle}". Đăng nhập để chia sẻ công khai cùng cộng đồng LOST.`,
+          ? `Đã lưu tạm "${cleanTitle}" trên máy (ngoại tuyến).`
+          : `Đã lưu "${cleanTitle}" trên trình duyệt. Đăng nhập để chia sẻ cùng anh em nhé.`,
       'success'
     );
   };
@@ -1292,10 +1451,10 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
 
   const handleOpenLiveGpsForRoute = () => {
     if (vertices.length < 2) {
-      onShowToast?.('Vui lòng vẽ hoặc nạp tối thiểu 2 điểm trước khi mở Live GPS.', 'error');
+      onShowToast?.('Hãy chấm hoặc mở tối thiểu 2 điểm trước khi mở GPS dẫn đường nhé.', 'error');
       return;
     }
-    const cleanTitle = routeTitle.trim() || 'Cung Đường Tự Vẽ LOST';
+    const cleanTitle = routeTitle.trim() || 'Cung đường mới';
     const targetSlug = loadedRouteMeta?.shareSlug || `local-live-${Date.now().toString(36)}`;
     const draftRecord: SavedCustomRouteRecord = {
       id: loadedRouteMeta?.id || `local-route-${Date.now()}`,
@@ -1306,7 +1465,11 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
       province: routeProvince.trim() || 'Việt Nam',
       baseTrailId: baseTrailId || undefined,
       waypoints,
-      trackPoints: vertices.map((v) => [v.lat, v.lng] as [number, number]),
+      trackPoints: vertices.map((v) =>
+        typeof v.elevationM === 'number' && Number.isFinite(v.elevationM)
+          ? ([v.lat, v.lng, Math.round(v.elevationM)] as [number, number, number])
+          : ([v.lat, v.lng] as [number, number])
+      ),
       elevations: vertices.map((v) => (typeof v.elevationM === 'number' ? v.elevationM : 0)),
       metrics: {
         distanceKm: metrics.distanceKm,
@@ -1333,11 +1496,12 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     onShowToast?.(`Đang mở Live GPS dẫn đường theo tuyến "${cleanTitle}"...`, 'info');
   };
 
-  // Hydrate shared /planner?route=<shareSlug> on mount via GET /api/custom-routes/share/:shareSlug
+  // Hydrate shared /planner?route=<shareSlug> once per shareSlug (never wipe unsaved edits on auth change)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const shareSlug = new URLSearchParams(window.location.search).get('route')?.trim();
-    if (!shareSlug) return;
+    if (!shareSlug || hydratedShareSlugRef.current === shareSlug) return;
+    hydratedShareSlugRef.current = shareSlug;
 
     const controller = new AbortController();
     const hydrateShared = async () => {
@@ -1361,7 +1525,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
             ? rec.waypoints.map((w) => ({ ...w, type: mapTrailWaypointType(w.type, w.name) }))
             : []
         );
-        setRouteTitle(rec.title || 'Cung Chia Sẻ LOST');
+        setRouteTitle(rec.title || 'Cung chia sẻ LOST');
         setRouteDescription(rec.description || '');
         if (rec.region === 'Miền Bắc' || rec.region === 'Miền Trung' || rec.region === 'Miền Nam') {
           setRouteRegion(rec.region);
@@ -1373,11 +1537,11 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
           typeof rec.creatorId === 'object' && rec.creatorId
             ? String(rec.creatorId._id || rec.creatorId.id || '')
             : String(rec.creatorId || '');
-        const isOwner = Boolean(rec.isLocalOnly || (currentUserId && ownerIdRaw && ownerIdRaw === currentUserId));
         setLoadedRouteMeta({
           id: rec._id || rec.id,
           shareSlug: rec.shareSlug,
-          isOwner,
+          isOwner: Boolean(rec.isLocalOnly),
+          creatorId: ownerIdRaw || undefined,
           isLocalOnly: rec.isLocalOnly,
         });
         setElevationSource(loadedVertices.some((v) => typeof v.elevationM === 'number') ? 'server-dem' : 'none');
@@ -1412,7 +1576,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
 
     void hydrateShared();
     return () => controller.abort();
-  }, [currentUserId]);
+  }, []);
 
   // Sync initialTrailId when switching trails in-place
   useEffect(() => {
@@ -1427,13 +1591,15 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
       if (!isMountedRef.current) return;
       setVertices(built.vertices);
       setWaypoints(built.waypoints);
-      setRouteTitle(`${tr.name} (Bản Tự Thiết Kế)`);
+      setRouteTitle(`${tr.name} (bản tự chỉnh)`);
       setRouteDescription(tr.description.slice(0, 220));
       setRouteRegion(tr.region);
       setRouteProvince(tr.province);
       setBaseTrailId(tr.id);
       setLoadedRouteMeta(null);
       setElevationSource('interpolated');
+      setSelectedPin(null);
+      setRepositioningPin(false);
       setFitBoundsToken((n) => n + 1);
     });
     return () => window.cancelAnimationFrame(rafId);
@@ -1534,36 +1700,67 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
       id: rec._id || rec.id,
       shareSlug: rec.shareSlug,
       isOwner,
+      creatorId: ownerIdRaw || undefined,
       isLocalOnly: rec.isLocalOnly,
     });
     setElevationSource(hasEle ? (rec.isLocalOnly ? 'interpolated' : 'server-dem') : 'none');
     setHoverIdx(null);
+    setSelectedPin(null);
+    setRepositioningPin(false);
     setFitBoundsToken((n) => n + 1);
     setIsLibraryOpen(false);
     onShowToast?.(
       hasEle
-        ? `Đã nạp cung "${rec.title}" kèm dữ liệu cao độ lên bản đồ.`
-        : `Đã nạp cung "${rec.title}". Bấm "Lấy Cao Độ DEM Thật" để cập nhật biểu đồ độ dốc.`,
+        ? `Đã mở cung "${rec.title}" kèm mặt cắt cao độ.`
+        : `Đã mở cung "${rec.title}". Bấm "Đo cao độ địa hình" để cập nhật độ dốc.`,
       'success'
     );
   };
 
   const handleDeleteSavedRoute = async (rec: SavedCustomRouteRecord) => {
-    const nextLocal = loadLocalSavedRoutes().filter((r) => r.id !== rec.id && r.shareSlug !== rec.shareSlug);
-    saveLocalSavedRoutes(nextLocal);
-    setMyRoutes((prev) => prev.filter((r) => r.id !== rec.id && r.shareSlug !== rec.shareSlug));
+    const recKey = rec._id || rec.id;
+    if (deletingRouteId) return;
 
     if (!rec.isLocalOnly && currentUser) {
+      setDeletingRouteId(recKey);
       try {
-        await fetch(`/api/custom-routes/${encodeURIComponent(rec._id || rec.id)}`, {
+        const res = await fetch(`/api/custom-routes/${encodeURIComponent(recKey)}`, {
           method: 'DELETE',
           headers: getApiHeaders(),
         });
+        if (!res.ok && res.status !== 404) {
+          const json = (await res.json().catch(() => null)) as { message?: string } | null;
+          onShowToastRef.current?.(
+            json?.message || 'Không thể xóa cung đường trên máy chủ lúc này.',
+            'error'
+          );
+          setDeletingRouteId(null);
+          setConfirmDeleteRouteId(null);
+          return;
+        }
       } catch {
-        // ignore network error
+        onShowToastRef.current?.(
+          'Mất kết nối máy chủ — chưa xóa được cung đường khỏi tài khoản.',
+          'error'
+        );
+        setDeletingRouteId(null);
+        setConfirmDeleteRouteId(null);
+        return;
+      } finally {
+        if (isMountedRef.current) setDeletingRouteId(null);
       }
     }
-    onShowToast?.(`Đã xóa cung "${rec.title}".`, 'info');
+
+    const nextLocal = loadLocalSavedRoutes().filter((r) => r.id !== rec.id && r.shareSlug !== rec.shareSlug);
+    saveLocalSavedRoutes(nextLocal);
+    setMyRoutes((prev) => prev.filter((r) => r.id !== rec.id && r.shareSlug !== rec.shareSlug));
+    setConfirmDeleteRouteId(null);
+    setLoadedRouteMeta((prev) =>
+      prev && (prev.id === recKey || prev.id === rec.id || prev.shareSlug === rec.shareSlug)
+        ? null
+        : prev
+    );
+    onShowToastRef.current?.(`Đã xóa cung "${rec.title}".`, 'info');
   };
 
   const handleToggleLikePublic = async (rec: SavedCustomRouteRecord) => {
@@ -1599,7 +1796,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
   // Action: Analyze with LOST AI
   const handleAnalyzeWithAi = () => {
     if (vertices.length < 2) {
-      onShowToast?.('Vui lòng vẽ hoặc nạp cung đường trước khi gửi sang LOST AI.', 'error');
+      onShowToast?.('Hãy chấm điểm hoặc mở cung đường trước khi gửi sang LOST AI.', 'error');
       return;
     }
     const wpSummary =
@@ -1627,15 +1824,28 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
   // Action: Send Draft to TrailContributionWizard (#contribute)
   const handleSendToContribute = () => {
     if (vertices.length < 2) {
-      onShowToast?.('Vui lòng vẽ tối thiểu 2 điểm tọa độ trước khi gửi Đóng góp Cung mới.', 'error');
+      onShowToast?.('Cần chấm tối thiểu 2 điểm tọa độ trước khi gửi đóng góp cung mới.', 'error');
       return;
     }
     const startPt = vertices[0];
     const endPt = vertices[vertices.length - 1];
-    const durationDays = metrics.recommendedHours >= 10 || metrics.distanceKm >= 18 ? 2 : 1;
+    const durationDays =
+      metrics.recommendedHours >= 18 || metrics.distanceKm >= 32
+        ? 3
+        : metrics.recommendedHours >= 10 || metrics.distanceKm >= 18
+          ? 2
+          : 1;
+    const durationHoursNote =
+      durationDays >= 3
+        ? '3 ngày 2 đêm'
+        : durationDays === 2
+          ? '2 ngày 1 đêm'
+          : metrics.recommendedHours <= 5
+            ? 'Nửa ngày'
+            : '1 ngày';
 
     const draft = {
-      name: routeTitle.trim() || 'Cung Đường Đóng Góp Từ Route Planner',
+      name: routeTitle.trim() || 'Cung đường đóng góp từ bản đồ vẽ tuyến',
       description:
         routeDescription.trim() ||
         `Tuyến trekking tự thiết kế tại ${routeProvince}: cự ly ${metrics.distanceKm} km, độ cao leo tích lũy +${metrics.elevationGainM}m, cao độ đỉnh ${metrics.maxAltitudeM}m.`,
@@ -1646,7 +1856,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
       maxAltitudeM: Math.max(100, metrics.maxAltitudeM),
       difficultyLevel: metrics.estimatedDifficulty,
       durationDays,
-      durationHoursNote: `${durationDays === 1 ? '1 Ngày' : `${durationDays}N${durationDays - 1}Đ`} (~${formatDurationHoursVi(metrics.recommendedHours)} di chuyển)`,
+      durationHoursNote,
       startLat: startPt.lat,
       startLng: startPt.lng,
       endLat: endPt.lat,
@@ -1670,7 +1880,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
       // ignore storage restrictions
     }
 
-    onShowToast?.('Đã lưu bản nháp cung đường — đang mở Trình Đóng Góp Cung Mới!', 'success');
+    onShowToast?.('Đã lưu bản nháp cung đường — đang mở biểu mẫu đóng góp cung mới.', 'success');
     if (onOpenContribute) {
       onOpenContribute();
     } else {
@@ -1802,8 +2012,8 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     [vertices]
   );
 
-  // Downsample draggable vertex pins if GPX has > 60 points so map never lags (keeps endpoints + every Nth)
-  const visibleDraggableVertices = useMemo(() => {
+  // Downsample interactive vertex pins if GPX has > 45 points so canvas stays crisp (keeps endpoints + every Nth)
+  const visibleVertices = useMemo(() => {
     if (vertices.length <= 45) {
       return vertices.map((v, idx) => ({ vertex: v, idx }));
     }
@@ -1818,8 +2028,164 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
     return out;
   }, [vertices]);
 
+  const plannerInitialCenter = useMemo<[number, number]>(
+    () => (initialSeed.vertices[0] ? [initialSeed.vertices[0].lat, initialSeed.vertices[0].lng] : [22.3364, 103.8438]),
+    [initialSeed.vertices]
+  );
+
+  const plannerBounds = useMemo(
+    () => (fitBoundsToken > 0 ? computeRouteBounds(vertices) : null),
+    [fitBoundsToken, vertices]
+  );
+
+  const plannerFlyTo = useMemo(() => {
+    if (fitBoundsToken === 0 || plannerBounds || vertices.length === 0) return null;
+    const first = vertices[0];
+    if (!Number.isFinite(first.lat) || !Number.isFinite(first.lng)) return null;
+    return {
+      lat: first.lat,
+      lng: first.lng,
+      zoom: 12.5,
+      key: fitBoundsToken,
+    };
+  }, [fitBoundsToken, plannerBounds, vertices]);
+
+  const plannerPolylines = useMemo<LostMapPolylineItem[]>(() => {
+    if (polylinePositions.length < 2) return [];
+    const profileCoords = profileSvg.coords;
+    return [
+      {
+        id: 'planner-main-route',
+        coords: polylinePositions,
+        color: 'primary',
+        width: 4,
+        opacity: 0.92,
+        interactive: profileCoords.length >= 2,
+        onHover: (lat, lng) => {
+          if (profileCoords.length < 2) return;
+          let bestIdx = 0;
+          let bestDistSq = Infinity;
+          for (let i = 0; i < profileCoords.length; i++) {
+            const dLat = profileCoords[i].lat - lat;
+            const dLng = profileCoords[i].lng - lng;
+            const dSq = dLat * dLat + dLng * dLng;
+            if (dSq < bestDistSq) {
+              bestDistSq = dSq;
+              bestIdx = i;
+            }
+          }
+          setHoverIdx(bestIdx);
+        },
+        onHoverOut: () => setHoverIdx(null),
+      },
+    ];
+  }, [polylinePositions, profileSvg.coords]);
+
+  const plannerMarkers = useMemo<LostMapMarkerItem[]>(() => {
+    const items: LostMapMarkerItem[] = [];
+
+    for (const { vertex, idx } of visibleVertices) {
+      const isStart = idx === 0;
+      const isEnd = idx === vertices.length - 1 && vertices.length > 1;
+      const isSelected = selectedPin?.kind === 'vertex' && selectedPin.idx === idx;
+      items.push({
+        id: `vtx-${idx}`,
+        lat: vertex.lat,
+        lng: vertex.lng,
+        label: isStart ? 'Điểm xuất phát' : isEnd ? 'Điểm kết thúc' : `Điểm #${idx + 1}`,
+        sublabel: `${vertex.lat.toFixed(5)}, ${vertex.lng.toFixed(5)}${
+          typeof vertex.elevationM === 'number' ? ` · ${Math.round(vertex.elevationM)}m` : ''
+        }`,
+        color: isStart ? 'primary' : isEnd ? 'danger' : 'muted',
+        size: isStart || isEnd ? 'md' : 'sm',
+        badge: isStart ? 'XP' : isEnd ? 'KT' : undefined,
+        active: isSelected,
+        onClick: () => {
+          setSelectedPin({ kind: 'vertex', idx });
+          setRepositioningPin(false);
+        },
+      });
+    }
+
+    for (const wp of waypoints) {
+      const meta = WAYPOINT_TYPE_META[wp.type] || WAYPOINT_TYPE_META.viewpoint;
+      const isSelected = selectedPin?.kind === 'waypoint' && selectedPin.id === wp.id;
+      items.push({
+        id: `wpt-${wp.id}`,
+        lat: wp.lat,
+        lng: wp.lng,
+        label: wp.name,
+        sublabel: `${meta.shortLabel}${typeof wp.elevationM === 'number' ? ` · ${wp.elevationM}m` : ''}`,
+        color: mapWaypointToMarkerColor(wp.type),
+        size: 'lg',
+        badge: meta.shortCode,
+        active: isSelected,
+        onClick: () => {
+          setSelectedPin({ kind: 'waypoint', id: wp.id });
+          setRepositioningPin(false);
+        },
+      });
+    }
+
+    if (hoveredPoint) {
+      items.push({
+        id: 'planner-hover-scrub',
+        lat: hoveredPoint.lat,
+        lng: hoveredPoint.lng,
+        label: `${hoveredPoint.distanceKm.toFixed(2)} km · ${hoveredPoint.elevationM}m`,
+        sublabel: `Độ dốc ${hoveredPoint.slopePercent > 0 ? '+' : ''}${hoveredPoint.slopePercent}%`,
+        color: 'warn',
+        size: 'md',
+        active: true,
+      });
+    }
+
+    return items;
+  }, [visibleVertices, vertices.length, waypoints, selectedPin, hoveredPoint]);
+
+  const selectedPinDetail = useMemo(() => {
+    if (!selectedPin) return null;
+    if (selectedPin.kind === 'vertex') {
+      const v = vertices[selectedPin.idx];
+      if (!v) return null;
+      return {
+        title:
+          selectedPin.idx === 0
+            ? 'Điểm xuất phát (#1)'
+            : selectedPin.idx === vertices.length - 1 && vertices.length > 1
+              ? `Điểm kết thúc (#${selectedPin.idx + 1})`
+              : `Điểm đường đi #${selectedPin.idx + 1}`,
+        coords: `${v.lat.toFixed(5)}, ${v.lng.toFixed(5)}`,
+        elevation: typeof v.elevationM === 'number' ? `${Math.round(v.elevationM)}m` : null,
+      };
+    }
+    const wp = waypoints.find((w) => w.id === selectedPin.id);
+    if (!wp) return null;
+    return {
+      title: wp.name,
+      coords: `${wp.lat.toFixed(5)}, ${wp.lng.toFixed(5)}`,
+      elevation: typeof wp.elevationM === 'number' ? `${wp.elevationM}m` : null,
+    };
+  }, [selectedPin, vertices, waypoints]);
+
+  const handleDeleteSelectedPin = () => {
+    if (!selectedPin) return;
+    cancelPendingDem();
+    pushUndoSnapshot();
+    if (selectedPin.kind === 'vertex') {
+      const targetIdx = selectedPin.idx;
+      setVertices((prev) => prev.filter((_, i) => i !== targetIdx));
+      setHoverIdx(null);
+    } else {
+      const targetId = selectedPin.id;
+      setWaypoints((prev) => prev.filter((wp) => wp.id !== targetId));
+    }
+    setSelectedPin(null);
+    setRepositioningPin(false);
+  };
+
   return (
-    <section className="hub-container page-view-slide" aria-label="Thiết Kế Cung Đường & Phân Tích GPX LOST">
+    <section className="hub-container page-view-slide" aria-label="Tự vẽ cung đường và đo độ dốc GPX">
       {/* Header */}
       <div
         style={{
@@ -1832,7 +2198,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
         }}
       >
         <div>
-          <div className="section-eyebrow">LOST INTERACTIVE GPX ROUTE PLANNER • DEM 90M</div>
+          <div className="section-eyebrow">Bản đồ vẽ tuyến GPX · Địa hình DEM</div>
           <h1
             className="font-editorial"
             style={{
@@ -1842,17 +2208,17 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
               marginBottom: 6,
             }}
           >
-            Thiết Kế Cung Đường & Phân Tích Độ Dốc GPX
+            Tự vẽ cung đường và đo độ dốc
           </h1>
           <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem', maxWidth: 700, lineHeight: 1.55 }}>
-            Nhấp trực tiếp lên bản đồ địa hình để vẽ cung đường, đặt mốc lán/nguồn nước/đỉnh, tải cao độ DEM thật, tính thời gian Naismith–Tobler và xuất file GPX 1.1.
+            Chạm lên bản đồ để phác thảo đường đi, cắm mốc lán nghỉ, suối nước hay đỉnh dốc. Hệ thống sẽ đo cao độ địa hình thực, tính giờ đi dự kiến và xuất tệp GPX 1.1 mang theo vào rừng.
           </p>
         </div>
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button type="button" className="btn btn-secondary" onClick={handleOpenLibrary}>
             <IconFolderSvg size={15} />
-            Cung Đã Lưu & Cộng Đồng
+            Tuyến đã lưu
           </button>
           {onBack && (
             <button type="button" className="btn btn-outline" onClick={onBack}>
@@ -1868,7 +2234,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
         <div className="hub-grid-3" style={{ gap: 12 }}>
           <div>
             <label className="form-label" htmlFor="planner-route-title" style={{ display: 'block', marginBottom: 4 }}>
-              Tên cung tự thiết kế
+              Tên cung đường
             </label>
             <input
               id="planner-route-title"
@@ -1890,7 +2256,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
 
           <div>
             <label className="form-label" htmlFor="planner-template-select" style={{ display: 'block', marginBottom: 4 }}>
-              Nạp mẫu từ {trails.length} cung LOST
+              Lấy khung từ {trails.length} cung có sẵn
             </label>
             <select
               id="planner-template-select"
@@ -1906,10 +2272,10 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                 fontSize: '0.84rem',
               }}
             >
-              <option value="">-- Chọn cung LOST làm khung sửa --</option>
+              <option value="">-- Chọn một cung có sẵn để chỉnh lại --</option>
               {trails.map((tr) => (
                 <option key={tr.id} value={tr.id}>
-                  {tr.name} ({tr.distanceKm}km • {tr.maxAltitudeM}m)
+                  {tr.name} ({tr.distanceKm}km · {tr.maxAltitudeM}m)
                 </option>
               ))}
             </select>
@@ -1931,7 +2297,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                 onClick={() => fileInputRef.current?.click()}
               >
                 <IconUploadSvg size={15} />
-                Nhập file .GPX
+                Mở tệp .GPX
               </button>
               <button
                 type="button"
@@ -1941,7 +2307,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                 onClick={handleFetchRealDem}
               >
                 <IconMountain size={15} />
-                {demLoading ? 'Đang lấy DEM...' : 'Lấy Cao Độ DEM Thật'}
+                {demLoading ? 'Đang đo cao độ...' : 'Đo cao độ địa hình'}
               </button>
             </div>
           </div>
@@ -1967,7 +2333,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
               onClick={() => setClickMode('vertex')}
             >
               <IconPlus size={14} />
-              Chấm Tuyến ({vertices.length})
+              Chấm đường đi ({vertices.length})
             </button>
             <button
               type="button"
@@ -1976,7 +2342,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
               onClick={() => setClickMode('waypoint')}
             >
               <IconMapPin size={14} />
-              Đặt Mốc ({waypoints.length})
+              Cắm mốc ({waypoints.length})
             </button>
 
             {clickMode === 'waypoint' && (
@@ -2049,10 +2415,10 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
               style={{ padding: '5px 9px', fontSize: '0.76rem' }}
               disabled={vertices.length < 2}
               onClick={handleReverseRoute}
-              title="Đảo chiều tuyến (Reverse) và tính lại leo/hạ DEM cùng bảng phân chặng"
+              title="Đảo chiều đi và tính lại độ dốc, leo/hạ cùng bảng chia chặng"
             >
               <IconSwapSvg size={14} />
-              Đảo Chiều Tuyến
+              Đảo chiều đi
             </button>
             <button
               type="button"
@@ -2079,7 +2445,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
         </div>
       </div>
 
-      {/* Interactive Leaflet Map Canvas */}
+      {/* Native GPU MapLibre Vector Map Canvas */}
       <div
         className="card"
         style={{
@@ -2090,166 +2456,151 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
           height: 'clamp(360px, 52vh, 560px)',
         }}
       >
-        <MapContainer
-          center={[22.3364, 103.8438]}
-          zoom={11}
-          style={{ width: '100%', height: '100%' }}
+        <LostVectorMap
+          center={plannerInitialCenter}
+          zoom={10.5}
+          basemap={tileKey}
+          polylines={plannerPolylines}
+          markers={plannerMarkers}
+          fitBounds={plannerBounds}
+          fitBoundsKey={fitBoundsToken}
+          flyTo={plannerFlyTo}
+          onMapClick={handleMapClick}
         >
-          <FreeBasemapLayer basemap={tileKey} />
-          <MapInteractionController
-            onMapClick={handleMapClick}
-            fitBoundsToken={fitBoundsToken}
-            vertices={vertices}
-          />
-
-          {/* Main Route Polyline */}
-          {polylinePositions.length >= 2 && (
-            <Polyline
-              positions={polylinePositions}
-              pathOptions={{
-                color: 'var(--color-primary)',
-                weight: 4,
-                opacity: 0.92,
+          {/* Selected Marker Quick Edit HUD */}
+          {selectedPinDetail && (
+            <div
+              style={{
+                position: 'absolute',
+                top: 12,
+                left: 12,
+                zIndex: 'var(--z-map-hud, 400)',
+                maxWidth: 'min(340px, calc(100% - 24px))',
               }}
-            />
-          )}
-
-          {/* Draggable Vertices (memoized static icons prevent 60Hz hover-scrub thrashing) */}
-          {visibleDraggableVertices.map(({ vertex, idx }) => {
-            const vIcon =
-              idx === 0
-                ? vertexIconMap.start
-                : idx === vertices.length - 1 && vertices.length > 1
-                  ? vertexIconMap.end
-                  : vertexIconMap.mid;
-            return (
-              <Marker
-                key={`vtx-${idx}`}
-                position={[vertex.lat, vertex.lng]}
-                icon={vIcon}
-                draggable
-                eventHandlers={{
-                  dragend(e) {
-                    const pos = e.target.getLatLng();
-                    handleDragVertex(idx, pos.lat, pos.lng);
-                  },
+            >
+              <div
+                className="cyber-dock-bar"
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                  padding: '9px 11px',
+                  fontSize: '0.76rem',
                 }}
               >
-                <Popup>
-                  <div style={{ fontSize: '0.78rem', fontVariantNumeric: 'tabular-nums' }}>
-                    <strong>Điểm #{idx + 1}</strong>
-                    <div>{vertex.lat.toFixed(5)}, {vertex.lng.toFixed(5)}</div>
-                    {typeof vertex.elevationM === 'number' && <div>Cao độ: {Math.round(vertex.elevationM)} m</div>}
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <strong style={{ color: 'var(--color-text-main)', display: 'block' }}>{selectedPinDetail.title}</strong>
+                    <span style={{ color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                      {selectedPinDetail.coords}
+                      {selectedPinDetail.elevation ? ` · ${selectedPinDetail.elevation}` : ''}
+                    </span>
                   </div>
-                </Popup>
-              </Marker>
-            );
-          })}
-
-          {/* Named Waypoint Markers */}
-          {waypoints.map((wp) => (
-            <Marker
-              key={wp.id}
-              position={[wp.lat, wp.lng]}
-              icon={waypointIconMap[wp.type]}
-              draggable
-              eventHandlers={{
-                dragend(e) {
-                  const pos = e.target.getLatLng();
-                  handleDragWaypoint(wp.id, pos.lat, pos.lng);
-                },
-              }}
-            >
-              <Popup>
-                <div style={{ minWidth: 160, display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.78rem' }}>
-                  <strong style={{ color: 'var(--color-text-main)' }}>{wp.name}</strong>
-                  <span style={{ color: 'var(--color-text-muted)' }}>{WAYPOINT_TYPE_META[wp.type].label}</span>
-                  <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--color-text-dim)' }}>
-                    {wp.lat.toFixed(5)}, {wp.lng.toFixed(5)}
-                    {typeof wp.elevationM === 'number' ? ` • ${wp.elevationM}m` : ''}
-                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    style={{ padding: '2px 5px' }}
+                    aria-label="Đóng bảng chọn điểm"
+                    onClick={() => {
+                      setSelectedPin(null);
+                      setRepositioningPin(false);
+                    }}
+                  >
+                    <IconX size={13} />
+                  </button>
                 </div>
-              </Popup>
-            </Marker>
-          ))}
-
-          {/* Live Elevation Profile Hover Sync Indicator */}
-          {hoveredPoint && (
-            <CircleMarker
-              center={[hoveredPoint.lat, hoveredPoint.lng]}
-              radius={7}
-              pathOptions={{
-                color: 'var(--color-on-media)',
-                fillColor: 'var(--color-earth)',
-                fillOpacity: 1,
-                weight: 2.5,
-              }}
-            />
+                {repositioningPin && (
+                  <div style={{ color: 'var(--color-primary)', fontWeight: 700, fontSize: '0.73rem' }}>
+                    Chạm vào vị trí mới trên bản đồ để dời điểm này...
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className={repositioningPin ? 'btn btn-primary' : 'btn btn-secondary'}
+                    style={{ padding: '4px 9px', fontSize: '0.73rem' }}
+                    onClick={() => setRepositioningPin((v) => !v)}
+                  >
+                    <IconMapPin size={12} />
+                    {repositioningPin ? 'Đang chọn vị trí...' : 'Dời vị trí'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    style={{ padding: '4px 9px', fontSize: '0.73rem', color: 'var(--color-error-text, var(--color-error))' }}
+                    onClick={handleDeleteSelectedPin}
+                  >
+                    <IconTrash size={12} />
+                    Xóa điểm này
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
-        </MapContainer>
 
-        {/* Empty Canvas Overlay Tip */}
-        {vertices.length === 0 && (
-          <div
-            style={{
-              position: 'absolute',
-              bottom: 14,
-              left: 14,
-              right: 14,
-              zIndex: 'var(--z-map-hud, 400)',
-              pointerEvents: 'none',
-              display: 'flex',
-              justifyContent: 'center',
-            }}
-          >
+          {/* Empty Canvas Overlay Tip */}
+          {vertices.length === 0 && (
             <div
-              className="cyber-dock-bar"
               style={{
-                pointerEvents: 'auto',
+                position: 'absolute',
+                bottom: 34,
+                left: 14,
+                right: 14,
+                zIndex: 'var(--z-map-hud, 400)',
+                pointerEvents: 'none',
                 display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                flexWrap: 'wrap',
-                fontSize: '0.8rem',
+                justifyContent: 'center',
               }}
             >
-              <span>Nhấp lên bản đồ để vẽ cung đường, hoặc nạp nhanh:</span>
-              {trails.slice(0, 3).map((tr) => (
-                <button
-                  key={tr.id}
-                  type="button"
-                  className="btn btn-primary"
-                  style={{ padding: '4px 10px', fontSize: '0.74rem' }}
-                  onClick={() => handleLoadTrailTemplate(tr.id)}
-                >
-                  {tr.name}
-                </button>
-              ))}
+              <div
+                className="cyber-dock-bar"
+                style={{
+                  pointerEvents: 'auto',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  flexWrap: 'wrap',
+                  fontSize: '0.8rem',
+                }}
+              >
+                <span>Chạm lên bản đồ để bắt đầu vẽ tuyến, hoặc mở nhanh:</span>
+                {trails.slice(0, 3).map((tr) => (
+                  <button
+                    key={tr.id}
+                    type="button"
+                    className="btn btn-primary"
+                    style={{ padding: '4px 10px', fontSize: '0.74rem' }}
+                    onClick={() => handleLoadTrailTemplate(tr.id)}
+                  >
+                    {tr.name}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </LostVectorMap>
       </div>
 
       {/* Real-Time Telemetry Bar */}
       <div className="editorial-stat-strip" style={{ marginBottom: 16 }}>
         <div className="editorial-stat-cell">
-          <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>Cự Ly (Haversine)</span>
+          <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>Cự ly dự kiến</span>
           <strong style={{ fontSize: '1.22rem', color: 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
             {metrics.distanceKm.toFixed(2)} km
           </strong>
-          <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)' }}>{vertices.length} điểm tọa độ</span>
+          <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)' }}>{vertices.length} điểm trên tuyến</span>
         </div>
         <div className="editorial-stat-cell">
-          <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>Leo / Hạ Tích Lũy</span>
+          <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>Leo / hạ tích lũy</span>
           <strong style={{ fontSize: '1.15rem', color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
             +{metrics.elevationGainM}m / -{metrics.elevationLossM}m
           </strong>
           <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-            Min {metrics.minAltitudeM}m → Max {metrics.maxAltitudeM}m
+            Thấp nhất {metrics.minAltitudeM}m → Cao nhất {metrics.maxAltitudeM}m
           </span>
         </div>
         <div className="editorial-stat-cell">
-          <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>Độ Dốc Cực Đại</span>
+          <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>Độ dốc gắt nhất</span>
           <strong
             style={{
               fontSize: '1.22rem',
@@ -2273,26 +2624,26 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
         <div className="editorial-stat-cell">
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
             <IconClock size={12} />
-            Thời Gian (Naismith / Tobler)
+            Thời gian dự kiến
           </span>
           <strong style={{ fontSize: '1.18rem', color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
             {formatDurationHoursVi(metrics.recommendedHours)}
           </strong>
           <span style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-            N+L {metrics.naismithLangmuirHours}h | Tobler {metrics.toblerHours}h
+            Naismith {metrics.naismithLangmuirHours}h · Tobler {metrics.toblerHours}h
           </span>
         </div>
         <div className="editorial-stat-cell">
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.7rem', color: 'var(--color-sky)', textTransform: 'uppercase', fontWeight: 700 }}>
             <IconDroplet size={12} />
-            Nước & Năng Lượng
+            Nước và năng lượng
           </span>
           <strong style={{ fontSize: '1.18rem', color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
             {metrics.waterLiters} L + {metrics.oresolPackets} Oresol
           </strong>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.72rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
             <IconFlame size={11} />
-            ~{metrics.caloriesKcal.toLocaleString('vi-VN')} kcal • Cấp {metrics.estimatedDifficulty}/5
+            ~{metrics.caloriesKcal.toLocaleString('vi-VN')} kcal · Cấp {metrics.estimatedDifficulty}/5
           </span>
         </div>
       </div>
@@ -2304,12 +2655,12 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <div>
               <h2 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 2 }}>
-                Biểu Đồ Trắc Dọc Cao Độ Theo Phân Cấp Độ Dốc
+                Mặt cắt cao độ và độ dốc
               </h2>
               <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
                 {hoveredPoint
-                  ? `Điểm đang trỏ: ${hoveredPoint.distanceKm.toFixed(2)} km • Cao độ ${hoveredPoint.elevationM} m • Độ dốc ${hoveredPoint.slopePercent > 0 ? '+' : ''}${hoveredPoint.slopePercent}%`
-                  : 'Di chuột hoặc chạm lướt trên biểu đồ để đối chiếu cao độ & vị trí trên bản đồ.'}
+                  ? `Tại mốc ${hoveredPoint.distanceKm.toFixed(2)} km · Cao độ ${hoveredPoint.elevationM} m · Độ dốc ${hoveredPoint.slopePercent > 0 ? '+' : ''}${hoveredPoint.slopePercent}%`
+                  : 'Lướt chuột hoặc chạm trên biểu đồ để xem từng đoạn dốc tương ứng trên bản đồ.'}
               </span>
             </div>
             <span
@@ -2323,16 +2674,16 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                 }`}
             >
               {elevationSource === 'server-dem'
-                ? 'DEM Thực địa (LOST)'
+                ? 'Cao độ DEM thực tế'
                 : elevationSource === 'terrarium-dem'
                   ? 'AWS Terrarium DEM'
                   : elevationSource === 'gpx-elevation'
-                    ? 'Cao độ GPX gốc'
+                    ? 'Cao độ từ tệp GPX'
                     : elevationSource === 'interpolated-fallback'
-                      ? 'Ước tính ngoại tuyến (DEM tạm gián đoạn)'
+                      ? 'Ước tính ngoại tuyến'
                       : elevationSource === 'interpolated'
                         ? 'Ước tính sơ bộ'
-                        : 'Chưa có dữ liệu DEM'}
+                        : 'Chưa đo cao độ'}
             </span>
           </div>
 
@@ -2457,7 +2808,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: '0.74rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--color-text-dim)' }}>
-                    Phân Tầng Độ Dốc Địa Hình (4 Cấp)
+                    Tỷ lệ độ dốc trên toàn tuyến
                   </span>
                   <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
                     Tổng {slopeBreakdown.totalKm.toFixed(2)} km
@@ -2649,7 +3000,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
           {/* Primary Route Actions */}
           <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <h2 style={{ fontSize: '0.98rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 2 }}>
-              Xuất Bản, Lưu Trữ & Tích Hợp LOST
+              Mang tuyến này ra thực địa
             </h2>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(175px, 100%), 1fr))', gap: 8 }}>
               <button
@@ -2659,17 +3010,17 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                 onClick={handleExportGpx}
               >
                 <IconDownload size={15} />
-                Xuất file GPX 1.1
+                Tải tệp GPX 1.1
               </button>
               <button
                 type="button"
                 className="btn btn-secondary"
                 disabled={vertices.length < 2}
                 onClick={handleOpenShareCard}
-                title="Dựng ảnh PNG bản đồ GPX ngoại tuyến cho tuyến tự vẽ"
+                title="Tạo thẻ ảnh PNG tóm tắt cung đường dùng ngay khi ngoại tuyến"
               >
                 <IconImage size={15} />
-                Xuất Thẻ PNG Tuyến Tự Vẽ
+                Tạo thẻ ảnh PNG
               </button>
               <button
                 type="button"
@@ -2678,7 +3029,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                 onClick={() => setIsSaveModalOpen(true)}
               >
                 <IconShare size={15} />
-                Lưu & Chia Sẻ Cung
+                Lưu và chia sẻ
               </button>
               <button
                 type="button"
@@ -2687,7 +3038,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                 onClick={handleAnalyzeWithAi}
               >
                 <IconBot size={15} />
-                Phân Tích Bằng LOST AI
+                Nhờ trợ lý góp ý cung
               </button>
               <button
                 type="button"
@@ -2697,7 +3048,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                 style={{ gridColumn: '1 / -1' }}
               >
                 <IconCompass size={15} color="var(--color-on-primary)" />
-                Mở Live GPS Theo Tuyến Này
+                Mở GPS dẫn đường theo tuyến này
               </button>
               <button
                 type="button"
@@ -2707,7 +3058,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                 style={{ gridColumn: '1 / -1' }}
               >
                 <IconSend size={15} />
-                Gửi Đóng Góp Cung Mới
+                Gửi đóng góp lên bản đồ chung
               </button>
             </div>
             <div style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -2720,16 +3071,16 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
           <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 380, overflowY: 'auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <h3 style={{ fontSize: '0.94rem', fontWeight: 700, color: 'var(--color-text-main)', margin: 0 }}>
-                Danh Sách Mốc Tọa Độ ({waypoints.length})
+                Các mốc trên đường ({waypoints.length})
               </h3>
               <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)' }}>
-                Gắn thẻ GPX &lt;sym&gt; • Kéo ghim để chỉnh
+                Chuẩn GPX &lt;sym&gt; · Chạm ghim để dời
               </span>
             </div>
 
             {waypoints.length === 0 ? (
               <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', lineHeight: 1.5, margin: 0 }}>
-                Chưa có mốc tọa độ. Chuyển sang nút <strong>Đặt Mốc</strong> rồi nhấp bản đồ để đánh dấu Xuất phát, Đỉnh núi, Nguồn nước, Lán trại hoặc Cảnh báo.
+                Chưa có mốc nào. Bấm nút <strong>Cắm mốc</strong> rồi chạm bản đồ để đánh dấu điểm xuất phát, đỉnh núi, suối nước, lán trại hay đoạn nguy hiểm.
               </p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -2874,13 +3225,13 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <div>
               <h2 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 2 }}>
-                Bảng Phân Chặng Theo Mốc (Leg Splits)
+                Chia chặng theo từng mốc
               </h2>
               <span style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                {legSplits.length} chặng • Hiệu chỉnh theo balo {packWeightKg} kg & thể lực{' '}
-                {fitnessLevel === 'beginner' ? 'Mới đi' : fitnessLevel === 'advanced' ? 'Chuyên sâu' : 'Trung bình'}
+                {legSplits.length} chặng · Tính theo balo {packWeightKg} kg và sức đi{' '}
+                {fitnessLevel === 'beginner' ? 'mới đi' : fitnessLevel === 'advanced' ? 'chuyên sâu' : 'trung bình'}
                 {waypoints.length === 0
-                  ? ' — Thêm mốc Lán / Suối / Đỉnh bằng nút Đặt Mốc để chia chi tiết từng chặng.'
+                  ? ' — cắm thêm mốc lán, suối hay đỉnh bằng nút Cắm mốc để chia chi tiết từng chặng.'
                   : '.'}
               </span>
             </div>
@@ -2891,7 +3242,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
               onClick={handleCopyLegSplits}
             >
               <IconCopy size={14} />
-              Sao Chép Bảng Phân Chặng
+              Sao chép bảng chặng
             </button>
           </div>
 
@@ -2918,12 +3269,12 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                   }}
                 >
                   <th style={{ padding: '9px 10px' }}>Chặng</th>
-                  <th style={{ padding: '9px 10px' }}>Từ Mốc → Đến Mốc</th>
+                  <th style={{ padding: '9px 10px' }}>Từ mốc → đến mốc</th>
                   <th style={{ padding: '9px 10px', textAlign: 'right' }}>Cự ly</th>
-                  <th style={{ padding: '9px 10px', textAlign: 'right' }}>Leo / Hạ</th>
+                  <th style={{ padding: '9px 10px', textAlign: 'right' }}>Leo / hạ</th>
                   <th style={{ padding: '9px 10px', textAlign: 'right' }}>Dốc TB</th>
-                  <th style={{ padding: '9px 10px', textAlign: 'right' }}>ETA Chặng (N+L / Tobler)</th>
-                  <th style={{ padding: '9px 10px', textAlign: 'right' }}>Tổng Giờ Tích Lũy</th>
+                  <th style={{ padding: '9px 10px', textAlign: 'right' }}>Giờ đi chặng</th>
+                  <th style={{ padding: '9px 10px', textAlign: 'right' }}>Tổng giờ tích lũy</th>
                 </tr>
               </thead>
               <tbody>
@@ -2988,7 +3339,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                   }}
                 >
                   <td colSpan={2} style={{ padding: '9px 10px' }}>
-                    Tổng Cộng Toàn Tuyến ({legSplits.length} chặng)
+                    Tổng cả chuyến ({legSplits.length} chặng)
                   </td>
                   <td style={{ padding: '9px 10px', textAlign: 'right', color: 'var(--color-primary)' }}>
                     {legSplits[legSplits.length - 1].cumulativeDistanceKm.toFixed(2)} km
@@ -3034,7 +3385,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                 <h2 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                  Lưu & Chia Sẻ Cung Tự Vẽ
+                  Lưu và chia sẻ cung đường
                 </h2>
                 <button
                   type="button"
@@ -3160,13 +3511,13 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
 
                 {canUpdateLoadedRoute && (
                   <p style={{ fontSize: '0.78rem', color: 'var(--color-primary)', margin: 0 }}>
-                    Bạn đang chỉnh sửa cung đã lưu của chính mình — bấm <strong>Cập Nhật Cung</strong> để ghi đè hoặc chọn <strong>Lưu Thành Bản Sao Mới</strong>.
+                    Bạn đang chỉnh lại tuyến đã lưu — bấm <strong>Cập nhật tuyến</strong> để lưu đè hoặc chọn <strong>Lưu thành bản mới</strong>.
                   </p>
                 )}
 
                 {!currentUser && (
                   <p style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
-                    Bạn chưa đăng nhập — cung đường sẽ được lưu an toàn vào bộ nhớ trình duyệt (Offline).
+                    Bạn chưa đăng nhập — tuyến này sẽ được lưu tạm trên trình duyệt để dùng ngoại tuyến.
                   </p>
                 )}
 
@@ -3186,15 +3537,15 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                       disabled={savingRoute}
                       onClick={() => void submitSaveCustomRoute(true)}
                     >
-                      {savingRoute ? 'Đang lưu...' : 'Lưu Thành Bản Sao Mới'}
+                      {savingRoute ? 'Đang lưu...' : 'Lưu thành bản mới'}
                     </button>
                   )}
                   <button type="submit" className="btn btn-primary" disabled={savingRoute}>
                     {savingRoute
                       ? 'Đang lưu...'
                       : canUpdateLoadedRoute
-                        ? 'Cập Nhật Cung'
-                        : 'Lưu Cung Tự Vẽ'}
+                        ? 'Cập nhật tuyến'
+                        : 'Lưu cung này'}
                   </button>
                 </div>
               </form>
@@ -3240,7 +3591,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h2 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                  Kho Cung Tự Vẽ LOST
+                  Tuyến đã lưu
                 </h2>
                 <div style={{ display: 'flex', gap: 6 }}>
                   <button
@@ -3270,19 +3621,19 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                   className={`editorial-tab-btn${libraryTab === 'mine' ? ' active' : ''}`}
                   onClick={() => setLibraryTab('mine')}
                 >
-                  Cung Của Tôi ({myRoutes.length})
+                  Của tôi ({myRoutes.length})
                 </button>
                 <button
                   type="button"
                   className={`editorial-tab-btn${libraryTab === 'public' ? ' active' : ''}`}
                   onClick={() => setLibraryTab('public')}
                 >
-                  Cộng Đồng Chia Sẻ ({publicRoutes.length})
+                  Anh em chia sẻ ({publicRoutes.length})
                 </button>
               </div>
 
               {libraryLoading ? (
-                <p style={{ fontSize: '0.84rem', color: 'var(--color-text-muted)' }}>Đang tải danh sách cung đường...</p>
+                <p style={{ fontSize: '0.84rem', color: 'var(--color-text-muted)' }}>Đang tải danh sách tuyến...</p>
               ) : (libraryTab === 'mine' ? myRoutes : publicRoutes).length === 0 ? (
                 <div
                   style={{
@@ -3295,8 +3646,8 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                   }}
                 >
                   {libraryTab === 'mine'
-                    ? 'Bạn chưa lưu cung tự vẽ nào. Hãy vẽ trên bản đồ và bấm "Lưu & Chia Sẻ Cung".'
-                    : 'Chưa có cung công khai từ cộng đồng (hoặc đang ngoại tuyến).'}
+                    ? 'Bạn chưa lưu cung nào. Vẽ trên bản đồ rồi bấm "Lưu và chia sẻ" nhé.'
+                    : 'Chưa có tuyến công khai nào từ cộng đồng (hoặc máy đang ngoại tuyến).'}
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -3319,10 +3670,10 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                             {rec.title}
                           </strong>
                           <span style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                            {rec.province || rec.region || 'Việt Nam'} • {rec.metrics?.distanceKm ?? 0} km • +{rec.metrics?.elevationGainM ?? 0}m • Max {rec.metrics?.maxAltitudeM ?? 0}m
+                            {rec.province || rec.region || 'Việt Nam'} · {rec.metrics?.distanceKm ?? 0} km · +{rec.metrics?.elevationGainM ?? 0}m · Đỉnh {rec.metrics?.maxAltitudeM ?? 0}m
                           </span>
                         </div>
-                        {rec.isLocalOnly && <span className="badge badge-cloud">Offline</span>}
+                        {rec.isLocalOnly && <span className="badge badge-cloud">Ngoại tuyến</span>}
                       </div>
 
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -3332,7 +3683,7 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                           style={{ padding: '5px 10px', fontSize: '0.76rem' }}
                           onClick={() => handleLoadSavedRoute(rec)}
                         >
-                          Mở trên Bản đồ
+                          Mở lên bản đồ
                         </button>
                         <button
                           type="button"
@@ -3360,12 +3711,33 @@ export const RoutePlannerView: React.FC<RoutePlannerViewProps> = ({
                             <IconHeart size={13} />
                             {rec.likesCount ?? 0}
                           </button>
+                        ) : confirmDeleteRouteId === (rec._id || rec.id) ? (
+                          <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                            <button
+                              type="button"
+                              className="btn btn-danger"
+                              disabled={deletingRouteId === (rec._id || rec.id)}
+                              style={{ padding: '5px 10px', fontSize: '0.76rem' }}
+                              onClick={() => void handleDeleteSavedRoute(rec)}
+                            >
+                              {deletingRouteId === (rec._id || rec.id) ? 'Đang xóa...' : 'Xác nhận xóa'}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-outline"
+                              disabled={deletingRouteId === (rec._id || rec.id)}
+                              style={{ padding: '5px 9px', fontSize: '0.76rem' }}
+                              onClick={() => setConfirmDeleteRouteId(null)}
+                            >
+                              Hủy
+                            </button>
+                          </div>
                         ) : (
                           <button
                             type="button"
                             className="btn btn-outline"
                             style={{ padding: '5px 10px', fontSize: '0.76rem', color: 'var(--color-error-text, var(--color-error))' }}
-                            onClick={() => void handleDeleteSavedRoute(rec)}
+                            onClick={() => setConfirmDeleteRouteId(rec._id || rec.id)}
                           >
                             <IconTrash size={13} />
                             Xóa

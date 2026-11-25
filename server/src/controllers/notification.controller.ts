@@ -42,7 +42,7 @@ export const getNotifications = async (req: AuthRequest, res: Response) => {
     }
 
     const pageSize = Math.min(Math.max(parseInt(String(limit), 10) || 20, 1), 100);
-    const pageNum = Math.max(parseInt(String(page), 10) || 1, 1);
+    const pageNum = Math.min(Math.max(parseInt(String(page), 10) || 1, 1), 1000);
     const skip = (pageNum - 1) * pageSize;
 
     const [notifications, totalCount, unreadByCategory] = await Promise.all([

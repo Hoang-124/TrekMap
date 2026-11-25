@@ -34,7 +34,7 @@ export interface ITrail extends Document {
   startLng: number;
   endLat?: number;
   endLng?: number;
-  gpxTrack: [number, number][]; // Leaflet [lat, lng] polyline points
+  gpxTrack: [number, number][]; // WGS84 [lat, lng] polyline points
   waypoints: ITrailWaypoint[];
   bestMonths: number[];
   avoidMonths: number[];
@@ -102,7 +102,7 @@ const trailSchema = new Schema<ITrail>(
     startLng: { type: Number, required: true, min: -180, max: 180 },
     endLat: { type: Number, min: -90, max: 90 },
     endLng: { type: Number, min: -180, max: 180 },
-    // Leaflet-ordered [lat, lng] polyline vertices
+    // WGS84-ordered [lat, lng] polyline vertices
     gpxTrack: { type: [[Number]], default: [] },
     waypoints: [
       {

@@ -48,7 +48,7 @@ const BORDER_PERMIT_TRAIL_IDS = new Set([
  * Deterministic AI Expedition Readiness Audit (Wave 16A).
  * Combines live Go/No-Go weather/hazards + NOAA Turnaround Pace + Pandolf Nutrition/Hydration
  * + Pack-to-Body Ratio + Park/Border Permit Lead-Time into a 0-100 Pre-Flight Readiness Audit.
- * Strictly serves approved trails only; NEVER fabricates weather when Open-Meteo is unreachable.
+ * Strictly serves approved trails only; NEVER fabricates weather when MET Norway (CC BY 4.0) is unreachable.
  */
 export async function computeExpeditionReadinessAudit(
   input: ReadinessAuditComputeInput,
@@ -166,7 +166,7 @@ export async function computeExpeditionReadinessAudit(
 
   if (!pacePlan) return null;
 
-  // Feed live Open-Meteo summit temperature & humidity into Pandolf hydration/electrolyte planner (<1ms pure CPU)
+  // Feed live MET Norway (CC BY 4.0) summit temperature & humidity into Pandolf hydration/electrolyte planner (<1ms pure CPU)
   const liveWeather = goNoGo?.weatherSummary ?? null;
   const liveTempRaw = liveWeather ? (liveWeather.summitTempMaxC ?? liveWeather.tempMaxC) : undefined;
   const liveAmbientTempC =
@@ -203,11 +203,11 @@ export async function computeExpeditionReadinessAudit(
   let weatherScore = 65;
   let weatherStatus: ReadinessPillarScore['status'] = 'warn';
   let weatherSummary =
-    'Chưa tải được dữ liệu thời tiết Open-Meteo trực tuyến — bắt buộc kiểm tra dự báo đỉnh núi & tin bão 24h trước giờ G.';
+    'Chưa tải được dữ liệu thời tiết MET Norway (CC BY 4.0) trực tuyến — bắt buộc kiểm tra dự báo đỉnh núi & tin bão 24h trước giờ G.';
 
   if (goNoGo) {
     const rawGoScore = Math.max(0, Math.min(100, Math.round(goNoGo.score)));
-    // Rule 11 Honesty: when live Open-Meteo weather is unavailable/out-of-range, cap weatherScore <= 72 & never show 'good'
+    // Rule 11 Honesty: when live MET Norway (CC BY 4.0) weather is unavailable/out-of-range, cap weatherScore <= 72 & never show 'good'
     weatherScore = weatherAvailable ? rawGoScore : Math.min(rawGoScore, 72);
     weatherStatus =
       goNoGo.verdict === 'NO_GO'
@@ -251,7 +251,7 @@ export async function computeExpeditionReadinessAudit(
         title: 'Cập nhật lại dự báo thời tiết gần ngày đi',
         action:
           goNoGo.factors?.forecastWindowNote ||
-          'Kiểm tra lại dự báo Open-Meteo trong vòng 72 giờ trước giờ khởi hành.',
+          'Kiểm tra lại dự báo MET Norway (CC BY 4.0) trong vòng 72 giờ trước giờ khởi hành.',
       });
     }
   } else {
@@ -469,7 +469,7 @@ export async function computeExpeditionReadinessAudit(
     readinessScore = Math.min(readinessScore, 59);
     verdict = readinessScore < 45 ? 'HOLD_OFF' : 'ADJUST_BEFORE_GO';
   } else if (!weatherAvailable) {
-    // Rule 11 Safety-First: NEVER grant READY when live Open-Meteo weather / Go-No-Go verification is absent
+    // Rule 11 Safety-First: NEVER grant READY when live MET Norway (CC BY 4.0) weather / Go-No-Go verification is absent
     const unverifiedCap = !goNoGo ? 74 : 77;
     readinessScore = Math.min(readinessScore, unverifiedCap);
     verdict = readinessScore >= 50 ? 'ADJUST_BEFORE_GO' : 'HOLD_OFF';

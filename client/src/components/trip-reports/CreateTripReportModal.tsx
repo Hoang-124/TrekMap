@@ -11,6 +11,7 @@ import { uploadImageToCloudinary } from '../../services/api.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
 import type { Trail } from '../../types.js';
+import { safeLocalStorageGet } from '../../utils/storageScope.js';
 
 interface CreateTripReportModalProps {
   isOpen: boolean;
@@ -18,7 +19,44 @@ interface CreateTripReportModalProps {
   onSuccess: () => void;
 }
 
-const getTodayIso = () => new Date().toISOString().split('T')[0];
+const ALLOWED_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+]);
+const ALLOWED_IMAGE_ACCEPT = 'image/jpeg,image/png,image/webp,image/gif';
+
+const getTodayIso = (): string => {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const y = parts.find((p) => p.type === 'year')?.value;
+    const m = parts.find((p) => p.type === 'month')?.value;
+    const d = parts.find((p) => p.type === 'day')?.value;
+    if (y && m && d) return `${y}-${m}-${d}`;
+  } catch {
+    // Fallback to UTC+7 offset
+  }
+  const vn = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  return `${vn.getUTCFullYear()}-${String(vn.getUTCMonth() + 1).padStart(2, '0')}-${String(vn.getUTCDate()).padStart(2, '0')}`;
+};
+
+function clampGroupSize(raw: string | number, fallback = 2): number {
+  const str = String(raw).trim();
+  if (!str) return fallback;
+  const parsed = Math.round(Number(str));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(50, parsed));
+}
+
+function dispatchReportToast(message: string, type: 'success' | 'error' | 'info' = 'info') {
+  window.dispatchEvent(new CustomEvent('lost:show-toast', { detail: { message, type } }));
+}
 
 export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
   isOpen,
@@ -33,7 +71,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
   const [content, setContent] = useState('');
   const [tripDate, setTripDate] = useState(getTodayIso);
   const [duration, setDuration] = useState('2 ngày 1 đêm');
-  const [groupSize, setGroupSize] = useState(2);
+  const [groupSizeInput, setGroupSizeInput] = useState('2');
   const [totalCost, setTotalCost] = useState('');
   const [rating, setRating] = useState(5);
   const [difficultyActual, setDifficultyActual] = useState(3);
@@ -42,13 +80,22 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
   const [warningsInput, setWarningsInput] = useState('');
   const [recommendationsInput, setRecommendationsInput] = useState('');
   const [photos, setPhotos] = useState<string[]>([]);
+  const [failedPhotoUrls, setFailedPhotoUrls] = useState<string[]>([]);
   const [photoUrlInput, setPhotoUrlInput] = useState('');
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  const isMountedRef = useRef(true);
   const isBusy = loading || uploadingPhoto;
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   // LIFO Focus Trap
   useFocusTrap(isOpen, dialogRef);
@@ -59,7 +106,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
     setContent('');
     setTripDate(getTodayIso());
     setDuration('2 ngày 1 đêm');
-    setGroupSize(2);
+    setGroupSizeInput('2');
     setTotalCost('');
     setRating(5);
     setDifficultyActual(3);
@@ -68,6 +115,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
     setWarningsInput('');
     setRecommendationsInput('');
     setPhotos([]);
+    setFailedPhotoUrls([]);
     setPhotoUrlInput('');
     setError('');
   }, []);
@@ -122,48 +170,78 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
     if (!fileList || fileList.length === 0) return;
     const remainingSlots = Math.max(0, 10 - photos.length);
     if (remainingSlots === 0) {
-      setError('Bạn có thể đính kèm tối đa 10 ảnh cho mỗi nhật ký chuyến đi.');
+      const msg = 'Bạn có thể đính kèm tối đa 10 ảnh cho mỗi nhật ký chuyến đi.';
+      setError(msg);
+      dispatchReportToast(msg, 'info');
       e.target.value = '';
       return;
     }
 
     const files = Array.from(fileList).slice(0, remainingSlots);
+    const truncatedCount = Math.max(0, fileList.length - remainingSlots);
     setUploadingPhoto(true);
     setError('');
 
+    let uploadedCount = 0;
+    let invalidTypeCount = 0;
+    let oversizeCount = 0;
+    let failedCount = 0;
+
     try {
-      const uploadedUrls: string[] = [];
       for (const file of files) {
-        if (!file.type.startsWith('image/')) {
-          setError('Chỉ chấp nhận định dạng ảnh hợp lệ (JPG, PNG, WebP).');
+        if (!ALLOWED_IMAGE_MIME_TYPES.has(file.type.toLowerCase())) {
+          invalidTypeCount += 1;
           continue;
         }
         if (file.size > 5 * 1024 * 1024) {
-          setError('Mỗi ảnh tối đa 5MB.');
+          oversizeCount += 1;
           continue;
         }
-        const base64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = (ev) => resolve(String(ev.target?.result || ''));
-          reader.onerror = () => reject(new Error('Không thể đọc tệp ảnh.'));
-          reader.readAsDataURL(file);
-        });
-        if (base64) {
-          const url = await uploadImageToCloudinary(base64, file.name, 'reviews');
-          uploadedUrls.push(url);
+        try {
+          const base64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (ev) => resolve(String(ev.target?.result || ''));
+            reader.onerror = () => reject(new Error('Không thể đọc tệp ảnh.'));
+            reader.readAsDataURL(file);
+          });
+          if (base64) {
+            const url = await uploadImageToCloudinary(base64, file.name, 'reviews');
+            if (!isMountedRef.current) return;
+            uploadedCount += 1;
+            setPhotos((prev) => (prev.length >= 10 || prev.includes(url) ? prev : [...prev, url]));
+          }
+        } catch {
+          failedCount += 1;
         }
       }
-      if (uploadedUrls.length > 0) {
-        setPhotos((prev) => [...prev, ...uploadedUrls].slice(0, 10));
+
+      if (!isMountedRef.current) return;
+      const notices: string[] = [];
+      if (invalidTypeCount > 0) {
+        notices.push(
+          `${invalidTypeCount} tệp không đúng định dạng (chỉ hỗ trợ JPG, PNG, WebP, GIF — không hỗ trợ SVG/HEIC/BMP).`
+        );
       }
-    } catch (err: unknown) {
-      setError(
-        err instanceof Error && err.message
-          ? err.message
-          : 'Không thể tải ảnh lên máy chủ. Bạn có thể dán link ảnh trực tiếp.'
-      );
+      if (oversizeCount > 0) {
+        notices.push(`${oversizeCount} ảnh vượt quá giới hạn 5MB nên đã bỏ qua.`);
+      }
+      if (failedCount > 0) {
+        notices.push(
+          uploadedCount > 0
+            ? `Đã lưu ${uploadedCount} ảnh thành công, nhưng ${failedCount} ảnh tải lên bị lỗi.`
+            : `Không thể tải ${failedCount} ảnh lên máy chủ. Bạn có thể thử lại hoặc dán đường link ảnh trực tiếp.`
+        );
+      }
+      if (truncatedCount > 0) {
+        notices.push(`Chỉ giữ tối đa 10 ảnh (đã bỏ qua ${truncatedCount} ảnh vượt giới hạn).`);
+      }
+      if (notices.length > 0) {
+        const summaryMsg = notices.join(' ');
+        setError(summaryMsg);
+        dispatchReportToast(summaryMsg, failedCount > 0 || invalidTypeCount > 0 || oversizeCount > 0 ? 'error' : 'info');
+      }
     } finally {
-      setUploadingPhoto(false);
+      if (isMountedRef.current) setUploadingPhoto(false);
       e.target.value = '';
     }
   };
@@ -176,7 +254,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
       return;
     }
     if (photos.length >= 10) {
-      setError('Bạn có thể đính kèm tối đa 10 ảnh thực địa.');
+      setError('Bạn có thể đính kèm tối đa 10 ảnh cho mỗi bài nhật ký.');
       return;
     }
     setPhotos((prev) => (prev.includes(trimmed) ? prev : [...prev, trimmed].slice(0, 10)));
@@ -193,7 +271,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
     if (loading || uploadingPhoto) return;
     setError('');
 
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!token) {
       setError('Vui lòng đăng nhập tài khoản để viết nhật ký chuyến đi.');
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
@@ -201,9 +279,12 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
     }
 
     if (!title.trim() || !content.trim()) {
-      setError('Vui lòng nhập đầy đủ tiêu đề và nội dung trải nghiệm thực tế.');
+      setError('Vui lòng nhập đầy đủ tiêu đề và nội dung chuyến đi.');
       return;
     }
+
+    const resolvedGroupSize = clampGroupSize(groupSizeInput, 2);
+    setGroupSizeInput(String(resolvedGroupSize));
 
     setLoading(true);
     try {
@@ -238,7 +319,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
           photos: finalPhotos.slice(0, 10),
           tripDate,
           duration: duration.trim() || '2 ngày 1 đêm',
-          groupSize,
+          groupSize: resolvedGroupSize,
           totalCost: totalCost.trim(),
           difficultyActual,
           weatherCondition: weatherCondition.trim(),
@@ -319,7 +400,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
         className="modal-content"
         role="dialog"
         aria-modal="true"
-        aria-label="Viết nhật ký chuyến đi thực tế"
+        aria-label="Viết nhật ký chuyến đi"
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
         style={{
@@ -365,10 +446,10 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
             </div>
             <div>
               <div style={{ fontSize: '0.68rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-                NHẬT KÝ THỰC ĐỊA &amp; KINH NGHIỆM (+30 ĐIỂM UY TÍN)
+                CHIA SẺ NHẬT KÝ HÀNH TRÌNH (+30 ĐIỂM UY TÍN)
               </div>
               <h3 style={{ margin: 0, fontSize: '1.14rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                Viết Nhật Ký Chuyến Đi Thực Tế
+                Viết nhật ký chuyến đi
               </h3>
             </div>
           </div>
@@ -415,7 +496,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
 
           {/* Chọn cung đường */}
           <div>
-            <label style={labelStyle}>Cung đường thực tế đã đi *</label>
+            <label style={labelStyle}>Cung đường đã đi *</label>
             <select
               value={selectedTrailId}
               onChange={(e) => setSelectedTrailId(e.target.value)}
@@ -459,7 +540,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
           {/* Grid thông số chuyến đi */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
             <div>
-              <label style={labelStyle}>Ngày khởi hành thực tế</label>
+              <label style={labelStyle}>Ngày khởi hành</label>
               <input
                 type="date"
                 required
@@ -470,7 +551,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
             </div>
 
             <div>
-              <label style={labelStyle}>Thời gian đi thực tế</label>
+              <label style={labelStyle}>Thời gian chuyến đi</label>
               <input
                 type="text"
                 placeholder="VD: 2 ngày 1 đêm"
@@ -481,19 +562,20 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
             </div>
 
             <div>
-              <label style={labelStyle}>Số thành viên trong nhóm</label>
+              <label style={labelStyle}>Số thành viên trong nhóm (1–50)</label>
               <input
                 type="number"
                 min={1}
                 max={50}
-                value={groupSize}
-                onChange={(e) => setGroupSize(Math.max(1, Number(e.target.value) || 1))}
+                value={groupSizeInput}
+                onChange={(e) => setGroupSizeInput(e.target.value)}
+                onBlur={() => setGroupSizeInput(String(clampGroupSize(groupSizeInput, 2)))}
                 style={inputStyle}
               />
             </div>
 
             <div>
-              <label style={labelStyle}>Tổng chi phí thực tế</label>
+              <label style={labelStyle}>Tổng chi phí ước tính</label>
               <input
                 type="text"
                 placeholder="VD: 1.600.000 VNĐ / người"
@@ -504,7 +586,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
             </div>
           </div>
 
-          {/* Đánh giá chung (1-5 sao) & Độ khó thực tế (wrap sạch trên mobile) */}
+          {/* Đánh giá chung (1-5 sao) & Độ khó cảm nhận (wrap sạch trên mobile) */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
             <div>
               <label style={labelStyle}>Đánh giá trải nghiệm (1-5 sao) *</label>
@@ -537,7 +619,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
             </div>
 
             <div>
-              <label style={labelStyle}>Độ khó thực tế gặp phải (1-5)</label>
+              <label style={labelStyle}>Độ khó cảm nhận (1-5)</label>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                 {[1, 2, 3, 4, 5].map((lvl) => (
                   <button
@@ -565,9 +647,9 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
             </div>
           </div>
 
-          {/* Thời tiết thực địa */}
+          {/* Thời tiết & đường mòn */}
           <div>
-            <label style={labelStyle}>Tình hình thời tiết &amp; đường mòn thực địa</label>
+            <label style={labelStyle}>Thời tiết &amp; tình trạng đường mòn</label>
             <input
               type="text"
               placeholder="VD: Trời khô ráo, sáng có sương mù nhẹ, đỉnh gió mạnh 25km/h"
@@ -591,7 +673,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
             </div>
 
             <div>
-              <label style={labelStyle}>Cảnh báo an toàn hiện trường</label>
+              <label style={labelStyle}>Lưu ý an toàn trên đường</label>
               <input
                 type="text"
                 placeholder="VD: Đoạn dốc trơn khi mưa, cần gậy và đèn pin tốt"
@@ -613,11 +695,11 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
             />
           </div>
 
-          {/* Thư viện ảnh kỷ niệm hiện trường (Tối đa 10 ảnh) */}
+          {/* Thư viện ảnh chuyến đi (Tối đa 10 ảnh) */}
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8, flexWrap: 'wrap' }}>
               <label style={{ ...labelStyle, marginBottom: 0 }}>
-                Ảnh kỷ niệm hiện trường ({photos.length}/10 ảnh)
+                Ảnh chụp chuyến đi ({photos.length}/10 ảnh)
               </label>
               {photos.length < 10 && (
                 <label
@@ -639,7 +721,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
                   <span>{uploadingPhoto ? 'Đang tải ảnh...' : 'Tải ảnh từ máy (nhiều ảnh)'}</span>
                   <input
                     type="file"
-                    accept="image/*"
+                    accept={ALLOWED_IMAGE_ACCEPT}
                     multiple
                     disabled={uploadingPhoto}
                     onChange={handlePhotoUpload}
@@ -658,51 +740,78 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
                   marginBottom: 8,
                 }}
               >
-                {photos.map((src, idx) => (
-                  <div
-                    key={`${src}-${idx}`}
-                    style={{
-                      position: 'relative',
-                      height: 68,
-                      borderRadius: 4,
-                      overflow: 'hidden',
-                      border: '1px solid var(--color-border)',
-                      background: 'var(--color-bg-main)',
-                    }}
-                  >
-                    <img
-                      loading="lazy"
-                      decoding="async"
-                      src={src}
-                      alt={`Ảnh hiện trường ${idx + 1}`}
-                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => handleRemovePhoto(idx)}
-                      aria-label={`Xóa ảnh ${idx + 1}`}
-                      title="Xóa ảnh"
+                {photos.map((src, idx) => {
+                  const isBroken = failedPhotoUrls.includes(src);
+                  return (
+                    <div
+                      key={`${src}-${idx}`}
                       style={{
-                        position: 'absolute',
-                        top: 3,
-                        right: 3,
-                        width: 20,
-                        height: 20,
+                        position: 'relative',
+                        height: 68,
                         borderRadius: 4,
-                        background: 'var(--overlay-bg)',
-                        border: '1px solid var(--color-border-strong)',
-                        color: 'var(--color-on-media)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        cursor: 'pointer',
-                        padding: 0,
+                        overflow: 'hidden',
+                        border: '1px solid var(--color-border)',
+                        background: 'var(--color-bg-main)',
                       }}
                     >
-                      <IconX size={11} color="var(--color-on-media)" />
-                    </button>
-                  </div>
-                ))}
+                      {isBroken ? (
+                        <div
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: 2,
+                            color: 'var(--color-text-dim)',
+                            fontSize: '0.62rem',
+                            padding: 4,
+                            textAlign: 'center',
+                          }}
+                        >
+                          <IconCamera size={14} color="var(--color-text-dim)" />
+                          <span>Lỗi ảnh</span>
+                        </div>
+                      ) : (
+                        <img
+                          loading="lazy"
+                          decoding="async"
+                          src={src}
+                          alt={`Ảnh chuyến đi ${idx + 1}`}
+                          onError={() =>
+                            setFailedPhotoUrls((prev) => (prev.includes(src) ? prev : [...prev, src]))
+                          }
+                          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                        />
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleRemovePhoto(idx)}
+                        aria-label={`Xóa ảnh ${idx + 1}`}
+                        title="Xóa ảnh"
+                        style={{
+                          position: 'absolute',
+                          top: 3,
+                          right: 3,
+                          width: 20,
+                          height: 20,
+                          borderRadius: 4,
+                          background: 'var(--overlay-bg)',
+                          border: '1px solid var(--color-border-strong)',
+                          color: 'var(--color-on-media)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          cursor: 'pointer',
+                          padding: 0,
+                        }}
+                      >
+                        <IconX size={11} color="var(--color-on-media)" />
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             )}
 
@@ -710,10 +819,11 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
               <div style={{ display: 'flex', gap: 6 }}>
                 <input
                   type="url"
-                  placeholder="Hoặc dán link ảnh thực tế (https://...) rồi bấm + Thêm"
+                  placeholder="Hoặc dán đường link ảnh (https://...) rồi bấm + Thêm"
                   value={photoUrlInput}
                   onChange={(e) => setPhotoUrlInput(e.target.value)}
                   onKeyDown={(e) => {
+                    if (e.nativeEvent.isComposing) return;
                     if (e.key === 'Enter') {
                       e.preventDefault();
                       handleAddPhotoUrl();
@@ -735,11 +845,11 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
 
           {/* Nội dung chi tiết */}
           <div>
-            <label style={labelStyle}>Nội dung chi tiết kinh nghiệm &amp; Review cung đường *</label>
+            <label style={labelStyle}>Chia sẻ chi tiết hành trình *</label>
             <textarea
               required
               rows={5}
-              placeholder="Kể lại chi tiết hành trình: thời gian xuất phát, địa hình từng chặng, lán nghỉ, nguồn nước, kinh nghiệm thực tế..."
+              placeholder="Kể lại chi tiết hành trình: thời gian xuất phát, địa hình từng chặng, lán nghỉ, nguồn nước, kinh nghiệm hữu ích cho người đi sau..."
               value={content}
               onChange={(e) => setContent(e.target.value)}
               style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.6 }}
@@ -763,7 +873,7 @@ export const CreateTripReportModal: React.FC<CreateTripReportModalProps> = ({
               className="btn btn-primary"
               style={{ borderRadius: 4, padding: '8px 22px', fontSize: '0.84rem', fontWeight: 800 }}
             >
-              {loading ? 'Đang gửi bài...' : 'Đăng Nhật Ký Chuyến Đi'}
+              {loading ? 'Đang gửi bài...' : 'Đăng nhật ký'}
             </button>
           </div>
         </form>

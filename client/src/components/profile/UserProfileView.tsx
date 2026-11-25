@@ -6,7 +6,7 @@ import { ThreadDetailModal } from '../forum/ThreadDetailModal.js';
 import { AuthorProfileModal } from '../forum/AuthorProfileModal.js';
 import { ProfileAnalyticsPanel, type RawCheckinInput } from './ProfileAnalyticsPanel.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
-import { clearSensitiveSessionStorage } from '../../utils/storageScope.js';
+import { clearSensitiveSessionStorage, safeLocalStorageGet, safeLocalStorageSet, scopedStorageKey } from '../../utils/storageScope.js';
 import { useFocusTrap, isTopmostFocusTrap } from '../../hooks/useFocusTrap.js';
 import { useSlidingIndicator } from '../../hooks/useSlidingIndicator.js';
 import { DEFAULT_VIETNAM_TRAIL_COVER } from '../../utils/cloudinary.js';
@@ -248,38 +248,38 @@ const DEFAULT_COVER_URL = '/covers/trail-fansipan.svg';
 const COVER_PRESETS: CoverPreset[] = [
   {
     id: 'fansipan',
-    name: 'Đỉnh Fansipan - Nóc Nhà Đông Dương',
-    location: '3,143m • Hoàng Liên Sơn, Lào Cai',
+    name: 'Đỉnh Fansipan — Nóc nhà Đông Dương',
+    location: '3.143m · Hoàng Liên Sơn, Lào Cai',
     url: '/covers/trail-fansipan.svg',
   },
   {
     id: 'taxua',
-    name: 'Sống Lưng Khủng Long Tà Xùa',
-    location: '2,865m • Bắc Yên, Sơn La',
+    name: 'Sống lưng Khủng Long Tà Xùa',
+    location: '2.865m · Bắc Yên, Sơn La',
     url: '/covers/trail-taxua.svg',
   },
   {
     id: 'laothan',
-    name: 'Đỉnh Lảo Thẩn - Thiên Đường Săn Mây',
-    location: '2,860m • Y Tý, Bát Xát, Lào Cai',
+    name: 'Đỉnh Lảo Thẩn — Biển mây Y Tý',
+    location: '2.860m · Y Tý, Bát Xát, Lào Cai',
     url: '/covers/trail-laothan.svg',
   },
   {
     id: 'kyquansan',
-    name: 'Bạch Mộc Lương Tử (Kỳ Quan San)',
-    location: '3,046m • Bát Xát & Phong Thổ',
+    name: 'Kỳ Quan San (Bạch Mộc Lương Tử)',
+    location: '3.046m · Bát Xát & Phong Thổ',
     url: '/covers/trail-kyquansan.svg',
   },
   {
     id: 'bachma',
-    name: 'Vườn Quốc Gia Bạch Mã',
-    location: '1,450m • Phú Lộc, Thừa Thiên Huế',
+    name: 'Vườn quốc gia Bạch Mã',
+    location: '1.450m · Phú Lộc, Thành phố Huế',
     url: '/covers/trail-bachma.svg',
   },
   {
     id: 'tanangphandung',
-    name: 'Cung Trek Tà Năng - Phan Dũng',
-    location: '55km • Lâm Đồng - Bình Thuận',
+    name: 'Tà Năng – Phan Dũng',
+    location: '55km · Lâm Đồng – Bình Thuận',
     url: '/covers/trail-tanangphandung.svg',
   },
 ];
@@ -287,7 +287,7 @@ const COVER_PRESETS: CoverPreset[] = [
 interface ProfileProps {
   currentUser?: UserProfile | null;
   onBack: () => void;
-  onSelectTrail: (trail: Trail) => void;
+  onSelectTrail: (trail: Trail, initialTab?: string) => void;
   onShowToast?: (message: string, type?: 'success' | 'error' | 'info') => void;
   onProfileUpdate?: (user: UserProfile) => void;
   onNavigateToContribute?: () => void;
@@ -301,28 +301,109 @@ interface GearItem {
 }
 
 const ALL_GEAR_ITEMS: GearItem[] = [
-  { id: 'tent', name: 'Lều cắm trại 2-4 người chống nước', category: 'Trú ẩn' },
-  { id: 'backpack', name: 'Balo leo núi chuyên dụng 50L', category: 'Chứa đồ' },
-  { id: 'boots', name: 'Giày leo núi gót bám địa hình', category: 'Di chuyển' },
-  { id: 'flashlight', name: 'Đèn pin đeo đầu siêu sáng 1000lm', category: 'Chiếu sáng' },
-  { id: 'firstaid', name: 'Túi y tế & Bộ sơ cứu khẩn cấp SOS', category: 'Y tế & An toàn' },
-  { id: 'stove', name: 'Bộ bếp dã ngoại & Bình gas sinh tồn', category: 'Nấu nướng' },
-  { id: 'radio', name: 'Bộ đàm sinh tồn & Còi cứu hộ SOS', category: 'Mạng liên lạc' },
-  { id: 'rope', name: 'Dây thừng dã ngoại & Móc leo núi', category: 'Bảo hộ' },
+  { id: 'tent', name: 'Lều 2–4 người chống mưa gió', category: 'Trú ẩn' },
+  { id: 'backpack', name: 'Balo trợ lực 50L', category: 'Đựng đồ' },
+  { id: 'boots', name: 'Giày leo núi đế bám đất ướt', category: 'Giày dép' },
+  { id: 'flashlight', name: 'Đèn pin đeo trán 1000lm', category: 'Chiếu sáng' },
+  { id: 'firstaid', name: 'Túi y tế & sơ cứu cơ bản', category: 'Y tế & an toàn' },
+  { id: 'stove', name: 'Bếp gas mini & bộ nồi dã ngoại', category: 'Nấu nướng' },
+  { id: 'radio', name: 'Bộ đàm & còi cứu hộ SOS', category: 'Liên lạc' },
+  { id: 'rope', name: 'Dây thừng phụ & móc khóa an toàn', category: 'Hỗ trợ' },
 ];
 
-// Interactive Trekking Style Options
+// Interactive Trekking Style Options (IDs preserved for DB compatibility, labels localized cleanly)
 const TREKKING_STYLE_OPTIONS = [
-  { id: 'Trekking & Camping', title: 'Trekking & Camping', sub: 'Leo núi & Cắm trại dã ngoại' },
-  { id: 'Alpine Ultra Trail', title: 'Alpine Ultra Trail', sub: 'Chạy trail địa hình cao' },
-  { id: 'Expedition Survival', title: 'Expedition Survival', sub: 'Sinh tồn mạo hiểm' },
-  { id: 'Lightweight Hiking', title: 'Lightweight Hiking', sub: 'Leo núi nhẹ nhàng' },
+  { id: 'Trekking & Camping', title: 'Đi rừng & Cắm trại', sub: 'Đi rừng dài ngày, hạ trại qua đêm' },
+  { id: 'Alpine Ultra Trail', title: 'Chạy địa hình núi cao', sub: 'Chạy địa hình tốc độ trên núi cao' },
+  { id: 'Expedition Survival', title: 'Sinh tồn dã ngoại tự túc', sub: 'Tự túc sâu trong rừng rậm' },
+  { id: 'Lightweight Hiking', title: 'Đi bộ nhẹ trong ngày', sub: 'Đi nhẹ nhàng, về trong ngày' },
 ];
+
+const formatTrekkingStyleVi = (styleId?: string | null): string => {
+  const clean = String(styleId || '').trim();
+  const matched = TREKKING_STYLE_OPTIONS.find((opt) => opt.id === clean);
+  return matched ? matched.title : clean || 'Đi rừng & Cắm trại';
+};
+
+const formatUserRoleVi = (role?: string | null): string => {
+  const normalized = String(role || 'user').trim().toLowerCase();
+  if (normalized === 'admin') return 'Quản trị viên';
+  if (normalized === 'moderator' || normalized === 'mod') return 'Điều phối viên';
+  if (normalized === 'guide' || normalized === 'porter') return 'Dẫn đường';
+  return 'Thành viên';
+};
+
+const formatSafeDateTimeVi = (raw?: string | null): string => {
+  if (!raw) return '';
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString('vi-VN');
+};
+
+const truncateUtf8Bytes = (text: string, maxBytes: number): string => {
+  if (!text || maxBytes <= 0) return '';
+  const encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+  if (!encoder) return text.slice(0, maxBytes);
+  if (encoder.encode(text).length <= maxBytes) return text;
+  let out = '';
+  for (const ch of text) {
+    const candidate = out + ch;
+    if (encoder.encode(candidate).length > maxBytes) break;
+    out = candidate;
+  }
+  return out;
+};
+
+const DEFAULT_GEAR_IDS: readonly string[] = ['tent', 'backpack', 'boots', 'flashlight', 'firstaid'];
+
+const readLocalGearLocker = (uid?: string | null): string[] => {
+  if (typeof window === 'undefined') return [...DEFAULT_GEAR_IDS];
+  try {
+    const raw = localStorage.getItem(scopedStorageKey('lost_gear_locker', uid));
+    if (!raw) return [...DEFAULT_GEAR_IDS];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((x): x is string => typeof x === 'string');
+    }
+  } catch {
+    // ignore malformed local storage
+  }
+  return [...DEFAULT_GEAR_IDS];
+};
+
+const sweepUserScopedLocalStorage = (uid?: string | null): void => {
+  if (typeof window === 'undefined') return;
+  const scopedPrefixes = [
+    'lost_cover_url_',
+    'lost_saved_meta_v1_',
+    'lost_checkins_',
+    'lost_annual_goals_v2_',
+    'lost_gear_locker_',
+  ];
+  try {
+    const keysToDelete: string[] = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      if (
+        scopedPrefixes.some((p) => key.startsWith(p)) &&
+        (!uid || key.endsWith(`_${uid}`) || key.endsWith('_guest'))
+      ) {
+        keysToDelete.push(key);
+      }
+    }
+    keysToDelete.forEach((k) => localStorage.removeItem(k));
+    sessionStorage.removeItem('lost_live_tracker_custom_route_id');
+  } catch {
+    // ignore storage access errors
+  }
+};
 
 // Comprehensive System Badges Definition with Vibrant Unique Color Themes
 interface SystemBadge {
   id: string;
   name: string;
+  legacyKeys: string[];
   rarity: 'Phổ Biến' | 'Hiếm' | 'Huyền Thoại';
   unlocked: boolean;
   unlockedAt?: string;
@@ -337,19 +418,20 @@ interface SystemBadge {
 const getDifficultyText = (level?: number): string => {
   if (!level) return 'Đang cập nhật';
   if (level <= 2) return `Dễ (${level}/5)`;
-  if (level === 3) return 'Trung Bình (3/5)';
+  if (level === 3) return 'Trung bình (3/5)';
   if (level === 4) return 'Khó (4/5)';
-  return 'Rất Khó (5/5)';
+  return 'Rất khó (5/5)';
 };
 
 const SYSTEM_BADGES: SystemBadge[] = [
   {
     id: 'b-1',
-    name: 'Trekker Mới',
+    name: 'Dấu Chân Đầu Tiên',
+    legacyKeys: ['trekker mới', 'new trekker'],
     rarity: 'Phổ Biến',
     unlocked: false,
-    description: 'Huy hiệu ghi nhận thành viên vừa khởi tạo tài khoản trên LOST thành công.',
-    requirement: 'Đăng ký tài khoản hệ thống LOST.',
+    description: 'Dấu chân đầu tiên khi bạn gia nhập cộng đồng đi núi LOST.',
+    requirement: 'Tạo tài khoản trên LOST.',
     color: 'var(--color-primary)',
     bg: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
     border: 'color-mix(in srgb, var(--color-primary) 36%, transparent)',
@@ -357,11 +439,12 @@ const SYSTEM_BADGES: SystemBadge[] = [
   },
   {
     id: 'b-2',
-    name: 'Verified Trekker',
+    name: 'Thành Viên Xác Thực',
+    legacyKeys: ['verified trekker'],
     rarity: 'Hiếm',
     unlocked: false,
-    description: 'Huy hiệu xác thực chính chủ dành cho tài khoản đã xác minh Email OTP hoặc Đăng nhập bằng Google.',
-    requirement: 'Kích hoạt xác minh OTP Email hoặc Google OAuth thành công.',
+    description: 'Tài khoản đã xác minh email bằng mã OTP hoặc đăng nhập qua Google.',
+    requirement: 'Xác minh email OTP hoặc đăng nhập bằng Google.',
     color: 'var(--color-sky)',
     bg: 'color-mix(in srgb, var(--color-sky) 12%, transparent)',
     border: 'color-mix(in srgb, var(--color-sky) 36%, transparent)',
@@ -369,10 +452,11 @@ const SYSTEM_BADGES: SystemBadge[] = [
   },
   {
     id: 'b-3',
-    name: 'Fansipan Peak Conqueror',
+    name: 'Chinh Phục Fansipan',
+    legacyKeys: ['fansipan peak conqueror', 'fansipan'],
     rarity: 'Huyền Thoại',
     unlocked: false,
-    description: 'Vượt qua tuyến đường Trạm Tôn chinh phục Nóc nhà Đông Dương ở độ cao 3,143m.',
+    description: 'Tự bước lên nóc nhà Đông Dương cao 3.143m qua dãy Hoàng Liên Sơn.',
     requirement: 'Check-in thành công tại đỉnh Fansipan (Lào Cai).',
     color: 'var(--color-sun)',
     bg: 'color-mix(in srgb, var(--color-sun) 12%, transparent)',
@@ -381,11 +465,12 @@ const SYSTEM_BADGES: SystemBadge[] = [
   },
   {
     id: 'b-4',
-    name: 'Alpine Master',
+    name: 'Bậc Thầy Núi Cao',
+    legacyKeys: ['alpine master'],
     rarity: 'Hiếm',
     unlocked: false,
-    description: 'Đạt cấp độ sinh tồn cao cấp nhờ tích lũy hơn 50 điểm uy tín và hoàn thành nhiều cung đường trek khó.',
-    requirement: 'Đạt từ 50 điểm uy tín (Reputation Score) trở lên.',
+    description: 'Dành cho người đi nhiều, chia sẻ thực địa tin cậy và đạt từ 500 điểm uy tín trở lên.',
+    requirement: 'Tích lũy tối thiểu 500 điểm uy tín trên LOST.',
     color: 'var(--color-sky)',
     bg: 'color-mix(in srgb, var(--color-sky) 12%, transparent)',
     border: 'color-mix(in srgb, var(--color-sky) 36%, transparent)',
@@ -393,11 +478,12 @@ const SYSTEM_BADGES: SystemBadge[] = [
   },
   {
     id: 'b-5',
-    name: 'Emergency Rescue Hero',
+    name: 'Người Báo Tin Cứu Hộ',
+    legacyKeys: ['emergency rescue hero'],
     rarity: 'Huyền Thoại',
     unlocked: false,
-    description: 'Vinh danh nhà thám hiểm có những đóng góp cảnh báo sự cố sạt lở hoặc hỗ trợ SOS cho cộng đồng.',
-    requirement: 'Gửi từ 3 bài cảnh báo sự cố an toàn trên Diễn đàn được cộng đồng xác minh.',
+    description: 'Ghi nhận những người kịp thời báo sạt lở, lũ suối hoặc hỗ trợ anh em lúc gặp sự cố.',
+    requirement: 'Có ít nhất 3 tin báo sự cố an toàn được cộng đồng xác nhận.',
     color: 'var(--color-error-text, var(--color-error))',
     bg: 'color-mix(in srgb, var(--color-error) 10%, transparent)',
     border: 'color-mix(in srgb, var(--color-error) 34%, transparent)',
@@ -405,11 +491,12 @@ const SYSTEM_BADGES: SystemBadge[] = [
   },
   {
     id: 'b-6',
-    name: 'Ultra Trail Pioneer',
+    name: 'Tiên Phong Đường Dài',
+    legacyKeys: ['ultra trail pioneer'],
     rarity: 'Huyền Thoại',
     unlocked: false,
-    description: 'Dành riêng cho những nhà thám hiểm bền bỉ chinh phục tổng quãng đường leo núi trên 100 km.',
-    requirement: 'Hoàn thành tổng quãng đường trek tích lũy vượt mốc 100 km.',
+    description: 'Đôi chân bền bỉ đã đi qua hơn 100 km đường núi rừng.',
+    requirement: 'Tích lũy tổng quãng đường check-in vượt mốc 100 km.',
     color: 'var(--color-stream)',
     bg: 'color-mix(in srgb, var(--color-stream) 12%, transparent)',
     border: 'color-mix(in srgb, var(--color-stream) 36%, transparent)',
@@ -524,7 +611,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
   // Cover Photo Customization (scoped per user ID so covers never leak across accounts)
   const [customCoverUrl, setCustomCoverUrl] = useState<string>(() => {
-    const storedForUser = currentUserId ? localStorage.getItem(getCoverStorageKey(currentUserId)) : null;
+    const storedForUser = currentUserId ? safeLocalStorageGet(getCoverStorageKey(currentUserId)) : null;
     return currentUser?.coverUrl || storedForUser || DEFAULT_COVER_URL;
   });
   const [showCoverModal, setShowCoverModal] = useState(false);
@@ -535,11 +622,18 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   const savedTabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const csvBlobCleanupRef = useRef<Map<number, string>>(new Map());
   const isMountedRef = useRef(true);
+  const loadProfileAbortRef = useRef<AbortController | null>(null);
+  const loadProfileSeqRef = useRef(0);
+  const followModalAbortRef = useRef<AbortController | null>(null);
+  const followModalSeqRef = useRef(0);
+  const gearRevisionRef = useRef(0);
   useEffect(() => {
     isMountedRef.current = true;
     const cleanupMap = csvBlobCleanupRef.current;
     return () => {
       isMountedRef.current = false;
+      loadProfileAbortRef.current?.abort();
+      followModalAbortRef.current?.abort();
       cleanupMap.forEach((url, timerId) => {
         window.clearTimeout(timerId);
         URL.revokeObjectURL(url);
@@ -572,11 +666,18 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     setPrevCoverSyncKey(coverSyncKey);
     const nextCover =
       currentUser?.coverUrl ||
-      (currentUserId ? localStorage.getItem(getCoverStorageKey(currentUserId)) : null) ||
+      (currentUserId ? safeLocalStorageGet(getCoverStorageKey(currentUserId)) : null) ||
       DEFAULT_COVER_URL;
     setCustomCoverUrl(nextCover);
     setPreviewCover(nextCover);
   }
+
+  // Gear Locker State (Feature 2 — persisted per user/guest in localStorage)
+  const [userGear, setUserGear] = useState<string[]>(() => readLocalGearLocker(currentUserId));
+  const userGearRef = useRef<string[]>(userGear);
+  useEffect(() => {
+    userGearRef.current = userGear;
+  }, [userGear]);
 
   const userSyncKey = `${currentUserId}|${currentUserEmail}`;
   const [prevUserSyncKey, setPrevUserSyncKey] = useState(userSyncKey);
@@ -591,10 +692,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     setConfirmRemoveSavedId(null);
     setSavingSavedMetaIds(new Set());
     setRemovingSavedIds(new Set());
+    setUserGear(readLocalGearLocker(currentUserId));
   }
-
-  // Gear Locker State (Feature 2)
-  const [userGear, setUserGear] = useState<string[]>(['tent', 'backpack', 'boots', 'flashlight', 'firstaid']);
 
   // User Live Forum Posts State (Feature 3)
   const [userForumPosts, setUserForumPosts] = useState<ForumThread[]>([]);
@@ -613,25 +712,25 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     if (!deletingContribution) return;
     const targetId = deletingContribution.id;
     const targetName = deletingContribution.name;
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
 
     // 1. Delete from Server DB if token exists and verify response
     try {
       if (token) {
-        const res = await fetch(`/api/contributions/${targetId}`, {
+        const res = await fetch(`/api/contributions/${encodeURIComponent(targetId)}`, {
           method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` },
+          headers: getApiHeaders(),
         });
         if (!res.ok && res.status !== 404) {
           const errData = await res.json().catch(() => ({}));
-          onShowToast?.(errData.message || 'Không thể xóa bài đóng góp trên máy chủ.', 'error');
+          onShowToast?.(errData.message || 'Chưa xóa được bài gửi này, bạn thử lại nhé.', 'error');
           setDeletingContribution(null);
           return;
         }
       }
     } catch (err) {
       console.warn('Delete contribution API error:', err);
-      onShowToast?.('Lỗi kết nối máy chủ khi xóa bài đóng góp.', 'error');
+      onShowToast?.('Mạng đang hơi chập chờn, chưa xóa được bài này.', 'error');
       setDeletingContribution(null);
       return;
     }
@@ -639,12 +738,12 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     setUserContributions((prev) => prev.filter((item) => item.id !== targetId && item._id !== targetId));
     setDeletingContribution(null);
     if (onShowToast) {
-      onShowToast(`Đã xóa bài đóng góp "${targetName}" thành công!`, 'info');
+      onShowToast(`Đã xóa bài gửi "${targetName}".`, 'info');
     }
   };
 
   const handleEditContribution = (contrib: ProfileContributionItem) => {
-    localStorage.setItem('lost_editing_contribution', JSON.stringify(contrib));
+    safeLocalStorageSet('lost_editing_contribution', JSON.stringify(contrib));
     if (onNavigateToContribute) {
       onNavigateToContribute();
     }
@@ -686,17 +785,26 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   }, []);
 
   const loadProfileData = useCallback(async () => {
+    loadProfileAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadProfileAbortRef.current = controller;
+    const { signal } = controller;
+    const reqSeq = ++loadProfileSeqRef.current;
+    const isStale = () => signal.aborted || !isMountedRef.current || reqSeq !== loadProfileSeqRef.current;
+
     setIsLoading(true);
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     let loadedUser: UserProfile | null = currentUserRef.current || null;
 
     try {
       if (token) {
         const res = await fetch('/api/auth/me', {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: getApiHeaders(),
+          signal,
         });
-        const data = await res.json();
-        if (data.success && data.user) {
+        const data = await res.json().catch(() => null);
+        if (isStale()) return;
+        if (res.ok && data?.success && data.user) {
           loadedUser = data.user;
           setProfile(data.user);
           populateForm(data.user);
@@ -712,20 +820,28 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           }
           if (data.user.gearLocker && Array.isArray(data.user.gearLocker)) {
             setUserGear(data.user.gearLocker);
+            try {
+              const uid = String(data.user._id || data.user.id || '');
+              localStorage.setItem(scopedStorageKey('lost_gear_locker', uid), JSON.stringify(data.user.gearLocker));
+            } catch {
+              // ignore quota error
+            }
           }
 
           // Fetch live contributions from Server API and merge with localStorage
           let serverContribs: ProfileContributionItem[] = [];
           try {
             const cRes = await fetch('/api/contributions', {
-              headers: { Authorization: `Bearer ${token}` },
+              headers: getApiHeaders(),
+              signal,
             });
-            const cData = await cRes.json();
-            if (cData.success && Array.isArray(cData.data)) {
+            const cData = await cRes.json().catch(() => null);
+            if (isStale()) return;
+            if (cRes.ok && cData?.success && Array.isArray(cData.data)) {
               serverContribs = cData.data as ProfileContributionItem[];
             }
           } catch (cErr) {
-            console.warn('[Profile Contrib API Fetch]:', cErr);
+            if (!signal.aborted) console.warn('[Profile Contrib API Fetch]:', cErr);
           }
 
           const contribMap = new Map<string, ProfileContributionItem>();
@@ -750,7 +866,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
             const emailMatch = Boolean(userEmail && cEmail && cEmail === userEmail);
             const idMatch = Boolean(userId && cUserId && cUserId === userId);
-            const nameMatch = Boolean(userName && cName && cName === userName);
+            const nameMatch = Boolean(!cEmail && !cUserId && userName && cName && cName === userName);
 
             return emailMatch || idMatch || nameMatch;
           });
@@ -758,19 +874,23 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         }
       }
     } catch (err) {
-      console.error('[Profile Fetch Error]:', err);
+      if (!signal.aborted) console.error('[Profile Fetch Error]:', err);
     } finally {
-      setIsLoading(false);
+      if (!isStale()) setIsLoading(false);
     }
+
+    if (isStale()) return;
 
     const activeUserId = String((loadedUser as UserWithMongoId | null)?._id || loadedUser?.id || loadedUser?.username || '').trim();
     if (activeUserId) {
       try {
         const statsRes = await fetch(`/api/users/profile/${encodeURIComponent(activeUserId)}`, {
           headers: getApiHeaders(),
+          signal,
         });
-        const statsData = await statsRes.json();
-        if (statsData.success && statsData.data?.stats) {
+        const statsData = await statsRes.json().catch(() => null);
+        if (isStale()) return;
+        if (statsRes.ok && statsData?.success && statsData.data?.stats) {
           setProfileStats({
             totalDistanceKm: Number(statsData.data.stats.totalDistanceKm) || 0,
             highestAltitudeM: Number(statsData.data.stats.highestAltitudeM) || 0,
@@ -785,18 +905,21 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           });
         }
       } catch (err) {
-        console.warn('[Profile Stats Fetch Error]:', err);
+        if (!signal.aborted) console.warn('[Profile Stats Fetch Error]:', err);
       }
     }
+
+    if (isStale()) return;
 
     try {
       const [allTrails, checkinsRes, savedRes, activitiesRes, leaderboardRes] = await Promise.all([
         fetchTrails(),
-        token ? fetch('/api/checkins/me', { headers: { Authorization: `Bearer ${token}` } }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
-        token ? fetch('/api/saved-trails', { headers: { Authorization: `Bearer ${token}` } }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
-        token ? fetch('/api/activities/me?limit=15', { headers: { Authorization: `Bearer ${token}` } }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
-        fetch('/api/checkins/leaderboard?limit=10').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+        token ? fetch('/api/checkins/me', { headers: getApiHeaders(), signal }).then((r) => (r.ok ? r.json().catch(() => null) : null)).catch(() => null) : Promise.resolve(null),
+        token ? fetch('/api/saved-trails', { headers: getApiHeaders(), signal }).then((r) => (r.ok ? r.json().catch(() => null) : null)).catch(() => null) : Promise.resolve(null),
+        token ? fetch('/api/activities/me?limit=15', { headers: getApiHeaders(), signal }).then((r) => (r.ok ? r.json().catch(() => null) : null)).catch(() => null) : Promise.resolve(null),
+        fetch('/api/checkins/leaderboard?limit=10', { signal }).then((r) => (r.ok ? r.json().catch(() => null) : null)).catch(() => null),
       ]);
+      if (isStale()) return;
       setAllAvailableTrails(allTrails);
 
       if (savedRes?.success && Array.isArray(savedRes.data)) {
@@ -954,16 +1077,20 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       console.error('[Trails Fetch Error]:', err);
     }
 
+    if (isStale()) return;
+
     try {
       const forumRes = await fetch('/api/forum', {
         headers: getApiHeaders(),
+        signal,
       });
-      const forumData = await forumRes.json();
-      if (forumData.success && Array.isArray(forumData.data)) {
+      const forumData = await forumRes.json().catch(() => null);
+      if (isStale()) return;
+      if (forumRes.ok && forumData?.success && Array.isArray(forumData.data)) {
         setUserForumPosts(forumData.data);
       }
     } catch (err) {
-      console.error('[Forum Posts Fetch Error]:', err);
+      if (!signal.aborted) console.error('[Forum Posts Fetch Error]:', err);
     }
   }, [populateForm]);
 
@@ -1120,6 +1247,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   ]);
 
   const loadFollowGraphList = useCallback(async (tab: 'followers' | 'following') => {
+    followModalAbortRef.current?.abort();
+    const controller = new AbortController();
+    followModalAbortRef.current = controller;
+    const reqSeq = ++followModalSeqRef.current;
+
     const targetUid = String(
       (profile as UserWithMongoId | null)?._id ||
         profile?.id ||
@@ -1128,16 +1260,17 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     ).trim();
     if (!targetUid) {
       setFollowModalList([]);
+      setFollowModalLoading(false);
       return;
     }
     setFollowModalLoading(true);
     try {
       const res = await fetch(
         `/api/users/${encodeURIComponent(targetUid)}/${tab}?limit=50`,
-        { headers: getApiHeaders() }
+        { headers: getApiHeaders(), signal: controller.signal }
       );
       const data = await res.json().catch(() => null);
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current || controller.signal.aborted || reqSeq !== followModalSeqRef.current) return;
       if (res.ok && data?.success && Array.isArray(data.data)) {
         setFollowModalList(data.data as FollowGraphMember[]);
         const total = Number(data.pagination?.total);
@@ -1151,9 +1284,13 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         setFollowModalList([]);
       }
     } catch {
-      if (isMountedRef.current) setFollowModalList([]);
+      if (isMountedRef.current && !controller.signal.aborted && reqSeq === followModalSeqRef.current) {
+        setFollowModalList([]);
+      }
     } finally {
-      if (isMountedRef.current) setFollowModalLoading(false);
+      if (isMountedRef.current && !controller.signal.aborted && reqSeq === followModalSeqRef.current) {
+        setFollowModalLoading(false);
+      }
     }
   }, [profile, currentUserId]);
 
@@ -1163,9 +1300,9 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   };
 
   const handleToggleFollowMember = async (member: FollowGraphMember) => {
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!token) {
-      onShowToast?.('Vui lòng đăng nhập để theo dõi thành viên.', 'info');
+      onShowToast?.('Đăng nhập trước để theo dõi thành viên nhé.', 'info');
       return;
     }
     if (togglingFollowIds.has(member._id)) return;
@@ -1187,15 +1324,15 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           followingCount: Math.max(0, prev.followingCount + (nextFollow ? 1 : -1)),
         }));
         onShowToast?.(
-          data.message || (nextFollow ? 'Đã theo dõi thành viên!' : 'Đã bỏ theo dõi thành viên.'),
+          data.message || (nextFollow ? 'Đã theo dõi!' : 'Đã bỏ theo dõi.'),
           'info'
         );
       } else {
-        onShowToast?.(data.message || 'Không thể cập nhật trạng thái theo dõi.', 'error');
+        onShowToast?.(data.message || 'Chưa cập nhật được trạng thái theo dõi.', 'error');
       }
     } catch {
       if (isMountedRef.current) {
-        onShowToast?.('Lỗi kết nối khi cập nhật trạng thái theo dõi.', 'error');
+        onShowToast?.('Mạng chập chờn, chưa cập nhật được theo dõi.', 'error');
       }
     } finally {
       if (isMountedRef.current) {
@@ -1213,7 +1350,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     setCpError('');
 
     if (!cpCurrentPassword) {
-      setCpError('Vui lòng nhập mật khẩu hiện tại.');
+      setCpError('Nhập mật khẩu hiện tại trước nhé.');
       return;
     }
     if (
@@ -1222,11 +1359,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       !/[A-Z]/.test(cpNewPassword) ||
       !/[0-9]/.test(cpNewPassword)
     ) {
-      setCpError('Mật khẩu mới cần tối thiểu 8 ký tự, bao gồm chữ hoa (A-Z), chữ thường (a-z) và chữ số (0-9).');
+      setCpError('Mật khẩu mới cần ít nhất 8 ký tự, gồm chữ hoa (A-Z), chữ thường (a-z) và số (0-9).');
       return;
     }
     if (cpNewPassword !== cpConfirmPassword) {
-      setCpError('Mật khẩu mới xác nhận không trùng khớp.');
+      setCpError('Hai ô mật khẩu mới chưa khớp nhau.');
       return;
     }
 
@@ -1244,7 +1381,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       const data = await res.json().catch(() => ({}));
       if (!isMountedRef.current) return;
       if (!res.ok || !data.success) {
-        setCpError(data.message || 'Không thể đổi mật khẩu lúc này.');
+        setCpError(data.message || 'Chưa đổi được mật khẩu lúc này.');
         return;
       }
 
@@ -1265,10 +1402,10 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       setCpNewPassword('');
       setCpConfirmPassword('');
       setCpError('');
-      onShowToast?.(data.message || 'Đổi mật khẩu thành công!', 'success');
+      onShowToast?.(data.message || 'Đã đổi mật khẩu mới!', 'success');
     } catch {
       if (isMountedRef.current) {
-        setCpError('Không thể kết nối máy chủ để đổi mật khẩu.');
+        setCpError('Không kết nối được lúc này, bạn thử lại sau chút nhé.');
       }
     } finally {
       if (isMountedRef.current) setIsChangingPassword(false);
@@ -1281,11 +1418,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     const isGoogleAcct = (profile || currentUser)?.authProvider === 'google';
 
     if (delConfirmText.trim().normalize('NFC') !== 'XÓA TÀI KHOẢN') {
-      setDelError('Vui lòng nhập chính xác cụm từ "XÓA TÀI KHOẢN" (in hoa có dấu).');
+      setDelError('Gõ đúng cụm từ "XÓA TÀI KHOẢN" (chữ in hoa, có dấu) để xác nhận.');
       return;
     }
     if (!isGoogleAcct && !delPassword) {
-      setDelError('Vui lòng nhập mật khẩu hiện tại để xác nhận xóa tài khoản.');
+      setDelError('Nhập mật khẩu hiện tại để xác nhận xóa tài khoản.');
       return;
     }
 
@@ -1303,7 +1440,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       const data = await res.json().catch(() => ({}));
       if (!isMountedRef.current) return;
       if (!res.ok || !data.success) {
-        setDelError(data.message || 'Không thể xóa tài khoản lúc này.');
+        setDelError(data.message || 'Chưa xóa được tài khoản lúc này.');
         return;
       }
 
@@ -1312,6 +1449,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       } catch {
         // ignore storage restrictions
       }
+      sweepUserScopedLocalStorage(currentUserId);
       clearSensitiveSessionStorage();
       window.dispatchEvent(new CustomEvent('lost:auth-changed', { detail: { authenticated: false } }));
       setShowDeleteAccountModal(false);
@@ -1322,7 +1460,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       }, 250);
     } catch {
       if (isMountedRef.current) {
-        setDelError('Không thể kết nối máy chủ để xóa tài khoản.');
+        setDelError('Không kết nối được lúc này để xóa tài khoản.');
       }
     } finally {
       if (isMountedRef.current) setIsDeletingAccount(false);
@@ -1330,49 +1468,69 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   };
 
   const handleToggleGear = async (gearId: string) => {
-    const previousGear = userGear;
-    const nextGear = userGear.includes(gearId)
-      ? userGear.filter((g) => g !== gearId)
-      : [...userGear, gearId];
+    const previousGear = userGearRef.current;
+    const nextGear = previousGear.includes(gearId)
+      ? previousGear.filter((g) => g !== gearId)
+      : [...previousGear, gearId];
+    const rev = ++gearRevisionRef.current;
 
+    userGearRef.current = nextGear;
     setUserGear(nextGear);
-    const token = localStorage.getItem('lost_token');
+    const storageKey = scopedStorageKey('lost_gear_locker', currentUserId);
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(nextGear));
+    } catch {
+      // ignore storage quota errors
+    }
+
+    const token = safeLocalStorageGet('lost_token');
 
     if (!token) {
-      onShowToast?.('Đã cập nhật tủ đồ thiết bị sinh tồn (cục bộ)!', 'info');
+      onShowToast?.('Đã lưu tủ đồ trên máy của bạn.', 'info');
       return;
     }
 
     try {
       const res = await fetch('/api/auth/profile', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ gearLocker: nextGear }),
       });
       const data = await res.json().catch(() => ({}));
+      if (rev !== gearRevisionRef.current || !isMountedRef.current) return;
       if (!res.ok || !data.success) {
+        userGearRef.current = previousGear;
         setUserGear(previousGear);
-        onShowToast?.(data.message || 'Không thể lưu tủ đồ thiết bị lên máy chủ.', 'error');
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(previousGear));
+        } catch {
+          // ignore
+        }
+        onShowToast?.(data.message || 'Chưa lưu được tủ đồ lúc này.', 'error');
         return;
       }
       if (data.user) {
         setProfile(data.user);
         onProfileUpdate?.(data.user);
       }
-      onShowToast?.('Đã cập nhật tủ đồ thiết bị sinh tồn!', 'success');
+      onShowToast?.('Đã cập nhật tủ đồ đi rừng!', 'success');
     } catch (err) {
       console.error('[Gear Save Error]:', err);
+      if (rev !== gearRevisionRef.current || !isMountedRef.current) return;
+      userGearRef.current = previousGear;
       setUserGear(previousGear);
-      onShowToast?.('Lỗi kết nối khi lưu tủ đồ thiết bị. Đã khôi phục trạng thái trước đó.', 'error');
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(previousGear));
+      } catch {
+        // ignore
+      }
+      onShowToast?.('Mạng chập chờn nên chưa lưu được tủ đồ, mình đã giữ lại danh sách cũ.', 'error');
     }
   };
 
   const handleCaptureCheckinGps = () => {
     if (!navigator.geolocation) {
-      onShowToast?.('Trình duyệt không hỗ trợ định vị GPS.', 'error');
+      onShowToast?.('Trình duyệt này không hỗ trợ định vị GPS.', 'error');
       return;
     }
     setIsCapturingCheckinGps(true);
@@ -1381,12 +1539,12 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         if (!isMountedRef.current) return;
         setCheckinCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
         setIsCapturingCheckinGps(false);
-        onShowToast?.('Đã đính kèm tọa độ GPS hiện tại để xác thực đỉnh!', 'success');
+        onShowToast?.('Đã gắn tọa độ GPS hiện tại!', 'success');
       },
       () => {
         if (!isMountedRef.current) return;
         setIsCapturingCheckinGps(false);
-        onShowToast?.('Không lấy được tín hiệu GPS. Bạn vẫn có thể check-in thủ công.', 'info');
+        onShowToast?.('Chưa bắt được sóng GPS — bạn vẫn check-in thủ công bình thường nhé.', 'info');
       },
       { enableHighAccuracy: true, timeout: 10000 }
     );
@@ -1399,7 +1557,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       return;
     }
 
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     const hours = Math.max(0.5, Math.min(240, Number(checkinHours) || 8));
 
     if (token) {
@@ -1407,10 +1565,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       try {
         const res = await fetch('/api/checkins', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
+          headers: getApiHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             trailId: trail.id,
             completionTimeHours: hours,
@@ -1418,7 +1573,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             ...(checkinCoords ? { lat: checkinCoords.lat, lng: checkinCoords.lng } : {}),
           }),
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         if (res.ok && data.success) {
           const nextChecked = [trail, ...checkedTrails];
           setCheckedTrails(nextChecked);
@@ -1427,14 +1582,14 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           }
           const badgeNote =
             Array.isArray(data.unlockedBadges) && data.unlockedBadges.length > 0
-              ? ` Mở khóa huy hiệu: ${data.unlockedBadges.join(', ')}!`
+              ? ` · Mở khóa huy hiệu: ${data.unlockedBadges.join(', ')}`
               : '';
-          onShowToast?.(`${data.message || `Check-in ${trail.name} thành công!`}${badgeNote}`, 'success');
+          onShowToast?.(`${data.message || `Đã lưu dấu chân tại ${trail.name}!`}${badgeNote}`, 'success');
           setShowCheckInModal(false);
           setCheckinCoords(null);
           // Refresh rawCheckins, leaderboard & activities silently
-          fetch('/api/checkins/me', { headers: { Authorization: `Bearer ${token}` } })
-            .then((r) => (r.ok ? r.json() : null))
+          fetch('/api/checkins/me', { headers: getApiHeaders() })
+            .then((r) => (r.ok ? r.json().catch(() => null) : null))
             .then((j) => {
               if (isMountedRef.current && j?.success && Array.isArray(j.data)) {
                 setRawCheckins(j.data as RawCheckinInput[]);
@@ -1442,16 +1597,16 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             })
             .catch(() => {});
           fetch('/api/checkins/leaderboard?limit=10')
-            .then((r) => (r.ok ? r.json() : null))
+            .then((r) => (r.ok ? r.json().catch(() => null) : null))
             .then((j) => isMountedRef.current && j?.success && Array.isArray(j.data) && setLeaderboard(j.data))
             .catch(() => {});
-          fetch('/api/activities/me?limit=15', { headers: { Authorization: `Bearer ${token}` } })
-            .then((r) => (r.ok ? r.json() : null))
+          fetch('/api/activities/me?limit=15', { headers: getApiHeaders() })
+            .then((r) => (r.ok ? r.json().catch(() => null) : null))
             .then((j) => isMountedRef.current && j?.success && Array.isArray(j.data) && setActivities(j.data))
             .catch(() => {});
           return;
         }
-        onShowToast?.(data.message || 'Không thể ghi nhận check-in lên máy chủ.', 'error');
+        onShowToast?.(data.message || 'Chưa lưu được check-in lúc này.', 'error');
         return;
       } catch {
         // Offline fallback below
@@ -1468,7 +1623,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     } catch {
       // ignore storage quota
     }
-    onShowToast?.(`Đã lưu check-in cục bộ cung đường ${trail.name}!`, 'info');
+    onShowToast?.(`Đã lưu check-in "${trail.name}" trên máy của bạn.`, 'info');
     setShowCheckInModal(false);
   };
 
@@ -1537,7 +1692,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         };
       })
     );
-    const token = typeof window !== 'undefined' ? localStorage.getItem('lost_token') : null;
+    const token = typeof window !== 'undefined' ? safeLocalStorageGet('lost_token') : null;
     const optimisticMap: Record<string, SavedTrailLocalMeta> = {
       ...readSavedTrailMetaMap(metaUid),
       [key]: { ...nextMeta, pendingSync: !token },
@@ -1589,7 +1744,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         })
       );
       if (patch.personalNote !== undefined) setEditingSavedId(null);
-      onShowToast?.(`Đã cập nhật thông tin "${trailName}".`, 'success');
+      onShowToast?.(`Đã lưu thay đổi cho "${trailName}".`, 'success');
     } catch (err) {
       if (!isMountedRef.current) return;
       const errMsg = err instanceof Error ? err.message : '';
@@ -1608,7 +1763,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         persistSavedTrailMetaMap(metaUid, fallbackMap);
         if (patch.personalNote !== undefined) setEditingSavedId(null);
         onShowToast?.(
-          `Đã lưu cục bộ cho "${trailName}" — sẽ tự đồng bộ khi máy chủ sẵn sàng.`,
+          `Đã lưu tạm "${trailName}" trên máy — sẽ tự đồng bộ khi có mạng.`,
           'info'
         );
       } else {
@@ -1630,7 +1785,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         };
         setSavedMetaMap(revertedMap);
         persistSavedTrailMetaMap(metaUid, revertedMap);
-        onShowToast?.(errMsg || 'Nội dung ghi chú hoặc bộ sưu tập không hợp lệ.', 'error');
+        onShowToast?.(errMsg || 'Ghi chú hoặc thư mục chưa hợp lệ.', 'error');
       }
     } finally {
       if (isMountedRef.current) {
@@ -1646,9 +1801,9 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
   const handleRemoveSavedTrail = async (trailId: string, trailName: string) => {
     const key = String(trailId);
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!token) {
-      onShowToast?.('Vui lòng đăng nhập để bỏ lưu cung đường.', 'info');
+      onShowToast?.('Đăng nhập trước để bỏ lưu cung này nhé.', 'info');
       return;
     }
     if (removingSavedIds.has(key)) return;
@@ -1672,19 +1827,19 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         persistSavedTrailMetaMap(metaUid, nextMap);
         if (editingSavedId === key) setEditingSavedId(null);
         if (confirmRemoveSavedId === key) setConfirmRemoveSavedId(null);
-        onShowToast?.(`Đã bỏ lưu cung đường "${trailName}".`, 'info');
+        onShowToast?.(`Đã bỏ "${trailName}" khỏi danh sách đã lưu.`, 'info');
       } else {
         const errData = await res.json().catch(() => null);
         if (isMountedRef.current) {
           onShowToast?.(
-            errData?.message || 'Không thể bỏ lưu cung đường trên máy chủ lúc này.',
+            errData?.message || 'Chưa bỏ lưu được cung này lúc này.',
             'error'
           );
         }
       }
     } catch {
       if (isMountedRef.current) {
-        onShowToast?.('Không thể bỏ lưu cung đường lúc này.', 'error');
+        onShowToast?.('Mạng chập chờn, chưa bỏ lưu được cung này.', 'error');
       }
     } finally {
       if (isMountedRef.current) {
@@ -1827,7 +1982,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
     if (dataRows.length === 0) {
       onShowToast?.(
-        'Bạn chưa có đỉnh đã check-in hoặc cung đường đã lưu nào để xuất CSV.',
+        'Bạn chưa có đỉnh check-in hay cung đã lưu nào để xuất file CSV.',
         'info'
       );
       return;
@@ -1869,7 +2024,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     csvBlobCleanupRef.current.set(revokeTimer, url);
 
     onShowToast?.(
-      `Đã xuất hồ sơ CSV (${exportedCheckinsCount} check-in, ${savedTrails.length} cung đã lưu)!`,
+      `Đã tải file CSV (${exportedCheckinsCount} lượt check-in, ${savedTrails.length} cung đã lưu).`,
       'success'
     );
   };
@@ -1882,7 +2037,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     }
 
     if (file.size > 5 * 1024 * 1024) {
-      onShowToast?.('Kích thước ảnh bìa không được vượt quá 5MB.', 'error');
+      onShowToast?.('Ảnh bìa tối đa 5MB thôi bạn nhé.', 'error');
       e.target.value = '';
       return;
     }
@@ -1894,7 +2049,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         setPreviewCover(base64);
         setCustomCoverInput('');
         onShowToast?.(
-          'Đã nạp ảnh từ máy tính vào bản xem trước! Nhấn "Lưu & Áp Dụng Ảnh Bìa" để tải lên và hoàn tất.',
+          'Đã hiện ảnh xem trước — bấm "Lưu ảnh bìa" bên dưới để áp dụng nhé.',
           'info'
         );
       }
@@ -1907,15 +2062,15 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     if (isSavingCover) return;
     let finalUrl = (coverUrlToApply || previewCover || customCoverInput).trim();
     if (!finalUrl) {
-      onShowToast?.('Vui lòng chọn hoặc dán đường dẫn ảnh bìa hợp lệ.', 'error');
+      onShowToast?.('Chọn ảnh có sẵn hoặc dán link ảnh hợp lệ trước nhé.', 'error');
       return;
     }
 
     setIsSavingCover(true);
     try {
-      // Upload base64 data URIs to Cloudinary under `covers` category
+      // Upload base64 data URIs to cloud storage under `covers` category
       if (finalUrl.startsWith('data:image/')) {
-        onShowToast?.('Đang tải ảnh bìa lên máy chủ lưu trữ...', 'info');
+        onShowToast?.('Đang tải ảnh bìa lên...', 'info');
         const uploadRes = await fetch('/api/upload', {
           method: 'POST',
           headers: getApiHeaders({ 'Content-Type': 'application/json' }),
@@ -1927,7 +2082,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         });
         const uploadJson = await uploadRes.json().catch(() => ({}));
         if (!uploadRes.ok || !uploadJson.success || !uploadJson.url) {
-          onShowToast?.(uploadJson.message || 'Không thể tải ảnh bìa lên Cloudinary.', 'error');
+          onShowToast?.(uploadJson.message || 'Chưa tải được ảnh bìa lên, bạn thử lại nhé.', 'error');
           return;
         }
         finalUrl = String(uploadJson.url);
@@ -1947,7 +2102,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.success || !data.user) {
-          onShowToast?.(data.message || 'Không thể lưu ảnh bìa lên máy chủ. Vui lòng thử lại.', 'error');
+          onShowToast?.(data.message || 'Chưa lưu được ảnh bìa, bạn thử lại nhé.', 'error');
           return;
         }
         const persistedCover = data.user.coverUrl || finalUrl;
@@ -1962,7 +2117,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         setProfile(data.user);
         onProfileUpdate?.({ ...data.user, coverUrl: persistedCover });
         setShowCoverModal(false);
-        onShowToast?.('Đã lưu và cập nhật ảnh bìa mới thành công!', 'success');
+        onShowToast?.('Đã đổi ảnh bìa mới!', 'success');
       } else {
         setCustomCoverUrl(finalUrl);
         setPreviewCover(finalUrl);
@@ -1972,11 +2127,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           console.warn('[Cover LocalStorage Warning]:', e);
         }
         setShowCoverModal(false);
-        onShowToast?.('Đã lưu ảnh bìa mới trên thiết bị!', 'info');
+        onShowToast?.('Đã lưu ảnh bìa trên máy của bạn.', 'info');
       }
     } catch (err) {
       console.error('[Cover Upload Error]:', err);
-      onShowToast?.('Lỗi kết nối khi lưu ảnh bìa. Vui lòng thử lại.', 'error');
+      onShowToast?.('Mạng chập chờn, chưa lưu được ảnh bìa. Bạn thử lại nhé.', 'error');
     } finally {
       if (isMountedRef.current) setIsSavingCover(false);
     }
@@ -1990,7 +2145,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     }
 
     if (file.size > 5 * 1024 * 1024) {
-      const msg = 'Kích thước tệp ảnh đại diện không được vượt quá 5MB.';
+      const msg = 'Ảnh đại diện tối đa 5MB thôi bạn nhé.';
       setFieldErrors((prev) => ({ ...prev, avatarUrl: msg }));
       onShowToast?.(msg, 'error');
       e.target.value = '';
@@ -2005,24 +2160,21 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         const base64 = reader.result;
         setEditAvatarUrl(base64);
         setFieldErrors((prev) => ({ ...prev, avatarUrl: '' }));
-        onShowToast?.('Đang tải và lưu ảnh đại diện mới lên Cloudinary...', 'info');
+        onShowToast?.('Đang tải ảnh đại diện mới lên...', 'info');
 
-        // Send to backend profile update handler which performs Cloudinary upload ONCE
-        const token = localStorage.getItem('lost_token');
+        // Send to backend profile update handler which performs image upload ONCE
+        const token = safeLocalStorageGet('lost_token');
         if (token) {
           try {
             const res = await fetch('/api/auth/profile', {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${token}`,
-              },
+              headers: getApiHeaders({ 'Content-Type': 'application/json' }),
               body: JSON.stringify({ avatarUrl: base64 }),
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok || !data.success || !data.user?.avatarUrl) {
               setEditAvatarUrl(previousAvatar);
-              const errMsg = data.message || 'Không thể tải ảnh đại diện lên máy chủ.';
+              const errMsg = data.message || 'Chưa tải được ảnh đại diện lên.';
               setFieldErrors((prev) => ({ ...prev, avatarUrl: errMsg }));
               onShowToast?.(errMsg, 'error');
               return;
@@ -2030,11 +2182,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             setEditAvatarUrl(data.user.avatarUrl);
             setProfile(data.user);
             onProfileUpdate?.(data.user);
-            onShowToast?.('Đã lưu ảnh đại diện lên Cloudinary CDN thành công!', 'success');
+            onShowToast?.('Đã đổi ảnh đại diện!', 'success');
           } catch (err) {
             console.error('[Avatar Update Error]:', err);
             setEditAvatarUrl(previousAvatar);
-            const errMsg = 'Lỗi kết nối khi tải lên ảnh đại diện. Đã khôi phục ảnh cũ.';
+            const errMsg = 'Mạng chập chờn nên chưa đổi được ảnh đại diện, mình đã giữ lại ảnh cũ.';
             setFieldErrors((prev) => ({ ...prev, avatarUrl: errMsg }));
             onShowToast?.(errMsg, 'error');
           }
@@ -2054,13 +2206,13 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     if (cleanUsername) {
       if (cleanUsername.length < 3 || cleanUsername.length > 30 || !/^[a-zA-Z0-9_-]+$/.test(cleanUsername)) {
         newErrors.username =
-          'Tên tài khoản phải từ 3–30 ký tự, chỉ gồm chữ không dấu, số, dấu gạch dưới (_) hoặc gạch ngang (-).';
+          'Tên tài khoản cần 3–30 ký tự, chỉ dùng chữ không dấu, số, gạch dưới (_) hoặc gạch ngang (-).';
       }
     }
 
     // 1. Full Name Inline Validation
     if (!editFullName.trim() || editFullName.trim().length < 2) {
-      newErrors.fullName = 'Họ và tên phải có ít nhất 2 ký tự.';
+      newErrors.fullName = 'Họ tên cần ít nhất 2 ký tự.';
     }
 
     // 2. Phone Number Inline Validation (Vietnamese Format)
@@ -2068,18 +2220,18 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       const cleanPhone = editPhone.trim().replace(/[\s.-]/g, '');
       const phoneRegex = /^(0|\+84)[35789][0-9]{8}$/;
       if (!phoneRegex.test(cleanPhone)) {
-        newErrors.phone = 'Số điện thoại liên lạc không đúng định dạng Việt Nam (Ví dụ hợp lệ: 0912345678).';
+        newErrors.phone = 'Số điện thoại chưa đúng định dạng Việt Nam (VD: 0912345678).';
       }
     }
 
     // 3. Emergency Contact Validation
     if (editEmergency.trim() && editEmergency.trim().length > 100) {
-      newErrors.emergencyContact = 'Thông tin liên hệ khẩn cấp không được vượt quá 100 ký tự.';
+      newErrors.emergencyContact = 'Liên hệ khẩn cấp không quá 100 ký tự.';
     }
 
     // 4. Bio Validation
     if (editBio.trim() && editBio.trim().length > 500) {
-      newErrors.bio = 'Tiểu sử cá nhân không được vượt quá 500 ký tự.';
+      newErrors.bio = 'Phần giới thiệu tối đa 500 ký tự.';
     }
 
     if (Object.keys(newErrors).length > 0) {
@@ -2090,15 +2242,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     setFieldErrors({});
     setEditUsernameSuggestions([]);
     setIsSaving(true);
-    const token = localStorage.getItem('lost_token');
 
     try {
       const res = await fetch('/api/auth/profile', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           ...(cleanUsername ? { username: cleanUsername } : {}),
           fullName: editFullName,
@@ -2111,18 +2259,18 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       setIsSaving(false);
 
       if (!res.ok || !data.success) {
         if (data.isDuplicateUsername) {
-          setFieldErrors({ username: data.message || 'Tên tài khoản này đã có người sử dụng.' });
+          setFieldErrors({ username: data.message || 'Tên tài khoản này có người dùng rồi.' });
           if (Array.isArray(data.suggestions)) {
             setEditUsernameSuggestions(data.suggestions);
           }
           return;
         }
-        setFieldErrors({ general: data.message || 'Không thể cập nhật hồ sơ cá nhân.' });
+        setFieldErrors({ general: data.message || 'Chưa lưu được hồ sơ lúc này.' });
         return;
       }
 
@@ -2130,11 +2278,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       if (onProfileUpdate) onProfileUpdate(data.user);
       setIsEditing(false);
       if (onShowToast) {
-        onShowToast(data.message || 'Cập nhật hồ sơ thành công!', 'success');
+        onShowToast(data.message || 'Đã lưu hồ sơ của bạn!', 'success');
       }
     } catch {
       setIsSaving(false);
-      setFieldErrors({ general: 'Lỗi máy chủ khi cập nhật hồ sơ cá nhân.' });
+      setFieldErrors({ general: 'Mạng chập chờn, chưa lưu được hồ sơ.' });
     }
   };
 
@@ -2165,12 +2313,26 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
   // Dynamic Expedition ID computed from user ID (Brand: LOST -> LS-...)
   const expeditionId = `LS-${(activeProfile.id || (activeProfile as UserWithMongoId)?._id || '000000').slice(-6).toUpperCase()}`;
 
-  // Real ISO 18004 Scannable QR Matrix encoding Expedition ID + SOS + Profile URL
+  // Real ISO 18004 Scannable QR Matrix encoding Expedition ID + SOS + Profile URL (bounded <= 130 UTF-8 bytes)
   const qrPassPayload = useMemo(() => {
-    const uname = activeProfile.username || 'trekker';
-    const sos = (activeProfile.emergencyContact || '112').replace(/\s+/g, '');
+    const uname = truncateUtf8Bytes(String(activeProfile.username || 'trekker').trim(), 24);
+    const rawSos = String(activeProfile.emergencyContact || '112').trim();
+    const phoneDigits = rawSos.match(/(?:\+84|0)[0-9\s.-]{8,13}/)?.[0]?.replace(/[\s.-]/g, '') || '';
+    const compactSos = truncateUtf8Bytes(phoneDigits || rawSos.replace(/\s+/g, ' '), 24) || '112';
     const origin = typeof window !== 'undefined' ? window.location.origin : 'https://lost.vn';
-    return `LOST|${expeditionId}|@${uname}|SOS:${sos}|${origin}/#profile-${uname}`;
+    const profileUrl = `${origin}/#profile-${encodeURIComponent(uname)}`;
+    const prefix = `LOST|${expeditionId}|@${uname}|SOS:${compactSos}|`;
+    const candidate = `${prefix}${profileUrl}`;
+    const encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+    if (!encoder || encoder.encode(candidate).length <= 130) {
+      return candidate;
+    }
+    const shortSos = truncateUtf8Bytes(compactSos, 14);
+    const shorter = `LOST|${expeditionId}|SOS:${shortSos}|${profileUrl}`;
+    if (encoder.encode(shorter).length <= 130) {
+      return shorter;
+    }
+    return truncateUtf8Bytes(`LOST|${expeditionId}|SOS:${shortSos}|${origin}`, 130);
   }, [expeditionId, activeProfile.username, activeProfile.emergencyContact]);
 
   const qrPassSvg = useMemo(() => {
@@ -2223,16 +2385,16 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
     const rep = Number(activeProfile.reputationScore) || 0;
     const completedTrips = Math.max(profileStats.checkinsCount, checkedTrails.length);
-    let rankLabel = 'Trekker Tập Sự';
+    let rankLabel = 'Người Đi Núi Mới';
     let rankProgress = Math.min(100, Math.round((rep / 50) * 100));
     if (rep >= 500) {
-      rankLabel = 'Alpine Master';
+      rankLabel = 'Bậc Thầy Núi Cao';
       rankProgress = 100;
     } else if (rep >= 200) {
-      rankLabel = 'Alpine Scout';
+      rankLabel = 'Trinh Sát Núi Cao';
       rankProgress = Math.min(100, Math.round(((rep - 200) / 300) * 100));
     } else if (rep >= 50) {
-      rankLabel = 'Trail Explorer';
+      rankLabel = 'Người Khám Phá';
       rankProgress = Math.min(100, Math.round(((rep - 50) / 150) * 100));
     }
 
@@ -2252,12 +2414,15 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     const userBadges = (activeProfile.badges || []).map((b) => b.toLowerCase());
     const hasFansipan = checkedTrails.some((t) => t.id === 'trail-fansipan' || t.name.toLowerCase().includes('fansipan'));
     return SYSTEM_BADGES.map((b) => {
-      const explicitMatch = userBadges.some((ub) => ub.includes(b.name.toLowerCase()) || b.name.toLowerCase().includes(ub));
+      const candidateKeys = [b.name.toLowerCase(), ...b.legacyKeys];
+      const explicitMatch = userBadges.some((ub) =>
+        candidateKeys.some((k) => ub.includes(k) || k.includes(ub))
+      );
       const dynamicUnlock =
         (b.id === 'b-1' && Boolean(activeProfile.id)) ||
         (b.id === 'b-2' && isVerifiedUser) ||
         (b.id === 'b-3' && hasFansipan) ||
-        (b.id === 'b-4' && computedTelemetry.rep >= 50) ||
+        (b.id === 'b-4' && computedTelemetry.rep >= 500) ||
         (b.id === 'b-6' && computedTelemetry.totalDistanceKm >= 100);
       return { ...b, unlocked: Boolean(explicitMatch || dynamicUnlock) };
     });
@@ -2293,27 +2458,27 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
     });
   }, [userForumPosts, activeProfile]);
 
-  const hasStoredToken = typeof window !== 'undefined' && Boolean(localStorage.getItem('lost_token'));
+  const hasStoredToken = typeof window !== 'undefined' && Boolean(safeLocalStorageGet('lost_token'));
 
   if (isLoading && !profile && !currentUser) {
-    return <div style={{ padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-dim)' }}>Đang tải thông tin hồ sơ...</div>;
+    return <div style={{ padding: '60px 20px', textAlign: 'center', color: 'var(--color-text-dim)' }}>Đang mở trang cá nhân...</div>;
   }
 
   if (!profile && !currentUser && !hasStoredToken) {
     return (
       <div style={{ maxWidth: 560, margin: '64px auto', padding: '40px 28px', textAlign: 'center', background: 'var(--color-bg-card)', border: '1px solid var(--color-border-strong)', borderRadius: 6, boxShadow: 'var(--shadow-card)' }}>
         <div className="section-eyebrow" style={{ justifyContent: 'center', marginBottom: 10 }}>
-          Hồ sơ thám hiểm LOST
+          Sổ tay đi núi LOST
         </div>
         <h2 className="font-editorial" style={{ fontSize: '1.6rem', color: 'var(--color-text-main)', margin: '0 0 10px 0' }}>
-          Đăng Nhập Để Xem Hồ Sơ Cá Nhân
+          Đăng nhập để xem sổ tay của bạn
         </h2>
         <p style={{ fontSize: '0.88rem', color: 'var(--color-text-muted)', lineHeight: 1.6, margin: '0 auto 22px auto', maxWidth: 440 }}>
-          Lưu trữ Hộ chiếu Đỉnh núi, phân tích biểu đồ cự ly, tủ đồ sinh tồn, nhật ký hành trình và mã QR Active Pass cứu hộ.
+          Lưu lại những đỉnh bạn đã bước qua, danh sách cung sắp đi, tủ đồ đi rừng và mã QR cứu hộ khi vào rừng.
         </p>
         <div style={{ display: 'flex', justifyContent: 'center', gap: 10, flexWrap: 'wrap' }}>
           <button type="button" className="btn btn-outline" onClick={onBack}>
-            <ArrowLeft size={15} /> Quay lại trang chủ
+            <ArrowLeft size={15} /> Về trang chủ
           </button>
           <button
             type="button"
@@ -2322,7 +2487,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               window.dispatchEvent(new CustomEvent('lost:open-auth-modal', { detail: { mode: 'login' } }));
             }}
           >
-            Đăng nhập ngay
+            Đăng nhập
           </button>
         </div>
       </div>
@@ -2331,7 +2496,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
   return (
     <div style={{ maxWidth: 1040, margin: '20px auto', padding: '0 20px 60px 20px' }}>
-      {/* Hidden File Input for Direct Cloudinary Avatar Upload */}
+      {/* Hidden File Input for Direct Avatar Upload */}
       <input
         type="file"
         ref={fileInputRef}
@@ -2343,7 +2508,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       {/* Top Action Bar */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
         <button type="button" className="btn btn-outline" onClick={onBack} style={{ fontSize: '0.86rem', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-          <ArrowLeft size={16} /> Quay lại trang chủ
+          <ArrowLeft size={16} /> Về trang chủ
         </button>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -2356,7 +2521,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             }}
             style={{ fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
           >
-            <Award size={15} color="var(--color-sun)" /> Hộ Chiếu Đỉnh Núi
+            <Award size={15} color="var(--color-sun)" /> Hộ chiếu đỉnh núi
           </button>
 
           {onNavigateToContribute && (
@@ -2366,7 +2531,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               onClick={onNavigateToContribute}
               style={{ fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
             >
-              <Compass size={15} color="var(--color-primary)" /> Đóng Góp Cung Mới
+              <Compass size={15} color="var(--color-primary)" /> Gửi cung mới
             </button>
           )}
 
@@ -2378,8 +2543,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             aria-label="Xuất hồ sơ leo núi dạng CSV"
             title={
               isLoading
-                ? 'Đang tải dữ liệu hồ sơ...'
-                : 'Tải xuống toàn bộ check-in đỉnh và danh sách cung đã lưu dạng CSV'
+                ? 'Đang tải dữ liệu...'
+                : 'Tải về toàn bộ check-in đỉnh và cung đã lưu dạng file CSV'
             }
             style={{
               fontSize: '0.82rem',
@@ -2390,7 +2555,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               cursor: isLoading ? 'wait' : 'pointer',
             }}
           >
-            <DownloadIcon size={15} color="var(--color-sky)" /> Xuất Hồ Sơ (CSV)
+            <DownloadIcon size={15} color="var(--color-sky)" /> Xuất file CSV
           </button>
 
           <button
@@ -2399,7 +2564,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             onClick={() => setShowQrModal(true)}
             style={{ fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
           >
-            <QrCode size={15} color="var(--color-primary)" /> Mã QR Pass
+            <QrCode size={15} color="var(--color-primary)" /> Mã QR cứu hộ
           </button>
 
           <button
@@ -2411,7 +2576,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             }}
             style={{ fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
           >
-            <Edit3 size={15} /> Chỉnh sửa hồ sơ
+            <Edit3 size={15} /> Sửa hồ sơ
           </button>
         </div>
       </div>
@@ -2440,53 +2605,58 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       >
         {/* Scenic Mountain Panorama Cover Banner */}
         <div
-          role="button"
-          tabIndex={0}
-          onClick={() => {
-            setFullViewImage({
-              url: customCoverUrl,
-              title: 'Ảnh Bìa Cá Nhân',
-              subtitle: `${activeProfile.fullName} (@${activeProfile.username || 'trekker'})`,
-              type: 'cover',
-            });
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              setFullViewImage({
-                url: customCoverUrl,
-                title: 'Ảnh Bìa Cá Nhân',
-                subtitle: `${activeProfile.fullName} (@${activeProfile.username || 'trekker'})`,
-                type: 'cover',
-              });
-            }
-          }}
-          title="Nhấn vào ảnh để xem trọn vẹn kích thước đầy đủ"
           style={{
             height: 175,
             position: 'relative',
             overflow: 'hidden',
             background: 'var(--color-bg-card)',
-            cursor: 'pointer',
           }}
         >
-          <img
-            decoding="async"
-            key={customCoverUrl}
-            src={customCoverUrl}
-            alt="Ảnh bìa hồ sơ thám hiểm"
+          <button
+            type="button"
+            onClick={() => {
+              setFullViewImage({
+                url: customCoverUrl,
+                title: 'Ảnh bìa cá nhân',
+                subtitle: `${activeProfile.fullName} (@${activeProfile.username || 'trekker'})`,
+                type: 'cover',
+              });
+            }}
+            title="Nhấn để xem ảnh bìa cỡ lớn"
+            aria-label="Xem ảnh bìa cỡ lớn"
             style={{
+              position: 'absolute',
+              inset: 0,
               width: '100%',
               height: '100%',
-              objectFit: 'cover',
-              objectPosition: 'center',
+              padding: 0,
+              border: 'none',
+              background: 'transparent',
+              cursor: 'pointer',
               display: 'block',
-              transition: 'transform 0.25s ease',
             }}
-            onError={(e) => {
-              (e.currentTarget as HTMLImageElement).src = DEFAULT_COVER_URL;
-            }}
-          />
+          >
+            <img
+              decoding="async"
+              key={customCoverUrl}
+              src={customCoverUrl}
+              alt="Ảnh bìa hồ sơ thám hiểm"
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                objectPosition: 'center',
+                display: 'block',
+                transition: 'transform 0.25s ease',
+              }}
+              onError={(e) => {
+                const img = e.currentTarget as HTMLImageElement;
+                if (img.dataset.fallbackApplied === '1') return;
+                img.dataset.fallbackApplied = '1';
+                img.src = DEFAULT_COVER_URL;
+              }}
+            />
+          </button>
           <div
             style={{
               position: 'absolute',
@@ -2523,8 +2693,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           {/* Change Cover Button */}
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation();
+            onClick={() => {
               setPreviewCover(customCoverUrl);
               setCustomCoverInput('');
               setShowCoverModal(true);
@@ -2534,7 +2703,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               position: 'absolute',
               top: 12,
               right: 14,
-              zIndex: 3,
+              zIndex: 4,
               background: 'var(--overlay-bg)',
               border: '1px solid color-mix(in srgb, var(--color-on-media) 24%, transparent)',
               color: 'var(--color-on-media)',
@@ -2548,7 +2717,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               cursor: 'pointer',
             }}
           >
-            <Camera size={13} /> Đổi Ảnh Bìa
+            <Camera size={13} /> Đổi ảnh bìa
           </button>
         </div>
 
@@ -2565,76 +2734,85 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         >
           {/* Avatar overlapping cover bottom cleanly */}
           <div
-            role="button"
-            tabIndex={0}
-            onClick={() => {
-              const currentAvatar = activeProfile.avatarUrl || activeProfile.avatar || getTrekkerAvatarSvg(activeProfile.fullName || activeProfile.username, activeProfile.role);
-              setFullViewImage({
-                url: currentAvatar,
-                title: 'Ảnh Đại Diện',
-                subtitle: `${activeProfile.fullName} (@${activeProfile.username || 'trekker'})`,
-                type: 'avatar',
-              });
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
+            style={{ position: 'relative', flexShrink: 0, marginTop: -42, width: 96, height: 96 }}
+          >
+            <button
+              type="button"
+              onClick={() => {
                 const currentAvatar = activeProfile.avatarUrl || activeProfile.avatar || getTrekkerAvatarSvg(activeProfile.fullName || activeProfile.username, activeProfile.role);
                 setFullViewImage({
                   url: currentAvatar,
-                  title: 'Ảnh Đại Diện',
+                  title: 'Ảnh đại diện',
                   subtitle: `${activeProfile.fullName} (@${activeProfile.username || 'trekker'})`,
                   type: 'avatar',
                 });
-              }
-            }}
-            title="Nhấn để xem ảnh đại diện trọn vẹn"
-            style={{ position: 'relative', flexShrink: 0, cursor: 'pointer', marginTop: -42 }}
-          >
-            <img
-              decoding="async"
-              src={activeProfile.avatarUrl || activeProfile.avatar || getTrekkerAvatarSvg(activeProfile.fullName || activeProfile.username, activeProfile.role)}
-              alt={activeProfile.fullName}
+              }}
+              title="Nhấn để xem ảnh đại diện trọn vẹn"
+              aria-label="Xem ảnh đại diện cỡ lớn"
               style={{
+                position: 'relative',
                 width: 96,
                 height: 96,
-                borderRadius: 6,
-                objectFit: 'cover',
-                border: '2px solid var(--color-primary)',
-                background: 'var(--color-bg-main)',
+                padding: 0,
+                border: 'none',
+                background: 'transparent',
+                cursor: 'pointer',
                 display: 'block',
-              }}
-            />
-            <div
-              style={{
-                position: 'absolute',
-                inset: 0,
                 borderRadius: 6,
-                background: 'color-mix(in srgb, var(--overlay-bg) 50%, transparent)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                opacity: 0,
-                transition: 'opacity 0.2s ease',
-                color: 'var(--color-on-media)',
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
-              onMouseLeave={(e) => (e.currentTarget.style.opacity = '0')}
             >
-              <Maximize2 size={18} color="var(--color-on-media)" />
-            </div>
+              <img
+                decoding="async"
+                src={activeProfile.avatarUrl || activeProfile.avatar || getTrekkerAvatarSvg(activeProfile.fullName || activeProfile.username, activeProfile.role)}
+                alt={activeProfile.fullName}
+                onError={(e) => {
+                  const img = e.currentTarget as HTMLImageElement;
+                  if (img.dataset.fallbackApplied === '1') return;
+                  img.dataset.fallbackApplied = '1';
+                  img.src = getTrekkerAvatarSvg(activeProfile.fullName || activeProfile.username, activeProfile.role);
+                }}
+                style={{
+                  width: 96,
+                  height: 96,
+                  borderRadius: 6,
+                  objectFit: 'cover',
+                  border: '2px solid var(--color-primary)',
+                  background: 'var(--color-bg-main)',
+                  display: 'block',
+                }}
+              />
+              <span
+                aria-hidden="true"
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  borderRadius: 6,
+                  background: 'color-mix(in srgb, var(--overlay-bg) 50%, transparent)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  opacity: 0,
+                  transition: 'opacity 0.2s ease',
+                  color: 'var(--color-on-media)',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
+                onMouseLeave={(e) => (e.currentTarget.style.opacity = '0')}
+              >
+                <Maximize2 size={18} color="var(--color-on-media)" />
+              </span>
+            </button>
             <button
               type="button"
-              onClick={(e) => {
-                e.stopPropagation();
+              onClick={() => {
                 fileInputRef.current?.click();
               }}
               title="Tải ảnh đại diện mới"
+              aria-label="Tải ảnh đại diện mới"
               style={{
                 position: 'absolute',
                 bottom: -5,
                 right: -5,
-                zIndex: 2,
+                zIndex: 3,
                 width: 28,
                 height: 28,
                 borderRadius: 4,
@@ -2652,7 +2830,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           </div>
 
           {/* Profile Details */}
-          <div style={{ flex: 1, minWidth: 260, paddingTop: 14 }}>
+          <div style={{ flex: 1, minWidth: 'min(260px, 100%)', paddingTop: 14 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
               <h1 className="font-editorial" style={{ fontSize: '1.65rem', fontWeight: 700, color: 'var(--color-text-main)', margin: 0, lineHeight: 1.15 }}>
                 {activeProfile.fullName}
@@ -2660,16 +2838,16 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               <span style={{ fontSize: '0.84rem', color: 'var(--color-primary)', fontWeight: 600 }}>
                 @{activeProfile.username || 'trekker'}
               </span>
-              <span className="badge badge-success" style={{ textTransform: 'uppercase' }}>
-                {activeProfile.role}
+              <span className="badge badge-success">
+                {formatUserRoleVi(activeProfile.role)}
               </span>
               {isVerifiedUser ? (
                 <span className="badge badge-success">
-                  <ShieldCheck size={12} color="var(--color-primary)" /> VERIFIED TREKKER
+                  <ShieldCheck size={12} color="var(--color-primary)" /> Đã xác thực
                 </span>
               ) : (
                 <span className="badge badge-warning">
-                  <ShieldAlert size={12} color="var(--color-earth)" /> CHƯA XÁC THỰC EMAIL
+                  <ShieldAlert size={12} color="var(--color-earth)" /> Chưa xác thực email
                 </span>
               )}
             </div>
@@ -2682,32 +2860,34 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--color-bg-main)', padding: '3px 9px', borderRadius: 3, border: '1px solid var(--color-border)' }}>
                 <Mail size={12} color="var(--color-sky)" /> {activeProfile.email}
               </span>
-              <span
+              <button
+                type="button"
                 onClick={() => {
                   setIsEditing(true);
                   populateForm(activeProfile);
                 }}
                 title="Bấm để cập nhật số điện thoại"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--color-bg-main)', padding: '3px 9px', borderRadius: 3, border: '1px solid var(--color-border)', cursor: 'pointer' }}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--color-bg-main)', padding: '3px 9px', borderRadius: 3, border: '1px solid var(--color-border)', cursor: 'pointer', fontSize: '0.78rem', fontFamily: 'var(--font-family)', color: 'var(--color-text-muted)' }}
               >
                 <Phone size={12} color="var(--color-primary)" />
                 <span style={{ color: activeProfile.phone ? 'var(--color-text-main)' : 'var(--color-text-dim)' }}>
                   {activeProfile.phone || 'Thêm SĐT'}
                 </span>
-              </span>
-              <span
+              </button>
+              <button
+                type="button"
                 onClick={() => {
                   setIsEditing(true);
                   populateForm(activeProfile);
                 }}
                 title="Bấm để thiết lập liên hệ khẩn cấp"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--color-bg-main)', padding: '3px 9px', borderRadius: 3, border: '1px solid var(--color-border)', cursor: 'pointer' }}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--color-bg-main)', padding: '3px 9px', borderRadius: 3, border: '1px solid var(--color-border)', cursor: 'pointer', fontSize: '0.78rem', fontFamily: 'var(--font-family)', color: 'var(--color-text-muted)' }}
               >
                 <AlertTriangle size={12} color="var(--color-earth)" />
                 <span>SOS: <strong style={{ color: activeProfile.emergencyContact ? 'var(--color-earth)' : 'var(--color-text-dim)' }}>{activeProfile.emergencyContact || 'Chưa thiết lập'}</strong></span>
-              </span>
+              </button>
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--color-bg-main)', padding: '3px 9px', borderRadius: 3, border: '1px solid var(--color-border)' }}>
-                <Compass size={12} color="var(--color-sky)" /> {activeProfile.preferredStyle || 'Trekking & Camping'}
+                <Compass size={12} color="var(--color-sky)" /> {formatTrekkingStyleVi(activeProfile.preferredStyle)}
               </span>
               <button
                 type="button"
@@ -2759,15 +2939,16 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               {activeProfile.bio ? (
                 <span>&ldquo;{activeProfile.bio}&rdquo;</span>
               ) : (
-                <span
+                <button
+                  type="button"
                   onClick={() => {
                     setIsEditing(true);
                     populateForm(activeProfile);
                   }}
-                  style={{ cursor: 'pointer', color: 'var(--color-text-dim)' }}
+                  style={{ cursor: 'pointer', color: 'var(--color-text-dim)', background: 'transparent', border: 'none', padding: 0, textAlign: 'left', fontSize: 'inherit', fontFamily: 'var(--font-family)' }}
                 >
-                  Chưa cập nhật tiểu sử cá nhân. <span style={{ color: 'var(--color-primary)', textDecoration: 'underline' }}>Bấm vào đây để thêm.</span>
-                </span>
+                  Chưa viết vài dòng giới thiệu bản thân. <span style={{ color: 'var(--color-primary)', textDecoration: 'underline' }}>Thêm ngay nhé.</span>
+                </button>
               )}
             </div>
           </div>
@@ -2779,22 +2960,22 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         <div className="editorial-stat-cell">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
             <Compass size={14} color="var(--color-primary)" />
-            <span style={{ fontSize: '0.68rem', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700 }}>Tổng Quãng Đường</span>
+            <span style={{ fontSize: '0.68rem', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700 }}>Tổng quãng đường</span>
           </div>
           <div className="font-editorial" style={{ fontSize: '1.75rem', fontWeight: 500, color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.05 }}>
             {computedTelemetry.totalDistanceKm.toLocaleString('vi-VN')} km
           </div>
           <div style={{ fontSize: '0.74rem', color: 'var(--color-primary)', marginTop: 3 }}>
             {computedTelemetry.completedTrips > 0
-              ? `Hoàn thành ${computedTelemetry.completedTrips} cung đường`
-              : 'Chưa có hành trình check-in'}
+              ? `Đã đi ${computedTelemetry.completedTrips} cung đường`
+              : 'Chưa ghi dấu chân nào'}
           </div>
         </div>
 
         <div className="editorial-stat-cell">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
             <Mountain size={14} color="var(--color-sky)" />
-            <span style={{ fontSize: '0.68rem', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700 }}>Đỉnh Cao Nhất</span>
+            <span style={{ fontSize: '0.68rem', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700 }}>Đỉnh cao nhất</span>
           </div>
           <div className="font-editorial" style={{ fontSize: '1.75rem', fontWeight: 500, color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.05 }}>
             {computedTelemetry.highestAltitudeM > 0
@@ -2809,10 +2990,10 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         <div className="editorial-stat-cell">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
             <Tent size={14} color="var(--color-earth)" />
-            <span style={{ fontSize: '0.68rem', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700 }}>Đóng Góp Cộng Đồng</span>
+            <span style={{ fontSize: '0.68rem', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700 }}>Đã đóng góp</span>
           </div>
           <div className="font-editorial" style={{ fontSize: '1.75rem', fontWeight: 500, color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.05 }}>
-            {userOwnPosts.length + userContributions.length} Bài
+            {userOwnPosts.length + userContributions.length} bài
           </div>
           <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', marginTop: 3 }}>
             {userOwnPosts.length} diễn đàn · {userContributions.length} cung đường
@@ -2822,7 +3003,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
         <div className="editorial-stat-cell">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
             <Award size={14} color="var(--color-primary)" />
-            <span style={{ fontSize: '0.68rem', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700 }}>Cấp Độ ({computedTelemetry.rep} PTS)</span>
+            <span style={{ fontSize: '0.68rem', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--color-text-dim)', fontWeight: 700 }}>Cấp bậc ({computedTelemetry.rep} điểm)</span>
           </div>
           <div className="font-editorial" style={{ fontSize: '1.35rem', fontWeight: 500, color: 'var(--color-primary)', lineHeight: 1.2 }}>{computedTelemetry.rankLabel}</div>
           <div style={{ width: '100%', background: 'var(--color-bg-main)', height: 5, borderRadius: 2, marginTop: 8, overflow: 'hidden', border: '1px solid var(--color-border)' }}>
@@ -2835,12 +3016,12 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       <div ref={profileTabTrackRef} className="editorial-tabs-bar has-glider">
         <span aria-hidden="true" className="lost-glider-tab" style={profileTabIndicatorStyle} />
         {[
-          { id: 'overview', label: 'Chiến Tích & Tổng Quan', Icon: Mountain, count: checkedTrails.length },
-          { id: 'analytics', label: 'Phân Tích & Nhật Ký', Icon: BarChart3, count: rawCheckins.length || checkedTrails.length },
-          { id: 'saved', label: 'Đã Lưu & Xếp Hạng', Icon: Award, count: savedTrails.length },
-          { id: 'contributions', label: 'Cung Đường Đóng Góp', Icon: Compass, count: userContributions.length },
-          { id: 'forum', label: 'Bài Viết Diễn Đàn', Icon: MessageSquare, count: userOwnPosts.length },
-          { id: 'gear', label: 'Tủ Đồ Sinh Tồn', Icon: Package, count: equippedGearItems.length },
+          { id: 'overview', label: 'Tổng quan & đỉnh đã đi', Icon: Mountain, count: checkedTrails.length },
+          { id: 'analytics', label: 'Nhật ký & biểu đồ', Icon: BarChart3, count: rawCheckins.length || checkedTrails.length },
+          { id: 'saved', label: 'Cung đã lưu & xếp hạng', Icon: Award, count: savedTrails.length },
+          { id: 'contributions', label: 'Cung đã đóng góp', Icon: Compass, count: userContributions.length },
+          { id: 'forum', label: 'Bài trên diễn đàn', Icon: MessageSquare, count: userOwnPosts.length },
+          { id: 'gear', label: 'Tủ đồ đi rừng', Icon: Package, count: equippedGearItems.length },
         ].map((tab) => {
           const isActive = activeTab === tab.id;
           const TabIcon = tab.Icon;
@@ -2897,7 +3078,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
                 <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <MapPin size={18} color="var(--color-primary)" /> Cung Đường Đã Chinh Phục ({checkedTrails.length})
+                  <MapPin size={18} color="var(--color-primary)" /> Những cung bạn đã đi ({checkedTrails.length})
                 </h3>
                 <button
                   type="button"
@@ -2905,14 +3086,14 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   onClick={() => setShowCheckInModal(true)}
                   style={{ fontSize: 'var(--font-size-xs)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 6 }}
                 >
-                  <MapPin size={13} color="var(--color-primary)" /> + Check-in Cung Mới
+                  <MapPin size={13} color="var(--color-primary)" /> + Check-in cung mới
                 </button>
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {checkedTrails.length === 0 ? (
                   <div style={{ textAlign: 'center', padding: '24px 16px', color: 'var(--color-text-muted)', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)', fontSize: 'var(--font-size-xs)', lineHeight: 1.6 }}>
-                    Chưa có cung đường check-in nào. Bấm <strong>"+ Check-in Cung Mới"</strong> để lưu lại các cung đường bạn đã thực sự chinh phục.
+                    Sổ hành trình còn trống. Bấm <strong>"+ Check-in cung mới"</strong> để ghi lại đỉnh núi đầu tiên bạn từng đặt chân tới nhé.
                   </div>
                 ) : (
                   checkedTrails.map((t, idx) => {
@@ -2981,14 +3162,15 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               <div className="card">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
                   <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <Award size={18} color="var(--color-primary)" /> Huy Hiệu Danh Dự ({unlockedBadgesCount}/{computedBadges.length})
+                    <Award size={18} color="var(--color-primary)" /> Huy hiệu ({unlockedBadgesCount}/{computedBadges.length})
                   </h3>
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)' }}>Bấm xem chi tiết</span>
+                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)' }}>Bấm để xem điều kiện</span>
                 </div>
 
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                   {computedBadges.map((badge) => (
-                    <div
+                    <button
+                      type="button"
                       key={badge.id}
                       onClick={() => setSelectedBadge(badge)}
                       style={{
@@ -3003,6 +3185,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                         gap: 7,
                         opacity: badge.unlocked ? 1 : 0.6,
                         boxShadow: badge.unlocked ? badge.glow : 'none',
+                        fontFamily: 'var(--font-family)',
                       }}
                       onMouseEnter={(e) => (e.currentTarget.style.transform = 'translateY(-2px)')}
                       onMouseLeave={(e) => (e.currentTarget.style.transform = 'translateY(0)')}
@@ -3015,7 +3198,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                       <span style={{ fontSize: '0.78rem', fontWeight: 700, color: badge.unlocked ? badge.color : 'var(--color-text-dim)' }}>
                         {badge.name}
                       </span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -3024,7 +3207,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               <div className="card">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
                   <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <Package size={18} color="var(--color-sky)" /> Trang Bị Sinh Tồn ({equippedGearItems.length})
+                    <Package size={18} color="var(--color-sky)" /> Đồ đi rừng đang có ({equippedGearItems.length})
                   </h3>
                   <button
                     type="button"
@@ -3032,7 +3215,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     onClick={() => setActiveTab('gear')}
                     style={{ fontSize: 'var(--font-size-xs)', padding: '4px 10px' }}
                   >
-                    Xem tủ đồ
+                    Mở tủ đồ
                   </button>
                 </div>
 
@@ -3060,7 +3243,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               <div className="card" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
                   <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <User size={18} color="var(--color-primary)" /> Thông Tin Cá Nhân & An Toàn Thực Địa
+                    <User size={18} color="var(--color-primary)" /> Thông tin liên lạc &amp; số SOS
                   </h3>
                   <button
                     type="button"
@@ -3071,7 +3254,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     }}
                     style={{ fontSize: 'var(--font-size-xs)', padding: '5px 12px', display: 'flex', alignItems: 'center', gap: 6 }}
                   >
-                    <Edit3 size={13} color="var(--color-primary)" /> Chỉnh Sửa Thông Tin
+                    <Edit3 size={13} color="var(--color-primary)" /> Cập nhật
                   </button>
                 </div>
 
@@ -3087,23 +3270,23 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   </div>
 
                   <div style={{ background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
-                    <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Số điện thoại cá nhân</div>
+                    <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Số điện thoại</div>
                     <div style={{ fontWeight: 700, color: activeProfile.phone ? 'var(--color-primary)' : 'var(--color-text-dim)', fontSize: '0.86rem' }}>
-                      {activeProfile.phone || 'Chưa cập nhật'}
+                      {activeProfile.phone || 'Chưa thêm'}
                     </div>
                   </div>
 
                   <div style={{ background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
-                    <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Liên hệ khẩn cấp (SOS)</div>
+                    <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Người thân liên hệ khẩn (SOS)</div>
                     <div style={{ fontWeight: 700, color: activeProfile.emergencyContact ? 'var(--color-earth)' : 'var(--color-text-dim)', fontSize: '0.86rem' }}>
                       {activeProfile.emergencyContact || 'Chưa thiết lập'}
                     </div>
                   </div>
 
                   <div style={{ background: 'var(--color-bg-main)', padding: '10px 14px', borderRadius: 4, border: '1px solid var(--color-border)', gridColumn: '1 / -1' }}>
-                    <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Giới thiệu bản thân (Bio)</div>
+                    <div style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>Đôi dòng về bạn</div>
                     <div style={{ color: activeProfile.bio ? 'var(--color-text-main)' : 'var(--color-text-dim)', fontStyle: activeProfile.bio ? 'normal' : 'italic', lineHeight: 1.5 }}>
-                      {activeProfile.bio || 'Chưa cập nhật tiểu sử cá nhân. Hãy thêm thông điệp và kinh nghiệm của bạn.'}
+                      {activeProfile.bio || 'Chưa viết gì cả — kể vài dòng về gu đi núi hoặc cung yêu thích của bạn nhé.'}
                     </div>
                   </div>
                 </div>
@@ -3113,17 +3296,17 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               <div className="card" style={{ background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
                   <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <Lock size={18} color="var(--color-sky)" /> Bảo Mật Tài Khoản
+                    <Lock size={18} color="var(--color-sky)" /> Bảo mật tài khoản
                   </h3>
                   <span className="badge badge-cloud" style={{ fontSize: '0.68rem' }}>
-                    {activeProfile.authProvider === 'google' ? 'Liên kết Google OAuth' : 'Đăng nhập Email & Mật khẩu'}
+                    {activeProfile.authProvider === 'google' ? 'Đăng nhập bằng Google' : 'Đăng nhập bằng email'}
                   </span>
                 </div>
 
                 <p style={{ margin: '0 0 14px 0', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
                   {activeProfile.authProvider === 'google'
-                    ? 'Tài khoản này sử dụng bảo mật Google OAuth. Bạn vẫn có thể quản lý quyền riêng tư hoặc xóa tài khoản vĩnh viễn bất cứ lúc nào.'
-                    : 'Định kỳ cập nhật mật khẩu mạnh để bảo vệ nhật ký hành trình, liên hệ SOS và thu hồi các phiên đăng nhập cũ.'}
+                    ? 'Tài khoản của bạn được bảo vệ qua Google. Bạn vẫn có thể xóa tài khoản vĩnh viễn bất cứ lúc nào nếu muốn.'
+                    : 'Đổi mật khẩu định kỳ để giữ an toàn cho nhật ký đi núi và thông tin liên hệ SOS của bạn.'}
                 </p>
 
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -3142,7 +3325,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                       }}
                       style={{ fontSize: 'var(--font-size-xs)', padding: '7px 14px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
                     >
-                      <KeyRoundIcon size={14} color="var(--color-primary)" /> Đổi Mật Khẩu
+                      <KeyRoundIcon size={14} color="var(--color-primary)" /> Đổi mật khẩu
                     </button>
                   )}
 
@@ -3166,7 +3349,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                       borderColor: 'color-mix(in srgb, var(--color-error) 42%, transparent)',
                     }}
                   >
-                    <TrashIcon size={14} color="var(--color-error-text, var(--color-error))" /> Xóa Tài Khoản Vĩnh Viễn
+                    <TrashIcon size={14} color="var(--color-error-text, var(--color-error))" /> Xóa tài khoản vĩnh viễn
                   </button>
                 </div>
               </div>
@@ -3179,7 +3362,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           <div className="card" style={{ animation: 'fadeIn 0.25s ease' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
               <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Compass size={18} color="var(--color-primary)" /> Lịch Sử Đóng Góp Cung Đường Trekking Mới ({userContributions.length})
+                <Compass size={18} color="var(--color-primary)" /> Cung đường bạn đã gửi ({userContributions.length})
               </h3>
               <button
                 type="button"
@@ -3187,7 +3370,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 onClick={() => { if (onNavigateToContribute) onNavigateToContribute(); }}
                 style={{ padding: '6px 14px', fontSize: '0.78rem' }}
               >
-                + Đóng Góp Cung Đường Mới
+                + Gửi cung mới
               </button>
             </div>
 
@@ -3214,7 +3397,10 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                         alt={contrib.name}
                         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                         onError={(e) => {
-                          (e.currentTarget as HTMLImageElement).src = DEFAULT_VIETNAM_TRAIL_COVER;
+                          const img = e.currentTarget as HTMLImageElement;
+                          if (img.dataset.fallbackApplied === '1') return;
+                          img.dataset.fallbackApplied = '1';
+                          img.src = DEFAULT_VIETNAM_TRAIL_COVER;
                         }}
                       />
                       <div style={{ position: 'absolute', top: 8, right: 8 }}>
@@ -3237,10 +3423,10 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                           }}
                         >
                           {contrib.status === 'approved'
-                            ? 'Đã Duyệt & Công Khai'
+                            ? 'Đã duyệt & lên bản đồ'
                             : contrib.status === 'rejected'
-                              ? 'Đã Từ Chối'
-                              : 'Chờ BQT Duyệt'}
+                              ? 'Chưa duyệt'
+                              : 'Đang chờ duyệt'}
                         </span>
                       </div>
                     </div>
@@ -3292,7 +3478,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               </div>
             ) : (
               <div style={{ textAlign: 'center', padding: '24px 16px', color: 'var(--color-text-muted)', fontStyle: 'italic', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)', fontSize: 'var(--font-size-sm)' }}>
-                Bạn chưa có bài đóng góp cung đường mới nào. Hãy bấm <strong>"+ Đóng Góp Cung Đường Mới"</strong> để chia sẻ kinh nghiệm và nhận +50 điểm uy tín!
+                Bạn chưa gửi cung mới nào. Biết lối mòn nào hay mà trên bản đồ chưa có? Bấm <strong>"+ Gửi cung mới"</strong> để chia sẻ lại cho anh em (+50 điểm uy tín).
               </div>
             )}
           </div>
@@ -3303,7 +3489,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           <div className="card" style={{ animation: 'fadeIn 0.25s ease' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
               <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <MessageSquare size={18} color="var(--color-sky)" /> Lịch Sử Bài Viết & Đóng Góp Diễn Đàn ({userOwnPosts.length})
+                <MessageSquare size={18} color="var(--color-sky)" /> Bài đã đăng trên diễn đàn ({userOwnPosts.length})
               </h3>
             </div>
 
@@ -3343,7 +3529,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                       e.currentTarget.style.transform = 'translateY(0)';
                     }}
                   >
-                    <div style={{ flex: 1, minWidth: 260 }}>
+                    <div style={{ flex: 1, minWidth: 'min(260px, 100%)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
                         <span className={post.category === 'Cảnh Báo' ? 'badge badge-error' : 'badge badge-success'}>
                           {post.category}
@@ -3363,7 +3549,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               </div>
             ) : (
               <div style={{ textAlign: 'center', padding: '24px 16px', color: 'var(--color-text-muted)', fontStyle: 'italic', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)', fontSize: 'var(--font-size-sm)' }}>
-                Tài khoản này chưa tạo bài viết hoặc bài đóng góp diễn đàn nào. Hãy đăng bài đầu tiên để nhận +10 điểm uy tín!
+                Bạn chưa đăng bài nào trên diễn đàn. Kể một chuyến đi hoặc hỏi đường anh em để nhận +10 điểm uy tín nhé.
               </div>
             )}
           </div>
@@ -3376,7 +3562,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <MapPin size={18} color="var(--color-primary)" /> Cung Đường Đã Lưu ({savedTrails.length})
+                  <MapPin size={18} color="var(--color-primary)" /> Cung đường đã lưu ({savedTrails.length})
                 </h3>
                 <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -3500,13 +3686,13 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               >
                 {savedTrails.length === 0 ? (
                   <div style={{ padding: 20, textAlign: 'center', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)', color: 'var(--color-text-muted)', fontSize: '0.82rem' }}>
-                    Chưa có cung đường nào trong danh sách lưu đám mây. Hãy mở một cung đường và bấm &ldquo;Lưu Cung Đường&rdquo; hoặc &ldquo;Tải Gói Offline&rdquo;.
+                    Bạn chưa lưu cung nào cả. Khi xem một cung thích đi, bấm &ldquo;Lưu cung&rdquo; hoặc &ldquo;Lưu offline&rdquo; để gom vào đây nhé.
                   </div>
                 ) : (() => {
                   if (visibleSavedTrails.length === 0) {
                     return (
                       <div style={{ padding: 18, textAlign: 'center', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)', color: 'var(--color-text-muted)', fontSize: '0.8rem' }}>
-                        Chưa có cung đường nào trong thư mục &ldquo;{savedCollectionFilter}&rdquo;. Chọn bộ sưu tập ở từng cung đường trong tab &ldquo;Tất cả&rdquo; để phân loại.
+                        Chưa có cung nào trong mục &ldquo;{savedCollectionFilter}&rdquo;. Bạn có thể chuyển mục ở từng cung trong tab &ldquo;Tất cả&rdquo;.
                       </div>
                     );
                   }
@@ -3578,7 +3764,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                                     onClick={() => onSelectTrail(matchedFull)}
                                     style={{ padding: '4px 10px', fontSize: '0.74rem' }}
                                   >
-                                    Mở Cung
+                                    Xem cung
                                   </button>
                                 )}
                                 <button
@@ -3596,7 +3782,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                                   }}
                                   style={{ padding: '4px 8px', fontSize: '0.74rem', display: 'inline-flex', alignItems: 'center', gap: 4 }}
                                 >
-                                  <Edit3 size={12} /> {meta.personalNote ? 'Sửa Ghi Chú' : 'Ghi Chú'}
+                                  <Edit3 size={12} /> {meta.personalNote ? 'Sửa ghi chú' : 'Ghi chú'}
                                 </button>
                                 {isConfirmingRemove ? (
                                   <>
@@ -3765,7 +3951,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                                     onClick={() => void handleUpdateSavedTrailMeta(tId, tName, { personalNote: savedNoteDraft })}
                                     style={{ padding: '4px 12px', fontSize: '0.74rem', display: 'inline-flex', alignItems: 'center', gap: 4 }}
                                   >
-                                    <Save size={12} /> {isSavingThis ? 'Đang lưu...' : 'Lưu Ghi Chú'}
+                                    <Save size={12} /> {isSavingThis ? 'Đang lưu...' : 'Lưu ghi chú'}
                                   </button>
                                 </div>
                               </div>
@@ -3781,19 +3967,19 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               {/* Recent Activity Timeline */}
               <div style={{ marginTop: 8, paddingTop: 14, borderTop: '1px solid var(--color-border)' }}>
                 <h4 style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)', margin: '0 0 10px 0' }}>
-                  Nhật Ký Hoạt Động Gần Đây ({activities.length})
+                  Hoạt động gần đây ({activities.length})
                 </h4>
                 {activities.length === 0 ? (
-                  <div style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)' }}>Chưa có hoạt động nào được ghi nhận.</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)' }}>Chưa có hoạt động nào gần đây.</div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 240, overflowY: 'auto' }}>
                     {activities.map((act, idx) => (
                       <div key={act._id || idx} style={{ padding: '8px 10px', borderRadius: 4, background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', fontSize: '0.76rem' }}>
                         <div style={{ fontWeight: 700, color: 'var(--color-text-main)' }}>
-                          {act.title || act.content || 'Hoạt động thực địa'}
+                          {act.title || act.content || 'Nhật ký đi núi'}
                         </div>
                         <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', marginTop: 2 }}>
-                          {act.createdAt ? new Date(act.createdAt).toLocaleString('vi-VN') : ''}
+                          {formatSafeDateTimeVi(act.createdAt)}
                         </div>
                       </div>
                     ))}
@@ -3805,14 +3991,14 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             {/* Top Summit Conquerors Leaderboard */}
             <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Award size={18} color="var(--color-earth)" /> Bảng Xếp Hạng Chinh Phục Đỉnh
+                <Award size={18} color="var(--color-earth)" /> Bảng xếp hạng chạm đỉnh
               </h3>
               <p style={{ margin: 0, fontSize: '0.76rem', color: 'var(--color-text-muted)' }}>
-                Thống kê thực tế từ hệ thống Check-in GPS &amp; Nhật ký đỉnh đã xác thực trên LOST.
+                Tổng hợp từ các lượt check-in đỉnh và tọa độ GPS đã xác thực trên LOST.
               </p>
               {leaderboard.length === 0 ? (
                 <div style={{ padding: 20, textAlign: 'center', background: 'var(--color-bg-main)', borderRadius: 4, border: '1px dashed var(--color-border)', color: 'var(--color-text-muted)', fontSize: '0.82rem' }}>
-                  Chưa có lượt check-in nào trên bảng xếp hạng. Hãy là người đầu tiên chinh phục và check-in đỉnh!
+                  Chưa có ai lên bảng — check-in đỉnh đầu tiên để mở bảng nhé!
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -3859,6 +4045,12 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                             decoding="async"
                             src={row.avatarUrl || getTrekkerAvatarSvg(row.fullName || row.username || 'Trekker')}
                             alt={row.fullName}
+                            onError={(e) => {
+                              const img = e.currentTarget as HTMLImageElement;
+                              if (img.dataset.fallbackApplied === '1') return;
+                              img.dataset.fallbackApplied = '1';
+                              img.src = getTrekkerAvatarSvg(row.fullName || row.username || 'Trekker');
+                            }}
                             style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
                           />
                           <div style={{ minWidth: 0 }}>
@@ -3893,10 +4085,10 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
               <div>
                 <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Package size={18} color="var(--color-primary)" /> Quản Lý Tủ Đồ Thiết Bị Sinh Tồn ({userGear.length}/{ALL_GEAR_ITEMS.length})
+                  <Package size={18} color="var(--color-primary)" /> Tủ đồ đi rừng ({userGear.length}/{ALL_GEAR_ITEMS.length})
                 </h3>
                 <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', marginTop: 3 }}>
-                  Bấm trực tiếp vào từng món trang bị để kích hoạt hoặc hủy kích hoạt trong balo dã ngoại
+                  Bấm vào từng món để đánh dấu đồ bạn đã sắm sẵn trong balo
                 </div>
               </div>
 
@@ -3906,7 +4098,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 onClick={() => setShowGearModal(true)}
                 style={{ fontSize: 'var(--font-size-xs)', padding: '6px 14px', display: 'flex', alignItems: 'center', gap: 6 }}
               >
-                <Edit3 size={14} /> Mở cửa sổ quản lý tủ đồ
+                <Edit3 size={14} /> Chọn nhanh đồ
               </button>
             </div>
 
@@ -3954,11 +4146,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     </div>
                     {isOwned ? (
                       <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.75rem', color: 'var(--color-primary)', fontWeight: 700 }}>
-                        <CheckCircle2 size={16} color="var(--color-primary)" /> Đã trang bị
+                        <CheckCircle2 size={16} color="var(--color-primary)" /> Đã có
                       </span>
                     ) : (
                       <span style={{ fontSize: '0.75rem', color: 'var(--color-text-dim)' }}>
-                        + Trang bị
+                        + Thêm vào tủ
                       </span>
                     )}
                   </div>
@@ -3973,10 +4165,10 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       {showQrModal &&
         createPortal(
           <div className="modal-overlay" onClick={() => setShowQrModal(false)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
-            <div ref={qrModalRef} tabIndex={-1} className="modal-content" role="dialog" aria-modal="true" aria-label="Mã thông hành QR Active Pass" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440 }}>
+            <div ref={qrModalRef} tabIndex={-1} className="modal-content" role="dialog" aria-modal="true" aria-label="Mã QR cứu hộ" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 440 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                 <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <QrCode size={20} /> Mã Thông Hành QR Active Pass
+                  <QrCode size={20} /> Mã QR cứu hộ
                 </h3>
                 <button type="button" onClick={() => setShowQrModal(false)} aria-label="Đóng" style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
                   <X size={20} />
@@ -4004,7 +4196,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   viewBox={`0 0 ${qrPassSvg.viewBoxSize} ${qrPassSvg.viewBoxSize}`}
                   shapeRendering="crispEdges"
                   role="img"
-                  aria-label={`Mã QR Active Pass ${expeditionId}`}
+                  aria-label={`Mã QR cứu hộ ${expeditionId}`}
                 >
                   <rect width={qrPassSvg.viewBoxSize} height={qrPassSvg.viewBoxSize} fill="var(--color-on-media)" />
                   <path
@@ -4015,17 +4207,17 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               </div>
 
               <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', lineHeight: 'var(--line-height-normal)', textAlign: 'center', marginBottom: 16 }}>
-                Mã QR chuẩn ISO mã hóa ID thám hiểm <strong style={{ color: 'var(--color-primary)' }}>#{expeditionId}</strong> dành cho Đội Cứu Hộ SOS và Cán bộ Trạm Kiểm Lâm quét trực tiếp bằng camera.
+                Mã QR chứa mã thẻ <strong style={{ color: 'var(--color-primary)' }}>#{expeditionId}</strong> và số người thân khẩn cấp để kiểm lâm hoặc đội cứu hộ quét nhanh khi cần.
               </div>
 
               <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: 12, fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <div>Trạng Thái: <strong style={{ color: 'var(--color-primary)' }}>{isVerifiedUser ? 'Đã Xác Thực' : 'Chưa Kích Hoạt OTP'}</strong></div>
-                <div>Liên Hệ Khẩn Cấp: <strong style={{ color: 'var(--color-text-main)' }}>{activeProfile.emergencyContact || 'Chưa thiết lập'}</strong></div>
-                <div>Thời Gian Tạo: <strong style={{ color: 'var(--color-sky)' }}>{new Date().toLocaleDateString('vi-VN')}</strong></div>
+                <div>Trạng thái: <strong style={{ color: 'var(--color-primary)' }}>{isVerifiedUser ? 'Đã xác thực' : 'Chưa xác thực email'}</strong></div>
+                <div>Người thân (SOS): <strong style={{ color: 'var(--color-text-main)' }}>{activeProfile.emergencyContact || 'Chưa thiết lập'}</strong></div>
+                <div>Ngày tạo mã: <strong style={{ color: 'var(--color-sky)' }}>{new Date().toLocaleDateString('vi-VN')}</strong></div>
               </div>
 
               <button type="button" className="btn btn-outline" onClick={() => setShowQrModal(false)} style={{ width: '100%', marginTop: 16 }}>
-                Đóng Cửa Sổ
+                Đóng
               </button>
             </div>
           </div>,
@@ -4036,10 +4228,10 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       {selectedBadge &&
         createPortal(
           <div className="modal-overlay" onClick={() => setSelectedBadge(null)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
-            <div ref={badgeModalRef} tabIndex={-1} className="modal-content" role="dialog" aria-modal="true" aria-label="Chi tiết huy hiệu danh dự" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 480, border: `1px solid ${selectedBadge.color}` }}>
+            <div ref={badgeModalRef} tabIndex={-1} className="modal-content" role="dialog" aria-modal="true" aria-label="Chi tiết huy hiệu" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 480, border: `1px solid ${selectedBadge.color}` }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                 <h3 style={{ fontSize: 'var(--font-size-base)', color: selectedBadge.color, fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Award size={20} /> Chi Tiết Huy Hiệu Danh Dự
+                  <Award size={20} /> Chi tiết huy hiệu
                 </h3>
                 <button type="button" onClick={() => setSelectedBadge(null)} aria-label="Đóng" style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
                   <X size={20} />
@@ -4055,19 +4247,19 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
                 <div style={{ marginTop: 12, display: 'flex', justifyContent: 'center', gap: 10 }}>
                   <span className={selectedBadge.unlocked ? 'badge badge-success' : 'badge badge-sun'}>
-                    {selectedBadge.unlocked ? 'Đã Mở Khóa' : 'Chưa Mở Khóa'}
+                    {selectedBadge.unlocked ? 'Đã mở khóa' : 'Chưa mở khóa'}
                   </span>
-                  <span className="badge badge-cloud">Độ Hiếm: {selectedBadge.rarity}</span>
+                  <span className="badge badge-cloud">Độ hiếm: {selectedBadge.rarity}</span>
                 </div>
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', lineHeight: 'var(--line-height-relaxed)' }}>
                 <div>
-                  <strong style={{ color: selectedBadge.color }}>Nguồn gốc &amp; Ý nghĩa: </strong>
+                  <strong style={{ color: selectedBadge.color }}>Ý nghĩa: </strong>
                   <span style={{ color: 'var(--color-text-main)' }}>{selectedBadge.description}</span>
                 </div>
                 <div>
-                  <strong style={{ color: 'var(--color-sky)' }}>Điều kiện mở khóa: </strong>
+                  <strong style={{ color: 'var(--color-sky)' }}>Cách mở khóa: </strong>
                   <span style={{ color: 'var(--color-text-main)' }}>{selectedBadge.requirement}</span>
                 </div>
                 {selectedBadge.unlockedAt && (
@@ -4078,7 +4270,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               </div>
 
               <button type="button" className="btn btn-primary" onClick={() => setSelectedBadge(null)} style={{ width: '100%', marginTop: 20 }}>
-                Đã Hiểu
+                Đóng
               </button>
             </div>
           </div>,
@@ -4089,10 +4281,10 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       {selectedTrailPassport &&
         createPortal(
           <div className="modal-overlay" onClick={() => setSelectedTrailPassport(null)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
-            <div ref={passportModalRef} tabIndex={-1} className="modal-content" role="dialog" aria-modal="true" aria-label="Chứng nhận chinh phục cung đường" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520, border: '1px solid var(--color-primary)' }}>
+            <div ref={passportModalRef} tabIndex={-1} className="modal-content" role="dialog" aria-modal="true" aria-label="Dấu chân đã chạm" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520, border: '1px solid var(--color-primary)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                 <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <MapPin size={20} /> Chứng Nhận Chinh Phục Cung Đường
+                  <MapPin size={20} /> Dấu chân đã chạm
                 </h3>
                 <button type="button" onClick={() => setSelectedTrailPassport(null)} aria-label="Đóng" style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
                   <X size={20} />
@@ -4101,7 +4293,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
               <div style={{ background: 'var(--color-bg-main)', borderRadius: 4, padding: 20, border: '1px dashed var(--color-primary)', textAlign: 'center', marginBottom: 18 }}>
                 <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', textTransform: 'uppercase', letterSpacing: 2 }}>
-                  OFFICIAL EXPEDITION CHECK-IN PASSPORT
+                  HỘ CHIẾU ĐỈNH NÚI · LOST
                 </div>
                 <div style={{ fontSize: 'var(--font-size-lg)', fontWeight: 'var(--font-weight-extrabold)', color: 'var(--color-text-main)', marginTop: 4 }}>
                   {selectedTrailPassport.name}
@@ -4113,12 +4305,12 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(180px, 100%), 1fr))', gap: 12, marginBottom: 18 }}>
                 <div style={{ background: 'var(--color-bg-main)', padding: 12, borderRadius: 4, border: '1px solid var(--color-border)' }}>
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', display: 'block' }}>Chiều Dài Cung Đường</span>
+                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', display: 'block' }}>Chiều dài cung</span>
                   <strong style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)' }}>{selectedTrailPassport.distanceKm} km</strong>
                 </div>
 
                 <div style={{ background: 'var(--color-bg-main)', padding: 12, borderRadius: 4, border: '1px solid var(--color-border)' }}>
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', display: 'block' }}>Độ Khó Địa Hình</span>
+                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', display: 'block' }}>Độ khó</span>
                   <strong style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)' }}>
                     {getDifficultyText(selectedTrailPassport.difficultyLevel)}
                   </strong>
@@ -4126,7 +4318,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               </div>
 
               <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-muted)', lineHeight: 'var(--line-height-normal)', marginBottom: 20 }}>
-                Dữ liệu được ghi nhận qua hệ thống <strong>GPS Trekking Log</strong> và kiểm chứng thông tin tuyến đường.
+                Chuyến đi đã được ghi vào sổ nhật ký trên LOST. Bạn có thể mở lại cung để xem bản đồ 3D và thời tiết bất cứ lúc nào.
               </div>
 
               <div style={{ display: 'flex', gap: 12 }}>
@@ -4139,11 +4331,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   onClick={() => {
                     const trailToNav = selectedTrailPassport;
                     setSelectedTrailPassport(null);
-                    onSelectTrail(trailToNav);
+                    onSelectTrail(trailToNav, 'map');
                   }}
                   style={{ flex: 1 }}
                 >
-                  Mở Bản Đồ 3D Cung Đường
+                  Mở bản đồ 3D
                 </button>
               </div>
             </div>
@@ -4155,13 +4347,13 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       {deletingContribution &&
         createPortal(
           <div className="modal-overlay" onClick={() => setDeletingContribution(null)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
-            <div ref={deleteContribModalRef} tabIndex={-1} className="modal-content" role="alertdialog" aria-modal="true" aria-label="Xác nhận xóa bài đóng góp" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420, border: '1.5px solid var(--color-error)' }}>
+            <div ref={deleteContribModalRef} tabIndex={-1} className="modal-content" role="alertdialog" aria-modal="true" aria-label="Xác nhận xóa bài gửi" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420, border: '1.5px solid var(--color-error)' }}>
               <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-error-text, var(--color-error))', fontWeight: 'var(--font-weight-extrabold)', margin: '0 0 12px 0' }}>
-                Xác nhận xóa bài đóng góp
+                Xóa cung đã gửi?
               </h3>
 
               <p style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-main)', lineHeight: 1.5, marginBottom: 20 }}>
-                Bạn có chắc chắn muốn xóa bài đóng góp cung đường <strong style={{ color: 'var(--color-primary)' }}>"{deletingContribution.name}"</strong> không? Thao tác này sẽ gỡ bài viết khỏi hệ thống và không thể hoàn tác.
+                Bạn chắc chắn muốn xóa bài gửi <strong style={{ color: 'var(--color-primary)' }}>"{deletingContribution.name}"</strong> chứ? Xóa rồi sẽ không khôi phục lại được.
               </p>
 
               <div style={{ display: 'flex', gap: 12 }}>
@@ -4171,7 +4363,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   onClick={() => setDeletingContribution(null)}
                   style={{ flex: 1, justifyContent: 'center' }}
                 >
-                  Hủy bỏ
+                  Thôi
                 </button>
                 <button
                   type="button"
@@ -4179,7 +4371,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   onClick={confirmDeleteContribution}
                   style={{ flex: 1, justifyContent: 'center' }}
                 >
-                  Xác nhận xóa
+                  Xóa luôn
                 </button>
               </div>
             </div>
@@ -4191,10 +4383,10 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       {showCheckInModal &&
         createPortal(
           <div className="modal-overlay" onClick={() => !isSubmittingCheckin && setShowCheckInModal(false)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
-            <div ref={checkInModalRef} tabIndex={-1} className="modal-content" role="dialog" aria-modal="true" aria-label="Chọn cung đường vừa chinh phục" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 540 }}>
+            <div ref={checkInModalRef} tabIndex={-1} className="modal-content" role="dialog" aria-modal="true" aria-label="Chọn cung bạn vừa đi" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 540 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                 <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <MapPin size={20} /> Chọn Cung Đường Vừa Chinh Phục
+                  <MapPin size={20} /> Chọn cung bạn vừa đi
                 </h3>
                 <button
                   type="button"
@@ -4215,7 +4407,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, padding: '10px 12px', borderRadius: 4, background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', marginBottom: 12 }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', color: 'var(--color-text-muted)', fontWeight: 700 }}>
-                  <span>Thời gian hoàn thành (giờ):</span>
+                  <span>Tổng thời gian đi (giờ):</span>
                   <input
                     type="number"
                     min={0.5}
@@ -4239,8 +4431,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     {isCapturingCheckinGps
                       ? 'Đang lấy GPS...'
                       : checkinCoords
-                        ? `GPS Đã Gắn (${checkinCoords.lat.toFixed(3)}, ${checkinCoords.lng.toFixed(3)})`
-                        : 'Đính Kèm GPS Xác Thực Đỉnh'}
+                        ? `Đã gắn GPS (${checkinCoords.lat.toFixed(3)}, ${checkinCoords.lng.toFixed(3)})`
+                        : 'Đính kèm GPS xác thực'}
                   </span>
                 </button>
               </div>
@@ -4268,7 +4460,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                           <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', marginTop: 2 }}>{trail.province} ({trail.distanceKm} km)</div>
                         </div>
                         <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-bold)', flexShrink: 0 }}>
-                          Đã Check-in
+                          Đã check-in
                         </span>
                       </div>
                     );
@@ -4344,7 +4536,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               {/* Modal Fixed Header */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, paddingBottom: 12, borderBottom: '1px solid var(--color-border)' }}>
                 <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <User size={20} /> Điền & Cập Nhật Thông Tin Cá Nhân
+                  <User size={20} /> Cập nhật thông tin cá nhân
                 </h3>
                 <button
                   type="button"
@@ -4385,10 +4577,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
                   {/* Editable Username Input */}
                   <div className="form-group">
-                    <label className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', gap: 6, margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
+                    <label htmlFor="profile-edit-username" className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', gap: 6, margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
                       Tên tài khoản (@username)
                     </label>
                     <input
+                      id="profile-edit-username"
                       type="text"
                       className="form-input"
                       placeholder="minh_trekker"
@@ -4443,10 +4636,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
                   {/* Full Name Input */}
                   <div className="form-group">
-                    <label className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
+                    <label htmlFor="profile-edit-fullname" className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
                       Họ và tên đầy đủ
                     </label>
                     <input
+                      id="profile-edit-fullname"
                       type="text"
                       className="form-input"
                       style={{
@@ -4469,10 +4663,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
                   {/* Phone Number Input */}
                   <div className="form-group">
-                    <label className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
+                    <label htmlFor="profile-edit-phone" className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
                       Số điện thoại cá nhân (chuẩn VN)
                     </label>
                     <input
+                      id="profile-edit-phone"
                       type="text"
                       className="form-input"
                       placeholder="0912 345 678"
@@ -4495,10 +4690,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
                   {/* Emergency Contact Input */}
                   <div className="form-group">
-                    <label className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
-                      Số điện thoại khẩn cấp (SOS Contact)
+                    <label htmlFor="profile-edit-emergency" className="form-label" style={{ height: 22, display: 'flex', alignItems: 'center', margin: 0, marginBottom: 8, whiteSpace: 'nowrap' }}>
+                      Số điện thoại khẩn cấp (SOS)
                     </label>
                     <input
+                      id="profile-edit-emergency"
                       type="text"
                       className="form-input"
                       placeholder="0988 776 655 (Người thân)"
@@ -4522,15 +4718,17 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
                 {/* CLEAN VISUAL CARD SELECTOR FOR PHONG CÁCH TREKKING */}
                 <div className="form-group">
-                  <label className="form-label" style={{ marginBottom: 10, display: 'block' }}>
-                    Phong cách Trekking yêu thích (Bấm chọn phong cách của bạn)
-                  </label>
+                  <div className="form-label" style={{ marginBottom: 10, display: 'block' }}>
+                    Gu đi núi của bạn
+                  </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
                     {TREKKING_STYLE_OPTIONS.map((style) => {
                       const isSelected = editStyle === style.id;
                       return (
-                        <div
+                        <button
+                          type="button"
                           key={style.id}
+                          aria-pressed={isSelected}
                           onClick={() => setEditStyle(style.id)}
                           style={{
                             background: isSelected ? 'color-mix(in srgb, var(--color-primary) 10%, var(--color-bg-main))' : 'var(--color-bg-main)',
@@ -4542,6 +4740,8 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'space-between',
+                            textAlign: 'left',
+                            fontFamily: 'var(--font-family)',
                           }}
                         >
                           <div>
@@ -4553,7 +4753,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                             </div>
                           </div>
                           {isSelected && <CheckCircle2 size={18} color="var(--color-primary)" style={{ flexShrink: 0 }} />}
-                        </div>
+                        </button>
                       );
                     })}
                   </div>
@@ -4561,15 +4761,21 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
                 {/* Avatar Upload from PC & Link URL Input */}
                 <div className="form-group">
-                  <label className="form-label" style={{ marginBottom: 10, display: 'block' }}>
-                    Ảnh Đại Diện (Avatar)
+                  <label htmlFor="profile-edit-avatar-url" className="form-label" style={{ marginBottom: 10, display: 'block' }}>
+                    Ảnh đại diện
                   </label>
                   <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
                     <img
                       loading="lazy"
                       decoding="async"
                       src={editAvatarUrl || getTrekkerAvatarSvg(activeProfile.fullName || activeProfile.username, activeProfile.role)}
-                      alt="Preview"
+                      alt="Xem trước ảnh đại diện"
+                      onError={(e) => {
+                        const img = e.currentTarget as HTMLImageElement;
+                        if (img.dataset.fallbackApplied === '1') return;
+                        img.dataset.fallbackApplied = '1';
+                        img.src = getTrekkerAvatarSvg(activeProfile.fullName || activeProfile.username, activeProfile.role);
+                      }}
                       style={{ width: 52, height: 52, borderRadius: 4, objectFit: 'cover', border: '1.5px solid var(--color-primary)', flexShrink: 0 }}
                     />
 
@@ -4584,6 +4790,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
                     <div style={{ flex: 1, minWidth: 240 }}>
                       <input
+                        id="profile-edit-avatar-url"
                         type="text"
                         className="form-input"
                         placeholder="Hoặc dán đường dẫn ảnh URL (https://...)"
@@ -4609,10 +4816,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
                 {/* Bio Textarea */}
                 <div className="form-group">
-                  <label className="form-label" style={{ marginBottom: 8, display: 'block' }}>
-                    Giới thiệu bản thân (Bio)
+                  <label htmlFor="profile-edit-bio" className="form-label" style={{ marginBottom: 8, display: 'block' }}>
+                    Giới thiệu bản thân
                   </label>
                   <textarea
+                    id="profile-edit-bio"
                     className="form-textarea"
                     rows={3}
                     placeholder="Chia sẻ kinh nghiệm leo núi, các cung đường đã qua hoặc thông điệp của bạn..."
@@ -4638,7 +4846,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     Hủy
                   </button>
                   <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                    <Save size={16} /> {isSaving ? 'Đang lưu...' : 'Lưu Thay Đổi Thông Tin'}
+                    <Save size={16} /> {isSaving ? 'Đang lưu...' : 'Lưu thay đổi'}
                   </button>
                 </div>
               </form>
@@ -4651,14 +4859,14 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
       {showGearModal &&
         createPortal(
           <div className="modal-overlay" onClick={() => setShowGearModal(false)} style={{ zIndex: 'var(--z-modal, 3000)' as unknown as number }}>
-            <div ref={gearModalRef} tabIndex={-1} className="modal-content" role="dialog" aria-modal="true" aria-label="Quản lý tủ đồ thiết bị sinh tồn" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 620 }}>
+            <div ref={gearModalRef} tabIndex={-1} className="modal-content" role="dialog" aria-modal="true" aria-label="Tủ đồ đi rừng" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 620 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                 <div>
                   <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 'var(--font-weight-extrabold)', margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <Package size={20} /> Quản Lý Tủ Đồ Thiết Bị Sinh Tồn
+                    <Package size={20} /> Tủ đồ đi rừng
                   </h3>
                   <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', marginTop: 4 }}>
-                    Tích chọn các trang bị dã ngoại bạn đang sở hữu ({userGear.length}/{ALL_GEAR_ITEMS.length})
+                    Chọn những món đồ bạn đã có sẵn ({userGear.length}/{ALL_GEAR_ITEMS.length})
                   </div>
                 </div>
                 <button type="button" onClick={() => setShowGearModal(false)} aria-label="Đóng" style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer' }}>
@@ -4697,7 +4905,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                       <div style={{ flex: 1 }}>
                         <div style={{ fontSize: 'var(--font-size-xs)', fontWeight: 'var(--font-weight-bold)', color: isOwned ? 'var(--color-text-main)' : 'var(--color-text-muted)' }}>{item.name}</div>
                         <div style={{ fontSize: 'var(--font-size-xs)', color: isOwned ? 'var(--color-primary)' : 'var(--color-text-dim)', marginTop: 2 }}>
-                          {isOwned ? 'Đã sở hữu' : '+ Bấm để chọn'}
+                          {isOwned ? 'Đã có' : '+ Bấm để chọn'}
                         </div>
                       </div>
                       {isOwned && <CheckCircle2 size={16} color="var(--color-primary)" style={{ flexShrink: 0 }} />}
@@ -4707,7 +4915,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
               </div>
 
               <button type="button" className="btn btn-primary" onClick={() => setShowGearModal(false)} style={{ width: '100%', marginTop: 20 }}>
-                Đã Xong - Lưu Trang Bị Đã Chọn
+                Xong
               </button>
             </div>
           </div>,
@@ -4724,9 +4932,9 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           onClose={() => {
             setSelectedThreadForModal(null);
             fetch('/api/forum', { headers: getApiHeaders() })
-              .then((res) => res.json())
+              .then((res) => (res.ok ? res.json().catch(() => null) : null))
               .then((data) => {
-                if (data.success && Array.isArray(data.data)) {
+                if (isMountedRef.current && data?.success && Array.isArray(data.data)) {
                   setUserForumPosts(data.data);
                 }
               })
@@ -4754,7 +4962,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
           onClose={() => setSelectedAuthorForModal(null)}
           onStartChat={(targetUserId) => {
             if (targetUserId) {
-              localStorage.setItem('lost_target_chat_user', targetUserId);
+              safeLocalStorageSet('lost_target_chat_user', targetUserId);
             }
             window.location.hash = '#messages';
           }}
@@ -4785,15 +4993,16 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, borderBottom: '1px solid var(--color-border)', paddingBottom: 14 }}>
               <div>
                 <h3 style={{ fontSize: '1.15rem', color: 'var(--color-text-main)', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Camera size={20} color="var(--color-primary)" /> Tùy Chỉnh Ảnh Bìa Trang Cá Nhân
+                  <Camera size={20} color="var(--color-primary)" /> Đổi ảnh bìa
                 </h3>
                 <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)', marginTop: 4 }}>
-                  Tải ảnh từ máy, chọn danh thắng trekking nổi tiếng Việt Nam hoặc dán đường dẫn ảnh bất kỳ.
+                  Tải ảnh từ máy, chọn ảnh núi rừng Việt Nam có sẵn hoặc dán link ảnh bạn thích.
                 </div>
               </div>
               <button
                 type="button"
                 disabled={isSavingCover}
+                aria-label="Đóng cửa sổ đổi ảnh bìa"
                 onClick={() => !isSavingCover && setShowCoverModal(false)}
                 style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: isSavingCover ? 'not-allowed' : 'pointer', padding: 4, opacity: isSavingCover ? 0.5 : 1 }}
               >
@@ -4804,7 +5013,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             {/* Live Preview Area */}
             <div style={{ marginBottom: 20 }}>
               <div style={{ fontSize: 'var(--font-size-xs)', fontWeight: 700, color: 'var(--color-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>
-                Bản Xem Trước Ảnh Bìa
+                Xem trước ảnh bìa
               </div>
               <div
                 style={{
@@ -4831,7 +5040,10 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     display: 'block',
                   }}
                   onError={(e) => {
-                    (e.currentTarget as HTMLImageElement).src = DEFAULT_COVER_URL;
+                    const img = e.currentTarget as HTMLImageElement;
+                    if (img.dataset.fallbackApplied === '1') return;
+                    img.dataset.fallbackApplied = '1';
+                    img.src = DEFAULT_COVER_URL;
                   }}
                 />
                 <div
@@ -4852,12 +5064,18 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                         decoding="async"
                         src={activeProfile.avatarUrl || activeProfile.avatar || getTrekkerAvatarSvg(activeProfile.fullName || activeProfile.username, activeProfile.role)}
                         alt={activeProfile.fullName}
+                        onError={(e) => {
+                          const img = e.currentTarget as HTMLImageElement;
+                          if (img.dataset.fallbackApplied === '1') return;
+                          img.dataset.fallbackApplied = '1';
+                          img.src = getTrekkerAvatarSvg(activeProfile.fullName || activeProfile.username, activeProfile.role);
+                        }}
                         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                       />
                     </div>
                     <div>
                       <div style={{ fontWeight: 800, color: 'var(--color-on-media)', fontSize: '0.92rem' }}>{activeProfile.fullName}</div>
-                      <div style={{ fontSize: '0.72rem', color: 'color-mix(in srgb, var(--color-on-media) 78%, transparent)' }}>@{activeProfile.username || 'trekker'} • {activeProfile.role}</div>
+                      <div style={{ fontSize: '0.72rem', color: 'color-mix(in srgb, var(--color-on-media) 78%, transparent)' }}>@{activeProfile.username || 'trekker'} • {formatUserRoleVi(activeProfile.role)}</div>
                     </div>
                   </div>
                 </div>
@@ -4867,7 +5085,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             {/* Option 1: Upload from local file */}
             <div style={{ marginBottom: 18 }}>
               <div style={{ fontSize: 'var(--font-size-xs)', fontWeight: 700, color: 'var(--color-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>
-                Cách 1: Tải Ảnh Lên Từ Thiết Bị
+                Cách 1 · Tải ảnh từ máy
               </div>
               <button
                 type="button"
@@ -4876,11 +5094,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 onClick={() => coverFileInputRef.current?.click()}
                 style={{ width: '100%', padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 'var(--font-size-sm)', borderRadius: 4 }}
               >
-                <Upload size={16} color="var(--color-primary)" /> Chọn Tệp Ảnh Từ Máy Tính (PNG, JPG, WebP - Tối đa 5MB)
+                <Upload size={16} color="var(--color-primary)" /> Chọn ảnh từ máy (PNG, JPG, WebP · tối đa 5MB)
               </button>
               {previewCover.startsWith('data:image/') && (
                 <div style={{ marginTop: 6, fontSize: 'var(--font-size-xs)', color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700 }}>
-                  <Check size={14} /> Đã chọn ảnh từ máy tính (Đang xem trước ở trên)
+                  <Check size={14} /> Đã chọn ảnh từ máy (đang xem trước phía trên)
                 </div>
               )}
             </div>
@@ -4888,14 +5106,16 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             {/* Option 2: Choose from iconic Vietnam trekking presets */}
             <div style={{ marginBottom: 18 }}>
               <div style={{ fontSize: 'var(--font-size-xs)', fontWeight: 700, color: 'var(--color-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>
-                Cách 2: Chọn Từ Danh Thắng Trekking Việt Nam
+                Cách 2 · Chọn ảnh núi rừng Việt Nam có sẵn
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10 }}>
                 {COVER_PRESETS.map((preset) => {
                   const isSelected = previewCover === preset.url;
                   return (
-                    <div
+                    <button
+                      type="button"
                       key={preset.id}
+                      aria-pressed={isSelected}
                       onClick={() => {
                         setPreviewCover(preset.url);
                         setCustomCoverInput('');
@@ -4903,11 +5123,15 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                       style={{
                         position: 'relative',
                         height: 76,
+                        width: '100%',
+                        padding: 0,
                         borderRadius: 4,
                         overflow: 'hidden',
                         cursor: 'pointer',
+                        background: 'var(--color-bg-main)',
                         border: isSelected ? '2px solid var(--color-primary)' : '1px solid var(--color-border)',
                         transition: 'border-color 0.18s ease',
+                        textAlign: 'left',
                       }}
                       onMouseEnter={(e) => {
                         if (!isSelected) e.currentTarget.style.borderColor = 'var(--color-primary)';
@@ -4921,7 +5145,13 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                         decoding="async"
                         src={preset.url}
                         alt={preset.name}
-                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                        onError={(e) => {
+                          const img = e.currentTarget as HTMLImageElement;
+                          if (img.dataset.fallbackApplied === '1') return;
+                          img.dataset.fallbackApplied = '1';
+                          img.src = DEFAULT_COVER_URL;
+                        }}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                       />
                       <div
                         style={{
@@ -4947,7 +5177,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                           <Check size={12} />
                         </div>
                       )}
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -4956,13 +5186,13 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             {/* Option 3: Direct URL input */}
             <div style={{ marginBottom: 22 }}>
               <div style={{ fontSize: 'var(--font-size-xs)', fontWeight: 700, color: 'var(--color-text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>
-                Cách 3: Dán Đường Dẫn Ảnh (URL Trực Tiếp)
+                Cách 3 · Dán đường dẫn ảnh (URL)
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <input
                   type="url"
                   className="form-input"
-                  placeholder="Dán link ảnh thực địa hoặc chọn mẫu có sẵn bên trên..."
+                  placeholder="Dán link ảnh hoặc chọn ảnh có sẵn bên trên..."
                   value={customCoverInput}
                   onChange={(e) => {
                     const val = e.target.value;
@@ -4979,12 +5209,12 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   onClick={() => {
                     if (customCoverInput.trim()) {
                       setPreviewCover(customCoverInput.trim());
-                      if (onShowToast) onShowToast('Đã áp dụng link ảnh vào bản xem trước!', 'info');
+                      if (onShowToast) onShowToast('Đã hiện link ảnh ở khung xem trước.', 'info');
                     }
                   }}
                   style={{ padding: '0 14px', fontSize: 'var(--font-size-xs)' }}
                 >
-                  Xem Thử Link
+                  Xem thử
                 </button>
               </div>
             </div>
@@ -5001,7 +5231,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 }}
                 style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-muted)' }}
               >
-                Khôi Phục Mặc Định
+                Về ảnh mặc định
               </button>
 
               <div style={{ display: 'flex', gap: 10 }}>
@@ -5021,7 +5251,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   onClick={() => void handleApplyCover(previewCover)}
                   style={{ padding: '8px 22px', fontSize: 'var(--font-size-sm)', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 6 }}
                 >
-                  <Save size={16} /> {isSavingCover ? 'Đang lưu ảnh bìa...' : 'Lưu & Áp Dụng Ảnh Bìa'}
+                  <Save size={16} /> {isSavingCover ? 'Đang lưu...' : 'Lưu ảnh bìa'}
                 </button>
               </div>
             </div>
@@ -5111,7 +5341,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   }}
                   style={{ fontSize: '0.76rem', padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--color-on-media)', borderColor: 'color-mix(in srgb, var(--color-on-media) 28%, transparent)' }}
                 >
-                  <Camera size={14} color="var(--color-primary)" /> Đổi Ảnh Bìa
+                  <Camera size={14} color="var(--color-primary)" /> Đổi ảnh bìa
                 </button>
               )}
               {fullViewImage.type === 'avatar' && (
@@ -5124,7 +5354,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   }}
                   style={{ fontSize: '0.76rem', padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--color-on-media)', borderColor: 'color-mix(in srgb, var(--color-on-media) 28%, transparent)' }}
                 >
-                  <Upload size={14} color="var(--color-primary)" /> Đổi Ảnh Đại Diện
+                  <Upload size={14} color="var(--color-primary)" /> Đổi ảnh đại diện
                 </button>
               )}
               {!fullViewImage.url.startsWith('data:') && (
@@ -5136,13 +5366,14 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                   style={{ fontSize: '0.76rem', padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--color-on-media)', borderColor: 'color-mix(in srgb, var(--color-on-media) 28%, transparent)', textDecoration: 'none' }}
                   title="Mở ảnh gốc trong tab mới"
                 >
-                  <ExternalLink size={14} /> Mở Ảnh Gốc
+                  <ExternalLink size={14} /> Mở ảnh gốc
                 </a>
               )}
               <button
                 type="button"
                 onClick={() => setFullViewImage(null)}
                 title="Đóng (Phím Esc)"
+                aria-label="Đóng ảnh xem toàn màn hình"
                 style={{
                   width: 36,
                   height: 36,
@@ -5239,7 +5470,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-text-main)', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <UsersIcon size={18} color="var(--color-sky)" /> Kết Nối Cộng Đồng
+                  <UsersIcon size={18} color="var(--color-sky)" /> Kết nối cộng đồng
                 </h3>
                 <button
                   type="button"
@@ -5335,6 +5566,12 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                             decoding="async"
                             src={memberAvatar}
                             alt={memberName}
+                            onError={(e) => {
+                              const img = e.currentTarget as HTMLImageElement;
+                              if (img.dataset.fallbackApplied === '1') return;
+                              img.dataset.fallbackApplied = '1';
+                              img.src = getTrekkerAvatarSvg(memberName);
+                            }}
                             style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover', flexShrink: 0, border: '1px solid var(--color-border)' }}
                           />
                           <div style={{ minWidth: 0 }}>
@@ -5342,7 +5579,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                               {memberName}
                             </div>
                             <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                              @{member.username || 'trekker'} · {Number(member.reputationScore || 0)} pts
+                              @{member.username || 'trekker'} · {Number(member.reputationScore || 0)} điểm
                             </div>
                           </div>
                         </button>
@@ -5388,7 +5625,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                 <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-primary)', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <KeyRoundIcon size={18} /> Đổi Mật Khẩu Tài Khoản
+                  <KeyRoundIcon size={18} /> Đổi mật khẩu
                 </h3>
                 <button
                   type="button"
@@ -5424,11 +5661,12 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 )}
 
                 <div>
-                  <label className="form-label" style={{ display: 'block', marginBottom: 5, fontSize: '0.78rem' }}>
+                  <label htmlFor="profile-cp-current" className="form-label" style={{ display: 'block', marginBottom: 5, fontSize: '0.78rem' }}>
                     Mật khẩu hiện tại
                   </label>
                   <div style={{ position: 'relative' }}>
                     <input
+                      id="profile-cp-current"
                       type={cpShowCurrent ? 'text' : 'password'}
                       className="form-input"
                       autoComplete="current-password"
@@ -5461,11 +5699,12 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 </div>
 
                 <div>
-                  <label className="form-label" style={{ display: 'block', marginBottom: 5, fontSize: '0.78rem' }}>
+                  <label htmlFor="profile-cp-new" className="form-label" style={{ display: 'block', marginBottom: 5, fontSize: '0.78rem' }}>
                     Mật khẩu mới
                   </label>
                   <div style={{ position: 'relative' }}>
                     <input
+                      id="profile-cp-new"
                       type={cpShowNew ? 'text' : 'password'}
                       className="form-input"
                       autoComplete="new-password"
@@ -5498,10 +5737,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 </div>
 
                 <div>
-                  <label className="form-label" style={{ display: 'block', marginBottom: 5, fontSize: '0.78rem' }}>
+                  <label htmlFor="profile-cp-confirm" className="form-label" style={{ display: 'block', marginBottom: 5, fontSize: '0.78rem' }}>
                     Xác nhận mật khẩu mới
                   </label>
                   <input
+                    id="profile-cp-confirm"
                     type={cpShowNew ? 'text' : 'password'}
                     className="form-input"
                     autoComplete="new-password"
@@ -5527,7 +5767,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     Hủy
                   </button>
                   <button type="submit" className="btn btn-primary" disabled={isChangingPassword}>
-                    <Save size={15} /> {isChangingPassword ? 'Đang cập nhật...' : 'Cập Nhật Mật Khẩu'}
+                    <Save size={15} /> {isChangingPassword ? 'Đang lưu...' : 'Lưu mật khẩu mới'}
                   </button>
                 </div>
               </form>
@@ -5556,7 +5796,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                 <h3 style={{ fontSize: 'var(--font-size-base)', color: 'var(--color-error-text, var(--color-error))', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <TrashIcon size={18} /> Xóa Tài Khoản Vĩnh Viễn
+                  <TrashIcon size={18} /> Xóa tài khoản vĩnh viễn
                 </h3>
                 <button
                   type="button"
@@ -5607,10 +5847,11 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                 )}
 
                 <div>
-                  <label className="form-label" style={{ display: 'block', marginBottom: 5, fontSize: '0.78rem' }}>
+                  <label htmlFor="profile-del-confirm" className="form-label" style={{ display: 'block', marginBottom: 5, fontSize: '0.78rem' }}>
                     Nhập chính xác cụm từ <strong style={{ color: 'var(--color-error-text, var(--color-error))' }}>XÓA TÀI KHOẢN</strong> để xác nhận:
                   </label>
                   <input
+                    id="profile-del-confirm"
                     type="text"
                     className="form-input"
                     placeholder="XÓA TÀI KHOẢN"
@@ -5623,11 +5864,12 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
 
                 {activeProfile.authProvider !== 'google' && (
                   <div>
-                    <label className="form-label" style={{ display: 'block', marginBottom: 5, fontSize: '0.78rem' }}>
+                    <label htmlFor="profile-del-password" className="form-label" style={{ display: 'block', marginBottom: 5, fontSize: '0.78rem' }}>
                       Mật khẩu hiện tại
                     </label>
                     <div style={{ position: 'relative' }}>
                       <input
+                        id="profile-del-password"
                         type={delShowPassword ? 'text' : 'password'}
                         className="form-input"
                         autoComplete="current-password"
@@ -5675,7 +5917,7 @@ export const UserProfileView: React.FC<ProfileProps> = ({ currentUser, onBack, o
                     disabled={isDeletingAccount || delConfirmText.trim().normalize('NFC') !== 'XÓA TÀI KHOẢN'}
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
                   >
-                    <TrashIcon size={15} /> {isDeletingAccount ? 'Đang xóa...' : 'Xác Nhận Xóa Vĩnh Viễn'}
+                    <TrashIcon size={15} /> {isDeletingAccount ? 'Đang xóa...' : 'Xác nhận xóa vĩnh viễn'}
                   </button>
                 </div>
               </form>

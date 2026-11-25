@@ -27,6 +27,10 @@ const SOCKET_AUTH_RECHECK_MS = 5000;
  * take effect immediately across joinConversation / typing / radio / community chat events.
  */
 async function ensureSocketUserActive(socket: Socket, forceFresh = false): Promise<boolean> {
+  if (socket.data?._revoked) {
+    socket.disconnect(true);
+    return false;
+  }
   const authUid: string | undefined = socket.data?.userId;
   if (!authUid || !Types.ObjectId.isValid(authUid)) return false;
   if (mongoose.connection.readyState !== 1) return false;
@@ -82,6 +86,19 @@ function checkSocketRateLimit(
   return true;
 }
 
+function parseOptionalFiniteNumber(val: unknown): number | undefined {
+  if (typeof val === 'number') {
+    return Number.isFinite(val) ? val : undefined;
+  }
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (!trimmed) return undefined;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
 const rateCleanup = setInterval(() => {
   const cutoff = Date.now() - 60_000;
   for (const [k, hits] of userSocketRateLimits.entries()) {
@@ -91,6 +108,10 @@ const rateCleanup = setInterval(() => {
   }
 }, 60_000);
 rateCleanup.unref();
+
+export const stopSocketTimers = (): void => {
+  clearInterval(rateCleanup);
+};
 
 export const initSocketServer = (httpServer: HttpServer): Server => {
   io = new Server(httpServer, {
@@ -156,21 +177,21 @@ export const initSocketServer = (httpServer: HttpServer): Server => {
       socket.emit('onlineUsersList', Array.from(userSockets.keys()));
     }
 
-    // Strict identity check + rate limit for explicit user room join
-    socket.on('join', (userId: string) => {
+    // Strict identity check + live DB ban/revocation re-check + rate limit for explicit user room join
+    socket.on('join', async (userId: string) => {
       if (!checkSocketRateLimit(socket, 'join', 5, 10_000)) return;
       const authUid: string | undefined = socket.data?.userId;
       const requestedUid = String(userId || '');
-      if (authUid && requestedUid === authUid) {
-        socket.join(`user:${authUid}`);
-        socket.join('room:authenticated');
-        socketToUser.set(socket.id, authUid);
-        if (!userSockets.has(authUid)) {
-          userSockets.set(authUid, new Set());
-        }
-        userSockets.get(authUid)?.add(socket.id);
-        socket.emit('onlineUsersList', Array.from(userSockets.keys()));
+      if (!authUid || requestedUid !== authUid) return;
+      if (!(await ensureSocketUserActive(socket, true))) return;
+      socket.join(`user:${authUid}`);
+      socket.join('room:authenticated');
+      socketToUser.set(socket.id, authUid);
+      if (!userSockets.has(authUid)) {
+        userSockets.set(authUid, new Set());
       }
+      userSockets.get(authUid)?.add(socket.id);
+      socket.emit('onlineUsersList', Array.from(userSockets.keys()));
     });
 
     // Authorized join for private DM / squad group conversation rooms (fail closed if DB offline or revoked)
@@ -378,14 +399,14 @@ export const initSocketServer = (httpServer: HttpServer): Server => {
           typeof msgData.channel === 'string' && VALID_CHAT_CHANNELS.has(msgData.channel.trim())
             ? msgData.channel.trim()
             : 'general';
-        const rawLat = typeof msgData.gpsLat === 'number' ? msgData.gpsLat : Number(msgData.gpsLat);
-        const rawLng = typeof msgData.gpsLng === 'number' ? msgData.gpsLng : Number(msgData.gpsLng);
-        const rawAlt = typeof msgData.altitudeM === 'number' ? msgData.altitudeM : Number(msgData.altitudeM);
+        const rawLat = parseOptionalFiniteNumber(msgData.gpsLat);
+        const rawLng = parseOptionalFiniteNumber(msgData.gpsLng);
+        const rawAlt = parseOptionalFiniteNumber(msgData.altitudeM);
+        const isNullIsland = rawLat === 0 && rawLng === 0;
         const hasValidGps =
-          msgData.gpsLat !== undefined &&
-          msgData.gpsLng !== undefined &&
-          Number.isFinite(rawLat) &&
-          Number.isFinite(rawLng) &&
+          rawLat !== undefined &&
+          rawLng !== undefined &&
+          !isNullIsland &&
           rawLat >= -90 &&
           rawLat <= 90 &&
           rawLng >= -180 &&
@@ -394,8 +415,7 @@ export const initSocketServer = (httpServer: HttpServer): Server => {
         const gpsLng = hasValidGps ? Number(rawLng.toFixed(6)) : undefined;
         const altitudeM =
           hasValidGps &&
-          msgData.altitudeM !== undefined &&
-          Number.isFinite(rawAlt) &&
+          rawAlt !== undefined &&
           rawAlt >= -500 &&
           rawAlt <= 9000
             ? Math.round(rawAlt)
@@ -512,4 +532,40 @@ export const evictUserFromRoom = (userId: string, roomName: string): void => {
 export const evictAllFromRoom = (roomName: string): void => {
   if (!io || !roomName) return;
   io.in(roomName).socketsLeave(roomName);
+};
+
+/**
+ * Marks all active sockets for a banned/deleted user as revoked immediately and forcefully disconnects them.
+ */
+export const disconnectUserSockets = (userId: string, delayMs = 0): void => {
+  if (!io || !userId) return;
+  const uid = String(userId);
+  const socketIds = userSockets.get(uid);
+  if (socketIds) {
+    for (const sid of socketIds) {
+      const sock = io.sockets.sockets.get(sid);
+      if (sock) {
+        sock.data._revoked = true;
+      }
+    }
+  }
+  const doDisconnect = () => {
+    if (!io) return;
+    io.in(`user:${uid}`).disconnectSockets(true);
+    const remaining = userSockets.get(uid);
+    if (remaining) {
+      for (const sid of Array.from(remaining)) {
+        const sock = io.sockets.sockets.get(sid);
+        if (sock) sock.disconnect(true);
+        socketToUser.delete(sid);
+      }
+      userSockets.delete(uid);
+    }
+  };
+  if (delayMs > 0) {
+    const t = setTimeout(doDisconnect, delayMs);
+    t.unref();
+  } else {
+    doDisconnect();
+  }
 };

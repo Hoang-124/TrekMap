@@ -7,7 +7,7 @@ import { FollowModel } from '../models/Follow.js';
 import { ActivityModel } from '../models/Activity.js';
 import { AuditLogModel } from '../models/AuditLog.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
-import { resolveTrailByIdOrSlug } from '../utils/resolveTrail.js';
+import { isValidObjectId, resolveTrailByIdOrSlug } from '../utils/resolveTrail.js';
 import { calculateHaversineDistanceKm } from '../utils/spatial.js';
 import { recordActivity } from '../utils/audit.js';
 import { awardReputationPoints } from '../utils/reputation.js';
@@ -16,6 +16,12 @@ import { invalidateCache } from '../middleware/cache.middleware.js';
 
 const VERIFIED_PROXIMITY_KM = 1.5;
 const DUPLICATE_CHECKIN_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12 hours per trail
+
+function parseStrictFiniteNumber(val: unknown): number | null {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
 
 /**
  * Checks whether a supplied GPS point or recorded GPX track passes within VERIFIED_PROXIMITY_KM
@@ -86,7 +92,7 @@ export function verifyCheckinProximity(
 export const createCheckin = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
-    if (!userId || !Types.ObjectId.isValid(userId)) {
+    if (!userId || !isValidObjectId(userId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để check-in cung đường.' });
     }
 
@@ -111,17 +117,23 @@ export const createCheckin = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, message: 'Thiếu mã cung đường cần check-in.' });
     }
 
-    const durationHrs = Number(completionTimeHours);
-    if (!Number.isFinite(durationHrs) || durationHrs < 0.2 || durationHrs > 240) {
+    const durationHrs = parseStrictFiniteNumber(completionTimeHours);
+    if (durationHrs === null || durationHrs < 0.2 || durationHrs > 240) {
       return res.status(400).json({ success: false, message: 'Thời gian hoàn thành phải nằm trong khoảng 0.2 đến 240 giờ.' });
     }
 
-    if (lat !== undefined || lng !== undefined) {
-      const nLat = Number(lat);
-      const nLng = Number(lng);
-      if (!Number.isFinite(nLat) || !Number.isFinite(nLng) || nLat < -90 || nLat > 90 || nLng < -180 || nLng > 180) {
+    const hasLatInput = lat !== undefined && lat !== null && lat !== '';
+    const hasLngInput = lng !== undefined && lng !== null && lng !== '';
+    let parsedLat: number | undefined;
+    let parsedLng: number | undefined;
+    if (hasLatInput || hasLngInput) {
+      const nLat = parseStrictFiniteNumber(lat);
+      const nLng = parseStrictFiniteNumber(lng);
+      if (nLat === null || nLng === null || nLat < -90 || nLat > 90 || nLng < -180 || nLng > 180) {
         return res.status(400).json({ success: false, message: 'Tọa độ GPS check-in không hợp lệ.' });
       }
+      parsedLat = nLat;
+      parsedLng = nLng;
     }
 
     let parsedDate = new Date();
@@ -133,25 +145,20 @@ export const createCheckin = async (req: AuthRequest, res: Response) => {
       parsedDate = d;
     }
 
-    const safeGpx: [number, number][] = Array.isArray(gpxTrackRecorded)
-      ? gpxTrackRecorded
-          .filter(
-            (pt: any) =>
-              Array.isArray(pt) &&
-              pt.length >= 2 &&
-              Number.isFinite(Number(pt[0])) &&
-              Number.isFinite(Number(pt[1])) &&
-              Number(pt[0]) >= -90 &&
-              Number(pt[0]) <= 90 &&
-              Number(pt[1]) >= -180 &&
-              Number(pt[1]) <= 180
-          )
-          .slice(0, 2000)
-          .map((pt: any) => [Number(pt[0]), Number(pt[1])])
-      : [];
+    const safeGpx: [number, number][] = [];
+    if (Array.isArray(gpxTrackRecorded)) {
+      for (let i = 0; i < gpxTrackRecorded.length && safeGpx.length < 2000; i++) {
+        const pt: any = gpxTrackRecorded[i];
+        if (!Array.isArray(pt) || pt.length < 2) continue;
+        const pLat = parseStrictFiniteNumber(pt[0]);
+        const pLng = parseStrictFiniteNumber(pt[1]);
+        if (pLat === null || pLng === null || pLat < -90 || pLat > 90 || pLng < -180 || pLng > 180) continue;
+        safeGpx.push([pLat, pLng]);
+      }
+    }
 
     const safePhotos = Array.isArray(photos)
-      ? photos.filter((u: any) => typeof u === 'string' && isSafeHttpUrl(u)).slice(0, 6)
+      ? photos.slice(0, 20).filter((u: any) => typeof u === 'string' && isSafeHttpUrl(u)).slice(0, 6)
       : [];
 
     if (mongoose.connection.readyState !== 1) {
@@ -178,14 +185,14 @@ export const createCheckin = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const proximity = verifyCheckinProximity(
-      trail,
-      lat !== undefined ? Number(lat) : undefined,
-      lng !== undefined ? Number(lng) : undefined,
-      safeGpx
-    );
+    const proximity = verifyCheckinProximity(trail, parsedLat, parsedLng, safeGpx);
 
     const existingForTrail = await CheckinModel.findOne({ userId: uid, trailId: trail._id }).lean();
+
+    const parsedDist = parseStrictFiniteNumber(distanceRecordedKm);
+    const parsedGain = parseStrictFiniteNumber(elevationGainRecordedM);
+    const parsedPack = parseStrictFiniteNumber(packWeightKg);
+    const parsedCompanions = parseStrictFiniteNumber(companionsCount);
 
     const checkin = await CheckinModel.create({
       userId: uid,
@@ -195,21 +202,15 @@ export const createCheckin = async (req: AuthRequest, res: Response) => {
       photos: safePhotos,
       gpxTrackRecorded: safeGpx,
       verifiedBadge: proximity.verified,
-      ...(Number.isFinite(Number(distanceRecordedKm)) && Number(distanceRecordedKm) > 0
-        ? { distanceRecordedKm: Math.min(500, Number(distanceRecordedKm)) }
-        : {}),
-      ...(Number.isFinite(Number(elevationGainRecordedM)) && Number(elevationGainRecordedM) >= 0
-        ? { elevationGainRecordedM: Math.min(30000, Number(elevationGainRecordedM)) }
-        : {}),
+      ...(parsedDist !== null && parsedDist > 0 ? { distanceRecordedKm: Math.min(500, parsedDist) } : {}),
+      ...(parsedGain !== null && parsedGain >= 0 ? { elevationGainRecordedM: Math.min(30000, parsedGain) } : {}),
       ...(typeof weatherObserved === 'string' && weatherObserved.trim()
         ? { weatherObserved: sanitizeInput(weatherObserved).slice(0, 160) }
         : {}),
-      ...(Number.isFinite(Number(packWeightKg)) && Number(packWeightKg) >= 0
-        ? { packWeightKg: Math.min(60, Number(packWeightKg)) }
-        : {}),
+      ...(parsedPack !== null && parsedPack >= 0 ? { packWeightKg: Math.min(60, parsedPack) } : {}),
       ...(typeof notes === 'string' && notes.trim() ? { notes: sanitizeInput(notes).slice(0, 1500) } : {}),
-      ...(Number.isFinite(Number(companionsCount)) && Number(companionsCount) >= 1
-        ? { companionsCount: Math.min(100, Math.round(Number(companionsCount))) }
+      ...(parsedCompanions !== null && parsedCompanions >= 1
+        ? { companionsCount: Math.min(100, Math.round(parsedCompanions)) }
         : {}),
       isPublic: typeof isPublic === 'boolean' ? isPublic : false,
     });
@@ -328,15 +329,17 @@ export const createCheckin = async (req: AuthRequest, res: Response) => {
 export const getMyCheckins = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
-    if (!userId || !Types.ObjectId.isValid(userId)) {
+    if (!userId || !isValidObjectId(userId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
     }
     if (mongoose.connection.readyState !== 1) {
       return res.json({ success: true, data: [] });
     }
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '200'), 10) || 200, 1), 500);
     const items = await CheckinModel.find({ userId: new Types.ObjectId(userId) })
       .populate('trailId', 'id name province region distanceKm elevationGainM maxAltitudeM difficultyLevel coverImage')
       .sort({ checkinDate: -1 })
+      .limit(limit)
       .lean();
     return res.json({ success: true, count: items.length, data: items });
   } catch (err) {

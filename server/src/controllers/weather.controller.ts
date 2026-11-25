@@ -103,8 +103,20 @@ function buildWarning(forecasts: any[]) {
  */
 export const getWeatherByCoordinates = async (req: Request, res: Response) => {
   try {
-    const lat = Number(req.query.lat);
-    const lng = Number(req.query.lng);
+    const rawLat = req.query.lat;
+    const rawLng = req.query.lng;
+    if (
+      rawLat === undefined ||
+      rawLng === undefined ||
+      typeof rawLat !== 'string' ||
+      typeof rawLng !== 'string' ||
+      !rawLat.trim() ||
+      !rawLng.trim()
+    ) {
+      return res.status(400).json({ success: false, message: 'Tọa độ lat/lng không hợp lệ.' });
+    }
+    const lat = Number(rawLat.trim());
+    const lng = Number(rawLng.trim());
 
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
       return res.status(400).json({ success: false, message: 'Tọa độ lat/lng không hợp lệ.' });
@@ -877,7 +889,7 @@ interface TrailClimateCacheEntry {
 
 const CLIMATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours fresh
 const CLIMATE_SWR_REFRESH_AGE_MS = 20 * 60 * 60 * 1000; // Proactive background refresh after 20 hours
-const CLIMATE_STALE_GRACE_MS = 7 * 24 * 60 * 60 * 1000; // 7-day real ERA5 stale fallback if archive has transient outage
+const CLIMATE_STALE_GRACE_MS = 7 * 24 * 60 * 60 * 1000; // 7-day real NASA POWER (MERRA-2) stale fallback if archive has transient outage
 const CLIMATE_FAILURE_BACKOFF_MS = 45 * 1000; // 45s cold-cache outage backoff to prevent 12s socket pileups
 const CLIMATE_CACHE_MAX_ENTRIES = 200;
 const CLIMATE_RAINY_DAY_THRESHOLD_MM = 1.0;
@@ -921,7 +933,7 @@ function setTrailClimateCache(key: string, entry: TrailClimateCacheEntry) {
   trailClimateCache.set(key, entry);
 }
 
-function getEra5ThreeYearWindow(): { startYear: number; endYear: number; startDate: string; endDate: string } {
+function getNasaPowerThreeYearWindow(): { startYear: number; endYear: number; startDate: string; endDate: string } {
   const now = new Date();
   let vnYear = now.getUTCFullYear();
   let vnMonth = now.getUTCMonth() + 1;
@@ -996,7 +1008,7 @@ async function fetchNasaPowerTrailClimate(params: {
   lat: number;
   lng: number;
 }): Promise<TrailClimateCacheEntry | null> {
-  const window = getEra5ThreeYearWindow();
+  const window = getNasaPowerThreeYearWindow();
   const url =
     `https://power.larc.nasa.gov/api/temporal/daily/point` +
     `?parameters=T2M_MIN,T2M_MAX,PRECTOTCORR` +

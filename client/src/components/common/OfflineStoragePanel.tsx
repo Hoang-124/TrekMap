@@ -17,6 +17,7 @@ import {
   IconMapPin,
   IconShieldCheck,
   IconAlertTriangle,
+  IconX,
 } from './SvgIcons.js';
 
 export interface OfflineStoragePanelProps {
@@ -143,6 +144,13 @@ export const OfflineStoragePanel: React.FC<OfflineStoragePanelProps> = ({ trails
         setDownloadProgress(null);
       }
     }
+  };
+
+  const handleCancelDownload = () => {
+    if (!downloadAbortRef.current) return;
+    downloadAbortRef.current.abort();
+    downloadAbortRef.current = null;
+    emitToast('Đã hủy tải gói bản đồ địa hình ngoại tuyến.', 'info');
   };
 
   const handleDeletePack = async (trailId: string, trailName: string) => {
@@ -316,7 +324,7 @@ export const OfflineStoragePanel: React.FC<OfflineStoragePanelProps> = ({ trails
               {stats?.savedPacksCount ?? 0} cung ({stats?.estimatedPacksMb ?? 0} MB)
             </div>
             <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-              {stats?.offlinePackTileCount ?? 0} ô bản đồ OSM được bảo vệ
+              {stats?.offlinePackTileCount ?? 0} ô địa hình Terrarium DEM (AWS Open Data)
             </div>
           </div>
 
@@ -378,7 +386,7 @@ export const OfflineStoragePanel: React.FC<OfflineStoragePanelProps> = ({ trails
         }}
       >
         <div style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 10 }}>
-          Tải Nhanh Gói Bản Đồ Offline ({sortedCatalogTrails.length} cung · Zoom 12–14 + GPX)
+          Tải Nhanh Gói Ngoại Tuyến ({sortedCatalogTrails.length} cung · Bản đồ địa hình Zoom 10–12 + GPX)
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <select
@@ -420,12 +428,36 @@ export const OfflineStoragePanel: React.FC<OfflineStoragePanelProps> = ({ trails
               {downloadingTrailId && downloadProgress
                 ? downloadProgress.total > 0
                   ? `Đang tải ${downloadProgress.pct}% (${downloadProgress.fetched}/${downloadProgress.total} ô)...`
-                  : 'Đang chuẩn bị ô bản đồ...'
+                  : 'Đang chuẩn bị ô địa hình...'
                 : savedIdSet.has(activeSelectId)
                 ? 'Cập nhật lại gói Offline'
                 : 'Tải Gói Offline'}
             </span>
           </button>
+
+          {downloadingTrailId !== null && (
+            <button
+              type="button"
+              onClick={handleCancelDownload}
+              aria-label="Hủy tải gói bản đồ ngoại tuyến"
+              style={{
+                padding: '9px 14px',
+                borderRadius: 4,
+                fontSize: '0.8rem',
+                fontWeight: 700,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+                border: '1px solid color-mix(in srgb, var(--color-error) 40%, transparent)',
+                background: 'color-mix(in srgb, var(--color-error) 10%, var(--color-bg-card))',
+                color: 'var(--color-error-text, var(--color-error))',
+                cursor: 'pointer',
+              }}
+            >
+              <IconX size={13} color="currentColor" />
+              <span>Hủy tải</span>
+            </button>
+          )}
         </div>
 
         {downloadProgress && (
@@ -479,7 +511,7 @@ export const OfflineStoragePanel: React.FC<OfflineStoragePanelProps> = ({ trails
             Danh Sách Gói Cung Đường Đã Lưu Ngoại Tuyến ({packs.length})
           </span>
           <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)' }}>
-            Hoạt động khi mất sóng 4G/5G (tự động dự phòng lớp OSM)
+            Bản đồ địa hình &amp; dữ liệu ngoại tuyến (AWS Open Data)
           </span>
         </div>
 
@@ -566,11 +598,13 @@ export const OfflineStoragePanel: React.FC<OfflineStoragePanelProps> = ({ trails
                       <span>·</span>
                       <span>
                         Lưu lúc:{' '}
-                        {new Date(pack.savedAt).toLocaleDateString('vi-VN', {
-                          day: '2-digit',
-                          month: '2-digit',
-                          year: 'numeric',
-                        })}
+                        {Number.isFinite(new Date(pack.savedAt).getTime())
+                          ? new Date(pack.savedAt).toLocaleDateString('vi-VN', {
+                              day: '2-digit',
+                              month: '2-digit',
+                              year: 'numeric',
+                            })
+                          : 'Gần đây'}
                       </span>
                     </div>
                   </div>

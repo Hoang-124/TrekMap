@@ -3,6 +3,8 @@
  * 100% Real Vietnam Geography, Wilderness First Aid (WFA), Alpine Weather, GPX Navigation & Official VQG Contacts.
  */
 
+import { mockTrails } from './seedData.js';
+
 export interface KnowledgeItem {
   id: string;
   category:
@@ -99,7 +101,7 @@ export const VIETNAM_PEAKS_MATRIX: PeakMatrixEntry[] = [
     region: 'Miền Bắc',
     rescue: '02133.876.605 / 112 / 114',
     checkpoint: 'Đồn Biên phòng Vàng Ma Chải (Phong Thổ)',
-    days: '2N1Đ',
+    days: '3N2Đ',
   },
   {
     id: 'ta_chi_nhu',
@@ -170,7 +172,7 @@ export const VIETNAM_PEAKS_MATRIX: PeakMatrixEntry[] = [
     region: 'Miền Bắc',
     rescue: '02133.876.605 / 112 / 114',
     checkpoint: 'Bản Thào A, xã Hố Mít, Tân Uyên',
-    days: '2N1Đ',
+    days: '3N2Đ',
   },
   {
     id: 'ta_xua',
@@ -215,7 +217,7 @@ export const VIETNAM_PEAKS_MATRIX: PeakMatrixEntry[] = [
     aliases: ['pu luong', 'ban kho muong', 'kho muong', 'son ba muoi', 'ban don pu luong', 'khu bttn pu luong', 'ba thuoc', 'thanh hoa', 'dinh 1700'],
     altitude: 1700,
     province: 'Thanh Hóa',
-    region: 'Miền Bắc',
+    region: 'Miền Trung',
     rescue: '02373.880.671 / 112 / 114',
     checkpoint: 'Khu BTTN Pù Luông, Huyện Bá Thước, Thanh Hóa',
     days: '2N1Đ',
@@ -261,7 +263,7 @@ export const VIETNAM_PEAKS_MATRIX: PeakMatrixEntry[] = [
     altitude: 1068,
     province: 'Quảng Ninh - Bắc Giang',
     region: 'Miền Bắc',
-    rescue: '0203.651.8888 / 112 / 114',
+    rescue: '0812.488.111 / 02033.854.153 / 112 / 114',
     checkpoint: 'KDL Yên Tử (TP. Uông Bí) / KDL Tây Yên Tử (Sơn Động)',
     days: '1 Ngày',
   },
@@ -305,10 +307,10 @@ export const VIETNAM_PEAKS_MATRIX: PeakMatrixEntry[] = [
     canonicalTrailId: 'trail-giengtroi',
     name: 'Giếng Trời (KBT Bà Nà - Núi Chúa)',
     aliases: ['gieng troi', 'giengtroi', 'thac gieng troi', 'ba na nui chua', 'rung ba na', 'hoa ninh', 'hoa vang', 'suoi da nang'],
-    altitude: 520,
+    altitude: 480,
     province: 'Đà Nẵng',
     region: 'Miền Trung',
-    rescue: '112 / 114',
+    rescue: '0236.3738.521 / 112 / 114',
     checkpoint: 'Bãi gửi xe chân núi Bà Nà, Xã Hòa Ninh, Hòa Vang',
     days: '1 Ngày / 2N1Đ',
   },
@@ -353,7 +355,7 @@ export const VIETNAM_PEAKS_MATRIX: PeakMatrixEntry[] = [
     canonicalTrailId: 'trail-thack50',
     name: 'Thác K50 (Khu BTTN Kon Chư Răng)',
     aliases: ['thac k50', 'k50', 'k50 gia lai', 'hang en', 'thac hang en', 'kon chu rang', 'konchurang', 'trai bo k50', 'son lang', 'huyen kbang', 'kbang gia lai', 'gia lai'],
-    altitude: 880,
+    altitude: 1020,
     province: 'Gia Lai - Bình Định',
     region: 'Tây Nguyên',
     rescue: '0985.551.682 / 112 / 114',
@@ -389,7 +391,7 @@ export const VIETNAM_PEAKS_MATRIX: PeakMatrixEntry[] = [
     canonicalTrailId: 'trail-muidoi',
     name: 'Cực Đông Mũi Đôi (Hòn Đầu)',
     aliases: ['mui doi', 'muidoi', 'cuc dong', 'cuc dong to quoc', 'hon dau', 'dam mon', 'bai rang', 'bai na', 'nhay ghenh', 'van thanh', 'van ninh', 'khanh hoa'],
-    altitude: 150,
+    altitude: 145,
     province: 'Khánh Hòa',
     region: 'Miền Trung',
     rescue: '0258.3837.149 / 112 / 114',
@@ -413,7 +415,7 @@ export const VIETNAM_PEAKS_MATRIX: PeakMatrixEntry[] = [
     canonicalTrailId: 'trail-cattien-bausau',
     name: 'VQG Cát Tiên - Bàu Sấu',
     aliases: ['cat tien', 'cattien', 'bau sau', 'bausau', 'vqg cat tien', 'nam cat tien', 'dam ca sau', 'cay tung co thu', 'ben cu', 'tan phu'],
-    altitude: 220,
+    altitude: 168,
     province: 'Đồng Nai',
     region: 'Miền Nam',
     rescue: '02513.669.228 / 0856.669.228 / 114',
@@ -440,7 +442,7 @@ export const VIETNAM_PEAKS_MATRIX: PeakMatrixEntry[] = [
     altitude: 504,
     province: 'Bà Rịa - Vũng Tàu',
     region: 'Miền Nam',
-    rescue: '112 / 114 / 115',
+    rescue: '0254.3876.318 / 112 / 114',
     checkpoint: 'Chùa Hang Mai / Suối Tiên, TP. Phú Mỹ',
     days: '1 Ngày',
   },
@@ -449,7 +451,7 @@ export const VIETNAM_PEAKS_MATRIX: PeakMatrixEntry[] = [
     canonicalTrailId: 'trail-bugiamap',
     name: 'VQG Bù Gia Mập (Đắk Ka & Thác Lưu Ly)',
     aliases: ['bu gia map', 'bugiamap', 'bgm', 'vqg bu gia map', 'vuon quoc gia bu gia map', 'dak ka', 'suoi dak ka', 'thac luu ly', 'thac dak mai', 'gieng troi bu gia map', 'binh phuoc'],
-    altitude: 700,
+    altitude: 660,
     province: 'Bình Phước',
     region: 'Miền Nam',
     rescue: '02713.724.237 / 0384.798.799 / 114',
@@ -644,20 +646,120 @@ export const TREKKING_SYNONYMS: Record<string, string[]> = {
   'thoi tiet': ['nhiet do dinh', 'lapse rate', 'gio giat', 'mua bao', 'suong mu', 'mua mua'],
 };
 
+function formatVietnameseMonthRange(months: number[]): string {
+  const unique = Array.from(new Set(months.filter((m) => Number.isInteger(m) && m >= 1 && m <= 12)));
+  if (unique.length === 0) return '';
+  if (unique.length === 12) return 'Quanh năm (Tháng 1 – Tháng 12)';
+
+  // Preserve contiguous wrap-around ranges like [10, 11, 12, 1, 2, 3, 4]
+  const set = new Set(unique);
+  const segments: Array<[number, number]> = [];
+  const visited = new Set<number>();
+  for (const m of unique) {
+    if (visited.has(m)) continue;
+    let start = m;
+    while (set.has(((start - 2 + 12) % 12) + 1) && !visited.has(((start - 2 + 12) % 12) + 1)) {
+      const prev = ((start - 2 + 12) % 12) + 1;
+      if (prev === m) break;
+      start = prev;
+    }
+    let end = start;
+    visited.add(start);
+    while (set.has((end % 12) + 1) && !visited.has((end % 12) + 1)) {
+      end = (end % 12) + 1;
+      visited.add(end);
+    }
+    segments.push([start, end]);
+  }
+  return segments.map(([s, e]) => (s === e ? `Tháng ${s}` : `Tháng ${s} – Tháng ${e}`)).join(', ');
+}
+
+function formatPeakDisplayTitle(name: string): string {
+  const trimmed = name.trim();
+  if (/^(đỉnh|vqg|khu\s+bttn|thác|giếng\s+trời|cực\s+đông|chùa\s+đồng|tà\s+năng|núi)/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `Đỉnh ${trimmed}`;
+}
+
 /**
  * Builds the exhaustive Master Knowledge Dataset across all 10 categories.
  */
 function buildMasterKnowledgeDataset(): KnowledgeItem[] {
   const dataset: KnowledgeItem[] = [];
+  const canonicalTrailMap = new Map(mockTrails.map((t) => [t.id, t]));
 
   // =========================================================================
-  // 1. TRAIL SPECIFIC QUESTIONS FOR ALL 27 VERIFIED PEAKS & TRAILS
+  // 1. TRAIL SPECIFIC QUESTIONS FOR ALL VERIFIED PEAKS & TRAILS (DRIVEN BY CANONICAL mockTrails)
   // =========================================================================
   VIETNAM_PEAKS_MATRIX.forEach((peak) => {
-    const isOneDay = peak.days.toLowerCase().includes('1 ngày') && !peak.days.includes('2N');
-    const isHighlandNorth = peak.region === 'Miền Bắc' && peak.altitude >= 1800;
+    const canonicalTrail = peak.canonicalTrailId ? canonicalTrailMap.get(peak.canonicalTrailId) : undefined;
+    const altitudeM = canonicalTrail?.maxAltitudeM ?? peak.altitude;
+    const region = canonicalTrail?.region ?? peak.region;
+    const durationDays =
+      canonicalTrail?.durationDays ??
+      (peak.days.includes('3N') ? 3 : peak.days.includes('2N') ? 2 : 1);
+    const isOneDay = durationDays <= 1 && !peak.days.includes('2N') && !peak.days.includes('3N');
+    const isThreeDay = durationDays >= 3 || peak.days.includes('3N');
+    const hasWaterSource = canonicalTrail ? Boolean(canonicalTrail.hasWaterSource) : true;
+    const hasCampsite = canonicalTrail ? Boolean(canonicalTrail.hasCampsite) : !isOneDay;
+    const bestMonths = canonicalTrail?.bestMonths?.length ? canonicalTrail.bestMonths : [];
+    const avoidMonths = canonicalTrail?.avoidMonths?.length ? canonicalTrail.avoidMonths : [];
     const baseKeywords = [peak.name.toLowerCase(), ...peak.aliases];
     const resolvedTrailId = peak.canonicalTrailId || peak.id;
+    const displayTitle = formatPeakDisplayTitle(peak.name);
+    const isHighlandNorth = region === 'Miền Bắc' && altitudeM >= 1800;
+    const isCentralCoastOrForest = region === 'Miền Trung' && peak.region === 'Miền Trung';
+    const isTayNguyen = peak.region === 'Tây Nguyên';
+
+    const bestMonthsText = bestMonths.length
+      ? formatVietnameseMonthRange(bestMonths)
+      : isHighlandNorth
+        ? 'Tháng 10 – Tháng 4'
+        : isCentralCoastOrForest
+          ? 'Tháng 1 – Tháng 8'
+          : 'Tháng 11 – Tháng 4';
+    const avoidMonthsText = avoidMonths.length
+      ? formatVietnameseMonthRange(avoidMonths)
+      : isCentralCoastOrForest
+        ? 'Tháng 9 – Tháng 12'
+        : region === 'Miền Bắc'
+          ? 'Tháng 6 – Tháng 8'
+          : 'Tháng 7 – Tháng 10';
+
+    const seasonAnswer = isHighlandNorth
+      ? `Thời điểm đẹp nhất chinh phục **${peak.name}** (${region} — ${altitudeM.toLocaleString()}m):\n\n1. **Mùa đẹp nhất (${bestMonthsText})**: Không khí mát lạnh, tỷ lệ săn biển mây cao và hoa rừng Tây Bắc nở rộ dọc sườn núi.\n2. **Lưu ý nhiệt độ đỉnh**: Đêm trên cao thường tụt xuống dưới 5°C – 10°C, cần chuẩn bị quy tắc 3 lớp áo và túi ngủ đủ ấm.\n3. **Mùa cần tránh (${avoidMonthsText})**: Mưa lũ lớn khu vực miền núi phía Bắc, nguy cơ sạt lở đất và lũ quét khe suối.`
+      : isCentralCoastOrForest
+        ? `Thời điểm đẹp nhất chinh phục **${peak.name}** (${peak.province} — Miền Trung):\n\n1. **Mùa thuận lợi (${bestMonthsText})**: Trời quang, nước suối trong và đường mòn khô ráo dễ di chuyển.${!hasWaterSource ? ' Lưu ý mang đủ nước và xuất phát sớm tránh nắng gắt ven biển.' : ''}\n2. **CẢNH BÁO MÙA BÃO MIỀN TRUNG — Mùa cần tránh (${avoidMonthsText})**: Đỉnh điểm mưa bão, áp thấp nhiệt đới và lũ quét nguy hiểm tại Miền Trung — **TUYỆT ĐỐI KHÔNG** cố đi khi có cảnh báo mưa lớn.`
+        : region === 'Miền Bắc'
+          ? `Thời điểm đẹp nhất chinh phục **${peak.name}** (${peak.province} — Miền Bắc):\n\n1. **Mùa đẹp nhất (${bestMonthsText})**: Thời tiết khô ráo, trời mát mẻ dễ chịu, thích hợp leo bậc đá và đi bộ rừng nguyên sinh miền Bắc.\n2. **Lưu ý sương ẩm**: Sáng sớm mùa xuân hoặc sau mưa phùn bậc đá và rễ cây có rêu trơn, nên dùng giày bám tốt.\n3. **Mùa cần tránh (${avoidMonthsText})**: Mưa lớn mùa hè và bão nhiệt đới gây trơn trượt, nguy cơ sạt lở.`
+          : `Thời điểm đẹp nhất chinh phục **${peak.name}** (${peak.province} — ${isTayNguyen ? 'Tây Nguyên' : 'Miền Nam'}):\n\n1. **Mùa khô thuận lợi (${bestMonthsText})**: Đường mòn khô ráo dễ bám, tầm nhìn thoáng rộng.\n2. **Lưu ý nắng nóng**: Nên xuất phát sớm (05:30 – 06:30) và chủ động bổ sung nước + điện giải Oresol.\n3. **Mùa cần tránh (${avoidMonthsText})**: Mưa lớn kéo dài, đường đất đỏ lầy lội, nhiều vắt rừng và nước suối dâng cao.`;
+
+    const itineraryAnswer = isOneDay
+      ? `**Lịch trình đề xuất trong ngày cho ${peak.name} (${altitudeM.toLocaleString()}m — ${peak.days}):**\n\n- **05:30 – 06:00**: Xuất phát từ **${peak.checkpoint}**, khởi động kỹ khớp gối và cổ chân.\n- **09:30 – 11:30**: Chạm đích **${peak.name}**, nghỉ ngơi, ăn trưa nhẹ và bù điện giải.\n- **13:00 – 16:00**: Hạ sơn về điểm xuất phát trước khi trời tối, hoàn thành hành trình an toàn.`
+      : isThreeDay
+        ? `**Lịch trình đề xuất 3 ngày 2 đêm cho ${peak.name} (${altitudeM.toLocaleString()}m — ${peak.days}):**\n\n- **Ngày 1**: 07:30 khai báo CCCD & xuất phát từ **${peak.checkpoint}** -> 11:30 ăn trưa dọc tuyến -> 16:30 đến điểm hạ trại / lán nghỉ đêm 1, ăn tối nóng và nghỉ sớm.\n- **Ngày 2**: 05:00 ăn sáng, mang balo gọn nhẹ đẩy chặng chính lên đích / đỉnh **${peak.name}** -> 11:30–13:00 chạm đỉnh, ăn trưa nhanh -> 16:30 rút về lán / bãi trại đêm 2 an toàn trước hoàng hôn.\n- **Ngày 3**: 06:30 ăn sáng, thu dọn toàn bộ rác (Leave No Trace) -> 07:30 xuất phát hạ sơn -> 14:30 – 16:00 về lại điểm xuất phát, báo bình an.`
+        : `**Lịch trình đề xuất 2 ngày 1 đêm cho ${peak.name} (${altitudeM.toLocaleString()}m — ${peak.days}):**\n\n- **Ngày 1**: 08:00 khai báo & xuất phát từ **${peak.checkpoint}** -> 11:30 ăn trưa nhẹ -> 16:30 đến điểm hạ trại / lán nghỉ -> Ăn tối ấm và nghỉ sớm.\n- **Ngày 2**: 04:30 thức dậy ăn sáng -> 06:00 chạm đỉnh đón bình minh / săn mây -> 08:30 thu dọn rác (LNT) rút về lán -> 14:30 xuống chân núi an toàn.`;
+
+    const waterAndShelterAnswer = `Điều kiện hậu cần tại **${peak.name}**:\n\n- **Nghỉ chân / Hạ trại**: ${
+      hasCampsite
+        ? isOneDay
+          ? 'Có điểm dừng nghỉ và khu vực cắm trại theo quy định (cần đăng ký trước nếu ở qua đêm).'
+          : altitudeM >= 1800 && region === 'Miền Bắc'
+            ? 'Có lán gỗ bản địa hoặc bãi hạ trại lều theo tuyến (bắt buộc mang túi ngủ chịu nhiệt phù hợp).'
+            : 'Có bãi hạ trại / điểm nghỉ quy định dọc tuyến (luôn mang lều bạt, đệm cách nhiệt và túi ngủ phù hợp).'
+        : 'Tuyến đi trong ngày, không có lán ngủ qua đêm cố định — cần kiểm soát giờ quay đầu để xuống núi trước khi trời tối.'
+    }\n- **Nguồn nước thực tế**: ${
+      hasWaterSource
+        ? 'Có điểm lấy nước suối / trạm dọc tuyến; bắt buộc lọc qua **màng lọc Sawyer / viên lọc Aquatabs** hoặc đun sôi trước khi uống. Mang theo tối thiểu **2 – 2.5 lít nước** cá nhân khi xuất phát.'
+        : '**KHÔNG CÓ nguồn nước suối tự nhiên dọc tuyến** — BẮT BUỘC tự mang đủ tối thiểu **3 – 4 lít nước/ngày + Oresol điện giải** (hoặc bố trí tiếp nước qua Porter/địa phương) để phòng mất nước và sốc nhiệt!'
+    }`;
+
+    const hazardsAnswer = !hasWaterSource
+      ? `Cảnh báo an toàn trọng điểm trên cung **${peak.name}**:\n\n1. **Thiếu nước & Sốc nhiệt**: Tuyến không có nguồn nước tự nhiên dọc đường; địa hình nắng gió lộ thiên (đồi cát/bậc đá/sống núi) gây mất nước cực nhanh — luôn dự phòng đủ nước và Oresol.\n2. **Trượt ngã trên đá / địa hình dốc**: ${canonicalTrail?.difficultyNote || 'Giữ 3 điểm tiếp xúc, mang giày bám chắc và không đi sát mép đá nguy hiểm.'}\n3. **Định vị ngoại tuyến**: Tải trước **Gói Offline & Tracklog GPX** trên LOST trước khi vào vùng sóng yếu.\n4. **Cứu nạn khẩn cấp**: Liên hệ **${peak.rescue}** hoặc **112 / 114**.`
+      : altitudeM >= 1800
+        ? `Cảnh báo an toàn trọng điểm trên cung **${peak.name}** (${altitudeM.toLocaleString()}m):\n\n1. **Gió núi, sương mù & hạ thân nhiệt**: Đỉnh cao trên 1.800m có thể lạnh sâu và gió giật mạnh; tuyệt đối không đứng sát mép vực sống lưng chụp ảnh.\n2. **Dốc đá rêu trơn trượt**: Sử dụng cặp gậy trekking để giảm tải khớp gối và giữ 3 điểm tiếp xúc khi đổ dốc.\n3. **Mất dấu trong sương mù**: Luôn tải trước **Gói Offline & Tracklog GPX** trên LOST để bật cảnh báo lệch tuyến.\n4. **Cứu nạn khẩn cấp**: Liên hệ **${peak.rescue}** hoặc **112 / 114**.`
+        : `Cảnh báo an toàn trọng điểm trên cung **${peak.name}**:\n\n1. **Đặc thù địa hình**: ${canonicalTrail?.difficultyNote || 'Đường rừng nhiệt đới nhiều rễ cây, đá rêu ẩm trơn và vắt rừng vào mùa ẩm.'}\n2. **An toàn suối & mưa rừng**: Theo dõi mực nước suối, tránh đi vào mùa mưa bão (${avoidMonthsText}) và hạ trại cách mép nước tối thiểu 50m.\n3. **Định vị & sức khỏe**: Mang thuốc chống vắt/côn trùng, đủ nước + điện giải và tải sẵn **Gói Offline & Tracklog GPX** trên LOST.\n4. **Cứu nạn khẩn cấp**: Liên hệ **${peak.rescue}** hoặc **112 / 114**.`;
 
     // Q1: Overview, Altitude & Difficulty
     dataset.push({
@@ -665,9 +767,9 @@ function buildMasterKnowledgeDataset(): KnowledgeItem[] {
       category: 'trail_specific',
       trailId: resolvedTrailId,
       trailName: peak.name,
-      question: `Đỉnh ${peak.name} cao bao nhiêu mét, thuộc tỉnh nào và độ khó ra sao?`,
+      question: `${displayTitle} cao bao nhiêu mét, thuộc tỉnh nào và độ khó ra sao?`,
       keywords: [...baseKeywords, 'độ cao', 'cao độ', 'độ khó', 'thuộc tỉnh', 'nằm ở đâu', 'tổng quan'],
-      answer: `**${peak.name}** có cao độ thực tế **${peak.altitude.toLocaleString()}m** thuộc địa phận **${peak.province}** (${peak.region}).\n\n- **Thời lượng chuẩn**: Phù hợp cho hành trình **${peak.days}**.\n- **Trạm xuất phát chính**: **${peak.checkpoint}**.\n- **Hotline cứu hộ xác thực**: **${peak.rescue}**.\n- **Lưu ý**: Rèn luyện thể lực trước 2–4 tuần và mang theo CCCD bản gốc để khai báo tại trạm kiểm lâm / biên phòng.`,
+      answer: `**${peak.name}** có cao độ thực tế **${altitudeM.toLocaleString()}m** thuộc địa phận **${peak.province}** (${region}).\n\n- **Thời lượng chuẩn**: Phù hợp cho hành trình **${peak.days}**${canonicalTrail ? ` (~${canonicalTrail.distanceKm} km, độ dốc tích lũy +${canonicalTrail.elevationGainM.toLocaleString()}m, cấp độ ${canonicalTrail.difficultyLevel}/5)` : ''}.\n- **Trạm xuất phát chính**: **${peak.checkpoint}**.\n- **Mùa đẹp / Tránh**: Đẹp nhất **${bestMonthsText}**; cần tránh **${avoidMonthsText}**.\n- **Hotline cứu hộ xác thực**: **${peak.rescue}**.\n- **Lưu ý**: Rèn luyện thể lực trước 2–4 tuần và mang theo CCCD bản gốc để khai báo tại trạm kiểm lâm / biên phòng.`,
       sourceOrHotline: peak.rescue,
     });
 
@@ -677,11 +779,9 @@ function buildMasterKnowledgeDataset(): KnowledgeItem[] {
       category: 'trail_specific',
       trailId: resolvedTrailId,
       trailName: peak.name,
-      question: `Mùa nào leo ${peak.name} đẹp nhất và thời tiết thuận lợi nhất?`,
+      question: `Mùa nào đi ${peak.name} đẹp nhất và thời tiết thuận lợi nhất?`,
       keywords: [...baseKeywords, 'mùa đẹp', 'tháng mấy', 'săn mây', 'thời tiết đẹp', 'biển mây'],
-      answer: isHighlandNorth
-        ? `Thời điểm đẹp nhất chinh phục **${peak.name}**:\n\n1. **Mùa săn mây (Tháng 10 – Tháng 3)**: Độ ẩm cao, nhiệt độ đêm hạ sâu dễ hình thành biển mây tràn thung lũng.\n2. **Mùa hoa rừng (Tháng 2 – Tháng 4)**: Hoa đỗ quyên và hoa rừng Tây Bắc nở rộ dọc sườn núi.\n3. **Mùa cần tránh (Tháng 6 – Tháng 8)**: Mưa bão lớn, nguy cơ sạt lở đất và lũ quét tại các khe suối.`
-        : `Thời điểm đẹp nhất chinh phục **${peak.name}**:\n\n1. **Mùa khô ráo (Tháng 11 – Tháng 4)**: Trời trong, đường mòn khô ráo dễ bám, tầm nhìn thoáng rộng.\n2. **Lưu ý nắng nóng**: Với các đỉnh thấp Miền Trung / Miền Nam / Tây Nguyên, nên xuất phát sớm (05:30 – 06:30) để tránh nắng gắt buổi trưa.\n3. **Mùa cần tránh (Tháng 7 – Tháng 10)**: Mưa lớn kéo dài, đá rêu trơn trượt và lũ quét khe suối.`,
+      answer: seasonAnswer,
       sourceOrHotline: peak.rescue,
     });
 
@@ -691,11 +791,9 @@ function buildMasterKnowledgeDataset(): KnowledgeItem[] {
       category: 'trail_specific',
       trailId: resolvedTrailId,
       trailName: peak.name,
-      question: `Lịch trình chi tiết leo ${peak.name} (${peak.days}) như thế nào?`,
+      question: `Lịch trình chi tiết đi ${peak.name} (${peak.days}) như thế nào?`,
       keywords: [...baseKeywords, 'lịch trình', 'timeline', 'kế hoạch đi', 'mấy ngày'],
-      answer: isOneDay
-        ? `**Lịch trình đề xuất trong ngày cho ${peak.name} (${peak.altitude}m — ${peak.days}):**\n\n- **06:00**: Xuất phát từ **${peak.checkpoint}**, khởi động kỹ khớp gối và cổ chân.\n- **09:30 – 11:00**: Chạm đích / đỉnh **${peak.name}**, nghỉ ngơi, ăn trưa nhẹ và bù điện giải.\n- **13:00 – 16:00**: Hạ sơn về chân núi trước khi trời tối, hoàn thành hành trình an toàn.`
-        : `**Lịch trình đề xuất cho ${peak.name} (${peak.altitude}m — ${peak.days}):**\n\n- **Ngày 1**: 08:00 xuất phát từ **${peak.checkpoint}** -> 11:30 ăn trưa nhẹ -> 16:30 đến điểm hạ trại / lán nghỉ -> Ăn tối ấm và nghỉ sớm.\n- **Ngày 2**: 04:30 thức dậy ăn sáng -> 06:00 chạm đỉnh đón bình minh / săn mây -> 08:30 thu dọn rác (LNT) rút về lán -> 14:30 xuống chân núi an toàn.`,
+      answer: itineraryAnswer,
       sourceOrHotline: peak.rescue,
     });
 
@@ -717,9 +815,9 @@ function buildMasterKnowledgeDataset(): KnowledgeItem[] {
       category: 'trail_specific',
       trailId: resolvedTrailId,
       trailName: peak.name,
-      question: `Thủ tục xin giấy phép leo ${peak.name} cần chuẩn bị những gì?`,
+      question: `Thủ tục xin giấy phép đi ${peak.name} cần chuẩn bị những gì?`,
       keywords: [...baseKeywords, 'giấy phép', 'kiểm lâm', 'biên phòng', 'cccd', 'thủ tục'],
-      answer: `Thủ tục bắt buộc khi chinh phục **${peak.name}**:\n\n- **Giấy tờ tùy thân**: **CCCD bản gốc** (hoặc hộ chiếu đối với người nước ngoài).\n- **Địa điểm khai báo**: Trạm kiểm lâm, BQL VQG hoặc Đồn Biên phòng tại **${peak.checkpoint}**.\n- **Lệ phí**: Vé tham quan / phí bảo vệ rừng theo niêm yết của VQG hoặc Khu BTTN.\n- **Hotline xác thực**: **${peak.rescue}**.`,
+      answer: `Thủ tục khi chinh phục **${peak.name}**:\n\n- **Giấy tờ tùy thân**: **CCCD bản gốc** (hoặc hộ chiếu đối với người nước ngoài).\n- **Địa điểm khai báo**: ${canonicalTrail?.permitInfo || `Trạm kiểm lâm, BQL VQG hoặc Đồn Biên phòng tại **${peak.checkpoint}**`}.\n- **Lệ phí**: Vé tham quan / phí bảo vệ rừng theo niêm yết của VQG hoặc Khu BTTN (nếu thuộc khu vực quản lý).\n- **Hotline xác thực**: **${peak.rescue}**.`,
       sourceOrHotline: peak.rescue,
     });
 
@@ -731,9 +829,7 @@ function buildMasterKnowledgeDataset(): KnowledgeItem[] {
       trailName: peak.name,
       question: `Trên cung đường ${peak.name} có lán ngủ và nguồn nước tự nhiên không?`,
       keywords: [...baseKeywords, 'lán ngủ', 'nguồn nước', 'nước suối', 'chỗ ngủ', 'cắm trại'],
-      answer: isOneDay
-        ? `Điều kiện hậu cần tại **${peak.name}**:\n\n- **Nghỉ chân**: Tuyến đi trong ngày, chủ yếu có điểm dừng nghỉ dọc đường (không cắm trại qua đêm trừ khi có giấy phép).\n- **Cơ số nước**: Tự chuẩn bị tối thiểu **2 – 3 lít nước + Oresol** trong balo cá nhân vì nhiều đoạn dốc đá không có suối tiếp nước.`
-        : `Điều kiện sinh hoạt tại **${peak.name}**:\n\n- **Lán nghỉ / Hạ trại**: Có lán gỗ bản địa hoặc bãi hạ trại lều theo tuyến (luôn mang túi ngủ phù hợp nhiệt độ đêm).\n- **Nguồn nước**: Có điểm lấy nước suối tự nhiên dọc tuyến; bắt buộc dùng **màng lọc Sawyer / viên lọc Aquatabs** hoặc đun sôi trước khi uống.\n- **Cơ số nước xuất phát**: Tối thiểu **2 – 2.5 lít nước** cá nhân.`,
+      answer: waterAndShelterAnswer,
       sourceOrHotline: peak.rescue,
     });
 
@@ -745,7 +841,7 @@ function buildMasterKnowledgeDataset(): KnowledgeItem[] {
       trailName: peak.name,
       question: `Những đoạn đường nguy hiểm và rủi ro lớn nhất tại ${peak.name} là gì?`,
       keywords: [...baseKeywords, 'nguy hiểm', 'rủi ro', 'vực sâu', 'trơn trượt', 'cảnh báo'],
-      answer: `Cảnh báo an toàn trọng điểm trên cung **${peak.name}**:\n\n1. **Gió núi và sống đá hẹp**: Cực kỳ cẩn trọng khi qua sống lưng trống trải; tuyệt đối không đứng sát mép vực chụp ảnh.\n2. **Dốc đá rêu trơn trượt**: Sử dụng cặp gậy trekking để giữ 3 điểm tiếp xúc khi đổ dốc.\n3. **Sương mù dày mất dấu**: Luôn tải trước **Gói Offline & Tracklog GPX** trên LOST để bật cảnh báo lệch tuyến.\n4. **Cứu nạn khẩn cấp**: Liên hệ **${peak.rescue}** hoặc **112 / 114**.`,
+      answer: hazardsAnswer,
       sourceOrHotline: peak.rescue,
     });
   });
@@ -1144,7 +1240,7 @@ function buildMasterKnowledgeDataset(): KnowledgeItem[] {
       cat: 'emergency_sos' as const,
       q: 'Xử lý cấp cứu thế nào khi trekker lỡ ăn phải nấm rừng lạ gây đau bụng, nôn mửa, tiêu chảy dữ dội?',
       kw: ['nấm độc', 'ngộ độc nấm', 'ăn phải nấm', 'ngộ độc thức ăn', 'nấm lạ'],
-      ans: `**CẤP CỨU NGỘ ĐỘC NẤM RỪNG:**\n\n1. **Trong 1–2 giờ đầu (nếu nạn nhân tỉnh táo)**: Cho uống nước ấm kích thích nôn tống độc, sau đó uống **Than hoạt tính (20–30g)** nếu có trong túi y tế.\n2. **Bù nước liên tục**: Uống từng ngụm **Oresol** chống tụt huyết áp do mất nước.\n3. **Giữ lại mẫu nấm**: Bỏ phần nấm thừa/chất nôn vào túi nilon để bác sĩ xác định độc tố.\n4. **Cấp cứu ngay**: Tuyệt đối không chủ quan vì độc tố Amatoxin gây suy gan/thận muộn -> gọi **115 / 112** chuyển viện ngay.`,
+      ans: `**CẤP CỨU NGỘ ĐỘC NẤM RỪNG (CHUẨN Y KHOA WFA / WHO):**\n\n1. **Ngừng ăn ngay & KHÔNG tự ý móc họng ép nôn**: Hướng dẫn WFA/WHO hiện đại khuyến cáo không tự gây nôn ngoài thực địa do nguy cơ sặc dịch nôn vào đường thở; nếu nạn nhân còn tỉnh táo hoàn toàn và trong 1 giờ đầu có thể dùng **Than hoạt tính** theo hướng dẫn y tế (tuyệt đối không cho uống nếu lơ mơ/co giật).\n2. **Bù nước có kiểm soát**: Khi còn tỉnh táo, cho uống từng ngụm nhỏ **Oresol** phòng mất nước do tiêu chảy/nôn tự phát.\n3. **Giữ lại mẫu nấm**: Chụp ảnh và bỏ phần nấm thừa vào túi kín để bác sĩ xác định đúng độc tố.\n4. **Sơ tán cấp cứu ngay**: Tuyệt đối không chủ quan nếu triệu chứng tạm lắng vì độc tố Amatoxin gây suy gan/thận muộn sau 6–24 giờ -> gọi **115 / 112** chuyển viện ngay.`,
     },
     {
       id: 'edge-heat-stroke-south',
@@ -1230,7 +1326,7 @@ function buildMasterKnowledgeDataset(): KnowledgeItem[] {
       category: 'trail_specific',
       question: 'Bảng so sánh Top 10 đỉnh núi cao nhất và cung trekking kinh điển nhất Việt Nam?',
       keywords: ['top 10 đỉnh núi', 'đỉnh núi cao nhất việt nam', 'so sánh các đỉnh', 'bảng xếp hạng đỉnh núi', 'tứ đại đỉnh', 'thập đại đỉnh'],
-      answer: `**BẢNG SO SÁNH TOP 10 ĐỈNH NÚI CAO NHẤT VIỆT NAM (100% SỐ LIỆU THỰC ĐỊA):**\n\n| Hạng | Đỉnh núi | Cao độ | Tỉnh | Thời lượng | Đặc trưng nổi bật |\n| --- | --- | --- | --- | --- | --- |\n| 1 | **Fansipan** | 3.143m | Lào Cai - Lai Châu | 2N1Đ | Nóc nhà Đông Dương, VQG Hoàng Liên |\n| 2 | **Pu Si Lung** | 3.083m | Lai Châu | 3N2Đ | Mốc biên giới 42, rừng trúc & suối đá |\n| 3 | **Pu Ta Leng** | 3.049m | Lai Châu | 3N2Đ | Đại ngàn hoa Đỗ Quyên cổ thụ (Tháng 3–4) |\n| 4 | **Kỳ Quan San (BMLT)** | 3.046m | Lào Cai - Lai Châu | 3N2Đ | Đón bình minh biển mây Đỉnh Muối 2.100m |\n| 5 | **Khang Su Văn** | 3.012m | Lai Châu | 2N1Đ | Cột mốc 79 biên giới, rừng rêu nguyên sinh |\n| 6 | **Tà Chì Nhù** | 2.979m | Yên Bái | 2N1Đ | Thảm hoa tím Chi Pâu (Tháng 9–10) & biển mây |\n| 7 | **Pờ Ma Lung** | 2.967m | Lai Châu | 3N2Đ | Rừng thảo quả & thác nước hoang sơ |\n| 8 | **Nhìu Cồ San** | 2.965m | Lào Cai | 2N1Đ | Thác Ong Chúa & rừng phong lá đỏ (Tháng 11) |\n| 9 | **Lùng Cúng** | 2.913m | Yên Bái | 2N1Đ | Rừng phong, đồi cỏ cháy & biển mây Mù Cang Chải |\n| 10 | **Tà Xùa** | 2.865m | Sơn La - Yên Bái | 2N1Đ | Sống lưng khủng long & rừng rêu ma mị |`,
+      answer: `**BẢNG SO SÁNH TOP 10 ĐỈNH NÚI CAO NHẤT VIỆT NAM TRÊN HỆ THỐNG LOST (100% SỐ LIỆU THỰC ĐỊA):**\n\n| Hạng | Đỉnh núi | Cao độ | Tỉnh | Thời lượng | Đặc trưng nổi bật |\n| --- | --- | --- | --- | --- | --- |\n| 1 | **Fansipan** | 3.143m | Lào Cai - Lai Châu | 2N1Đ | Nóc nhà Đông Dương, VQG Hoàng Liên |\n| 2 | **Pu Si Lung** | 3.083m | Lai Châu | 3N2Đ | Mốc biên giới 42, rừng trúc & suối đá |\n| 3 | **Pu Ta Leng** | 3.049m | Lai Châu | 3N2Đ | Đại ngàn hoa Đỗ Quyên cổ thụ (Tháng 3–4) |\n| 4 | **Kỳ Quan San (BMLT)** | 3.046m | Lào Cai - Lai Châu | 3N2Đ | Đón bình minh biển mây Đỉnh Muối 2.100m |\n| 5 | **Khang Su Văn** | 3.012m | Lai Châu | 3N2Đ | Cột mốc 79 biên giới, rừng rêu nguyên sinh |\n| 6 | **Tả Liên Sơn (Cổ Trâu)** | 2.996m | Lai Châu | 2N1Đ | Rừng cổ tích rêu phong, thảo quả & đỗ quyên |\n| 7 | **Tà Chì Nhù** | 2.979m | Yên Bái | 2N1Đ | Thảm hoa tím Chi Pâu (Tháng 9–10) & biển mây |\n| 8 | **Nhìu Cồ San** | 2.965m | Lào Cai | 2N1Đ | Thác Ong Chúa & rừng phong lá đỏ (Tháng 11) |\n| 9 | **Lùng Cúng** | 2.913m | Yên Bái | 2N1Đ | Rừng phong, đồi cỏ cháy & biển mây Mù Cang Chải |\n| 10 | **Nam Kang Ho Tao** | 2.881m | Lai Châu | 3N2Đ | Suối thác, vách đá hiểm trở bậc nhất Tây Bắc |\n\n*Ghi chú địa lý: Dãy Hoàng Liên Sơn còn có **Pờ Ma Lung (2.967m, Lai Châu, 3N2Đ)** cùng cụm đỉnh săn mây >2.850m kinh điển **Tà Xùa (2.865m)**, **Lảo Thẩn (2.860m)** và **Ngũ Chỉ Sơn (2.858m)**.*`,
     },
   ];
 

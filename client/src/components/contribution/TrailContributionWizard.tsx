@@ -1,14 +1,9 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
-  MapContainer,
-  FreeBasemapLayer,
-  Marker,
-  Popup,
-  Polyline,
-  useMapEvents,
-  useMap,
-} from '../map/LeafletPrimitives.js';
-import L from 'leaflet';
+  LostVectorMap,
+  type LostMapMarkerItem,
+  type LostMapPolylineItem,
+} from '../map/LostVectorMap.js';
 import { FREE_BASEMAPS, FREE_BASEMAP_ORDER, type BasemapKey } from '../../utils/mapTiles.js';
 import {
   submitTrailContribution,
@@ -16,8 +11,12 @@ import {
   uploadImageToCloudinary,
   reverseGeocode,
 } from '../../services/api.js';
-import { scopedStorageKey } from '../../utils/storageScope.js';
-import { haversineMeters } from '../../utils/geoMath.js';
+import { safeLocalStorageGet, scopedStorageKey } from '../../utils/storageScope.js';
+import {
+  computeRouteMetrics,
+  parseGpxXml,
+  type RouteWaypointType,
+} from '../../utils/routeMetrics.js';
 import type { Region, UserProfile, Waypoint } from '../../types.js';
 import {
   IconCompass,
@@ -49,54 +48,30 @@ const ArrowRight = ({ size = 18, color = 'currentColor', style }: { size?: numbe
   </svg>
 );
 
-// Pure SVG Leaflet Pin Icons (Rule 12 compliant - zero external CDN PNG markers; Leaflet divIcon SVG colors)
-const createSvgPin = (fill: string) =>
-  L.divIcon({
-    html: `<svg width="28" height="38" viewBox="0 0 30 40" fill="none" xmlns="http://www.w3.org/2000/svg" style="filter: drop-shadow(0 3px 6px rgba(0,0,0,0.45));"><path d="M15 1.5C7.5 1.5 1.5 7.5 1.5 15C1.5 24.8 13.6 36.8 14.5 37.7C14.8 38 15.2 38 15.5 37.7C16.4 36.8 28.5 24.8 28.5 15C28.5 7.5 22.5 1.5 15 1.5Z" fill="${fill}" stroke="#ffffff" stroke-width="2.4"/><circle cx="15" cy="15" r="5" fill="#ffffff"/></svg>`,
-    className: 'custom-contrib-svg-pin',
-    iconSize: [28, 38],
-    iconAnchor: [14, 38],
-    popupAnchor: [0, -34],
-  });
+function computeContribBounds(
+  pts: [number, number][]
+): [[number, number], [number, number]] | null {
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLng = Infinity;
+  let maxLng = -Infinity;
+  let validCount = 0;
 
-const greenPinIcon = createSvgPin('#1f6f4a');
-const redPinIcon = createSvgPin('#b83c32');
-const bluePinIcon = createSvgPin('#2c6a8e');
+  for (const [lat, lng] of pts) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+    if (lng < minLng) minLng = lng;
+    if (lng > maxLng) maxLng = lng;
+    validCount += 1;
+  }
 
-function MapClickListener({ onSelectCoords }: { onSelectCoords: (lat: number, lng: number) => void }) {
-  useMapEvents({
-    click(e) {
-      onSelectCoords(Number(e.latlng.lat.toFixed(5)), Number(e.latlng.lng.toFixed(5)));
-    },
-  });
-  return null;
-}
-
-function MapBoundsFitter({
-  gpxTrack,
-  start,
-  end,
-  fitVersion,
-}: {
-  gpxTrack: [number, number][];
-  start: [number, number];
-  end: [number, number];
-  fitVersion: number;
-}) {
-  const map = useMap();
-  useEffect(() => {
-    const pts: [number, number][] = gpxTrack.length >= 2 ? gpxTrack : [start, end];
-    const valid = pts.filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng));
-    if (valid.length >= 2) {
-      const bounds = L.latLngBounds(valid);
-      if (bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
-      }
-    } else if (valid.length === 1) {
-      map.setView(valid[0], 13);
-    }
-  }, [map, gpxTrack, fitVersion]); // eslint-disable-line react-hooks/exhaustive-deps
-  return null;
+  if (validCount < 2) return null;
+  if (Math.abs(maxLat - minLat) < 1e-6 && Math.abs(maxLng - minLng) < 1e-6) return null;
+  return [
+    [minLat, minLng],
+    [maxLat, maxLng],
+  ];
 }
 
 interface ProvinceData {
@@ -106,41 +81,55 @@ interface ProvinceData {
 
 const VIETNAM_ADMINISTRATIVE_DATA: Record<string, ProvinceData[]> = {
   'Miền Bắc': [
-    { name: 'Thành phố Hà Nội', wards: ['Phường Ba Đình', 'Phường Hoàn Kiếm', 'Xã Ba Vì', 'Xã Hương Sơn', 'Xã Sóc Sơn'] },
-    { name: 'Tỉnh Lào Cai', wards: ['Phường Sa Pa', 'Xã Y Tý', 'Xã Bát Xát', 'Xã Mường Hum', 'Xã Tả Van', 'Xã Bản Hồ', 'Xã Ngũ Chỉ Sơn', 'Xã Tả Phìn'] },
-    { name: 'Tỉnh Yên Bái', wards: ['Phường Nghĩa Lộ', 'Xã Trạm Tấu', 'Xã Mù Cang Chải', 'Xã Xà Hồ', 'Xã Tú Lệ', 'Xã La Pán Tẩn'] },
-    { name: 'Tỉnh Hà Giang', wards: ['Phường Hà Giang', 'Xã Đồng Văn', 'Xã Mèo Vạc', 'Xã Lũng Cú', 'Xã Thông Nguyên', 'Xã Quản Bạ', 'Xã Cao Bồ'] },
-    { name: 'Tỉnh Lai Châu', wards: ['Phường Lai Châu', 'Xã Tam Đường', 'Xã Tả Liên', 'Xã Sơn Bình', 'Xã Hồ Thầu', 'Xã Sìn Hồ', 'Xã Pa Vệ Sử'] },
-    { name: 'Tỉnh Sơn La', wards: ['Phường Sơn La', 'Xã Bắc Yên', 'Xã Tà Xùa', 'Phường Mộc Châu', 'Xã Vân Hồ'] },
-    { name: 'Tỉnh Hòa Bình', wards: ['Phường Hòa Bình', 'Xã Mai Châu', 'Xã Hang Kia', 'Xã Pà Cò', 'Xã Cao Phong'] },
-    { name: 'Tỉnh Cao Bằng', wards: ['Phường Cao Bằng', 'Xã Trùng Khánh', 'Xã Đàm Thủy', 'Xã Hà Quảng', 'Xã Nguyên Bình'] },
-    { name: 'Tỉnh Lạng Sơn', wards: ['Phường Lạng Sơn', 'Xã Mẫu Sơn', 'Xã Hữu Lũng', 'Xã Chi Lăng'] },
-    { name: 'Tỉnh Quảng Ninh', wards: ['Thành phố Hạ Long', 'Phường Yên Tử', 'Xã Bình Liêu', 'Xã Cô Tô'] },
+    { name: 'Thành phố Hà Nội', wards: ['Phường Ba Đình', 'Phường Hoàn Kiếm', 'Xã Tản Lĩnh (Ba Vì)', 'Xã Ba Vì', 'Xã Hương Sơn', 'Xã Sóc Sơn'] },
+    { name: 'Tỉnh Lào Cai', wards: ['Phường Sa Pa', 'Xã Y Tý', 'Thị trấn Bát Xát', 'Xã Mường Hum', 'Xã Tả Van', 'Xã Bản Hồ', 'Xã Ngũ Chỉ Sơn', 'Xã Tả Phìn'] },
+    { name: 'Tỉnh Yên Bái', wards: ['Phường Nghĩa Lộ', 'Thị trấn Trạm Tấu', 'Thị trấn Mù Cang Chải', 'Xã Xà Hồ', 'Xã Tú Lệ', 'Xã La Pán Tẩn', 'Xã Nậm Có'] },
+    { name: 'Tỉnh Hà Giang', wards: ['Thành phố Hà Giang', 'Thị trấn Đồng Văn', 'Thị trấn Mèo Vạc', 'Xã Lũng Cú', 'Xã Thông Nguyên', 'Thị trấn Tam Sơn', 'Xã Cao Bồ'] },
+    { name: 'Tỉnh Lai Châu', wards: ['Thành phố Lai Châu', 'Thị trấn Tam Đường', 'Xã Tả Lèng', 'Xã Sơn Bình', 'Xã Hồ Thầu', 'Thị trấn Sìn Hồ', 'Xã Pa Vệ Sử', 'Xã Vàng Ma Chải'] },
+    { name: 'Tỉnh Sơn La', wards: ['Thành phố Sơn La', 'Thị trấn Bắc Yên', 'Xã Tà Xùa', 'Thị xã Mộc Châu', 'Xã Chiềng Sơn', 'Xã Vân Hồ'] },
+    { name: 'Tỉnh Hòa Bình', wards: ['Thành phố Hòa Bình', 'Thị trấn Mai Châu', 'Xã Hang Kia', 'Xã Pà Cò', 'Thị trấn Cao Phong'] },
+    { name: 'Tỉnh Cao Bằng', wards: ['Thành phố Cao Bằng', 'Thị trấn Trùng Khánh', 'Xã Đàm Thủy', 'Thị trấn Xuân Hòa', 'Thị trấn Nguyên Bình'] },
+    { name: 'Tỉnh Lạng Sơn', wards: ['Thành phố Lạng Sơn', 'Xã Mẫu Sơn', 'Thị trấn Hữu Lũng', 'Thị trấn Đồng Mỏ'] },
+    { name: 'Tỉnh Quảng Ninh', wards: ['Thành phố Hạ Long', 'Phường Phương Đông (Uông Bí)', 'Xã Thượng Yên Công', 'Thị trấn Bình Liêu', 'Xã Hoành Mô', 'Thị trấn Cô Tô'] },
+    { name: 'Tỉnh Ninh Bình', wards: ['Xã Cúc Phương', 'Thị trấn Nho Quan', 'Xã Ninh Hải', 'Thành phố Hoa Lư'] },
+    { name: 'Thành phố Hải Phòng', wards: ['Thị trấn Cát Bà', 'Xã Việt Hải', 'Xã Gia Luận', 'Xã Trân Châu'] },
+    { name: 'Tỉnh Vĩnh Phúc', wards: ['Thị trấn Tam Đảo', 'Thị trấn Hợp Châu', 'Xã Hồ Sơn', 'Xã Đại Đình'] },
+    { name: 'Tỉnh Bắc Kạn', wards: ['Xã Nam Mẫu', 'Thị trấn Chợ Rã', 'Xã Quảng Khê'] },
+    { name: 'Tỉnh Phú Thọ', wards: ['Xã Xuân Sơn', 'Thị trấn Tân Phú', 'Xã Xuân Đài'] },
+    { name: 'Tỉnh Tuyên Quang', wards: ['Thị trấn Na Hang', 'Xã Thượng Lâm', 'Thị trấn Lăng Can'] },
   ],
   'Miền Trung': [
-    { name: 'Thành phố Đà Nẵng', wards: ['Phường Sơn Trà', 'Phường Thọ Quang', 'Phường Hải Châu', 'Xã Hòa Bắc', 'Xã Hòa Vang', 'Xã Hòa Ninh'] },
-    { name: 'Thành phố Huế', wards: ['Phường Huế', 'Phường Thuận Thành', 'Xã Bạch Mã', 'Xã A Lưới', 'Xã Nam Đông'] },
-    { name: 'Tỉnh Quảng Bình', wards: ['Thành phố Đồng Hới', 'Xã Phong Nha - Kẻ Bàng', 'Xã Tân Hóa', 'Xã Bố Trạch'] },
-    { name: 'Tỉnh Quảng Nam', wards: ['Thành phố Hội An', 'Thành phố Tam Kỳ', 'Xã Nam Trà My', 'Xã Phước Sơn'] },
-    { name: 'Thành phố Đà Lạt (Lâm Đồng)', wards: ['Phường Đà Lạt', 'Phường Xuân Thọ', 'Xã Lạc Dương', 'Xã Bidoup', 'Xã Tà Năng', 'Xã Phan Dũng'] },
-    { name: 'Tỉnh Đắk Lắk', wards: ['Thành phố Buôn Ma Thuột', 'Xã Krông Bông', 'Xã Buôn Đôn', 'Xã Lắk'] },
-    { name: 'Tỉnh Gia Lai', wards: ['Thành phố Pleiku', 'Xã Chư Đăng Ya', 'Xã Kbang', 'Xã Mang Yang'] },
-    { name: 'Tỉnh Kon Tum', wards: ['Thành phố Kon Tum', 'Xã Măng Đen', 'Xã Đắk Glei', 'Xã Tu Mơ Rông'] },
-    { name: 'Tỉnh Ninh Thuận', wards: ['Thành phố Phan Rang', 'Xã Phước Bình', 'Xã Vĩnh Hy', 'Xã Vĩnh Hải'] },
-    { name: 'Tỉnh Bình Thuận', wards: ['Thành phố Phan Thiết', 'Xã Phan Dũng', 'Xã Tánh Linh'] },
+    { name: 'Tỉnh Thanh Hóa', wards: ['Xã Thành Lâm', 'Xã Phú Lệ', 'Xã Cổ Lũng', 'Thị trấn Cành Nàng'] },
+    { name: 'Tỉnh Nghệ An', wards: ['Xã Chi Khê', 'Thị trấn Con Cuông', 'Xã Môn Sơn', 'Xã Châu Khê'] },
+    { name: 'Tỉnh Quảng Bình', wards: ['Thành phố Đồng Hới', 'Thị trấn Phong Nha', 'Xã Tân Hóa', 'Thị trấn Hoàn Lão'] },
+    { name: 'Thành phố Huế', wards: ['Quận Thuận Hóa', 'Quận Phú Xuân', 'Xã Lộc Trì', 'Thị trấn A Lưới', 'Thị trấn Khe Tre'] },
+    { name: 'Thành phố Đà Nẵng', wards: ['Phường Sơn Trà', 'Phường Thọ Quang', 'Phường Hải Châu', 'Xã Hòa Bắc', 'Xã Hòa Ninh', 'Xã Hòa Sơn'] },
+    { name: 'Tỉnh Quảng Nam', wards: ['Thành phố Hội An', 'Thành phố Tam Kỳ', 'Xã Trà Mai (Nam Trà My)', 'Thị trấn Khâm Đức'] },
+    { name: 'Tỉnh Quảng Ngãi', wards: ['Thành phố Quảng Ngãi', 'Xã Ba Lế', 'Huyện Lý Sơn'] },
+    { name: 'Tỉnh Bình Định', wards: ['Thành phố Quy Nhơn', 'Xã Nhơn Lý', 'Xã Vĩnh Sơn'] },
+    { name: 'Tỉnh Phú Yên', wards: ['Thành phố Tuy Hòa', 'Xã Hòa Tâm', 'Xã Sơn Long'] },
+    { name: 'Tỉnh Khánh Hòa', wards: ['Thành phố Nha Trang', 'Xã Vạn Thạnh', 'Xã Suối Cát', 'Thị trấn Diên Khánh'] },
+    { name: 'Tỉnh Ninh Thuận', wards: ['Thành phố Phan Rang - Tháp Chàm', 'Xã Phước Bình', 'Xã Vĩnh Hải'] },
+    { name: 'Tỉnh Bình Thuận', wards: ['Thành phố Phan Thiết', 'Xã Phan Dũng', 'Thị trấn Lạc Tánh'] },
+    { name: 'Tỉnh Kon Tum', wards: ['Thành phố Kon Tum', 'Thị trấn Măng Đen', 'Thị trấn Đắk Glei', 'Xã Đắk Na'] },
+    { name: 'Tỉnh Gia Lai', wards: ['Thành phố Pleiku', 'Xã Sơn Lang', 'Xã Chư Đăng Ya', 'Thị trấn Kbang', 'Thị trấn Kon Dơng'] },
+    { name: 'Tỉnh Đắk Lắk', wards: ['Thành phố Buôn Ma Thuột', 'Thị trấn Krông Kmar', 'Xã Krông Na', 'Thị trấn Liên Sơn'] },
+    { name: 'Tỉnh Đắk Nông', wards: ['Thành phố Gia Nghĩa', 'Xã Đắk Som', 'Xã Quảng Khê'] },
+    { name: 'Tỉnh Lâm Đồng', wards: ['Thành phố Đà Lạt', 'Phường Xuân Thọ', 'Thị trấn Lạc Dương', 'Xã Đạ Nhim', 'Xã Tà Năng', 'Xã Đạ Chais'] },
   ],
   'Miền Nam': [
-    { name: 'Thành phố Hồ Chí Minh', wards: ['Phường TP. Thủ Đức', 'Xã Cần Giờ', 'Xã Củ Chi', 'Phường Quận 1'] },
-    { name: 'Tỉnh Bà Rịa - Vũng Tàu', wards: ['Thành phố Vũng Tàu', 'Thành phố Bà Rịa', 'Xã Núi Dinh', 'Xã Xuyên Mộc'] },
-    { name: 'Tỉnh Đồng Nai', wards: ['Thành phố Biên Hòa', 'Xã Nam Cát Tiên', 'Xã Chứa Chan'] },
-    { name: 'Tỉnh Tây Ninh', wards: ['Thành phố Tây Ninh', 'Phường Ninh Sơn', 'Xã Tân Biên'] },
-    { name: 'Tỉnh An Giang', wards: ['Thành phố Long Xuyên', 'Thành phố Châu Đốc', 'Xã An Hảo', 'Xã Tri Tôn'] },
-    { name: 'Tỉnh Kiên Giang', wards: ['Thành phố Phú Quốc', 'Thành phố Rạch Giá', 'Xã Nam Du'] },
+    { name: 'Thành phố Hồ Chí Minh', wards: ['Thành phố Thủ Đức', 'Quận 1', 'Xã Cần Giờ', 'Thị trấn Củ Chi'] },
+    { name: 'Tỉnh Bà Rịa - Vũng Tàu', wards: ['Thành phố Vũng Tàu', 'Thành phố Bà Rịa', 'Thành phố Phú Mỹ', 'Xã Tân Hải', 'Xã Xuyên Mộc'] },
+    { name: 'Tỉnh Đồng Nai', wards: ['Thành phố Biên Hòa', 'Xã Nam Cát Tiên', 'Thị trấn Gia Ray', 'Xã Suối Cát'] },
+    { name: 'Tỉnh Bình Phước', wards: ['Thành phố Đồng Xoài', 'Xã Bù Gia Mập', 'Phường Thác Mơ', 'Thị trấn Phước Bình'] },
+    { name: 'Tỉnh Tây Ninh', wards: ['Thành phố Tây Ninh', 'Phường Ninh Sơn', 'Xã Thạnh Tân', 'Thị trấn Tân Biên'] },
+    { name: 'Tỉnh An Giang', wards: ['Thành phố Long Xuyên', 'Thành phố Châu Đốc', 'Xã An Hảo', 'Thị trấn Tri Tôn'] },
+    { name: 'Tỉnh Kiên Giang', wards: ['Thành phố Phú Quốc', 'Thành phố Rạch Giá', 'Xã An Sơn'] },
   ],
 };
 
 const PROVINCE_COORDINATES: Record<string, [number, number]> = {
-  'Thành phố Đà Nẵng': [16.0544, 108.2022],
+  'Thành phố Hà Nội': [21.0285, 105.8542],
   'Tỉnh Lào Cai': [22.3364, 103.8438],
   'Tỉnh Yên Bái': [21.7052, 104.8705],
   'Tỉnh Hà Giang': [22.8233, 104.9839],
@@ -148,19 +137,35 @@ const PROVINCE_COORDINATES: Record<string, [number, number]> = {
   'Tỉnh Sơn La': [21.3257, 103.9188],
   'Tỉnh Hòa Bình': [20.8156, 105.3384],
   'Tỉnh Cao Bằng': [22.6663, 106.2625],
-  'Thành phố Huế': [16.4637, 107.5909],
-  'Tỉnh Quảng Bình': [17.4687, 106.6227],
+  'Tỉnh Lạng Sơn': [21.8537, 106.7615],
+  'Tỉnh Quảng Ninh': [21.1418, 106.7165],
+  'Tỉnh Ninh Bình': [20.2539, 105.7145],
+  'Thành phố Hải Phòng': [20.7997, 107.0481],
+  'Tỉnh Vĩnh Phúc': [21.4566, 105.6426],
+  'Tỉnh Bắc Kạn': [22.4167, 105.6167],
+  'Tỉnh Phú Thọ': [21.1394, 104.9461],
+  'Tỉnh Tuyên Quang': [22.3536, 105.3947],
+  'Tỉnh Thanh Hóa': [20.478, 105.125],
+  'Tỉnh Nghệ An': [19.0432, 104.8835],
+  'Tỉnh Quảng Bình': [17.5906, 106.2833],
+  'Thành phố Huế': [16.2585, 107.8615],
+  'Thành phố Đà Nẵng': [16.0544, 108.2022],
   'Tỉnh Quảng Nam': [15.567, 108.0],
-  'Thành phố Đà Lạt (Lâm Đồng)': [11.9404, 108.4583],
-  'Tỉnh Đắk Lắk': [12.6667, 108.05],
-  'Tỉnh Gia Lai': [13.9833, 108.0],
-  'Tỉnh Kon Tum': [14.3497, 108.0005],
+  'Tỉnh Quảng Ngãi': [15.1214, 108.8044],
+  'Tỉnh Bình Định': [13.7829, 109.2197],
+  'Tỉnh Phú Yên': [13.0882, 109.0929],
+  'Tỉnh Khánh Hòa': [12.2585, 109.1932],
   'Tỉnh Ninh Thuận': [11.7165, 109.193],
   'Tỉnh Bình Thuận': [11.3515, 108.6455],
-  'Thành phố Hà Nội': [21.0285, 105.8542],
+  'Tỉnh Kon Tum': [14.3497, 108.0005],
+  'Tỉnh Gia Lai': [14.5045, 108.5625],
+  'Tỉnh Đắk Lắk': [12.482, 108.342],
+  'Tỉnh Đắk Nông': [11.8692, 107.9882],
+  'Tỉnh Lâm Đồng': [11.9404, 108.4583],
   'Thành phố Hồ Chí Minh': [10.8231, 106.6297],
-  'Tỉnh Bà Rịa - Vũng Tàu': [10.521, 107.116],
+  'Tỉnh Bà Rịa - Vũng Tàu': [10.5865, 107.0622],
   'Tỉnh Đồng Nai': [11.4235, 107.4285],
+  'Tỉnh Bình Phước': [12.1922, 107.2044],
   'Tỉnh Tây Ninh': [11.367, 106.167],
   'Tỉnh An Giang': [10.3759, 105.4185],
   'Tỉnh Kiên Giang': [10.227, 103.963],
@@ -169,49 +174,84 @@ const PROVINCE_COORDINATES: Record<string, [number, number]> = {
 // 100% Source-Verified Vietnam National Parks & Provincial Forestry Rescue Contacts (Rule 11)
 const VERIFIED_PROVINCE_RESCUE: Record<string, { name: string; phone: string; rangerContact: string }> = {
   'Tỉnh Lào Cai': {
-    name: 'VQG Hoàng Liên & Chi Cục Kiểm Lâm Lào Cai',
+    name: 'VQG Hoàng Liên & Chi cục Kiểm lâm Lào Cai',
     phone: '02143.871.494',
-    rangerContact: '0985.834.581 / Trạm Kiểm Lâm Trạm Tôn',
+    rangerContact: '0985.834.581 / Trạm Kiểm lâm Trạm Tôn',
   },
   'Tỉnh Yên Bái': {
-    name: 'Chi Cục Kiểm Lâm Yên Bái',
+    name: 'Chi cục Kiểm lâm Yên Bái',
     phone: '02163.852.341',
-    rangerContact: 'Hạt Kiểm Lâm địa phương / 112',
+    rangerContact: 'Hạt Kiểm lâm địa phương / 112',
   },
   'Tỉnh Lai Châu': {
-    name: 'Chi Cục Kiểm Lâm Lai Châu',
+    name: 'Chi cục Kiểm lâm Lai Châu',
     phone: '02133.876.605',
-    rangerContact: 'Hạt Kiểm Lâm địa phương / 112',
+    rangerContact: 'Hạt Kiểm lâm địa phương / 112',
+  },
+  'Tỉnh Sơn La': {
+    name: 'Chi cục Kiểm lâm Sơn La',
+    phone: '02123.852.046',
+    rangerContact: 'Hạt Kiểm lâm địa phương / 112',
   },
   'Tỉnh Hà Giang': {
-    name: 'Chi Cục Kiểm Lâm Hà Giang',
+    name: 'Chi cục Kiểm lâm Hà Giang',
     phone: '0219.3861.628',
-    rangerContact: 'Hạt Kiểm Lâm địa phương / 112',
+    rangerContact: 'Hạt Kiểm lâm địa phương / 112',
   },
   'Thành phố Hà Nội': {
     name: 'VQG Ba Vì (Ba Vì, Hà Nội)',
     phone: '02433.881.082',
     rangerContact: '0966.173.119 / 114',
   },
+  'Tỉnh Quảng Ninh': {
+    name: 'BQL Di sản Yên Tử & Chi cục Kiểm lâm Quảng Ninh',
+    phone: '0812.488.111',
+    rangerContact: '02033.835.523 / 112',
+  },
+  'Tỉnh Ninh Bình': {
+    name: 'VQG Cúc Phương (Nho Quan, Ninh Bình)',
+    phone: '1800.5555.88',
+    rangerContact: '02293.848.006 / 112',
+  },
+  'Tỉnh Thanh Hóa': {
+    name: 'BQL Khu BTTN Pù Luông (Bá Thước, Thanh Hóa)',
+    phone: '02373.880.671',
+    rangerContact: 'Hạt Kiểm lâm Bá Thước / 112',
+  },
+  'Tỉnh Nghệ An': {
+    name: 'VQG Pù Mát (Con Cuông, Nghệ An)',
+    phone: '02383.873.374',
+    rangerContact: '0964.585.655 / 112',
+  },
   'Thành phố Huế': {
     name: 'VQG Bạch Mã (Phú Lộc, TP. Huế)',
     phone: '0234.3871.330',
-    rangerContact: '0836.356.669 / Trạm Kiểm Lâm VQG Bạch Mã',
+    rangerContact: '0836.356.669 / Trạm Kiểm lâm VQG Bạch Mã',
+  },
+  'Thành phố Đà Nẵng': {
+    name: 'BQL Rừng đặc dụng Bà Nà - Núi Chúa (Đà Nẵng)',
+    phone: '0236.3738.521',
+    rangerContact: 'CNCH Đà Nẵng 112 / 114',
   },
   'Tỉnh Quảng Bình': {
     name: 'VQG Phong Nha - Kẻ Bàng (Quảng Bình)',
     phone: '0918.841.455',
     rangerContact: '0868.815.678 / 114',
   },
-  'Thành phố Đà Lạt (Lâm Đồng)': {
-    name: 'VQG Bidoup - Núi Bà & Chi Cục KL Lâm Đồng',
+  'Tỉnh Khánh Hòa': {
+    name: 'Chi cục Kiểm lâm Khánh Hòa & Khu BTTN Hòn Bà',
+    phone: '0258.3837.149',
+    rangerContact: '0258.3213.222 / 112',
+  },
+  'Tỉnh Lâm Đồng': {
+    name: 'VQG Bidoup - Núi Bà & Chi cục Kiểm lâm Lâm Đồng',
     phone: '0263.3502.005',
     rangerContact: '02633.822.441 / 0947.047.449',
   },
   'Tỉnh Đắk Lắk': {
     name: 'VQG Chư Yang Sin (Krông Bông, Đắk Lắk)',
     phone: '0262.3734.226',
-    rangerContact: 'Trạm Kiểm Lâm VQG Chư Yang Sin / 112',
+    rangerContact: 'Trạm Kiểm lâm VQG Chư Yang Sin / 112',
   },
   'Tỉnh Gia Lai': {
     name: 'Khu BTTN Kon Chư Răng (Kbang, Gia Lai)',
@@ -223,13 +263,23 @@ const VERIFIED_PROVINCE_RESCUE: Record<string, { name: string; phone: string; ra
     phone: '0798.889.468',
     rangerContact: 'TT Du lịch & GDMT VQG Núi Chúa / 112',
   },
+  'Tỉnh Bà Rịa - Vũng Tàu': {
+    name: 'Hạt Kiểm lâm Phú Mỹ — Trạm Kiểm lâm Núi Dinh',
+    phone: '0254.3876.318',
+    rangerContact: '112 / 114',
+  },
   'Tỉnh Đồng Nai': {
-    name: 'VQG Cát Tiên & Chi Cục KL Đồng Nai',
+    name: 'VQG Cát Tiên & Chi cục Kiểm lâm Đồng Nai',
     phone: '02513.669.228',
     rangerContact: '0251.3992.053 / 0856.669.228',
   },
+  'Tỉnh Bình Phước': {
+    name: 'VQG Bù Gia Mập (Bù Gia Mập, Bình Phước)',
+    phone: '02713.724.237',
+    rangerContact: '0384.798.799 / 112',
+  },
   'Tỉnh Tây Ninh': {
-    name: 'Đội CNCH KDL Quốc Gia Núi Bà Đen 24/24',
+    name: 'Đội CNCH KDL Quốc gia Núi Bà Đen 24/24',
     phone: '0276.387.5678',
     rangerContact: 'BQL KDL 0276.3823.378 / 114',
   },
@@ -280,14 +330,56 @@ function matchVietnamProvince(rawProvince: string): { region: Region; province: 
   return null;
 }
 
-function inferWaypointTypeFromGpx(rawType: string, rawName: string): Waypoint['type'] {
-  const combined = `${rawType} ${rawName}`.toLowerCase();
-  if (/camp|tent|trại|trai|lán|lan|ngủ|ngu/.test(combined)) return 'campsite';
-  if (/water|suối|suoi|nước|nuoc|spring|stream/.test(combined)) return 'water';
-  if (/danger|hazard|cảnh báo|nguy hiểm|dốc|vách|sạt/.test(combined)) return 'danger';
-  if (/charge|sạc|điện|trạm kiểm lâm|station/.test(combined)) return 'charging';
-  if (/rest|nghỉ|nghi|dừng|dung/.test(combined)) return 'rest';
-  return 'viewpoint';
+const CANONICAL_DURATION_OPTIONS = [
+  { value: '1 ngày', label: '1 ngày (Trong ngày)', days: 1 },
+  { value: '2 ngày 1 đêm', label: '2 ngày 1 đêm', days: 2 },
+  { value: '3 ngày 2 đêm', label: '3 ngày 2 đêm', days: 3 },
+  { value: '4 ngày 3 đêm', label: '4 ngày 3 đêm', days: 4 },
+  { value: 'Nửa ngày', label: 'Nửa ngày (4-6 tiếng)', days: 1 },
+] as const;
+
+function normalizeDurationHoursNote(raw: unknown, durationDays?: unknown): string {
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (CANONICAL_DURATION_OPTIONS.some((o) => o.value === text)) return text;
+  const lower = text.toLowerCase();
+  if (/nửa ngày|nua ngay|half/.test(lower)) return 'Nửa ngày';
+  if (/4\s*n\s*3|4\s*ngày/.test(lower)) return '4 ngày 3 đêm';
+  if (/3\s*n\s*2|3\s*ngày/.test(lower)) return '3 ngày 2 đêm';
+  if (/2\s*n\s*1|2\s*ngày/.test(lower)) return '2 ngày 1 đêm';
+  if (/1\s*ngày|trong ngày/.test(lower)) return '1 ngày';
+  const days = Number(durationDays);
+  if (Number.isFinite(days)) {
+    if (days >= 4) return '4 ngày 3 đêm';
+    if (days === 3) return '3 ngày 2 đêm';
+    if (days === 2) return '2 ngày 1 đêm';
+  }
+  return '1 ngày';
+}
+
+function mapRouteWaypointTypeToContrib(type: RouteWaypointType | string): Waypoint['type'] {
+  switch (type) {
+    case 'camp':
+      return 'campsite';
+    case 'water':
+      return 'water';
+    case 'danger':
+      return 'danger';
+    case 'ranger':
+      return 'charging';
+    case 'rest':
+      return 'rest';
+    case 'peak':
+    case 'viewpoint':
+    case 'start':
+    default:
+      return 'viewpoint';
+  }
+}
+
+function isWithinVietnamBounds(lat: number, lng: number): boolean {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  if (lat === 0 && lng === 0) return false;
+  return lat >= 8.0 && lat <= 23.6 && lng >= 102.0 && lng <= 110.5;
 }
 
 interface GeoSuggestion {
@@ -361,6 +453,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
   const [isGeocoding, setIsGeocoding] = useState<boolean>(false);
   const geocodeReqSeqRef = useRef<number>(0);
   const hasHydratedDraftCheckRef = useRef<boolean>(false);
+  const isEditingRef = useRef<boolean>(false);
 
   // Optional Waypoint editor form state (Step 3)
   const [wpName, setWpName] = useState('');
@@ -376,7 +469,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
     altNames: '',
     province: 'Tỉnh Lào Cai',
     district: 'Phường Sa Pa',
-    hamlet: 'Trạm Kiểm Lâm Trạm Tôn',
+    hamlet: '',
     region: 'Miền Bắc' as Region,
     distanceKm: 15,
     elevationGainM: 800,
@@ -402,6 +495,27 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
     endLat: 22.3512,
     endLng: 103.864,
   });
+
+  const formDataRef = useRef(formData);
+  useEffect(() => {
+    formDataRef.current = formData;
+  }, [formData]);
+
+  useEffect(() => {
+    isEditingRef.current = Boolean(editingId);
+  }, [editingId]);
+
+  useEffect(() => {
+    return () => {
+      if (isEditingRef.current) {
+        try {
+          localStorage.removeItem('lost_editing_contribution');
+        } catch {
+          // ignore storage errors
+        }
+      }
+    };
+  }, []);
 
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -495,9 +609,10 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
         durationDays: Number.isFinite(Number(editingItem.durationDays)) && Number(editingItem.durationDays) >= 1
           ? Math.round(Number(editingItem.durationDays))
           : prev.durationDays,
-        durationHoursNote: typeof editingItem.durationHoursNote === 'string' && editingItem.durationHoursNote.trim()
-          ? editingItem.durationHoursNote
-          : prev.durationHoursNote,
+        durationHoursNote: normalizeDurationHoursNote(
+          editingItem.durationHoursNote ?? prev.durationHoursNote,
+          editingItem.durationDays ?? prev.durationDays
+        ),
         altNames: Array.isArray(editingItem.altNames)
           ? (editingItem.altNames as string[]).join(', ')
           : typeof editingItem.altNames === 'string'
@@ -519,14 +634,14 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
       if (rawGpx.length > 0) {
         setGpxTrack(rawGpx);
         if (!isRealEdit) {
-          setGpxFileName('Tuyến tự vẽ từ Thiết Kế GPX LOST');
+          setGpxFileName('Tuyến tự vẽ từ bản đồ vẽ tuyến LOST');
         }
         setMapFitVersion((v) => v + 1);
       }
     };
 
     // 1. Check if user is explicitly editing an existing submitted contribution (has id/_id)
-    const editingStr = localStorage.getItem('lost_editing_contribution');
+    const editingStr = safeLocalStorageGet('lost_editing_contribution');
     let hasActiveExistingEdit = false;
     if (editingStr) {
       try {
@@ -542,7 +657,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
 
     // 2. Otherwise, check RoutePlannerView handoff draft ('lost_planner_draft_contribution')
     if (!hasActiveExistingEdit) {
-      const plannerDraftStr = localStorage.getItem('lost_planner_draft_contribution');
+      const plannerDraftStr = safeLocalStorageGet('lost_planner_draft_contribution');
       if (plannerDraftStr) {
         try {
           const draft = JSON.parse(plannerDraftStr) as Record<string, unknown>;
@@ -553,7 +668,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
             if (editingStr) {
               localStorage.removeItem('lost_editing_contribution');
             }
-            const msg = 'Đã nạp tuyến đường từ Thiết Kế GPX vào biểu mẫu đóng góp!';
+            const msg = 'Đã nạp tuyến đường từ bản đồ vẽ tuyến vào biểu mẫu đóng góp.';
             if (onShowToast) {
               onShowToast(msg, 'success');
             } else {
@@ -603,7 +718,12 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
     if (!pendingDraft) return;
     const fd = pendingDraft.formData;
     if (fd && typeof fd === 'object') {
-      setFormData((prev) => ({ ...prev, ...(fd as Partial<typeof prev>) }));
+      const normalizedDuration = normalizeDurationHoursNote(fd.durationHoursNote, fd.durationDays);
+      setFormData((prev) => ({
+        ...prev,
+        ...(fd as Partial<typeof prev>),
+        durationHoursNote: normalizedDuration,
+      }));
     }
     if (Array.isArray(pendingDraft.gpxTrack)) {
       setGpxTrack(pendingDraft.gpxTrack);
@@ -634,34 +754,34 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
   const applyGeoSuggestion = useCallback(
     (suggestion: GeoSuggestion, silent = false) => {
       const matched = matchVietnamProvince(suggestion.province);
+      const nextDistrictCandidate = (suggestion.district || '').trim();
+      const nextHamletCandidate = (suggestion.village || '').trim();
+
+      let resolvedDistrict: string | null = null;
+      if (nextDistrictCandidate) {
+        const wards = matched?.province.wards || [];
+        const matchedWard = wards.find(
+          (w) => normalizeAdminName(w) === normalizeAdminName(nextDistrictCandidate)
+        );
+        if (matchedWard) {
+          setIsCustomWard(false);
+          setCustomWardText('');
+          resolvedDistrict = matchedWard;
+        } else {
+          setIsCustomWard(true);
+          setCustomWardText(nextDistrictCandidate);
+          resolvedDistrict = nextDistrictCandidate;
+        }
+      }
+
       setFormData((prev) => {
         const nextRegion = matched?.region || prev.region;
         const nextProvince = matched?.province.name || prev.province;
-        const nextDistrictCandidate = (suggestion.district || '').trim();
-        const nextHamletCandidate = (suggestion.village || '').trim();
-
-        let nextDistrict = prev.district;
-        if (nextDistrictCandidate) {
-          const wards = matched?.province.wards || [];
-          const matchedWard = wards.find(
-            (w) => normalizeAdminName(w) === normalizeAdminName(nextDistrictCandidate)
-          );
-          if (matchedWard) {
-            setIsCustomWard(false);
-            setCustomWardText('');
-            nextDistrict = matchedWard;
-          } else {
-            setIsCustomWard(true);
-            setCustomWardText(nextDistrictCandidate);
-            nextDistrict = nextDistrictCandidate;
-          }
-        }
-
         return {
           ...prev,
           region: nextRegion,
           province: nextProvince,
-          district: nextDistrict,
+          district: resolvedDistrict ?? prev.district,
           ...(nextHamletCandidate ? { hamlet: nextHamletCandidate } : {}),
           ...(matched ? { rescueContact: getRescueContactForProvince(nextProvince) } : {}),
         };
@@ -699,7 +819,22 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
         };
         setGeoSuggestion(suggestion);
 
-        // Auto-populate empty administrative fields seamlessly without overwriting user-entered values
+        // Auto-populate empty administrative fields without calling setState inside a state updater
+        const currentSnap = formDataRef.current;
+        const shouldFillDistrict = !currentSnap.district.trim() && Boolean(rawDist);
+        let matchedAutoWard: string | undefined;
+        if (shouldFillDistrict) {
+          const wards = matched?.province.wards || [];
+          matchedAutoWard = wards.find((w) => normalizeAdminName(w) === normalizeAdminName(rawDist));
+          if (matchedAutoWard) {
+            setIsCustomWard(false);
+            setCustomWardText('');
+          } else {
+            setIsCustomWard(true);
+            setCustomWardText(rawDist);
+          }
+        }
+
         setFormData((prev) => {
           const updates: Partial<typeof prev> = {};
           if (!prev.province.trim() && matched?.province.name) {
@@ -708,9 +843,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
             updates.rescueContact = getRescueContactForProvince(matched.province.name);
           }
           if (!prev.district.trim() && rawDist) {
-            setIsCustomWard(true);
-            setCustomWardText(rawDist);
-            updates.district = rawDist;
+            updates.district = matchedAutoWard || rawDist;
           }
           if (!prev.hamlet.trim() && rawVillage) {
             updates.hamlet = rawVillage;
@@ -728,27 +861,160 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
     []
   );
 
+  const contribMapBounds = useMemo(() => {
+    const pts: [number, number][] =
+      gpxTrack.length >= 2
+        ? gpxTrack
+        : [
+            [formData.startLat, formData.startLng],
+            [formData.endLat, formData.endLng],
+          ];
+    return computeContribBounds(pts);
+  }, [gpxTrack, formData.startLat, formData.startLng, formData.endLat, formData.endLng]);
+
+  const contribMapFitKey = `${step}-${mapFitVersion}-${gpxTrack.length}`;
+
+  const contribMapFlyTo = useMemo(() => {
+    if (contribMapBounds) return null;
+    if (!Number.isFinite(formData.startLat) || !Number.isFinite(formData.startLng)) return null;
+    return {
+      lat: formData.startLat,
+      lng: formData.startLng,
+      zoom: 12,
+      key: contribMapFitKey,
+    };
+  }, [contribMapBounds, formData.startLat, formData.startLng, contribMapFitKey]);
+
+  const contribMapPolylines = useMemo<LostMapPolylineItem[]>(
+    () => [
+      {
+        id: 'contrib-route-line',
+        coords:
+          gpxTrack.length >= 2
+            ? gpxTrack
+            : [
+                [formData.startLat, formData.startLng],
+                [formData.endLat, formData.endLng],
+              ],
+        color: 'primary',
+        width: 4,
+        opacity: 0.92,
+      },
+    ],
+    [gpxTrack, formData.startLat, formData.startLng, formData.endLat, formData.endLng]
+  );
+
+  const contribMapMarkers = useMemo<LostMapMarkerItem[]>(() => {
+    const items: LostMapMarkerItem[] = [
+      {
+        id: 'contrib-start-pin',
+        lat: formData.startLat,
+        lng: formData.startLng,
+        label: 'Điểm xuất phát',
+        sublabel: `${formData.startLat.toFixed(5)}, ${formData.startLng.toFixed(5)}`,
+        color: 'primary',
+        size: 'lg',
+        badge: 'XP',
+        active: pinMode === 'start',
+      },
+      {
+        id: 'contrib-end-pin',
+        lat: formData.endLat,
+        lng: formData.endLng,
+        label: 'Đích / đỉnh',
+        sublabel: `${formData.endLat.toFixed(5)}, ${formData.endLng.toFixed(5)}`,
+        color: 'danger',
+        size: 'lg',
+        badge: 'ĐĐ',
+        active: pinMode === 'end',
+      },
+    ];
+
+    formData.waypoints.forEach((wp, idx) => {
+      const wpColor: LostMapMarkerItem['color'] =
+        wp.type === 'danger' ? 'danger' : wp.type === 'campsite' ? 'warn' : 'info';
+      items.push({
+        id: wp.id,
+        lat: wp.lat,
+        lng: wp.lng,
+        label: wp.name,
+        sublabel: `${WAYPOINT_TYPE_LABELS[wp.type] || wp.type}${wp.elevationM ? ` · ${wp.elevationM}m` : ''}`,
+        color: wpColor,
+        size: 'md',
+        badge: String(idx + 1),
+      });
+    });
+
+    if (pinMode === 'waypoint' && wpLat.trim() && wpLng.trim()) {
+      const draftLat = Number(wpLat);
+      const draftLng = Number(wpLng);
+      if (Number.isFinite(draftLat) && Number.isFinite(draftLng)) {
+        items.push({
+          id: 'contrib-draft-wp',
+          lat: draftLat,
+          lng: draftLng,
+          label: wpName.trim() || 'Mốc đang chọn',
+          sublabel: `${draftLat.toFixed(5)}, ${draftLng.toFixed(5)}`,
+          color: 'info',
+          size: 'md',
+          pulse: true,
+          active: true,
+        });
+      }
+    }
+
+    return items;
+  }, [
+    formData.startLat,
+    formData.startLng,
+    formData.endLat,
+    formData.endLng,
+    formData.waypoints,
+    pinMode,
+    wpLat,
+    wpLng,
+    wpName,
+  ]);
+
+  const handleContribMapClick = useCallback(
+    (rawLat: number, rawLng: number) => {
+      const lat = Number(rawLat.toFixed(5));
+      const lng = Number(rawLng.toFixed(5));
+      if (pinMode === 'start') {
+        setFormData((prev) => ({ ...prev, startLat: lat, startLng: lng }));
+        setGpxTrack((prev) => (prev.length >= 2 ? [[lat, lng], ...prev.slice(1)] : prev));
+        void triggerReverseGeocode(lat, lng);
+      } else if (pinMode === 'end') {
+        setFormData((prev) => ({ ...prev, endLat: lat, endLng: lng }));
+        setGpxTrack((prev) => (prev.length >= 2 ? [...prev.slice(0, -1), [lat, lng]] : prev));
+      } else {
+        setWpLat(String(lat));
+        setWpLng(String(lng));
+      }
+    },
+    [pinMode, triggerReverseGeocode]
+  );
+
   const handleCancelAndBack = () => {
     setEditingId(null);
+    isEditingRef.current = false;
     onBack();
-    window.setTimeout(() => {
-      try {
-        localStorage.removeItem('lost_editing_contribution');
-      } catch {
-        // ignore storage errors
-      }
-    }, 0);
+    try {
+      localStorage.removeItem('lost_editing_contribution');
+    } catch {
+      // ignore storage errors
+    }
   };
 
   if (!currentUser) {
     return (
       <div style={{ maxWidth: 560, margin: '64px auto', padding: '40px 28px', textAlign: 'center', background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', borderRadius: 4, boxShadow: 'var(--shadow-card)' }}>
-        <div className="section-eyebrow" style={{ justifyContent: 'center', marginBottom: 10 }}>Xác thực thực địa</div>
+        <div className="section-eyebrow" style={{ justifyContent: 'center', marginBottom: 10 }}>Góp dữ liệu thực địa</div>
         <h2 className="font-editorial" style={{ fontSize: '1.55rem', fontWeight: 700, color: 'var(--color-text-main)', marginBottom: 10 }}>
-          Yêu Cầu Đăng Nhập Để Đóng Góp
+          Đăng nhập để đóng góp cung mới
         </h2>
         <p style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem', lineHeight: 1.6, maxWidth: 460, margin: '0 auto 24px auto' }}>
-          Để đảm bảo tính xác thực 100% dữ liệu thực địa và ghi nhận điểm uy tín (+50 điểm), bạn cần đăng nhập trước khi đóng góp cung đường mới.
+          Mỗi cung đường trên LOST đều được ghi lại từ chuyến đi thật của anh em. Đăng nhập để chúng tôi ghi nhận đóng góp của bạn và cộng 50 điểm uy tín khi bài được duyệt.
         </p>
         <div style={{ display: 'flex', justifyContent: 'center', gap: 12, flexWrap: 'wrap' }}>
           <button type="button" className="btn btn-outline" onClick={handleCancelAndBack} style={{ padding: '9px 22px', fontSize: '0.88rem', borderRadius: 4 }}>
@@ -762,7 +1028,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
             }}
             style={{ padding: '9px 24px', fontSize: '0.88rem', borderRadius: 4 }}
           >
-            Đăng nhập ngay
+            Đăng nhập
           </button>
         </div>
       </div>
@@ -850,10 +1116,24 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
 
   const handleCoverImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
+
+    if (!/^image\/(jpeg|png|webp|gif|avif)$/i.test(file.type)) {
+      onShowToast?.('Chọn ảnh định dạng JPG, PNG, WebP hoặc AVIF nhé.', 'error');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      onShowToast?.('Ảnh bìa vượt quá 5 MB — nén nhẹ hơn rồi tải lại nhé.', 'error');
+      return;
+    }
 
     setUploadingImage(true);
     const reader = new FileReader();
+    reader.onerror = () => {
+      setUploadingImage(false);
+      onShowToast?.('Không thể đọc tệp ảnh từ thiết bị.', 'error');
+    };
     reader.onload = async (event) => {
       try {
         const base64 = event.target?.result as string;
@@ -867,7 +1147,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
           });
         }
       } catch {
-        onShowToast?.('Không thể tải ảnh lên Cloudinary, vui lòng thử lại.', 'error');
+        onShowToast?.('Không thể tải ảnh lên máy chủ, bạn thử lại nhé.', 'error');
       } finally {
         setUploadingImage(false);
       }
@@ -877,90 +1157,61 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
 
   const handleGpxUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
-    setGpxFileName(file.name);
+    if (file.size > 2.5 * 1024 * 1024) {
+      onShowToast?.('Tệp GPX nặng quá 2,5 MB — rút gọn tệp rồi tải lại nhé.', 'error');
+      return;
+    }
     const reader = new FileReader();
+    reader.onerror = () => {
+      onShowToast?.('Không thể đọc tệp GPX từ thiết bị.', 'error');
+    };
     reader.onload = (event) => {
       try {
-        const xmlText = event.target?.result as string;
-        const parser = new DOMParser();
-        const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
-        if (xmlDoc.querySelector('parsererror')) {
-          onShowToast?.('Tệp GPX không đúng định dạng XML hợp lệ.', 'error');
-          return;
-        }
-        const trkpts = Array.from(xmlDoc.querySelectorAll('trkpt'));
-        if (trkpts.length === 0) {
-          onShowToast?.('Không tìm thấy tọa độ <trkpt> nào trong tệp GPX.', 'error');
-          return;
-        }
-        const parsed = trkpts
-          .map((pt) => {
-            const lat = parseFloat(pt.getAttribute('lat') || 'NaN');
-            const lng = parseFloat(pt.getAttribute('lon') || 'NaN');
-            const eleText = pt.querySelector('ele')?.textContent;
-            const ele = eleText ? parseFloat(eleText) : NaN;
-            return { lat, lng, ele };
-          })
-          .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng) && p.lat >= -90 && p.lat <= 90 && p.lng >= -180 && p.lng <= 180);
-
-        if (parsed.length === 0) {
-          onShowToast?.('Tệp GPX không chứa tọa độ địa lý hợp lệ.', 'error');
+        const xmlText = String(event.target?.result || '');
+        const parsed = parseGpxXml(xmlText);
+        if (!parsed.vertices || parsed.vertices.length < 2) {
+          onShowToast?.('Tệp GPX cần tối thiểu 2 tọa độ tuyến hợp lệ.', 'error');
           return;
         }
 
-        const points: [number, number][] = parsed.map((p) => [p.lat, p.lng]);
+        const metrics = computeRouteMetrics(parsed.vertices);
+        const computedDistanceKm = Math.round(metrics.distanceKm * 10) / 10;
+        const maxAlt = parsed.hasElevation && metrics.maxAltitudeM > 0 ? Math.round(metrics.maxAltitudeM) : undefined;
+        const totalGain = parsed.hasElevation && metrics.elevationGainM > 0 ? Math.round(metrics.elevationGainM) : undefined;
 
-        // Calculate cumulative Haversine track distance in km
-        let totalMeters = 0;
-        for (let i = 1; i < points.length; i++) {
-          totalMeters += haversineMeters(points[i - 1][0], points[i - 1][1], points[i][0], points[i][1]);
+        const maxPoints = 1500;
+        const stepStride = parsed.vertices.length > maxPoints ? Math.ceil(parsed.vertices.length / maxPoints) : 1;
+        const points: [number, number][] = [];
+        for (let i = 0; i < parsed.vertices.length; i += stepStride) {
+          points.push([parsed.vertices[i].lat, parsed.vertices[i].lng]);
         }
-        const computedDistanceKm = Math.round((totalMeters / 1000) * 10) / 10;
-
-        const elevations = parsed.map((p) => p.ele).filter((v) => Number.isFinite(v));
-        let maxAlt: number | undefined;
-        let totalGain: number | undefined;
-        if (elevations.length > 0) {
-          maxAlt = Math.round(Math.max(...elevations));
-          let gain = 0;
-          for (let i = 1; i < elevations.length; i++) {
-            const diff = elevations[i] - elevations[i - 1];
-            if (diff > 0) gain += diff;
-          }
-          totalGain = Math.round(gain);
+        const lastVertex = parsed.vertices[parsed.vertices.length - 1];
+        if (
+          points[points.length - 1][0] !== lastVertex.lat ||
+          points[points.length - 1][1] !== lastVertex.lng
+        ) {
+          points.push([lastVertex.lat, lastVertex.lng]);
         }
 
         const start = points[0];
         const end = points[points.length - 1];
 
-        // Parse <wpt> waypoint markers embedded inside the uploaded GPX file
-        const wptNodes = Array.from(xmlDoc.querySelectorAll('wpt'));
-        const extractedWaypoints: Waypoint[] = [];
-        wptNodes.forEach((node, idx) => {
-          const lat = parseFloat(node.getAttribute('lat') || 'NaN');
-          const lng = parseFloat(node.getAttribute('lon') || 'NaN');
-          if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-            return;
-          }
-          const rawName = (node.querySelector('name')?.textContent || '').trim() || `Mốc GPX #${idx + 1}`;
-          const rawDesc =
-            (node.querySelector('desc')?.textContent || node.querySelector('cmt')?.textContent || '').trim();
-          const rawType =
-            (node.querySelector('type')?.textContent || node.querySelector('sym')?.textContent || '').trim();
-          const eleRaw = parseFloat(node.querySelector('ele')?.textContent || 'NaN');
-          const mappedType = inferWaypointTypeFromGpx(rawType, rawName);
-          extractedWaypoints.push({
+        const extractedWaypoints: Waypoint[] = parsed.waypoints.map((w, idx) => {
+          const mappedType = mapRouteWaypointTypeToContrib(w.type);
+          return {
             id: `gpx-wpt-${Date.now()}-${idx}`,
-            name: rawName.slice(0, 120),
+            name: (w.name || `Mốc GPX #${idx + 1}`).slice(0, 120),
             type: mappedType,
-            description: (rawDesc || WAYPOINT_TYPE_LABELS[mappedType]).slice(0, 400),
-            elevationM: Number.isFinite(eleRaw) ? Math.round(eleRaw) : undefined,
-            lat: Number(lat.toFixed(5)),
-            lng: Number(lng.toFixed(5)),
-          });
+            description: (w.note || WAYPOINT_TYPE_LABELS[mappedType]).slice(0, 400),
+            elevationM: typeof w.elevationM === 'number' && Number.isFinite(w.elevationM) ? Math.round(w.elevationM) : undefined,
+            lat: Number(w.lat.toFixed(5)),
+            lng: Number(w.lng.toFixed(5)),
+          };
         });
 
+        setGpxFileName(file.name);
         setGpxTrack(points);
         setMapFitVersion((v) => v + 1);
         const startLatRounded = Number(start[0].toFixed(5));
@@ -988,12 +1239,17 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
         });
         void triggerReverseGeocode(startLatRounded, startLngRounded);
         onShowToast?.(
-          `Đã trích xuất ${points.length} điểm GPS${computedDistanceKm > 0 ? ` • ${computedDistanceKm} km` : ''}${maxAlt ? ` • đỉnh ${maxAlt}m` : ''}${extractedWaypoints.length > 0 ? ` • ${extractedWaypoints.length} mốc tọa độ` : ''} từ tệp GPX!`,
+          `Đã trích xuất ${points.length} điểm GPS${computedDistanceKm > 0 ? ` • ${computedDistanceKm} km` : ''}${maxAlt ? ` • đỉnh ${maxAlt}m` : ''}${totalGain ? ` • leo +${totalGain}m` : ''}${extractedWaypoints.length > 0 ? ` • ${extractedWaypoints.length} mốc tọa độ` : ''} từ tệp GPX.`,
           'success'
         );
       } catch (err) {
         console.error('GPX parse error:', err);
-        onShowToast?.('Không thể đọc tệp GPX. Vui lòng kiểm tra lại định dạng.', 'error');
+        onShowToast?.(
+          err instanceof Error && err.message
+            ? err.message
+            : 'Không thể đọc tệp GPX — kiểm tra lại định dạng tệp nhé.',
+          'error'
+        );
       }
     };
     reader.readAsText(file);
@@ -1005,11 +1261,11 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
     const latNum = Number(wpLat);
     const lngNum = Number(wpLng);
     if (!cleanName) {
-      onShowToast?.('Vui lòng nhập tên mốc tọa độ (VD: Lán nghỉ 2.400m, Suối nguồn...).', 'error');
+      onShowToast?.('Nhập tên mốc tọa độ (VD: Lán nghỉ 2.400m, Suối nguồn...).', 'error');
       return;
     }
-    if (!Number.isFinite(latNum) || !Number.isFinite(lngNum) || latNum < -90 || latNum > 90 || lngNum < -180 || lngNum > 180) {
-      onShowToast?.('Vui lòng chọn điểm trên bản đồ hoặc nhập tọa độ Lat/Lng hợp lệ cho mốc.', 'error');
+    if (!isWithinVietnamBounds(latNum, lngNum)) {
+      onShowToast?.('Chọn điểm trên bản đồ hoặc nhập tọa độ Lat/Lng hợp lệ trong lãnh thổ Việt Nam.', 'error');
       return;
     }
     const elevNum = wpElevation.trim() ? Math.round(Number(wpElevation)) : undefined;
@@ -1042,14 +1298,14 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
       errs.name = 'Tên cung đường bắt buộc và phải có ít nhất 3 ký tự.';
     }
     if (!formData.hamlet.trim() || formData.hamlet.trim().length < 2) {
-      errs.hamlet = 'Vui lòng nhập điểm xuất phát (Thôn/Bản/Cửa rừng).';
+      errs.hamlet = 'Nhập điểm xuất phát thực tế (thôn, bản, trạm kiểm lâm hoặc cửa rừng).';
     }
     if (!formData.province.trim() || !formData.district.trim()) {
-      errs.district = 'Vui lòng chọn đầy đủ Tỉnh và Phường/Xã.';
+      errs.district = 'Chọn đầy đủ tỉnh/thành và phường/xã.';
     }
     setErrors(errs);
     if (Object.keys(errs).length > 0) {
-      onShowToast?.('Vui lòng hoàn thành đầy đủ thông tin tại Bước 1!', 'error');
+      onShowToast?.('Hoàn thiện thông tin còn thiếu ở Bước 1 trước khi tiếp tục.', 'error');
       return false;
     }
     return true;
@@ -1067,11 +1323,11 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
       errs.maxAltitudeM = 'Cao độ đỉnh núi phải lớn hơn 0 m.';
     }
     if (formData.bestMonths.length === 0) {
-      errs.bestMonths = 'Vui lòng chọn ít nhất 1 tháng lý tưởng nhất để leo núi.';
+      errs.bestMonths = 'Chọn ít nhất 1 tháng đẹp để leo núi.';
     }
     setErrors(errs);
     if (Object.keys(errs).length > 0) {
-      onShowToast?.('Vui lòng kiểm tra lại thông số kỹ thuật & mùa leo tại Bước 2!', 'error');
+      onShowToast?.('Kiểm tra lại thông số kỹ thuật và mùa leo ở Bước 2.', 'error');
       return false;
     }
     return true;
@@ -1079,24 +1335,19 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
 
   const validateStep3 = (): boolean => {
     const errs: Record<string, string> = {};
-    if (Number.isNaN(formData.startLat) || formData.startLat < -90 || formData.startLat > 90) {
-      errs.startLat = 'Vĩ độ xuất phát không hợp lệ (-90 đến 90).';
+    if (!isWithinVietnamBounds(formData.startLat, formData.startLng)) {
+      errs.startLat = 'Tọa độ xuất phát phải nằm trong phạm vi địa lý Việt Nam (vĩ độ 8.0–23.6, kinh độ 102.0–110.5).';
     }
-    if (Number.isNaN(formData.startLng) || formData.startLng < -180 || formData.startLng > 180) {
-      errs.startLng = 'Kinh độ xuất phát không hợp lệ (-180 đến 180).';
+    if (!isWithinVietnamBounds(formData.endLat, formData.endLng)) {
+      errs.endLat = 'Tọa độ đích/đỉnh phải nằm trong phạm vi địa lý Việt Nam (vĩ độ 8.0–23.6, kinh độ 102.0–110.5).';
     }
-    if (Number.isNaN(formData.endLat) || formData.endLat < -90 || formData.endLat > 90) {
-      errs.endLat = 'Vĩ độ kết thúc không hợp lệ (-90 đến 90).';
-    }
-    if (Number.isNaN(formData.endLng) || formData.endLng < -180 || formData.endLng > 180) {
-      errs.endLng = 'Kinh độ kết thúc không hợp lệ (-180 đến 180).';
-    }
-    if (formData.startLat === formData.endLat && formData.startLng === formData.endLng) {
-      errs.endLat = 'Điểm xuất phát và kết thúc không được trùng nhau.';
+    const isSameEndpoint = formData.startLat === formData.endLat && formData.startLng === formData.endLng;
+    if (isSameEndpoint && gpxTrack.length < 3) {
+      errs.endLat = 'Điểm xuất phát và đích trùng nhau — hãy tải tệp GPX vòng khép kín hoặc ghim điểm đích riêng.';
     }
     setErrors(errs);
     if (Object.keys(errs).length > 0) {
-      onShowToast?.('Vui lòng kiểm tra lại tọa độ GPS tại Bước 3!', 'error');
+      onShowToast?.('Kiểm tra lại tọa độ GPS ở Bước 3.', 'error');
       return false;
     }
     return true;
@@ -1105,7 +1356,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
   const validateStep4 = (): boolean => {
     const errs: Record<string, string> = {};
     if (!formData.coverImage.trim()) {
-      errs.coverImage = 'Vui lòng tải ảnh từ thiết bị hoặc nhập link ảnh bìa thực địa.';
+      errs.coverImage = 'Tải ảnh từ thiết bị hoặc dán đường dẫn ảnh bìa thực địa.';
     }
     if (!formData.description.trim() || formData.description.trim().length < 10) {
       errs.description = 'Mô tả tổng quan cần ít nhất 10 ký tự.';
@@ -1114,14 +1365,14 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
       errs.transportationInfo = 'Hướng dẫn di chuyển cần ít nhất 5 ký tự.';
     }
     if (!formData.rescueContact.phone.trim() || formData.rescueContact.phone.trim().length < 3) {
-      errs.rescuePhone = 'Vui lòng nhập số hotline cứu hộ khẩn cấp thực tế.';
+      errs.rescuePhone = 'Nhập số hotline cứu hộ khẩn cấp thực tế.';
     }
     if (formData.permitRequired && !formData.permitInfo.trim()) {
-      errs.permitInfo = 'Vui lòng nhập nơi cấp phép hoặc lệ phí.';
+      errs.permitInfo = 'Nhập nơi cấp phép hoặc lệ phí vào rừng.';
     }
     setErrors(errs);
     if (Object.keys(errs).length > 0) {
-      onShowToast?.('Vui lòng điền đủ ảnh, mô tả & hotline cứu hộ tại Bước 4!', 'error');
+      onShowToast?.('Điền đủ ảnh bìa, mô tả và hotline cứu hộ ở Bước 4.', 'error');
       return false;
     }
     return true;
@@ -1134,6 +1385,32 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
         const copy = { ...prev };
         delete copy[field];
         return copy;
+      });
+    }
+  };
+
+  const updateEndpointCoord = (which: 'start' | 'end', axis: 'lat' | 'lng', rawValue: string) => {
+    const num = Number(rawValue);
+    const field =
+      which === 'start'
+        ? axis === 'lat'
+          ? 'startLat'
+          : 'startLng'
+        : axis === 'lat'
+          ? 'endLat'
+          : 'endLng';
+    handleChange(field, num);
+    if (Number.isFinite(num)) {
+      setGpxTrack((prev) => {
+        if (prev.length < 2) return prev;
+        if (which === 'start') {
+          const nextFirst: [number, number] =
+            axis === 'lat' ? [num, prev[0][1]] : [prev[0][0], num];
+          return [nextFirst, ...prev.slice(1)];
+        }
+        const last = prev[prev.length - 1];
+        const nextLast: [number, number] = axis === 'lat' ? [num, last[1]] : [last[0], num];
+        return [...prev.slice(0, -1), nextLast];
       });
     }
   };
@@ -1160,10 +1437,10 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
       setErrors((prev) => ({
         ...prev,
         copyrightConfirmed:
-          'Vui lòng xác nhận bản quyền hình ảnh và dữ liệu tọa độ trước khi gửi đóng góp.',
+          'Xác nhận quyền sở hữu bản quyền hình ảnh và dữ liệu tọa độ trước khi gửi.',
       }));
       onShowToast?.(
-        'Vui lòng đánh dấu xác nhận quyền sở hữu bản quyền hình ảnh & dữ liệu tọa độ trước khi gửi.',
+        'Đánh dấu xác nhận bản quyền hình ảnh và dữ liệu tọa độ trước khi gửi.',
         'error'
       );
       return;
@@ -1207,8 +1484,8 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
       setLoading(false);
 
       const toastMsg = editingId
-        ? 'Cập nhật bài đóng góp vào Database thành công!'
-        : 'Đã lưu bài đóng góp vào Database thành công! Đã gửi thông báo tới Ban Quản Trị duyệt.';
+        ? 'Đã lưu các thay đổi cho bài đóng góp của bạn.'
+        : 'Cảm ơn bạn đã góp cung mới! Ban quản trị sẽ đối chiếu thực địa và duyệt sớm.';
       onShowToast?.(toastMsg, 'success');
       onSuccess();
     } catch (err: unknown) {
@@ -1216,14 +1493,14 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
       onShowToast?.(
         err instanceof Error && err.message
           ? err.message
-          : 'Không thể lưu bài đóng góp vào Database, vui lòng thử lại.',
+          : 'Chưa gửi được bài đóng góp lúc này, bạn thử lại nhé.',
         'error'
       );
     }
   };
 
   const userAvatar = currentUser?.avatarUrl || currentUser?.avatar || '';
-  const userName = currentUser?.fullName || currentUser?.name || 'Trekker Đóng Góp';
+  const userName = currentUser?.fullName || currentUser?.name || 'Người đóng góp';
 
   return (
     <div style={{ maxWidth: 1240, margin: '14px auto 48px auto', padding: '0 20px', boxSizing: 'border-box' }}>
@@ -1241,9 +1518,9 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
         }}
       >
         <div>
-          <div className="section-eyebrow" style={{ marginBottom: 6 }}>Đóng góp bản đồ thực địa</div>
+          <div className="section-eyebrow" style={{ marginBottom: 6 }}>Góp đường lên bản đồ chung</div>
           <h2 className="font-editorial" style={{ fontSize: 'clamp(1.65rem, 3vw, 2.2rem)', fontWeight: 500, color: 'var(--color-text-main)', margin: 0, lineHeight: 1.08 }}>
-            {isEditing ? 'Chỉnh Sửa Thông Tin Bài Đóng Góp' : 'Đóng Góp Cung Đường Mới'}
+            {isEditing ? 'Chỉnh lại thông tin cung đã gửi' : 'Đóng góp cung đường mới'}
           </h2>
         </div>
         <button
@@ -1252,7 +1529,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
           onClick={handleCancelAndBack}
           style={{ padding: '7px 14px', fontSize: '0.82rem', display: 'inline-flex', alignItems: 'center', gap: 6, borderRadius: 4 }}
         >
-          <ArrowLeft size={15} /> Hủy &amp; Quay lại
+          <ArrowLeft size={15} /> Hủy và quay lại
         </button>
       </div>
 
@@ -1275,7 +1552,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <IconClock size={17} color="var(--color-sky)" />
             <div style={{ fontSize: '0.82rem', color: 'var(--color-text-main)' }}>
-              <strong>Phát hiện bản nháp đóng góp chưa hoàn tất</strong>
+              <strong>Bạn còn một bản nháp đang viết dở</strong>
               {pendingDraft.savedAt && (
                 <span style={{ color: 'var(--color-text-muted)', marginLeft: 6 }}>
                   (lưu lúc{' '}
@@ -1300,7 +1577,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
               onClick={handleRestoreDraft}
               style={{ padding: '6px 12px', fontSize: '0.76rem', borderRadius: 4 }}
             >
-              Khôi phục bản nháp
+              Tiếp tục viết
             </button>
             <button
               type="button"
@@ -1308,29 +1585,55 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
               onClick={handleDiscardDraft}
               style={{ padding: '6px 12px', fontSize: '0.76rem', borderRadius: 4 }}
             >
-              Bỏ qua &amp; Xóa nháp
+              Xóa nháp
             </button>
           </div>
         </div>
       )}
 
-      {/* Swiss Editorial 5-Column Hairline Stepper */}
-      <div className="editorial-stat-strip" style={{ marginBottom: 22 }}>
+      {/* Swiss Editorial 5-Column Hairline Stepper (Keyboard-accessible tablist) */}
+      <div
+        role="tablist"
+        aria-label="Các bước đóng góp cung đường"
+        className="editorial-stat-strip"
+        style={{ marginBottom: 22 }}
+      >
         {[
-          { stepNum: 1, title: 'Vị Trí & Tên' },
-          { stepNum: 2, title: 'Thông Số & Mùa' },
-          { stepNum: 3, title: 'Bản Đồ GPS' },
-          { stepNum: 4, title: 'Tiện Ích & Cứu Hộ' },
-          { stepNum: 5, title: 'Xem Trước & Gửi' },
+          { stepNum: 1, title: 'Tên và địa bàn' },
+          { stepNum: 2, title: 'Thông số và mùa' },
+          { stepNum: 3, title: 'Bản đồ GPS' },
+          { stepNum: 4, title: 'Hậu cần và cứu hộ' },
+          { stepNum: 5, title: 'Xem lại và gửi' },
         ].map(({ stepNum, title }) => {
           const isActive = step === stepNum;
           const isDone = step > stepNum;
+          const isReachable = stepNum <= step;
 
           return (
-            <div
+            <button
               key={stepNum}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              aria-current={isActive ? 'step' : undefined}
+              disabled={!isReachable}
               onClick={() => {
                 if (stepNum < step) setStep(stepNum);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowLeft' && stepNum > 1) {
+                  e.preventDefault();
+                  setStep(stepNum - 1);
+                } else if (e.key === 'ArrowRight' && stepNum < step) {
+                  e.preventDefault();
+                  setStep(stepNum + 1);
+                } else if (e.key === 'Home') {
+                  e.preventDefault();
+                  setStep(1);
+                } else if (e.key === 'End') {
+                  e.preventDefault();
+                  setStep(step);
+                }
               }}
               className="editorial-stat-cell"
               style={{
@@ -1339,8 +1642,12 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                 gap: 10,
                 padding: '12px 14px',
                 background: isActive ? 'var(--color-surface-elevated)' : 'var(--color-bg-card)',
+                border: 'none',
                 borderBottom: isActive ? '2px solid var(--color-primary)' : '2px solid transparent',
                 cursor: stepNum < step ? 'pointer' : 'default',
+                textAlign: 'left',
+                fontFamily: 'var(--font-family)',
+                opacity: isReachable ? 1 : 0.72,
               }}
             >
               <div
@@ -1369,7 +1676,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
               >
                 {title}
               </span>
-            </div>
+            </button>
           );
         })}
       </div>
@@ -1382,7 +1689,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
               <IconCompass size={22} color="var(--color-primary)" />
               <h3 style={{ fontSize: '1.12rem', color: 'var(--color-text-main)', fontWeight: 800, margin: 0 }}>
-                Bước 1: Tên Cung Đường &amp; Phân Cấp Hành Chính (100% Thực Địa)
+                Bước 1: Tên cung đường và địa bàn thực tế
               </h3>
             </div>
 
@@ -1394,7 +1701,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                     type="text"
                     className="form-input"
                     style={{ padding: '10px 14px', fontSize: '0.9rem', borderRadius: 4, borderColor: errors.name ? 'var(--color-error)' : undefined }}
-                    placeholder="Ví dụ: Chinh Phục Đỉnh Pu Ta Leng 3049m"
+                    placeholder="Ví dụ: Pu Ta Leng 3.049m từ bản Sì Thâu Chải"
                     value={formData.name}
                     onChange={(e) => handleChange('name', e.target.value)}
                   />
@@ -1402,19 +1709,19 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                 </div>
 
                 <div className="form-group" style={{ marginBottom: 16 }}>
-                  <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 700, marginBottom: 6 }}>Tên gọi khác / Tên đỉnh (phân tách bởi dấu phẩy)</label>
+                  <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 700, marginBottom: 6 }}>Tên gọi khác / tên đỉnh (cách nhau bởi dấu phẩy)</label>
                   <input
                     type="text"
                     className="form-input"
                     style={{ padding: '10px 14px', fontSize: '0.9rem', borderRadius: 4 }}
-                    placeholder="Ví dụ: Pu Ta Leng Peak, Nóc Nhà Thứ 3 Đông Dương..."
+                    placeholder="Ví dụ: Đỉnh Pu Ta Leng, núi Tả Liên..."
                     value={formData.altNames}
                     onChange={(e) => handleChange('altNames', e.target.value)}
                   />
                 </div>
 
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 700, marginBottom: 6 }}>Thôn / Bản / Cửa Rừng (Căn cứ xuất phát) *</label>
+                  <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 700, marginBottom: 6 }}>Thôn / bản / cửa rừng xuất phát *</label>
                   <input
                     type="text"
                     className="form-input"
@@ -1489,7 +1796,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                 }}
                 style={{ padding: '10px 26px', fontSize: '0.92rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 8, borderRadius: 4 }}
               >
-                Tiếp theo: Thông số kỹ thuật &amp; Mùa leo <ArrowRight size={16} />
+                Tiếp theo: Thông số và mùa đẹp <ArrowRight size={16} />
               </button>
             </div>
           </div>
@@ -1501,7 +1808,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
               <IconMountain size={22} color="var(--color-primary)" />
               <h3 style={{ fontSize: '1.12rem', color: 'var(--color-text-main)', fontWeight: 800, margin: 0 }}>
-                Bước 2: Thông Số Kỹ Thuật &amp; Lịch Mùa Trekking 12 Tháng
+                Bước 2: Thông số đường đi và lịch mùa đẹp
               </h3>
             </div>
 
@@ -1554,18 +1861,25 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                       value={formData.durationHoursNote}
                       onChange={(e) => {
                         const val = e.target.value;
-                        let days = 1;
-                        if (val.includes('2 ngày')) days = 2;
-                        if (val.includes('3 ngày')) days = 3;
-                        if (val.includes('4 ngày')) days = 4;
+                        const matchedOpt = CANONICAL_DURATION_OPTIONS.find((o) => o.value === val);
+                        let days = matchedOpt?.days ?? 1;
+                        if (!matchedOpt) {
+                          if (val.includes('2 ngày')) days = 2;
+                          if (val.includes('3 ngày')) days = 3;
+                          if (val.includes('4 ngày')) days = 4;
+                        }
                         setFormData((prev) => ({ ...prev, durationHoursNote: val, durationDays: days }));
                       }}
                     >
-                      <option value="1 ngày">1 ngày (Trong ngày)</option>
-                      <option value="2 ngày 1 đêm">2 ngày 1 đêm</option>
-                      <option value="3 ngày 2 đêm">3 ngày 2 đêm</option>
-                      <option value="4 ngày 3 đêm">4 ngày 3 đêm</option>
-                      <option value="Nửa ngày">Nửa ngày (4-6 tiếng)</option>
+                      {CANONICAL_DURATION_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                      {formData.durationHoursNote &&
+                        !CANONICAL_DURATION_OPTIONS.some((o) => o.value === formData.durationHoursNote) && (
+                          <option value={formData.durationHoursNote}>{formData.durationHoursNote}</option>
+                        )}
                     </select>
                   </div>
                   <div>
@@ -1596,12 +1910,12 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
               <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: '16px 18px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
                   <label className="form-label" style={{ fontSize: '0.85rem', fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <IconCalendar size={15} color="var(--color-primary)" /> Lịch 12 Tháng Trekking *
+                    <IconCalendar size={15} color="var(--color-primary)" /> Lịch 12 tháng nên đi *
                   </label>
                   <div style={{ display: 'flex', gap: 12, fontSize: '0.74rem' }}>
                     <span style={{ color: 'var(--color-primary)', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                       <span style={{ width: 7, height: 7, borderRadius: 2, background: 'var(--color-primary)', display: 'inline-block' }} />
-                      Mùa lý tưởng
+                      Mùa đẹp
                     </span>
                     <span style={{ color: 'var(--color-error-text, var(--color-error))', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                       <span style={{ width: 7, height: 7, borderRadius: 2, background: 'var(--color-error)', display: 'inline-block' }} />
@@ -1610,7 +1924,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                   </div>
                 </div>
                 <div style={{ fontSize: '0.75rem', color: 'var(--color-text-dim)', marginBottom: 12 }}>
-                  Nhấp vào từng tháng để chuyển đổi: <strong>Lý tưởng</strong> → <strong>Nên tránh</strong> → <strong>Bình thường</strong>
+                  Nhấp vào từng tháng để đổi trạng thái: <strong>Mùa đẹp</strong> → <strong>Nên tránh</strong> → <strong>Bình thường</strong>
                 </div>
 
                 <div className="wizard-months-grid">
@@ -1670,7 +1984,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                 }}
                 style={{ padding: '10px 26px', fontSize: '0.88rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 8, borderRadius: 4 }}
               >
-                Tiếp theo: Bản đồ &amp; Tọa độ GPS <ArrowRight size={16} />
+                Tiếp theo: Bản đồ và tọa độ GPS <ArrowRight size={16} />
               </button>
             </div>
           </div>
@@ -1683,7 +1997,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <IconMapPin size={20} color="var(--color-primary)" />
                 <h3 style={{ fontSize: '1.1rem', color: 'var(--color-text-main)', fontWeight: 700, margin: 0 }}>
-                  Bước 3: Đánh Dấu Tọa Độ GPS, Tracklog GPX &amp; Mốc Tọa Độ
+                  Bước 3: Chấm tọa độ GPS, tải GPX và gắn mốc dọc đường
                 </h3>
               </div>
 
@@ -1702,7 +2016,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                     cursor: 'pointer',
                   }}
                 >
-                  1. Ghim Xuất Phát
+                  1. Ghim xuất phát
                 </button>
                 <button
                   type="button"
@@ -1718,7 +2032,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                     cursor: 'pointer',
                   }}
                 >
-                  2. Ghim Đích / Đỉnh
+                  2. Ghim đích / đỉnh
                 </button>
                 <button
                   type="button"
@@ -1734,7 +2048,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                     cursor: 'pointer',
                   }}
                 >
-                  3. Ghim Mốc Tọa Độ
+                  3. Ghim mốc dọc đường
                 </button>
                 <select
                   className="form-select"
@@ -1754,61 +2068,20 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
             </div>
 
             <div className="wizard-grid-2-wide" style={{ alignItems: 'start' }}>
-              {/* Map Canvas & GPX Upload */}
+              {/* Native GPU Vector Map Canvas & GPX Upload */}
               <div>
                 <div style={{ height: 310, borderRadius: 4, overflow: 'hidden', border: '1px solid var(--color-border)', marginBottom: 12, position: 'relative' }}>
-                  <MapContainer
+                  <LostVectorMap
                     center={PROVINCE_COORDINATES[formData.province] || [formData.startLat, formData.startLng]}
-                    zoom={11}
-                    style={{ height: '100%', width: '100%' }}
-                  >
-                    <FreeBasemapLayer basemap={mapTileType} />
-                    <MapBoundsFitter
-                      gpxTrack={gpxTrack}
-                      start={[formData.startLat, formData.startLng]}
-                      end={[formData.endLat, formData.endLng]}
-                      fitVersion={mapFitVersion}
-                    />
-                    <MapClickListener
-                      onSelectCoords={(lat, lng) => {
-                        if (pinMode === 'start') {
-                          setFormData((prev) => ({ ...prev, startLat: lat, startLng: lng }));
-                          void triggerReverseGeocode(lat, lng);
-                        } else if (pinMode === 'end') {
-                          setFormData((prev) => ({ ...prev, endLat: lat, endLng: lng }));
-                        } else {
-                          setWpLat(String(lat));
-                          setWpLng(String(lng));
-                        }
-                      }}
-                    />
-                    <Marker position={[formData.startLat, formData.startLng]} icon={greenPinIcon}>
-                      <Popup>Xuất phát: {formData.startLat}, {formData.startLng}</Popup>
-                    </Marker>
-                    <Marker position={[formData.endLat, formData.endLng]} icon={redPinIcon}>
-                      <Popup>Đích / Đỉnh: {formData.endLat}, {formData.endLng}</Popup>
-                    </Marker>
-                    {formData.waypoints.map((wp) => (
-                      <Marker key={wp.id} position={[wp.lat, wp.lng]} icon={bluePinIcon}>
-                        <Popup>
-                          <strong>{wp.name}</strong> ({WAYPOINT_TYPE_LABELS[wp.type] || wp.type})
-                          {wp.elevationM ? ` • ${wp.elevationM}m` : ''}
-                        </Popup>
-                      </Marker>
-                    ))}
-                    <Polyline
-                      positions={
-                        gpxTrack.length > 0
-                          ? gpxTrack
-                          : [
-                              [formData.startLat, formData.startLng],
-                              [formData.endLat, formData.endLng],
-                            ]
-                      }
-                      color="#1f6f4a"
-                      weight={4}
-                    />
-                  </MapContainer>
+                    zoom={10.5}
+                    basemap={mapTileType}
+                    markers={contribMapMarkers}
+                    polylines={contribMapPolylines}
+                    fitBounds={contribMapBounds}
+                    fitBoundsKey={contribMapFitKey}
+                    flyTo={contribMapFlyTo}
+                    onMapClick={handleContribMapClick}
+                  />
                 </div>
 
                 {/* Reverse Geocode 1-Click Administrative Suggestion Banner */}
@@ -1879,15 +2152,29 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                 {/* GPX Upload Bar */}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: '9px 14px', borderRadius: 4 }}>
                   <span style={{ fontSize: '0.82rem', color: 'var(--color-text-main)', fontWeight: 700 }}>
-                    Tệp GPX Tuyến Đường{gpxTrack.length > 0 ? ` (${gpxTrack.length} điểm)` : ''}:
+                    Tệp GPX tuyến đường{gpxTrack.length > 0 ? ` (${gpxTrack.length} điểm)` : ''}:
                   </span>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                     <label htmlFor="gpx-file-upload-input" className="btn btn-outline" style={{ padding: '5px 14px', fontSize: '0.78rem', cursor: 'pointer', borderRadius: 4, height: 28, display: 'inline-flex', alignItems: 'center' }}>
-                      Tải tệp .gpx
+                      Chọn tệp .gpx
                     </label>
                     <span style={{ fontSize: '0.78rem', color: gpxFileName ? 'var(--color-primary)' : 'var(--color-text-dim)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {gpxFileName || 'Chưa chọn tệp'}
                     </span>
+                    {gpxTrack.length > 0 && (
+                      <button
+                        type="button"
+                        className="btn btn-outline"
+                        onClick={() => {
+                          setGpxTrack([]);
+                          setGpxFileName('');
+                          onShowToast?.('Đã gỡ tuyến GPX — bạn có thể chấm lại điểm xuất phát và đích.', 'info');
+                        }}
+                        style={{ padding: '4px 10px', fontSize: '0.74rem', borderRadius: 4, height: 28, color: 'var(--color-error-text, var(--color-error))' }}
+                      >
+                        Xóa GPX
+                      </button>
+                    )}
                     <input id="gpx-file-upload-input" type="file" accept=".gpx" onChange={handleGpxUpload} style={{ display: 'none' }} />
                   </div>
                 </div>
@@ -1897,29 +2184,29 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 10 }}>
                   <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 4 }}>
-                    <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-primary)', marginBottom: 6 }}>1. Tọa độ Xuất Phát</div>
+                    <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-primary)', marginBottom: 6 }}>1. Tọa độ xuất phát</div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(95px, 1fr))', gap: 6 }}>
                       <div>
                         <label className="form-label" style={{ fontSize: '0.7rem', marginBottom: 2 }}>Vĩ độ (Lat)</label>
-                        <input type="number" step="0.00001" className="form-input" style={{ padding: '6px 8px', fontSize: '0.82rem', borderRadius: 4 }} value={formData.startLat} onChange={(e) => handleChange('startLat', Number(e.target.value))} />
+                        <input type="number" step="0.00001" className="form-input" style={{ padding: '6px 8px', fontSize: '0.82rem', borderRadius: 4 }} value={formData.startLat} onChange={(e) => updateEndpointCoord('start', 'lat', e.target.value)} />
                       </div>
                       <div>
                         <label className="form-label" style={{ fontSize: '0.7rem', marginBottom: 2 }}>Kinh độ (Lng)</label>
-                        <input type="number" step="0.00001" className="form-input" style={{ padding: '6px 8px', fontSize: '0.82rem', borderRadius: 4 }} value={formData.startLng} onChange={(e) => handleChange('startLng', Number(e.target.value))} />
+                        <input type="number" step="0.00001" className="form-input" style={{ padding: '6px 8px', fontSize: '0.82rem', borderRadius: 4 }} value={formData.startLng} onChange={(e) => updateEndpointCoord('start', 'lng', e.target.value)} />
                       </div>
                     </div>
                   </div>
 
                   <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 4 }}>
-                    <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-error-text, var(--color-error))', marginBottom: 6 }}>2. Tọa độ Đích / Đỉnh</div>
+                    <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-error-text, var(--color-error))', marginBottom: 6 }}>2. Tọa độ đích / đỉnh</div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(95px, 1fr))', gap: 6 }}>
                       <div>
                         <label className="form-label" style={{ fontSize: '0.7rem', marginBottom: 2 }}>Vĩ độ (Lat)</label>
-                        <input type="number" step="0.00001" className="form-input" style={{ padding: '6px 8px', fontSize: '0.82rem', borderRadius: 4 }} value={formData.endLat} onChange={(e) => handleChange('endLat', Number(e.target.value))} />
+                        <input type="number" step="0.00001" className="form-input" style={{ padding: '6px 8px', fontSize: '0.82rem', borderRadius: 4 }} value={formData.endLat} onChange={(e) => updateEndpointCoord('end', 'lat', e.target.value)} />
                       </div>
                       <div>
                         <label className="form-label" style={{ fontSize: '0.7rem', marginBottom: 2 }}>Kinh độ (Lng)</label>
-                        <input type="number" step="0.00001" className="form-input" style={{ padding: '6px 8px', fontSize: '0.82rem', borderRadius: 4 }} value={formData.endLng} onChange={(e) => handleChange('endLng', Number(e.target.value))} />
+                        <input type="number" step="0.00001" className="form-input" style={{ padding: '6px 8px', fontSize: '0.82rem', borderRadius: 4 }} value={formData.endLng} onChange={(e) => updateEndpointCoord('end', 'lng', e.target.value)} />
                       </div>
                     </div>
                   </div>
@@ -1934,10 +2221,10 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                 <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: 12 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, gap: 8 }}>
                     <span style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-sky)' }}>
-                      Mốc Tọa Độ Thực Địa (Tùy chọn • {formData.waypoints.length})
+                      Mốc dọc đường (tùy chọn · {formData.waypoints.length})
                     </span>
                     <span style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)' }}>
-                      Chọn &ldquo;3. Ghim Mốc&rdquo; rồi bấm bản đồ để lấy Lat/Lng
+                      Chọn &ldquo;3. Ghim mốc dọc đường&rdquo; rồi chạm bản đồ
                     </span>
                   </div>
 
@@ -2003,7 +2290,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                       className="btn btn-outline"
                       style={{ padding: '6px 10px', fontSize: '0.76rem', fontWeight: 700, borderRadius: 4, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
                     >
-                      <IconPlus size={13} color="var(--color-primary)" /> Thêm Mốc
+                      <IconPlus size={13} color="var(--color-primary)" /> Thêm mốc
                     </button>
                   </div>
 
@@ -2028,7 +2315,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                             <strong style={{ color: 'var(--color-text-main)' }}>{wp.name}</strong>
                             <span style={{ color: 'var(--color-text-dim)', marginLeft: 6 }}>
                               {WAYPOINT_TYPE_LABELS[wp.type] || wp.type}
-                              {wp.elevationM ? ` • ${wp.elevationM}m` : ''} ({wp.lat}, {wp.lng})
+                              {wp.elevationM ? ` · ${wp.elevationM}m` : ''} ({wp.lat}, {wp.lng})
                             </span>
                           </div>
                           <button
@@ -2047,10 +2334,10 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
 
                 <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: 12, fontSize: '0.76rem', color: 'var(--color-text-dim)', lineHeight: 1.5 }}>
                   <div style={{ fontWeight: 800, color: 'var(--color-text-main)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <IconLightbulb size={15} color="var(--color-sun)" /> Hướng Dẫn Tọa Độ Thực Địa
+                    <IconLightbulb size={15} color="var(--color-sun)" /> Mẹo chấm tọa độ nhanh
                   </div>
-                  <div>• Nhấp trực tiếp vào bản đồ vệ tinh để cập nhật tọa độ xuất phát, đỉnh hoặc mốc dọc đường.</div>
-                  <div>• Tải tệp <code>.gpx</code> sẽ tự động tính cự ly (km), cao độ đỉnh, độ dốc tích lũy và căn khung bản đồ.</div>
+                  <div>• Chạm trực tiếp lên bản đồ để đặt điểm xuất phát, đích đến hoặc mốc dọc đường.</div>
+                  <div>• Tải tệp <code>.gpx</code> lên là hệ thống tự tính cự ly, độ cao đỉnh, độ dốc và căn khung sẵn cho bạn.</div>
                 </div>
               </div>
             </div>
@@ -2067,7 +2354,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                 }}
                 style={{ padding: '10px 26px', fontSize: '0.88rem', fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 8, borderRadius: 4 }}
               >
-                Tiếp theo: Tiện ích &amp; Cứu hộ <ArrowRight size={16} />
+                Tiếp theo: Hậu cần và cứu hộ <ArrowRight size={16} />
               </button>
             </div>
           </div>
@@ -2079,7 +2366,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
               <IconShieldCheck size={22} color="var(--color-primary)" />
               <h3 style={{ fontSize: '1.12rem', color: 'var(--color-text-main)', fontWeight: 800, margin: 0 }}>
-                Bước 4: Tiện Ích, Giấy Phép, Hotline Cứu Hộ &amp; Ảnh Thực Địa
+                Bước 4: Ảnh thực tế, đường đi và cứu hộ địa bàn
               </h3>
             </div>
 
@@ -2087,7 +2374,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
               <div>
                 <div className="form-group" style={{ marginBottom: 14 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                    <label className="form-label" style={{ fontSize: '0.82rem', fontWeight: 700, margin: 0 }}>Ảnh bìa thực địa *</label>
+                    <label className="form-label" style={{ fontSize: '0.82rem', fontWeight: 700, margin: 0 }}>Ảnh bìa chụp thực tế *</label>
                     <label htmlFor="cover-file-input" className="btn btn-primary" style={{ padding: '4px 12px', fontSize: '0.76rem', height: 28, cursor: 'pointer', borderRadius: 4 }}>
                       {uploadingImage ? 'Đang tải...' : 'Tải ảnh từ máy'}
                     </label>
@@ -2097,7 +2384,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                     type="text"
                     className="form-input"
                     style={{ padding: '8px 12px', fontSize: '0.85rem', borderRadius: 4, borderColor: errors.coverImage ? 'var(--color-error)' : undefined }}
-                    placeholder="Dán link ảnh thực địa hợp pháp của bạn hoặc bấm 'Tải ảnh từ máy'"
+                    placeholder="Dán link ảnh thực tế của bạn hoặc bấm 'Tải ảnh từ máy'"
                     value={formData.coverImage}
                     onChange={(e) => handleChange('coverImage', e.target.value)}
                   />
@@ -2105,12 +2392,12 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                 </div>
 
                 <div className="form-group" style={{ marginBottom: 14 }}>
-                  <label className="form-label" style={{ fontSize: '0.82rem', fontWeight: 700, marginBottom: 4 }}>Mô tả tổng quan cung đường *</label>
+                  <label className="form-label" style={{ fontSize: '0.82rem', fontWeight: 700, marginBottom: 4 }}>Cảm nhận và mô tả cung đường *</label>
                   <textarea
                     className="form-textarea"
                     rows={3}
                     style={{ padding: '8px 12px', fontSize: '0.85rem', borderRadius: 4, borderColor: errors.description ? 'var(--color-error)' : undefined }}
-                    placeholder="Mô tả về đặc trưng cảnh quan, thảm thực vật, mốc thời gian..."
+                    placeholder="Kể ngắn gọn về cảnh quan, con dốc đáng nhớ, đoạn rừng hay nguồn nước trên cung..."
                     value={formData.description}
                     onChange={(e) => handleChange('description', e.target.value)}
                   />
@@ -2118,12 +2405,12 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                 </div>
 
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label" style={{ fontSize: '0.82rem', fontWeight: 700, marginBottom: 4 }}>Hướng dẫn di chuyển đến chân núi *</label>
+                  <label className="form-label" style={{ fontSize: '0.82rem', fontWeight: 700, marginBottom: 4 }}>Đường đi tới chân núi *</label>
                   <textarea
                     className="form-textarea"
                     rows={2}
                     style={{ padding: '8px 12px', fontSize: '0.85rem', borderRadius: 4, borderColor: errors.transportationInfo ? 'var(--color-error)' : undefined }}
-                    placeholder="Lộ trình xe khách giường nằm, xe ôm vào bản, điểm gửi xe..."
+                    placeholder="Cách bắt xe khách, đi xe máy vào bản hay chỗ gửi xe dưới chân núi..."
                     value={formData.transportationInfo}
                     onChange={(e) => handleChange('transportationInfo', e.target.value)}
                   />
@@ -2134,7 +2421,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
               <div>
                 <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: '14px 16px', marginBottom: 14 }}>
                   <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--color-sun)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <IconAlertTriangle size={15} color="var(--color-sun)" /> Cứu Hộ &amp; Kiểm Lâm Địa Bàn (Thực Tế) *
+                    <IconAlertTriangle size={15} color="var(--color-sun)" /> Cứu hộ và Kiểm lâm địa bàn *
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8, marginBottom: 8 }}>
                     <div>
@@ -2259,10 +2546,10 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                 <span style={{ fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
                   {userName}
                 </span>
-                <span style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)' }}>• +50 điểm uy tín khi Ban Quản Trị duyệt</span>
+                <span style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)' }}>· +50 điểm uy tín sau khi được duyệt</span>
               </div>
               <span className="badge badge-sun">
-                <IconClock size={12} color="var(--color-sun)" /> Chờ Ban Quản Trị Duyệt
+                <IconClock size={12} color="var(--color-sun)" /> Chờ duyệt
               </span>
             </div>
 
@@ -2379,7 +2666,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                   }}
                 />
                 <span>
-                  Tôi xác nhận sở hữu bản quyền hoặc có quyền hợp pháp sử dụng hình ảnh &amp; dữ liệu tọa độ gửi lên LOST{' '}
+                  Tôi xác nhận mình có quyền sở hữu bản quyền hoặc quyền sử dụng hợp pháp đối với hình ảnh và dữ liệu tọa độ gửi lên LOST{' '}
                   <span style={{ color: 'var(--color-error-text, var(--color-error))' }}>*</span>
                 </span>
               </label>
@@ -2400,7 +2687,7 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
 
             <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
               <button type="button" className="btn btn-secondary" onClick={() => setStep(4)} style={{ padding: '10px 22px', fontSize: '0.88rem', borderRadius: 4 }}>
-                <ArrowLeft size={16} /> Sửa thông tin
+                <ArrowLeft size={16} /> Chỉnh lại
               </button>
               <button
                 type="button"
@@ -2422,11 +2709,11 @@ export const TrailContributionWizard: React.FC<WizardProps> = ({ onBack, onSucce
                 }}
               >
                 {loading ? (
-                  <span>Đang lưu vào Database...</span>
+                  <span>Đang gửi bài...</span>
                 ) : (
                   <>
                     <IconSend size={16} />
-                    {isEditing ? 'Cập Nhật & Lưu Vào Database' : 'Xác Nhận & Lưu Vào Database (Gửi BQT Duyệt)'}
+                    {isEditing ? 'Lưu thay đổi' : 'Gửi cung đường để xét duyệt'}
                   </>
                 )}
               </button>

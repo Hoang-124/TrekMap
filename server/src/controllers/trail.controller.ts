@@ -20,6 +20,14 @@ import { GearChecklistModel } from '../models/GearChecklist.js';
 import { SafetyTimerModel } from '../models/SafetyTimer.js';
 import { SummitChallengeModel } from '../models/SummitChallenge.js';
 import { RangerStationModel } from '../models/RangerStation.js';
+import { TrailPoiModel } from '../models/TrailPoi.js';
+import { TrainingPlanModel } from '../models/TrainingPlan.js';
+import { WeatherAlertSubModel } from '../models/WeatherAlertSub.js';
+import { LiveBeaconModel } from '../models/LiveBeacon.js';
+import { GuideInquiryModel } from '../models/GuideInquiry.js';
+import { ThreadModel } from '../models/Thread.js';
+import { CustomRouteModel } from '../models/CustomRoute.js';
+import { AiKnowledgeModel } from '../models/AiKnowledge.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
 import {
@@ -33,8 +41,64 @@ import { sanitizeInput, isSafeHttpUrl, hasDangerousMongoKeys } from '../utils/va
 import { invalidateCache } from '../middleware/cache.middleware.js';
 import { recordAuditLog, recordActivity } from '../utils/audit.js';
 import { fetchTrailDemElevation, invalidateElevationCache } from '../services/elevation.service.js';
-import { isValidObjectId, resolveTrailByIdOrSlug, resolveTrailObjectId } from '../utils/resolveTrail.js';
+import { invalidateAiTrailCache } from '../services/ai.service.js';
+import { isValidObjectId, resolveTrailByIdOrSlug } from '../utils/resolveTrail.js';
 import { calculateHaversineDistanceKm as spatialHaversineKm } from '../utils/spatial.js';
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results = new Array<R>(items.length);
+  let nextIdx = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIdx < items.length) {
+        const idx = nextIdx++;
+        results[idx] = await fn(items[idx]);
+      }
+    })
+  );
+  return results;
+}
+
+/**
+ * Cascades deletion/detachment across ALL child collections referencing a deleted trail.
+ * Shared between `deleteTrailAdmin` and `deleteContribution`.
+ */
+export async function cascadeDeleteTrailChildren(
+  tid: mongoose.Types.ObjectId,
+  slug?: string
+): Promise<void> {
+  const stringCandidates = Array.from(new Set([slug, String(tid)].filter((v): v is string => Boolean(v))));
+  const mixedCandidates: any[] = [tid, ...stringCandidates];
+
+  await Promise.allSettled([
+    ReviewModel.deleteMany({ trailId: tid }),
+    IncidentModel.deleteMany({ trailId: { $in: mixedCandidates } }),
+    TrailConditionModel.deleteMany({ trailId: { $in: mixedCandidates } }),
+    WeatherForecastModel.deleteMany({ trailId: tid }),
+    ItineraryModel.deleteMany({ trailId: tid }),
+    TripReportModel.deleteMany({ trailId: tid }),
+    TripPlanModel.deleteMany({ trailId: tid }),
+    CheckinModel.deleteMany({ trailId: tid }),
+    SavedTrailModel.deleteMany({ trailId: tid }),
+    GearChecklistModel.deleteMany({ trailId: tid }),
+    TrailPoiModel.deleteMany({ trailId: { $in: stringCandidates } }),
+    WeatherAlertSubModel.deleteMany({ trailId: { $in: stringCandidates } }),
+    TrainingPlanModel.deleteMany({ targetTrailId: tid }),
+    AiKnowledgeModel.deleteMany({ trailId: { $in: stringCandidates } }),
+    CustomRouteModel.updateMany({ baseTrailId: tid }, { $unset: { baseTrailId: '' } }),
+    GuideInquiryModel.updateMany({ trailId: tid }, { $unset: { trailId: '' } }),
+    ThreadModel.updateMany({ trailId: { $in: stringCandidates } }, { $set: { trailId: '' } }),
+    LiveBeaconModel.updateMany({ trailId: { $in: stringCandidates } }, { $set: { trailId: '' } }),
+    SafetyTimerModel.updateMany({ trailId: tid, status: 'active' }, { $set: { status: 'cancelled' } }),
+    ...(slug ? [Contribution.deleteMany({ id: slug })] : []),
+    UserModel.updateMany(
+      { $or: [{ checkedInTrails: tid }, { savedTrails: tid }] },
+      { $pull: { checkedInTrails: tid, savedTrails: tid } }
+    ),
+  ]);
+}
 
 const inMemoryTrails: Trail[] = [...mockTrails];
 const VALID_REGIONS = new Set(['Miền Bắc', 'Miền Trung', 'Miền Nam']);
@@ -79,42 +143,62 @@ export function calculateHaversineDistanceKm(lat1: number, lon1: number, lat2: n
   return Math.round(spatialHaversineKm(lat1, lon1, lat2, lon2) * 10) / 10;
 }
 
+function parseStrictFiniteNumber(val: unknown): number | null {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseSafeBoolean(val: unknown, fallback: boolean): boolean {
+  if (typeof val === 'boolean') return val;
+  if (typeof val === 'string') {
+    const lower = val.trim().toLowerCase();
+    if (lower === 'true' || lower === '1') return true;
+    if (lower === 'false' || lower === '0' || lower === '') return false;
+  }
+  if (typeof val === 'number') {
+    if (val === 1) return true;
+    if (val === 0) return false;
+  }
+  return fallback;
+}
+
 function sanitizeWaypoints(raw: unknown) {
   if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((w: any) => w && typeof w === 'object' && Number.isFinite(Number(w.lat)) && Number.isFinite(Number(w.lng)))
-    .slice(0, 60)
-    .map((w: any, i: number) => {
-      const lat = Number(w.lat);
-      const lng = Number(w.lng);
-      return {
-        id: typeof w.id === 'string' && w.id.trim() ? sanitizeInput(w.id).slice(0, 40) : `wp-${i + 1}`,
-        name: sanitizeInput(String(w.name || `Mốc ${i + 1}`)).slice(0, 120),
-        type: VALID_WAYPOINT_TYPES.has(w.type) ? w.type : 'viewpoint',
-        description: sanitizeInput(String(w.description || '')).slice(0, 400),
-        ...(Number.isFinite(Number(w.elevationM)) ? { elevationM: Math.round(Number(w.elevationM)) } : {}),
-        lat: Math.max(-90, Math.min(90, lat)),
-        lng: Math.max(-180, Math.min(180, lng)),
-      };
+  const out: any[] = [];
+  for (let i = 0; i < raw.length && out.length < 60; i++) {
+    const w: any = raw[i];
+    if (!w || typeof w !== 'object') continue;
+    const lat = parseStrictFiniteNumber(w.lat);
+    const lng = parseStrictFiniteNumber(w.lng);
+    if (lat === null || lng === null) continue;
+    const ele = parseStrictFiniteNumber(w.elevationM);
+    const idx = out.length;
+    out.push({
+      id: typeof w.id === 'string' && w.id.trim() ? sanitizeInput(w.id).slice(0, 40) : `wp-${idx + 1}`,
+      name: sanitizeInput(String(w.name || `Mốc ${idx + 1}`)).slice(0, 120),
+      type: VALID_WAYPOINT_TYPES.has(w.type) ? w.type : 'viewpoint',
+      description: sanitizeInput(String(w.description || '')).slice(0, 400),
+      ...(ele !== null ? { elevationM: Math.round(ele) } : {}),
+      lat: Math.max(-90, Math.min(90, lat)),
+      lng: Math.max(-180, Math.min(180, lng)),
     });
+  }
+  return out;
 }
 
 function sanitizeGpxTrack(raw: unknown): [number, number][] {
   if (!Array.isArray(raw)) return [];
-  return raw
-    .filter(
-      (pt: any) =>
-        Array.isArray(pt) &&
-        pt.length >= 2 &&
-        Number.isFinite(Number(pt[0])) &&
-        Number.isFinite(Number(pt[1])) &&
-        Number(pt[0]) >= -90 &&
-        Number(pt[0]) <= 90 &&
-        Number(pt[1]) >= -180 &&
-        Number(pt[1]) <= 180
-    )
-    .slice(0, 5000)
-    .map((pt: any) => [Number(pt[0]), Number(pt[1])]);
+  const out: [number, number][] = [];
+  for (let i = 0; i < raw.length && out.length < 5000; i++) {
+    const pt: any = raw[i];
+    if (!Array.isArray(pt) || pt.length < 2) continue;
+    const lat = parseStrictFiniteNumber(pt[0]);
+    const lng = parseStrictFiniteNumber(pt[1]);
+    if (lat === null || lng === null || lat < -90 || lat > 90 || lng < -180 || lng > 180) continue;
+    out.push([lat, lng]);
+  }
+  return out;
 }
 
 function sanitizeMonths(raw: unknown): number[] {
@@ -197,7 +281,8 @@ export const getTrails = async (req: Request, res: Response) => {
       else if (sortBy === 'altitude_desc') sortOptions.maxAltitudeM = -1;
       else hasSort = false;
 
-      const page = parseInt(String(req.query.page || ''), 10);
+      const rawPage = parseInt(String(req.query.page || ''), 10);
+      const page = !isNaN(rawPage) && rawPage > 0 ? Math.min(rawPage, 1000) : NaN;
       const rawLimit = parseInt(String(req.query.limit || ''), 10);
       const limit = !isNaN(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 100;
 
@@ -269,7 +354,16 @@ export const getTrails = async (req: Request, res: Response) => {
   else if (sortBy === 'duration_desc') filtered.sort((a, b) => (b.durationDays || 0) - (a.durationDays || 0));
   else if (sortBy === 'altitude_desc') filtered.sort((a, b) => (b.maxAltitudeM || 0) - (a.maxAltitudeM || 0));
 
-  return res.json({ success: true, count: filtered.length, data: filtered });
+  const rawLimitFallback = parseInt(String(req.query.limit || ''), 10);
+  const clampedLimitFallback = !isNaN(rawLimitFallback) && rawLimitFallback > 0 ? Math.min(rawLimitFallback, 100) : 100;
+  const rawPageFallback = parseInt(String(req.query.page || ''), 10);
+  const clampedPageFallback = !isNaN(rawPageFallback) && rawPageFallback > 0 ? Math.min(rawPageFallback, 1000) : 1;
+  const pagedFallback =
+    req.query.limit !== undefined || req.query.page !== undefined
+      ? filtered.slice((clampedPageFallback - 1) * clampedLimitFallback, clampedPageFallback * clampedLimitFallback)
+      : filtered;
+
+  return res.json({ success: true, count: pagedFallback.length, data: pagedFallback });
 };
 
 export const getNearbyTrails = async (req: Request, res: Response) => {
@@ -312,18 +406,21 @@ export const getNearbyTrails = async (req: Request, res: Response) => {
 
       const queryExecutionTimeMs = Math.round((performance.now() - startTimeMs) * 100) / 100;
 
-      const dataWithDistance = await Promise.all(
-        dbTrails.map(async (trail: any) => {
-          const distKm = calculateHaversineDistanceKm(latitude, longitude, trail.startLat, trail.startLng);
-          const routeInfo = await calculateDrivingRoute(latitude, longitude, trail.startLat, trail.startLng);
-          return {
-            ...trail,
-            distanceFromUserKm: distKm,
-            roadDistanceKm: routeInfo.roadDistanceKm,
-            travelDurationMin: routeInfo.travelDurationMin,
-            travelDurationFormatted: routeInfo.travelDurationFormatted,
-          };
-        })
+      const dataWithDistance = await mapWithConcurrency(dbTrails, 4, async (trail: any) => {
+        const distKm = calculateHaversineDistanceKm(latitude, longitude, trail.startLat, trail.startLng);
+        const routeInfo = await calculateDrivingRoute(latitude, longitude, trail.startLat, trail.startLng);
+        return {
+          ...trail,
+          distanceFromUserKm: distKm,
+          roadDistanceKm: routeInfo.roadDistanceKm,
+          travelDurationMin: routeInfo.travelDurationMin,
+          travelDurationFormatted: routeInfo.travelDurationFormatted,
+          routingAttribution: routeInfo.attribution,
+        };
+      });
+
+      const uniqueAttributions = Array.from(
+        new Set(dataWithDistance.map((item: any) => item.routingAttribution).filter(Boolean))
       );
 
       return res.json({
@@ -332,6 +429,7 @@ export const getNearbyTrails = async (req: Request, res: Response) => {
         radiusKm: Number.isFinite(radiusKm) ? radiusKm : null,
         executionTimeMs: queryExecutionTimeMs,
         userCoordinates: { lat: latitude, lng: longitude },
+        attribution: uniqueAttributions.join(' · '),
         data: dataWithDistance,
       });
     }
@@ -351,16 +449,19 @@ export const getNearbyTrails = async (req: Request, res: Response) => {
   }
 
   const topNearest = nearbyMemoryTrails.slice(0, limit);
-  const trailsWithDriving = await Promise.all(
-    topNearest.map(async (t) => {
-      const routeInfo = await calculateDrivingRoute(latitude, longitude, t.startLat, t.startLng);
-      return {
-        ...t,
-        roadDistanceKm: routeInfo.roadDistanceKm,
-        travelDurationMin: routeInfo.travelDurationMin,
-        travelDurationFormatted: routeInfo.travelDurationFormatted,
-      };
-    })
+  const trailsWithDriving = await mapWithConcurrency(topNearest, 4, async (t) => {
+    const routeInfo = await calculateDrivingRoute(latitude, longitude, t.startLat, t.startLng);
+    return {
+      ...t,
+      roadDistanceKm: routeInfo.roadDistanceKm,
+      travelDurationMin: routeInfo.travelDurationMin,
+      travelDurationFormatted: routeInfo.travelDurationFormatted,
+      routingAttribution: routeInfo.attribution,
+    };
+  });
+
+  const uniqueFallbackAttributions = Array.from(
+    new Set(trailsWithDriving.map((item: any) => item.routingAttribution).filter(Boolean))
   );
 
   const totalTimeMs = Math.round((performance.now() - startTimeMs) * 100) / 100;
@@ -371,6 +472,7 @@ export const getNearbyTrails = async (req: Request, res: Response) => {
     radiusKm: Number.isFinite(radiusKm) ? radiusKm : null,
     executionTimeMs: totalTimeMs,
     userCoordinates: { lat: latitude, lng: longitude },
+    attribution: uniqueFallbackAttributions.join(' · '),
     data: trailsWithDriving,
   });
 };
@@ -459,6 +561,11 @@ export const getTrailById = async (req: AuthRequest, res: Response) => {
     // Fallback
   }
 
+  // Strictly restrict mock seed fallback to offline DB mode so deleted/unapproved trails never resurrect
+  if (mongoose.connection.readyState === 1) {
+    return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường này.' });
+  }
+
   const trail = inMemoryTrails.find((t) => t.id === id);
   if (!trail) {
     return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường này.' });
@@ -503,8 +610,11 @@ export const getTrailGuides = async (req: Request, res: Response) => {
   let trailSlug = id;
 
   try {
-    const trail = await findTrailLeanByIdOrSlug(id, 'id region province');
+    const trail = await findTrailLeanByIdOrSlug(id, 'id region province status');
     if (trail) {
+      if (trail.status && trail.status !== 'approved') {
+        return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường này.' });
+      }
       region = trail.region || '';
       province = trail.province || '';
       if (trail.id) trailSlug = trail.id;
@@ -513,7 +623,7 @@ export const getTrailGuides = async (req: Request, res: Response) => {
     // Fallback
   }
 
-  if (!region) {
+  if (!region && mongoose.connection.readyState !== 1) {
     const localTrail = inMemoryTrails.find((t) => t.id === id);
     if (localTrail) {
       region = localTrail.region;
@@ -579,12 +689,15 @@ export const createReview = async (req: AuthRequest, res: Response) => {
     return res.status(400).json({ success: false, message: 'Nội dung đánh giá phải có ít nhất 5 ký tự.' });
   }
 
-  const numRating = Number(rating);
-  const numDiffRating = Number(difficultyRating || 3);
-  if (!Number.isFinite(numRating) || numRating < 1 || numRating > 5) {
+  const numRating = parseStrictFiniteNumber(rating);
+  const numDiffRating =
+    difficultyRating !== undefined && difficultyRating !== null && difficultyRating !== ''
+      ? parseStrictFiniteNumber(difficultyRating)
+      : 3;
+  if (numRating === null || numRating < 1 || numRating > 5) {
     return res.status(400).json({ success: false, message: 'Điểm đánh giá phải từ 1 đến 5 sao.' });
   }
-  if (!Number.isFinite(numDiffRating) || numDiffRating < 1 || numDiffRating > 5) {
+  if (numDiffRating === null || numDiffRating < 1 || numDiffRating > 5) {
     return res.status(400).json({ success: false, message: 'Đánh giá độ khó phải từ 1 đến 5.' });
   }
 
@@ -608,7 +721,7 @@ export const createReview = async (req: AuthRequest, res: Response) => {
 
   try {
     const resolvedTrail = await resolveTrailByIdOrSlug(trailId);
-    if (!resolvedTrail) {
+    if (!resolvedTrail || (resolvedTrail.status && resolvedTrail.status !== 'approved')) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường để đánh giá.' });
     }
 
@@ -682,22 +795,45 @@ export const createReview = async (req: AuthRequest, res: Response) => {
       data: { ...created.toObject(), id: created._id.toString() },
       reputationReward,
     });
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: 'Bạn đã gửi đánh giá cho cung đường này rồi.',
+      });
+    }
     console.error('[Create Review Error]:', err);
     return res.status(500).json({ success: false, message: 'Không thể lưu đánh giá lúc này.' });
   }
 };
 
 export const getTrailReviews = async (req: AuthRequest, res: Response) => {
-  const { id } = req.params;
+  const id = String(req.params.id || '').trim();
   const viewerId = req.user?.userId;
+  if (!id || id.length > 100) {
+    return res.status(400).json({ success: false, message: 'Mã cung đường không hợp lệ.' });
+  }
   try {
-    const resolvedObjId = await resolveTrailObjectId(id);
-    if (!resolvedObjId) {
+    if (mongoose.connection.readyState !== 1) {
+      const existsInSeed = inMemoryTrails.some((t) => t.id === id);
+      if (!existsInSeed && !isValidObjectId(id)) {
+        return res.status(400).json({ success: false, message: 'Mã cung đường không hợp lệ.' });
+      }
       return res.json({ success: true, count: 0, data: [] });
     }
 
-    const reviews = await ReviewModel.find({ trailId: resolvedObjId })
+    const trail = await findTrailLeanByIdOrSlug(id, '_id status');
+    if (!trail) {
+      if (!isValidObjectId(id)) {
+        return res.status(400).json({ success: false, message: 'Mã cung đường không hợp lệ.' });
+      }
+      return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường.' });
+    }
+    if (trail.status && trail.status !== 'approved') {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường.' });
+    }
+
+    const reviews = await ReviewModel.find({ trailId: trail._id })
       .populate('userId', 'fullName avatarUrl reputationScore')
       .sort({ createdAt: -1 })
       .limit(100)
@@ -724,8 +860,9 @@ export const getTrailReviews = async (req: AuthRequest, res: Response) => {
     });
 
     return res.json({ success: true, count: formatted.length, data: formatted });
-  } catch {
-    return res.json({ success: true, count: 0, data: [] });
+  } catch (err) {
+    console.error('[Get Trail Reviews Error]:', err);
+    return res.status(500).json({ success: false, message: 'Lỗi máy chủ khi tải đánh giá cung đường.' });
   }
 };
 
@@ -764,16 +901,16 @@ export const updateReview = async (req: AuthRequest, res: Response) => {
     const nextText = content !== undefined ? content : comment;
 
     if (rating !== undefined) {
-      const numRating = Number(rating);
-      if (!Number.isFinite(numRating) || numRating < 1 || numRating > 5) {
+      const numRating = parseStrictFiniteNumber(rating);
+      if (numRating === null || numRating < 1 || numRating > 5) {
         return res.status(400).json({ success: false, message: 'Điểm đánh giá phải từ 1 đến 5 sao.' });
       }
       review.rating = Math.round(numRating);
     }
 
     if (difficultyRating !== undefined) {
-      const numDiff = Number(difficultyRating);
-      if (!Number.isFinite(numDiff) || numDiff < 1 || numDiff > 5) {
+      const numDiff = parseStrictFiniteNumber(difficultyRating);
+      if (numDiff === null || numDiff < 1 || numDiff > 5) {
         return res.status(400).json({ success: false, message: 'Đánh giá độ khó phải từ 1 đến 5.' });
       }
       review.difficultyRating = Math.round(numDiff);
@@ -928,17 +1065,19 @@ export const createTrailAdmin = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ success: false, message: 'Thiếu thông tin tên cung đường, tỉnh hoặc vùng miền hợp lệ.' });
     }
 
-    const startLat = Number(data.startLat ?? data.startLocation?.lat);
-    const startLng = Number(data.startLng ?? data.startLocation?.lng);
-    if (!Number.isFinite(startLat) || !Number.isFinite(startLng) || startLat < -90 || startLat > 90 || startLng < -180 || startLng > 180) {
+    const startLat = parseStrictFiniteNumber(data.startLat ?? data.startLocation?.lat);
+    const startLng = parseStrictFiniteNumber(data.startLng ?? data.startLocation?.lng);
+    if (startLat === null || startLng === null || startLat < -90 || startLat > 90 || startLng < -180 || startLng > 180) {
       return res.status(400).json({ success: false, message: 'Tọa độ GPS xuất phát không hợp lệ.' });
     }
 
-    const endLat = data.endLat !== undefined ? Number(data.endLat) : startLat;
-    const endLng = data.endLng !== undefined ? Number(data.endLng) : startLng;
-    if (!Number.isFinite(endLat) || !Number.isFinite(endLng) || endLat < -90 || endLat > 90 || endLng < -180 || endLng > 180) {
+    const parsedEndLat = data.endLat !== undefined && data.endLat !== null && data.endLat !== '' ? parseStrictFiniteNumber(data.endLat) : startLat;
+    const parsedEndLng = data.endLng !== undefined && data.endLng !== null && data.endLng !== '' ? parseStrictFiniteNumber(data.endLng) : startLng;
+    if (parsedEndLat === null || parsedEndLng === null || parsedEndLat < -90 || parsedEndLat > 90 || parsedEndLng < -180 || parsedEndLng > 180) {
       return res.status(400).json({ success: false, message: 'Tọa độ GPS đích không hợp lệ.' });
     }
+    const endLat = parsedEndLat;
+    const endLng = parsedEndLng;
 
     const coverImage =
       typeof data.coverImage === 'string' && isSafeHttpUrl(data.coverImage)
@@ -975,7 +1114,7 @@ export const createTrailAdmin = async (req: AuthRequest, res: Response) => {
       avoidMonths: sanitizeMonths(data.avoidMonths),
       gpxTrack: sanitizeGpxTrack(data.gpxTrack),
       waypoints: sanitizeWaypoints(data.waypoints),
-      permitRequired: Boolean(data.permitRequired),
+      permitRequired: parseSafeBoolean(data.permitRequired, false),
       permitInfo: sanitizeInput(String(data.permitInfo || '')).slice(0, 500),
       rescueContact:
         data.rescueContact && typeof data.rescueContact === 'object'
@@ -985,9 +1124,9 @@ export const createTrailAdmin = async (req: AuthRequest, res: Response) => {
               rangerContact: sanitizeInput(String(data.rescueContact.rangerContact || '')).slice(0, 120),
             }
           : { name: `Cứu nạn Khẩn cấp ${data.province}`, phone: '112 / 114', rangerContact: '115' },
-      hasCampsite: Boolean(data.hasCampsite),
-      hasWaterSource: Boolean(data.hasWaterSource),
-      kidFriendly: Boolean(data.kidFriendly),
+      hasCampsite: parseSafeBoolean(data.hasCampsite, false),
+      hasWaterSource: parseSafeBoolean(data.hasWaterSource, false),
+      kidFriendly: parseSafeBoolean(data.kidFriendly, false),
       rating: 0,
       reviewCount: 0,
       startLat,
@@ -1000,6 +1139,7 @@ export const createTrailAdmin = async (req: AuthRequest, res: Response) => {
     });
 
     invalidateCache('/api/trails');
+    invalidateAiTrailCache();
     await recordAuditLog(req, 'CREATE_TRAIL', 'trails', `Tạo cung đường ${newTrail.name} (${newTrail.id || newTrail._id})`);
     return res.status(201).json({ success: true, message: 'Tạo cung đường mới thành công!', data: newTrail });
   } catch (err: any) {
@@ -1063,24 +1203,45 @@ export const updateTrailAdmin = async (req: AuthRequest, res: Response) => {
           };
           continue;
         }
+        if (key === 'permitRequired' || key === 'hasCampsite' || key === 'hasWaterSource' || key === 'kidFriendly') {
+          sanitizedUpdate[key] = parseSafeBoolean(val, false);
+          continue;
+        }
         sanitizedUpdate[key] = typeof val === 'string' ? sanitizeInput(val) : val;
       }
     }
 
-    const nextLat = sanitizedUpdate.startLat !== undefined ? Number(sanitizedUpdate.startLat) : existing.startLat;
-    const nextLng = sanitizedUpdate.startLng !== undefined ? Number(sanitizedUpdate.startLng) : existing.startLng;
+    const nextLat =
+      sanitizedUpdate.startLat !== undefined ? parseStrictFiniteNumber(sanitizedUpdate.startLat) : existing.startLat;
+    const nextLng =
+      sanitizedUpdate.startLng !== undefined ? parseStrictFiniteNumber(sanitizedUpdate.startLng) : existing.startLng;
     if (sanitizedUpdate.startLat !== undefined || sanitizedUpdate.startLng !== undefined) {
-      if (!Number.isFinite(nextLat) || !Number.isFinite(nextLng) || nextLat < -90 || nextLat > 90 || nextLng < -180 || nextLng > 180) {
+      if (nextLat === null || nextLng === null || nextLat < -90 || nextLat > 90 || nextLng < -180 || nextLng > 180) {
         return res.status(400).json({ success: false, message: 'Tọa độ GPS không hợp lệ.' });
       }
       sanitizedUpdate.startLat = nextLat;
       sanitizedUpdate.startLng = nextLng;
       sanitizedUpdate.startLocation = { type: 'Point', coordinates: [nextLng, nextLat] };
     }
+    if (sanitizedUpdate.endLat !== undefined) {
+      const nextEndLat = parseStrictFiniteNumber(sanitizedUpdate.endLat);
+      if (nextEndLat === null || nextEndLat < -90 || nextEndLat > 90) {
+        return res.status(400).json({ success: false, message: 'Tọa độ GPS đích không hợp lệ.' });
+      }
+      sanitizedUpdate.endLat = nextEndLat;
+    }
+    if (sanitizedUpdate.endLng !== undefined) {
+      const nextEndLng = parseStrictFiniteNumber(sanitizedUpdate.endLng);
+      if (nextEndLng === null || nextEndLng < -180 || nextEndLng > 180) {
+        return res.status(400).json({ success: false, message: 'Tọa độ GPS đích không hợp lệ.' });
+      }
+      sanitizedUpdate.endLng = nextEndLng;
+    }
 
     const updated = await TrailModel.findByIdAndUpdate(existing._id, { $set: sanitizedUpdate }, { new: true, runValidators: true });
     invalidateCache('/api/trails');
     invalidateElevationCache(String(existing.id || existing._id));
+    invalidateAiTrailCache();
     await recordAuditLog(req, 'UPDATE_TRAIL', 'trails', `Cập nhật cung đường ${existing.name} (${existing.id || existing._id})`);
     return res.json({ success: true, message: 'Cập nhật thông tin cung đường thành công!', data: updated });
   } catch (err) {
@@ -1100,25 +1261,12 @@ export const deleteTrailAdmin = async (req: AuthRequest, res: Response) => {
     if (trail) {
       const tid = trail._id;
       const slug = trail.id;
-      const idCandidates = slug ? [tid, slug, String(tid)] : [tid, String(tid)];
 
       await TrailModel.findByIdAndDelete(tid);
-      await Promise.allSettled([
-        ReviewModel.deleteMany({ trailId: tid }),
-        IncidentModel.deleteMany({ trailId: { $in: idCandidates } }),
-        TrailConditionModel.deleteMany({ trailId: { $in: idCandidates } }),
-        WeatherForecastModel.deleteMany({ trailId: tid }),
-        ItineraryModel.deleteMany({ trailId: tid }),
-        TripReportModel.deleteMany({ trailId: tid }),
-        TripPlanModel.deleteMany({ trailId: tid }),
-        CheckinModel.deleteMany({ trailId: tid }),
-        SavedTrailModel.deleteMany({ trailId: tid }),
-        GearChecklistModel.deleteMany({ trailId: tid }),
-        SafetyTimerModel.updateMany({ trailId: tid, status: 'active' }, { $set: { status: 'cancelled' } }),
-        ...(slug ? [Contribution.deleteMany({ id: slug })] : []),
-        UserModel.updateMany({}, { $pull: { checkedInTrails: tid, savedTrails: tid } }),
-      ]);
+      await cascadeDeleteTrailChildren(tid, slug);
       invalidateElevationCache(String(slug || tid));
+    } else if (mongoose.connection.readyState === 1) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường để xóa.' });
     } else {
       const idx = inMemoryTrails.findIndex((t) => t.id === id);
       if (idx === -1) {
@@ -1131,6 +1279,7 @@ export const deleteTrailAdmin = async (req: AuthRequest, res: Response) => {
     if (memIdx >= 0) inMemoryTrails.splice(memIdx, 1);
 
     invalidateCache('/api/trails');
+    invalidateAiTrailCache();
     await recordAuditLog(req, 'DELETE_TRAIL', 'trails', `Xóa cung đường ${trail?.name || id}`);
     return res.json({ success: true, message: 'Đã xóa cung đường thành công!' });
   } catch (err) {
@@ -1313,7 +1462,7 @@ export const getNearbyTrailsForTrail = async (req: Request, res: Response) => {
       }
     }
 
-    if (!sourceTrail) {
+    if (!sourceTrail && mongoose.connection.readyState !== 1) {
       sourceTrail = inMemoryTrails.find((t) => t.id === id) || null;
       if (sourceTrail) {
         candidateTrails = inMemoryTrails;
@@ -1403,15 +1552,15 @@ export const getTrailElevation = async (req: Request, res: Response) => {
 
   try {
     let trail: any = null;
-    try {
-      trail = await findTrailLeanByIdOrSlug(
+    if (mongoose.connection.readyState === 1) {
+      const dbTrail = await findTrailLeanByIdOrSlug(
         id,
-        'id gpxTrack startLat startLng endLat endLng distanceKm maxAltitudeM elevationGainM'
+        'id status gpxTrack startLat startLng endLat endLng distanceKm maxAltitudeM elevationGainM'
       );
-    } catch {
-      // ignore offline
-    }
-    if (!trail) {
+      if (dbTrail && (!dbTrail.status || dbTrail.status === 'approved')) {
+        trail = dbTrail;
+      }
+    } else {
       trail = inMemoryTrails.find((t) => t.id === id);
     }
     if (!trail) {
@@ -1445,15 +1594,19 @@ export const getTrailElevation = async (req: Request, res: Response) => {
 export const getTrailPermitTemplate = async (req: Request, res: Response) => {
   const id = String(req.params.id || '').trim();
   let trail: any = null;
-  try {
-    trail = await findTrailLeanByIdOrSlug(
-      id,
-      'id name province district distanceKm durationDays durationHoursNote difficultyLevel permitRequired permitInfo rescueContact'
-    );
-  } catch {
-    // offline fallback
-  }
-  if (!trail) {
+  if (mongoose.connection.readyState === 1) {
+    try {
+      const dbTrail = await findTrailLeanByIdOrSlug(
+        id,
+        'id status name province district distanceKm durationDays durationHoursNote difficultyLevel permitRequired permitInfo rescueContact'
+      );
+      if (dbTrail && (!dbTrail.status || dbTrail.status === 'approved')) {
+        trail = dbTrail;
+      }
+    } catch {
+      // ignore
+    }
+  } else {
     trail = inMemoryTrails.find((t) => t.id === id);
   }
   if (!trail) {
@@ -1534,15 +1687,19 @@ export const getTrailPermitTemplate = async (req: Request, res: Response) => {
 export const getTrailShareMetadata = async (req: Request, res: Response) => {
   const id = String(req.params.id || '').trim();
   let trail: any = null;
-  try {
-    trail = await findTrailLeanByIdOrSlug(
-      id,
-      'id name province maxAltitudeM distanceKm difficultyLevel elevationGainM description coverImage'
-    );
-  } catch {
-    // offline fallback
-  }
-  if (!trail) {
+  if (mongoose.connection.readyState === 1) {
+    try {
+      const dbTrail = await findTrailLeanByIdOrSlug(
+        id,
+        'id status name province maxAltitudeM distanceKm difficultyLevel elevationGainM description coverImage'
+      );
+      if (dbTrail && (!dbTrail.status || dbTrail.status === 'approved')) {
+        trail = dbTrail;
+      }
+    } catch {
+      // ignore
+    }
+  } else {
     trail = inMemoryTrails.find((t) => t.id === id);
   }
   if (!trail) {
@@ -1573,8 +1730,8 @@ export const createGuideReview = async (req: AuthRequest, res: Response) => {
     }
 
     const { rating, comment } = req.body || {};
-    const numRating = Number(rating);
-    if (!Number.isFinite(numRating) || numRating < 1 || numRating > 5) {
+    const numRating = parseStrictFiniteNumber(rating);
+    if (numRating === null || numRating < 1 || numRating > 5) {
       return res.status(400).json({ success: false, message: 'Điểm đánh giá phải từ 1 đến 5 sao.' });
     }
     const cleanComment = sanitizeInput(String(comment || '')).trim();
@@ -1596,7 +1753,7 @@ export const createGuideReview = async (req: AuthRequest, res: Response) => {
     }
 
     const [guide, user] = await Promise.all([
-      GuideModel.findById(guideId),
+      GuideModel.findById(guideId).select('trailSlugs provinces region reviews reviewCount rating').lean(),
       UserModel.findById(userId).select('fullName username').lean(),
     ]);
 
@@ -1613,8 +1770,9 @@ export const createGuideReview = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Verify if user has checked into any trail in this guide's region/province
+    // Verify if user has checked into any trail in this guide's region/province (omit heavy gpxTrackRecorded)
     const userCheckins = await CheckinModel.find({ userId: userObjId })
+      .select('trailId')
       .populate('trailId', 'region province id')
       .lean();
     const verifiedTrip = userCheckins.some((c: any) => {
@@ -1628,24 +1786,42 @@ export const createGuideReview = async (req: AuthRequest, res: Response) => {
     });
 
     const userName = user?.fullName || user?.username || 'Trekker';
-    guide.reviews = guide.reviews || [];
-    const prevReviewsLen = guide.reviews.length;
-    const baselineExternalCount = Math.max(0, (guide.reviewCount || 0) - prevReviewsLen);
-    const baselineWeightedSum = baselineExternalCount * (guide.rating || 0);
-
-    guide.reviews.unshift({
+    const newReviewEntry = {
       userId: userObjId,
       userName,
       rating: numRating,
       comment: cleanComment.slice(0, 800),
       verifiedTrip,
       createdAt: new Date(),
-    });
+    };
 
-    const userReviewsScore = guide.reviews.reduce((s, r) => s + r.rating, 0);
-    guide.reviewCount = baselineExternalCount + guide.reviews.length;
-    guide.rating = Math.round(((baselineWeightedSum + userReviewsScore) / guide.reviewCount) * 10) / 10;
-    await guide.save();
+    // Atomic duplicate-guarded push eliminates read-modify-write lost updates & concurrent duplicate reviews
+    const pushedGuide = await GuideModel.findOneAndUpdate(
+      { _id: guideId, 'reviews.userId': { $ne: userObjId } },
+      { $push: { reviews: { $each: [newReviewEntry], $position: 0 } } },
+      { new: true }
+    );
+    if (!pushedGuide) {
+      return res.status(409).json({
+        success: false,
+        message: 'Bạn đã gửi đánh giá cho Porter/Guide này rồi.',
+      });
+    }
+
+    const allReviews = pushedGuide.reviews || [];
+    const prevReviewsLen = Math.max(0, allReviews.length - 1);
+    const baselineExternalCount = Math.max(0, (pushedGuide.reviewCount || 0) - prevReviewsLen);
+    const baselineWeightedSum = baselineExternalCount * (pushedGuide.rating || 0);
+    const userReviewsScore = allReviews.reduce((s, r) => s + r.rating, 0);
+    const nextReviewCount = baselineExternalCount + allReviews.length;
+    const nextRating =
+      nextReviewCount > 0 ? Math.round(((baselineWeightedSum + userReviewsScore) / nextReviewCount) * 10) / 10 : 0;
+
+    const updatedGuide = await GuideModel.findByIdAndUpdate(
+      guideId,
+      { $set: { reviewCount: nextReviewCount, rating: nextRating } },
+      { new: true }
+    );
 
     invalidateCache('/api/guides');
     invalidateCache('/api/directory');
@@ -1654,7 +1830,7 @@ export const createGuideReview = async (req: AuthRequest, res: Response) => {
     return res.status(201).json({
       success: true,
       message: 'Đã gửi đánh giá Porter/Guide thành công!',
-      data: guide,
+      data: updatedGuide || pushedGuide,
     });
   } catch (err) {
     console.error('[Create Guide Review Error]:', err);

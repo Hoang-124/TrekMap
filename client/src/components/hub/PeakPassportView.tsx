@@ -8,6 +8,7 @@ import { useSlidingIndicator } from '../../hooks/useSlidingIndicator.js';
 import { DEFAULT_VIETNAM_TRAIL_COVER } from '../../utils/cloudinary.js';
 import { searchMatchVietnamese } from '../../utils/textUtils.js';
 import { generateQrMatrix, buildQrSvgPath } from '../../utils/qrMatrix.js';
+import { parseGpxFileClient } from '../../utils/gpxParser.js';
 import {
   IconMountain,
   IconShieldCheck,
@@ -25,6 +26,7 @@ import {
 } from '../common/SvgIcons.js';
 import { ExpeditionShareCardModal } from '../common/ExpeditionShareCardModal.js';
 import type { ExpeditionSharePoint } from '../../utils/expeditionShareCard.js';
+import { safeLocalStorageGet } from '../../utils/storageScope.js';
 
 export interface PeakPassportViewProps {
   trails: Trail[];
@@ -173,6 +175,7 @@ interface RawLeaderboardRow {
   summitsCount?: number;
   verifiedPeaks?: number;
   verifiedCount?: number;
+  verifiedCheckins?: number;
   totalUniqueKm?: number;
   totalDistanceKm?: number;
   totalElevationGainM?: number;
@@ -181,20 +184,20 @@ interface RawLeaderboardRow {
 }
 
 const ELEVATION_MILESTONES = [
-  { targetM: 5000, title: 'Khởi Hành Cao Nguyên', badge: '5K Climber' },
-  { targetM: 15000, title: 'Vượt Đỉnh Hoàng Liên', badge: '15K Alpinist' },
-  { targetM: 30000, title: 'Chiến Binh Rừng Già', badge: '30K Mountaineer' },
-  { targetM: 50000, title: 'Huyền Thoại Trường Sơn', badge: '50K Legend' },
+  { targetM: 5000, title: 'Bước đầu lên cao nguyên', badge: '5K Climber' },
+  { targetM: 15000, title: 'Qua những dốc Hoàng Liên', badge: '15K Alpinist' },
+  { targetM: 30000, title: 'Chân quen đường rừng già', badge: '30K Mountaineer' },
+  { targetM: 50000, title: 'Dấu chân dọc Trường Sơn', badge: '50K Legend' },
 ];
 
 const TIER_META: Record<
   SummitChallengeSeed['tier'],
   { label: string; color: string }
 > = {
-  bronze: { label: 'Hạng Đồng', color: 'var(--color-earth)' },
-  silver: { label: 'Hạng Bạc', color: 'var(--color-sky)' },
-  gold: { label: 'Hạng Vàng', color: 'var(--color-sun)' },
-  alpine_legend: { label: 'Huyền Thoại Alpine', color: 'var(--color-primary)' },
+  bronze: { label: 'Hạng đồng', color: 'var(--color-earth)' },
+  silver: { label: 'Hạng bạc', color: 'var(--color-sky)' },
+  gold: { label: 'Hạng vàng', color: 'var(--color-sun)' },
+  alpine_legend: { label: 'Chặng dài núi cao', color: 'var(--color-primary)' },
 };
 
 const readCssVar = (name: string, fallback: string): string => {
@@ -228,10 +231,15 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
   const [checkinModalTrail, setCheckinModalTrail] = useState<Trail | null>(null);
   const [checkinHours, setCheckinHours] = useState('8');
   const [checkinGps, setCheckinGps] = useState<{ lat: number; lng: number } | null>(null);
+  const [checkinGpxTrack, setCheckinGpxTrack] = useState<[number, number][]>([]);
+  const [checkinGpxMeta, setCheckinGpxMeta] = useState<{ fileName: string; distanceKm: number; pointsCount: number } | null>(null);
+  const [parsingCheckinGpx, setParsingCheckinGpx] = useState(false);
   const [capturingGps, setCapturingGps] = useState(false);
   const [submittingCheckin, setSubmittingCheckin] = useState(false);
+  const checkinGpxInputRef = useRef<HTMLInputElement | null>(null);
 
   // Passport export modal preview & per-peak offline PNG share card modal
+  const [checkinOpenedAtMs, setCheckinOpenedAtMs] = useState<number>(0);
   const [showCardPreview, setShowCardPreview] = useState(false);
   const [shareCardTarget, setShareCardTarget] = useState<{
     trail: Trail;
@@ -367,13 +375,13 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
       elevationGainM: trail.elevationGainM,
       durationLabel,
       dateLabel,
-      hikerName: currentUser?.fullName || currentUser?.username || 'Nhà Thám Hiểm LOST',
+      hikerName: currentUser?.fullName || currentUser?.username || 'Người đi rừng LOST',
       verifiedGps: stamp.verifiedBadge,
       coordinates,
       trackPoints,
       defaultCaption: stamp.verifiedBadge
-        ? 'Đã đóng dấu xác thực GPS trên Hộ Chiếu Đỉnh Núi LOST'
-        : 'Đã ghi dấu chinh phục trên Hộ Chiếu Đỉnh Núi LOST',
+        ? 'Đã đóng dấu xác thực GPS trên sổ dấu đỉnh LOST'
+        : 'Đã ghi dấu chuyến đi trên sổ dấu đỉnh LOST',
     };
   }, [shareCardTarget, currentUser]);
 
@@ -385,7 +393,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
     const controller = new AbortController();
     const { signal } = controller;
     const run = async () => {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('lost_token') : null;
+      const token = typeof window !== 'undefined' ? safeLocalStorageGet('lost_token') : null;
 
       // Seed local stamped peaks first for instant offline rendering
       const nextStamped: Record<string, StampedPeakInfo> = {};
@@ -393,12 +401,34 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
         if (slug) nextStamped[slug] = { trailSlug: slug, verifiedBadge: false };
       });
       try {
-        const localIds: unknown = JSON.parse(localStorage.getItem(localCheckinsKey) || '[]');
-        if (Array.isArray(localIds)) {
-          localIds.forEach((slug) => {
-            const s = String(slug || '');
-            if (s && !nextStamped[s]) {
-              nextStamped[s] = { trailSlug: s, verifiedBadge: false };
+        const rawLocal: unknown = JSON.parse(localStorage.getItem(localCheckinsKey) || '[]');
+        if (Array.isArray(rawLocal)) {
+          rawLocal.forEach((entry) => {
+            if (typeof entry === 'string' && entry) {
+              if (!nextStamped[entry]) {
+                nextStamped[entry] = { trailSlug: entry, verifiedBadge: false };
+              }
+            } else if (entry && typeof entry === 'object' && 'trailSlug' in entry) {
+              const rec = entry as StampedPeakInfo;
+              if (rec.trailSlug && !nextStamped[rec.trailSlug]) {
+                nextStamped[rec.trailSlug] = {
+                  trailSlug: String(rec.trailSlug),
+                  verifiedBadge: Boolean(rec.verifiedBadge),
+                  checkinDate: rec.checkinDate,
+                  completionTimeHours: rec.completionTimeHours,
+                };
+              }
+            }
+          });
+        } else if (rawLocal && typeof rawLocal === 'object') {
+          Object.entries(rawLocal as Record<string, StampedPeakInfo>).forEach(([slug, rec]) => {
+            if (slug && rec && !nextStamped[slug]) {
+              nextStamped[slug] = {
+                trailSlug: slug,
+                verifiedBadge: Boolean(rec.verifiedBadge),
+                checkinDate: rec.checkinDate,
+                completionTimeHours: rec.completionTimeHours,
+              };
             }
           });
         }
@@ -550,7 +580,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
           .catch(() => null);
 
         if (!signal.aborted && (!res?.success || !Array.isArray(res.data))) {
-          res = await fetch('/api/checkins/leaderboard?limit=20', {
+          res = await fetch(`/api/checkins/leaderboard?${qs.toString()}`, {
             headers: getApiHeaders(),
             signal,
           })
@@ -567,7 +597,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
               username: row.username,
               avatarUrl: row.avatarUrl,
               trailsConquered: Number(row.trailsConquered ?? row.summitsCount ?? 0),
-              verifiedPeaks: Number(row.verifiedPeaks ?? row.verifiedCount ?? 0),
+              verifiedPeaks: Number(row.verifiedPeaks ?? row.verifiedCount ?? row.verifiedCheckins ?? 0),
               totalUniqueKm: Number(row.totalUniqueKm ?? row.totalDistanceKm ?? 0),
               totalElevationGainM: Number(row.totalElevationGainM ?? 0),
               highestAltitudeM: Number(row.highestAltitudeM ?? 0),
@@ -636,36 +666,50 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
 
     return baseList.map((ch) => {
       const serverMatch = serverChallenges?.find((s) => s.slug === ch.slug);
+      const regionScopedTrails =
+        ch.region && ch.region !== 'Toàn Quốc'
+          ? conqueredTrails.filter((t) => t.region === ch.region)
+          : conqueredTrails;
       const matchedSlugs = ch.requiredTrailSlugs.filter((s) => conqueredSlugsSet.has(s));
       const verifiedInChallenge = matchedSlugs.filter((s) => Boolean(stampedMap[s]?.verifiedBadge)).length;
 
       let progressCount = matchedSlugs.length;
       let target = Math.max(1, ch.targetCount || ch.requiredTrailSlugs.length || 1);
+      let completedSlugs = matchedSlugs;
 
-      if (ch.ruleType === 'cumulative_km' && ch.targetKm) {
-        progressCount = Math.round(totalUniqueKm);
-        target = ch.targetKm;
-      } else if (ch.ruleType === 'cumulative_gain' && ch.targetGainM) {
-        progressCount = totalElevationGainM;
-        target = ch.targetGainM;
+      if (ch.ruleType === 'cumulative_km') {
+        target = Math.max(1, ch.targetKm || ch.targetCount || 100);
+        progressCount = Math.round(
+          regionScopedTrails.reduce((sum, t) => sum + (Number(t.distanceKm) || 0), 0)
+        );
+        completedSlugs = regionScopedTrails.map((t) => String(t.id));
+      } else if (ch.ruleType === 'cumulative_gain') {
+        target = Math.max(100, ch.targetGainM || ch.targetCount || 5000);
+        progressCount = Math.round(
+          regionScopedTrails.reduce((sum, t) => sum + (Number(t.elevationGainM) || 0), 0)
+        );
+        completedSlugs = regionScopedTrails.map((t) => String(t.id));
       } else if (ch.ruleType === 'altitude_threshold' && ch.minAltitudeM) {
-        const highTrails = conqueredTrails.filter((t) => (t.maxAltitudeM || 0) >= ch.minAltitudeM!);
+        const highTrails = regionScopedTrails.filter((t) => (t.maxAltitudeM || 0) >= ch.minAltitudeM!);
         progressCount = highTrails.length;
+        completedSlugs = highTrails.map((t) => String(t.id));
       }
 
       const effectiveCount = serverMatch
         ? Math.max(serverMatch.progressCount, progressCount)
         : progressCount;
-      const progressPercent = Math.min(100, Math.round((effectiveCount / target) * 100));
-      const isCompleted = Boolean(serverMatch?.isCompleted || effectiveCount >= target);
+      const effectiveTarget = serverMatch?.targetCount && serverMatch.targetCount > 1 ? serverMatch.targetCount : target;
+      const progressPercent = Math.min(100, Math.round((effectiveCount / effectiveTarget) * 100));
+      const isCompleted = Boolean(serverMatch?.isCompleted || effectiveCount >= effectiveTarget);
       const isClaimed = Boolean(serverMatch?.isClaimed || claimedSlugs.has(ch.slug));
 
       return {
         ...ch,
+        targetCount: effectiveTarget,
         completedTrailSlugs:
-          serverMatch && serverMatch.completedTrailSlugs.length >= matchedSlugs.length
+          serverMatch && serverMatch.completedTrailSlugs.length >= completedSlugs.length
             ? serverMatch.completedTrailSlugs
-            : matchedSlugs,
+            : completedSlugs,
         progressCount: effectiveCount,
         progressPercent,
         isCompleted,
@@ -673,14 +717,14 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
         verifiedCount: Math.max(serverMatch?.verifiedCount || 0, verifiedInChallenge),
       };
     });
-  }, [serverChallenges, conqueredTrails, stampedMap, totalUniqueKm, totalElevationGainM, claimedSlugs]);
+  }, [serverChallenges, conqueredTrails, stampedMap, claimedSlugs]);
 
   const handleClaimChallenge = async (ch: ChallengeWithProgress) => {
     if (claimingSlug || !ch.isCompleted || ch.isClaimed) return;
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!currentUser || !token) {
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal', { detail: { mode: 'login' } }));
-      onShowToast?.('Vui lòng đăng nhập để nhận huy hiệu & điểm uy tín vào hồ sơ LOST.', 'info');
+      onShowToast?.('Đăng nhập để nhận huy hiệu và cộng điểm uy tín vào hồ sơ nhé.', 'info');
       return;
     }
 
@@ -701,15 +745,15 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
           // ignore
         }
         onShowToast?.(
-          data.message || `Đã nhận huy hiệu "${ch.badgeName}" (+${ch.rewardPoints} điểm uy tín)!`,
+          data.message || `Đã nhận huy hiệu "${ch.badgeName}" (+${ch.rewardPoints} điểm uy tín).`,
           'success'
         );
         reloadPassportData();
         return;
       }
-      onShowToast?.(data.message || 'Chưa thể nhận huy hiệu lúc này.', 'error');
+      onShowToast?.(data.message || 'Chưa nhận được huy hiệu lúc này.', 'error');
     } catch {
-      onShowToast?.('Không thể kết nối máy chủ để xác nhận huy hiệu.', 'error');
+      onShowToast?.('Không kết nối được máy chủ để lưu huy hiệu.', 'error');
     } finally {
       setClaimingSlug(null);
     }
@@ -726,20 +770,50 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
         if (!isMountedRef.current) return;
         setCheckinGps({ lat: pos.coords.latitude, lng: pos.coords.longitude });
         setCapturingGps(false);
-        onShowToast?.('Đã khóa tọa độ GPS thực địa để đóng dấu xác thực!', 'success');
+        onShowToast?.('Đã bắt được tọa độ GPS để đóng dấu xác thực.', 'success');
       },
       () => {
         if (!isMountedRef.current) return;
         setCapturingGps(false);
-        onShowToast?.('Không lấy được tín hiệu GPS. Bạn vẫn có thể đóng dấu hộ chiếu thủ công.', 'info');
+        onShowToast?.('Không bắt được sóng GPS. Bạn vẫn có thể tự đóng dấu thủ công nhé.', 'info');
       },
       { enableHighAccuracy: true, timeout: 10000 }
     );
   };
 
+  const handleSelectCheckinGpx = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setParsingCheckinGpx(true);
+    try {
+      const parsed = await parseGpxFileClient(file);
+      if (!isMountedRef.current) return;
+      const trackLatLng: [number, number][] = parsed.points.map(([lat, lng]) => [lat, lng]);
+      setCheckinGpxTrack(trackLatLng);
+      setCheckinGpxMeta({
+        fileName: parsed.fileName,
+        distanceKm: parsed.offlineAnalysis.distanceKm,
+        pointsCount: trackLatLng.length,
+      });
+      onShowToast?.(
+        `Đã nạp tracklog "${parsed.fileName}" (${trackLatLng.length} điểm, ${parsed.offlineAnalysis.distanceKm} km) để xác thực đỉnh.`,
+        'success'
+      );
+    } catch (err) {
+      if (!isMountedRef.current) return;
+      onShowToast?.(
+        err instanceof Error ? err.message : 'Không thể đọc tệp GPX này. Kiểm tra lại định dạng GPX 1.1 nhé.',
+        'error'
+      );
+    } finally {
+      if (isMountedRef.current) setParsingCheckinGpx(false);
+    }
+  };
+
   const handleConfirmStampCheckin = async () => {
     if (!checkinModalTrail || submittingCheckin) return;
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     const hours = Math.max(0.5, Math.min(240, Number(checkinHours) || 8));
 
     setSubmittingCheckin(true);
@@ -752,25 +826,35 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
             trailId: checkinModalTrail.id,
             completionTimeHours: hours,
             ...(checkinGps ? { lat: checkinGps.lat, lng: checkinGps.lng } : {}),
+            ...(checkinGpxTrack.length >= 2 ? { gpxTrackRecorded: checkinGpxTrack } : {}),
           }),
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         if (res.ok && data.success) {
           onShowToast?.(
-            data.message || `Đã đóng dấu đỉnh "${checkinModalTrail.name}" vào Hộ Chiếu!`,
+            data.message || `Đã đóng dấu đỉnh "${checkinModalTrail.name}" vào sổ của bạn.`,
             'success'
           );
           setCheckinModalTrail(null);
           setCheckinGps(null);
+          setCheckinGpxTrack([]);
+          setCheckinGpxMeta(null);
           reloadPassportData();
           return;
         }
-        onShowToast?.(data.message || 'Không thể đóng dấu lên máy chủ.', 'error');
+        if (res.status === 409) {
+          onShowToast?.(
+            'Cung này vừa được đóng dấu trong 12 giờ qua (quy định chống trùng lặp). Hãy quay lại sau 12 giờ và đính kèm tệp .GPX hoặc tọa độ GPS thực địa để nâng cấp dấu xác thực.',
+            'info'
+          );
+          return;
+        }
+        onShowToast?.(data.message || 'Chưa lưu được dấu đỉnh lên máy chủ.', 'error');
         return;
       }
 
-      // Offline / guest local stamp
-      const next = {
+      // Offline / guest local stamp — preserve date & duration metadata
+      const next: Record<string, StampedPeakInfo> = {
         ...stampedMap,
         [checkinModalTrail.id]: {
           trailSlug: checkinModalTrail.id,
@@ -781,15 +865,17 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
       };
       setStampedMap(next);
       try {
-        localStorage.setItem(localCheckinsKey, JSON.stringify(Object.keys(next)));
+        localStorage.setItem(localCheckinsKey, JSON.stringify(next));
       } catch {
         // ignore
       }
-      onShowToast?.(`Đã lưu dấu hộ chiếu cục bộ cho "${checkinModalTrail.name}"!`, 'info');
+      onShowToast?.(`Đã lưu dấu đỉnh "${checkinModalTrail.name}" trên máy này.`, 'info');
       setCheckinModalTrail(null);
       setCheckinGps(null);
+      setCheckinGpxTrack([]);
+      setCheckinGpxMeta(null);
     } catch {
-      onShowToast?.('Lỗi kết nối khi đóng dấu hộ chiếu.', 'error');
+      onShowToast?.('Mất kết nối máy chủ khi lưu dấu đỉnh.', 'error');
     } finally {
       setSubmittingCheckin(false);
     }
@@ -849,7 +935,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
           setVerifyResult({
             code: verifyCode,
             status: 'error',
-            errorMessage: json?.message || 'Không tìm thấy Hộ Chiếu Đỉnh Núi hợp lệ cho mã này.',
+            errorMessage: json?.message || 'Không tìm thấy sổ dấu đỉnh hợp lệ cho mã này.',
           });
         }
       })
@@ -858,7 +944,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
           setVerifyResult({
             code: verifyCode,
             status: 'error',
-            errorMessage: 'Không thể kết nối máy chủ để xác minh mã Hộ Chiếu lúc này.',
+            errorMessage: 'Không kết nối được máy chủ để kiểm tra mã lúc này.',
           });
         }
       });
@@ -879,8 +965,11 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
     }
   };
 
-  const expeditionCode = `LS-${(userId || 'GUEST0').slice(-6).toUpperCase()}`;
-  const qrPayload = `${typeof window !== 'undefined' ? window.location.origin : 'https://lost.vn'}/passport?verify=${encodeURIComponent(expeditionCode)}`;
+  const hasVerifiedAccountCode = Boolean(userId);
+  const expeditionCode = hasVerifiedAccountCode ? `LS-${userId.slice(-6).toUpperCase()}` : 'KHACH-TAM';
+  const qrPayload = hasVerifiedAccountCode
+    ? `${typeof window !== 'undefined' ? window.location.origin : 'https://lost.vn'}/passport?verify=${encodeURIComponent(expeditionCode)}`
+    : `${typeof window !== 'undefined' ? window.location.origin : 'https://lost.vn'}/passport`;
   const qrData = useMemo(() => generateQrMatrix(qrPayload), [qrPayload]);
   const qrSvg = useMemo(() => buildQrSvgPath(qrData.matrix, 2), [qrData.matrix]);
 
@@ -893,38 +982,51 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
       const textMain = readCssVar('--color-text-main', 'CanvasText');
       const textMuted = readCssVar('--color-text-muted', 'GrayText');
       const borderStrong = readCssVar('--color-border-strong', 'GrayText');
-      const onMedia = readCssVar('--color-on-media', 'white');
+      const onMedia = readCssVar('--color-on-media', readCssVar('--color-on-primary', 'var(--color-on-primary)'));
       const qrDarkFill = isLightTheme ? textMain : bgMain;
 
-      const holderName = (currentUser?.fullName || currentUser?.username || 'Trekker LOST')
+      const rawHolder = (currentUser?.fullName || currentUser?.username || 'Trekker LOST')
         .replace(/[<>&"]/g, '');
-      const topPeakLabel = highestPeak
-        ? `${highestPeak.name.replace(/[<>&"]/g, '')} (${highestPeak.maxAltitudeM.toLocaleString('vi-VN')}m)`
-        : 'Chưa đóng dấu đỉnh';
+      const holderName = rawHolder.length > 26 ? `${rawHolder.slice(0, 25).trim()}…` : rawHolder;
+
+      let topPeakLabel = 'Chưa đóng dấu đỉnh';
+      if (highestPeak) {
+        const cleanPeakName = highestPeak.name.replace(/[<>&"]/g, '');
+        const altSuffix = ` (${highestPeak.maxAltitudeM.toLocaleString('vi-VN')}m)`;
+        const maxNameChars = Math.max(12, 46 - altSuffix.length);
+        const truncatedName =
+          cleanPeakName.length > maxNameChars ? `${cleanPeakName.slice(0, maxNameChars - 1).trim()}…` : cleanPeakName;
+        topPeakLabel = `${truncatedName}${altSuffix}`;
+      }
+      const qrCaption = hasVerifiedAccountCode ? 'QUÉT KIỂM TRA SỔ DẤU' : 'SỔ DẤU ĐỈNH LOST VN';
 
       const svgMarkup = `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+        <defs>
+          <clipPath id="peak-box-clip"><rect x="64" y="316" width="608" height="86"/></clipPath>
+          <clipPath id="holder-clip"><rect x="52" y="84" width="636" height="60"/></clipPath>
+        </defs>
         <rect width="960" height="540" fill="${bgMain}"/>
         <rect x="24" y="24" width="912" height="492" rx="6" fill="${bgCard}" stroke="${borderStrong}" stroke-width="2"/>
         <rect x="24" y="24" width="912" height="6" fill="${primary}"/>
-        <text x="56" y="76" fill="${primary}" font-family="Plus Jakarta Sans, sans-serif" font-size="14" font-weight="700" letter-spacing="4">LOST VIETNAM · OFFICIAL SUMMIT PASSPORT</text>
-        <text x="56" y="128" fill="${textMain}" font-family="Plus Jakarta Sans, sans-serif" font-size="38" font-weight="800">${holderName}</text>
-        <text x="56" y="160" fill="${textMuted}" font-family="Plus Jakarta Sans, sans-serif" font-size="16" font-weight="600">MÃ HỘ CHIẾU: ${expeditionCode}  ·  XÁC THỰC GPS: ${verifiedStampsCount} ĐỈNH</text>
+        <text x="56" y="76" fill="${primary}" font-family="Plus Jakarta Sans, sans-serif" font-size="14" font-weight="700" letter-spacing="4">LOST VIETNAM · SỔ DẤU ĐỈNH</text>
+        <text x="56" y="128" fill="${textMain}" font-family="Plus Jakarta Sans, sans-serif" font-size="36" font-weight="800" clip-path="url(#holder-clip)">${holderName}</text>
+        <text x="56" y="160" fill="${textMuted}" font-family="Plus Jakarta Sans, sans-serif" font-size="16" font-weight="600">MÃ SỔ: ${expeditionCode}  ·  XÁC THỰC GPS: ${verifiedStampsCount} ĐỈNH</text>
         <line x1="56" y1="190" x2="680" y2="190" stroke="${borderStrong}" stroke-width="1"/>
-        <text x="56" y="232" fill="${textMuted}" font-family="Plus Jakarta Sans, sans-serif" font-size="13" font-weight="700" letter-spacing="2">ĐỈNH ĐÃ CHINH PHỤC</text>
+        <text x="56" y="232" fill="${textMuted}" font-family="Plus Jakarta Sans, sans-serif" font-size="13" font-weight="700" letter-spacing="2">ĐỈNH ĐÃ QUA</text>
         <text x="56" y="274" fill="${primary}" font-family="Plus Jakarta Sans, sans-serif" font-size="40" font-weight="800">${conqueredTrails.length} / ${trails.length}</text>
         <text x="275" y="232" fill="${textMuted}" font-family="Plus Jakarta Sans, sans-serif" font-size="13" font-weight="700" letter-spacing="2">TỔNG CỰ LY</text>
         <text x="275" y="274" fill="${textMain}" font-family="Plus Jakarta Sans, sans-serif" font-size="40" font-weight="800">${totalUniqueKm} km</text>
         <text x="485" y="232" fill="${textMuted}" font-family="Plus Jakarta Sans, sans-serif" font-size="13" font-weight="700" letter-spacing="2">TỔNG ĐỘ DỐC</text>
         <text x="485" y="274" fill="${sun}" font-family="Plus Jakarta Sans, sans-serif" font-size="40" font-weight="800">+${totalElevationGainM.toLocaleString('vi-VN')}m</text>
         <rect x="56" y="316" width="624" height="86" rx="4" fill="${bgMain}" stroke="${borderStrong}"/>
-        <text x="76" y="348" fill="${textMuted}" font-family="Plus Jakarta Sans, sans-serif" font-size="12" font-weight="700" letter-spacing="2">NÓC NHÀ CAO NHẤT ĐÃ ĐÓNG DẤU</text>
-        <text x="76" y="382" fill="${textMain}" font-family="Plus Jakarta Sans, sans-serif" font-size="20" font-weight="700">${topPeakLabel}</text>
-        <text x="56" y="476" fill="${textMuted}" font-family="Plus Jakarta Sans, sans-serif" font-size="13">Xuất ngày ${new Date().toLocaleDateString('vi-VN')} · Cộng đồng Trekking Thực Địa LOST Việt Nam</text>
+        <text x="76" y="348" fill="${textMuted}" font-family="Plus Jakarta Sans, sans-serif" font-size="12" font-weight="700" letter-spacing="2">ĐỈNH CAO NHẤT ĐÃ ĐẾN</text>
+        <text x="76" y="382" fill="${textMain}" font-family="Plus Jakarta Sans, sans-serif" font-size="19" font-weight="700" clip-path="url(#peak-box-clip)">${topPeakLabel}</text>
+        <text x="56" y="476" fill="${textMuted}" font-family="Plus Jakarta Sans, sans-serif" font-size="13">Xuất ngày ${new Date().toLocaleDateString('vi-VN')} · Cộng đồng đi núi LOST Việt Nam</text>
         <rect x="720" y="196" width="184" height="184" rx="4" fill="${onMedia}"/>
         <g transform="translate(730, 206) scale(${(164 / qrSvg.viewBoxSize).toFixed(4)})">
           <path d="${qrSvg.pathD}" fill="${qrDarkFill}"/>
         </g>
-        <text x="812" y="408" text-anchor="middle" fill="${textMuted}" font-family="Plus Jakarta Sans, sans-serif" font-size="12" font-weight="700">QUÉT XÁC MINH HỘ CHIẾU</text>
+        <text x="812" y="408" text-anchor="middle" fill="${textMuted}" font-family="Plus Jakarta Sans, sans-serif" font-size="12" font-weight="700">${qrCaption}</text>
       </svg>`;
 
       const svgBlob = new Blob([svgMarkup], { type: 'image/svg+xml;charset=utf-8' });
@@ -946,7 +1048,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
           document.body.removeChild(a);
         }
         URL.revokeObjectURL(url);
-        onShowToast?.('Đã tải thẻ Hộ Chiếu Đỉnh Núi (PNG) thành công!', 'success');
+        onShowToast?.('Đã tải ảnh thẻ dấu đỉnh (PNG).', 'success');
       };
       img.onerror = () => {
         // Fallback: download clean SVG directly
@@ -957,11 +1059,11 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
         a.click();
         document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 1000);
-        onShowToast?.('Đã tải thẻ Hộ Chiếu Đỉnh Núi (SVG) thành công!', 'success');
+        onShowToast?.('Đã tải ảnh thẻ dấu đỉnh (SVG).', 'success');
       };
       img.src = url;
     } catch {
-      onShowToast?.('Không thể xuất ảnh thẻ Hộ chiếu lúc này.', 'error');
+      onShowToast?.('Chưa xuất được ảnh thẻ lúc này.', 'error');
     }
   };
 
@@ -981,7 +1083,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
         }}
       >
         <div>
-          <div className="section-eyebrow">Hộ Chiếu Đỉnh Núi Việt Nam</div>
+          <div className="section-eyebrow">Nhật ký đỉnh núi Việt Nam</div>
           <h1
             className="font-editorial"
             style={{
@@ -991,10 +1093,10 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
               lineHeight: 1.08,
             }}
           >
-            Peak Passport &amp; Thử Thách Chinh Phục
+            Dấu chân qua từng đỉnh
           </h1>
           <p style={{ fontSize: '0.86rem', color: 'var(--color-text-muted)', margin: '6px 0 0 0' }}>
-            Đóng dấu {trails.length} đỉnh núi thực địa Việt Nam, mở khóa bộ sưu tập huy hiệu và so kè bảng xếp hạng GPS.
+            Ghi lại dấu chân trên {trails.length} cung núi Việt Nam, gom dần những mốc độ cao và xem ai đang đi nhiều nhất mùa này.
           </p>
         </div>
 
@@ -1005,7 +1107,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
             onClick={() => setShowCardPreview(true)}
             style={{ fontSize: '0.8rem', padding: '8px 14px' }}
           >
-            <IconDownload size={15} /> Thẻ Hộ Chiếu PNG
+            <IconDownload size={15} /> Xuất thẻ dấu đỉnh PNG
           </button>
           {onBack && (
             <button
@@ -1045,10 +1147,10 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
               />
               <strong style={{ fontSize: '0.92rem', color: 'var(--color-text-main)' }}>
                 {isVerifyingPassport
-                  ? `Đang xác minh Hộ Chiếu Đỉnh Núi mã ${verifyCode}...`
+                  ? `Đang kiểm tra mã sổ dấu ${verifyCode}...`
                   : verifyResult?.status === 'verified' && verifyResult.data
-                    ? `Hộ Chiếu Đỉnh Núi Đã Xác Thực · ${verifyResult.data.expeditionCode}`
-                    : `Không thể xác minh mã Hộ Chiếu ${verifyCode}`}
+                    ? `Sổ dấu đỉnh đã xác thực · ${verifyResult.data.expeditionCode}`
+                    : `Không kiểm tra được mã ${verifyCode}`}
               </strong>
               {verifyResult?.status === 'verified' && verifyResult.data && (
                 <span className="badge badge-success" style={{ fontSize: '0.68rem' }}>
@@ -1129,43 +1231,43 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
       <div className="editorial-stat-strip" style={{ marginBottom: 20 }}>
         <div className="editorial-stat-cell">
           <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-text-dim)', fontWeight: 700 }}>
-            Đỉnh Đã Đóng Dấu
+            Đỉnh đã qua
           </div>
           <div className="font-editorial" style={{ fontSize: '1.7rem', color: 'var(--color-primary)', fontVariantNumeric: 'tabular-nums' }}>
             {conqueredTrails.length}/{trails.length}
           </div>
           <div style={{ fontSize: '0.73rem', color: 'var(--color-text-muted)' }}>
-            {verifiedStampsCount} đỉnh xác thực GPS
+            {verifiedStampsCount} đỉnh có GPS xác thực
           </div>
         </div>
 
         <div className="editorial-stat-cell">
           <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-text-dim)', fontWeight: 700 }}>
-            Độ Dốc Tích Lũy
+            Độ dốc đã leo
           </div>
           <div className="font-editorial" style={{ fontSize: '1.7rem', color: 'var(--color-sun)', fontVariantNumeric: 'tabular-nums' }}>
             +{totalElevationGainM.toLocaleString('vi-VN')}m
           </div>
           <div style={{ fontSize: '0.73rem', color: 'var(--color-text-muted)' }}>
-            Tổng cự ly {totalUniqueKm.toLocaleString('vi-VN')} km
+            Tổng quãng đường {totalUniqueKm.toLocaleString('vi-VN')} km
           </div>
         </div>
 
         <div className="editorial-stat-cell">
           <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-text-dim)', fontWeight: 700 }}>
-            Nóc Nhà Cao Nhất
+            Đỉnh cao nhất
           </div>
           <div className="font-editorial" style={{ fontSize: '1.7rem', color: 'var(--color-sky)', fontVariantNumeric: 'tabular-nums' }}>
             {highestPeak ? `${highestPeak.maxAltitudeM.toLocaleString('vi-VN')}m` : '0m'}
           </div>
           <div style={{ fontSize: '0.73rem', color: 'var(--color-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {highestPeak ? highestPeak.name : 'Chưa đóng dấu đỉnh nào'}
+            {highestPeak ? highestPeak.name : 'Chưa ghi dấu đỉnh nào'}
           </div>
         </div>
 
         <div className="editorial-stat-cell">
           <div style={{ fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-text-dim)', fontWeight: 700 }}>
-            Thử Thách Hoàn Thành
+            Thử thách đã đạt
           </div>
           <div className="font-editorial" style={{ fontSize: '1.7rem', color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
             {challenges.filter((c) => c.isCompleted).length}/{challenges.length}
@@ -1181,7 +1283,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
           <div style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--color-text-main)', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
             <IconMountain size={16} color="var(--color-primary)" />
-            Cột Mốc Độ Cao Tích Lũy (Vertical Gain Milestones)
+            Các mốc độ cao đã leo
           </div>
           <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
             Hiện tại: <strong style={{ color: 'var(--color-primary)' }}>+{totalElevationGainM.toLocaleString('vi-VN')}m</strong> / 50.000m
@@ -1230,9 +1332,9 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
         <span aria-hidden="true" className="lost-glider-tab" style={passportTabIndicatorStyle} />
         {(
           [
-            { id: 'challenges', label: 'Bộ Sưu Tập Thử Thách', count: challenges.length },
-            { id: 'passport', label: `Hộ Chiếu Đóng Dấu ${trails.length} Đỉnh`, count: trails.length },
-            { id: 'leaderboard', label: 'Bảng Xếp Hạng Chinh Phục', count: leaderboard.length },
+            { id: 'challenges', label: 'Thử thách gom đỉnh', count: challenges.length },
+            { id: 'passport', label: `Đóng dấu ${trails.length} đỉnh`, count: trails.length },
+            { id: 'leaderboard', label: 'Anh em đi nhiều', count: leaderboard.length },
           ] as const
         ).map((tab) => (
           <button
@@ -1265,7 +1367,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
         <div className="hub-grid-2 tab-content-slide">
           {loading && challenges.length === 0 ? (
             <div className="card" style={{ padding: 36, textAlign: 'center', color: 'var(--color-text-muted)' }}>
-              Đang tải thử thách chinh phục đỉnh Việt Nam...
+              Đang tải danh sách thử thách...
             </div>
           ) : (
             challenges.map((ch) => {
@@ -1284,7 +1386,10 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                       loading="lazy"
                       style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                       onError={(e) => {
-                        (e.currentTarget as HTMLImageElement).src = DEFAULT_VIETNAM_TRAIL_COVER;
+                        const img = e.currentTarget as HTMLImageElement;
+                        if (img.dataset.fallbackApplied === '1') return;
+                        img.dataset.fallbackApplied = '1';
+                        img.src = DEFAULT_VIETNAM_TRAIL_COVER;
                       }}
                     />
                     <div
@@ -1418,7 +1523,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
 
                       {ch.isClaimed ? (
                         <span className="badge badge-success">
-                          <IconCheckCircle size={12} /> Đã Nhận Huy Hiệu
+                          <IconCheckCircle size={12} /> Đã nhận huy hiệu
                         </span>
                       ) : ch.isCompleted ? (
                         <button
@@ -1428,7 +1533,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                           onClick={() => void handleClaimChallenge(ch)}
                           style={{ padding: '6px 14px', fontSize: '0.78rem' }}
                         >
-                          {claimingSlug === ch.slug ? 'Đang xác nhận...' : 'Nhận Huy Hiệu & Điểm'}
+                          {claimingSlug === ch.slug ? 'Đang lưu...' : 'Nhận huy hiệu'}
                         </button>
                       ) : (
                         <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -1565,7 +1670,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                     {isStamped ? (
                       <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                         <span className="badge badge-success">
-                          <IconShieldCheck size={12} /> {stamp.verifiedBadge ? 'GPS Xác Thực' : 'Đã Đóng Dấu'}
+                          <IconShieldCheck size={12} /> {stamp.verifiedBadge ? 'Có GPS xác thực' : 'Đã đóng dấu'}
                         </span>
                         {!stamp.verifiedBadge && (
                           <button
@@ -1573,13 +1678,16 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                             className="btn btn-outline"
                             onClick={() => {
                               setCheckinModalTrail(trail);
+                              setCheckinOpenedAtMs(Date.now());
                               setCheckinHours(String(stamp.completionTimeHours || Math.max(4, (trail.durationDays || 1) * 7)));
                               setCheckinGps(null);
+                              setCheckinGpxTrack([]);
+                              setCheckinGpxMeta(null);
                             }}
                             style={{ padding: '4px 9px', fontSize: '0.72rem', color: 'var(--color-sky)' }}
-                            title="Nâng cấp dấu thủ công lên Check-in GPS xác thực"
+                            title="Gắn tọa độ GPS hoặc tệp .GPX để xác thực dấu đỉnh này"
                           >
-                            <IconMapPin size={11} color="var(--color-sky)" /> Xác Thực GPS
+                            <IconMapPin size={11} color="var(--color-sky)" /> Xác thực GPS / GPX
                           </button>
                         )}
                       </div>
@@ -1589,12 +1697,15 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                         className="btn btn-primary"
                         onClick={() => {
                           setCheckinModalTrail(trail);
+                          setCheckinOpenedAtMs(Date.now());
                           setCheckinHours(String(Math.max(4, (trail.durationDays || 1) * 7)));
                           setCheckinGps(null);
+                          setCheckinGpxTrack([]);
+                          setCheckinGpxMeta(null);
                         }}
                         style={{ padding: '5px 10px', fontSize: '0.74rem' }}
                       >
-                        <IconMapPin size={12} /> Đóng Dấu Đỉnh
+                        <IconMapPin size={12} /> Đóng dấu đỉnh
                       </button>
                     )}
 
@@ -1605,7 +1716,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                           className="btn btn-secondary"
                           onClick={() => setShareCardTarget({ trail, stamp })}
                           style={{ padding: '5px 9px', fontSize: '0.74rem' }}
-                          title={`Xuất thẻ ảnh PNG hành trình chinh phục ${trail.name}`}
+                          title={`Xuất thẻ ảnh PNG chuyến đi ${trail.name}`}
                         >
                           <IconImage size={12} /> Thẻ PNG
                         </button>
@@ -1617,7 +1728,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                           onClick={() => onSelectTrail(trail)}
                           style={{ padding: '5px 10px', fontSize: '0.74rem' }}
                         >
-                          Xem Cung
+                          Xem cung
                         </button>
                       )}
                     </div>
@@ -1635,10 +1746,10 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
             <div>
               <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                Bảng Xếp Hạng Nhà Thám Hiểm Việt Nam
+                Những bước chân đi nhiều nhất
               </h3>
               <p style={{ margin: '3px 0 0 0', fontSize: '0.78rem', color: 'var(--color-text-muted)' }}>
-                Tổng hợp từ dữ liệu đóng dấu đỉnh thực tế &amp; xác thực GPS trên hệ thống LOST.
+                Tính từ các đỉnh đã đóng dấu và xác thực GPS trên LOST.
               </p>
             </div>
             <select
@@ -1657,7 +1768,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
 
           {leaderboard.length === 0 ? (
             <div style={{ padding: 36, textAlign: 'center', color: 'var(--color-text-muted)', border: '1px dashed var(--color-border)', borderRadius: 4, fontSize: '0.84rem' }}>
-              Chưa có dữ liệu xếp hạng trong khu vực này. Hãy là người đầu tiên đóng dấu đỉnh!
+              Chưa có ai ghi dấu ở khu vực này — bạn mở hàng trước nhé?
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1748,7 +1859,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                 <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800, color: 'var(--color-text-main)', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
-                  <IconCompass size={18} color="var(--color-primary)" /> Đóng Dấu Hộ Chiếu Đỉnh
+                  <IconCompass size={18} color="var(--color-primary)" /> Đóng dấu chuyến đi
                 </h3>
                 <button
                   type="button"
@@ -1775,7 +1886,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
               </div>
 
               <div className="form-group">
-                <label className="form-label" htmlFor="passport-checkin-hours">Thời gian hoàn thành thực tế (giờ)</label>
+                <label className="form-label" htmlFor="passport-checkin-hours">Bạn đi hết bao nhiêu giờ?</label>
                 <input
                   id="passport-checkin-hours"
                   type="number"
@@ -1788,7 +1899,36 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                 />
               </div>
 
-              <div style={{ marginBottom: 16 }}>
+              {(() => {
+                const existingStamp =
+                  stampedMap[String(checkinModalTrail.id)] ||
+                  stampedMap[String((checkinModalTrail as TrailWithMongoId)._id || '')];
+                if (!existingStamp || existingStamp.verifiedBadge || !existingStamp.checkinDate || !checkinOpenedAtMs) return null;
+                const elapsedMs = checkinOpenedAtMs - new Date(existingStamp.checkinDate).getTime();
+                const cooldownMs = 12 * 60 * 60 * 1000;
+                if (!Number.isFinite(elapsedMs) || elapsedMs < 0 || elapsedMs >= cooldownMs) return null;
+                const hoursLeft = Math.max(1, Math.ceil((cooldownMs - elapsedMs) / (60 * 60 * 1000)));
+                return (
+                  <div
+                    role="note"
+                    style={{
+                      padding: '9px 11px',
+                      borderRadius: 4,
+                      marginBottom: 14,
+                      fontSize: '0.75rem',
+                      lineHeight: 1.5,
+                      color: 'var(--color-text-main)',
+                      background: 'color-mix(in srgb, var(--color-sun) 12%, var(--color-bg-main))',
+                      border: '1px solid color-mix(in srgb, var(--color-sun) 38%, var(--color-border))',
+                    }}
+                  >
+                    Bạn vừa đóng dấu cung này trong 12 giờ qua. Máy chủ áp dụng thời gian chờ chống trùng lặp còn khoảng{' '}
+                    <strong>{hoursLeft} giờ</strong> — sau đó bạn có thể tải tệp <code>.GPX</code> hoặc gắn tọa độ GPS để nâng cấp dấu xác thực.
+                  </div>
+                );
+              })()}
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
                 <button
                   type="button"
                   className={`btn ${checkinGps ? 'btn-primary' : 'btn-outline'}`}
@@ -1798,11 +1938,52 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                 >
                   <IconShieldCheck size={15} />
                   {capturingGps
-                    ? 'Đang lấy tín hiệu vệ tinh GPS...'
+                    ? 'Đang bắt sóng vệ tinh GPS...'
                     : checkinGps
-                      ? `Đã khóa GPS (${checkinGps.lat.toFixed(4)}, ${checkinGps.lng.toFixed(4)})`
-                      : 'Đính Kèm GPS Xác Thực Thực Địa'}
+                      ? `Đã lấy GPS (${checkinGps.lat.toFixed(4)}, ${checkinGps.lng.toFixed(4)})`
+                      : 'Gắn tọa độ GPS thực địa'}
                 </button>
+
+                <input
+                  ref={checkinGpxInputRef}
+                  type="file"
+                  accept=".gpx,application/gpx+xml,text/xml"
+                  onChange={(ev) => void handleSelectCheckinGpx(ev)}
+                  style={{ display: 'none' }}
+                />
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    type="button"
+                    className={`btn ${checkinGpxMeta ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => checkinGpxInputRef.current?.click()}
+                    disabled={parsingCheckinGpx}
+                    style={{ flex: 1, fontSize: '0.8rem' }}
+                  >
+                    <IconCompass size={15} />
+                    {parsingCheckinGpx
+                      ? 'Đang đọc tệp GPX...'
+                      : checkinGpxMeta
+                        ? `GPX: ${checkinGpxMeta.fileName} (${checkinGpxMeta.distanceKm} km)`
+                        : 'Đính kèm tệp .GPX xác thực đỉnh'}
+                  </button>
+                  {checkinGpxMeta && (
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      aria-label="Gỡ tệp GPX đã chọn"
+                      onClick={() => {
+                        setCheckinGpxTrack([]);
+                        setCheckinGpxMeta(null);
+                      }}
+                      style={{ padding: '0 10px' }}
+                    >
+                      <IconX size={14} />
+                    </button>
+                  )}
+                </div>
+                <div style={{ fontSize: '0.71rem', color: 'var(--color-text-dim)', lineHeight: 1.45 }}>
+                  Hỗ trợ xác thực ngoại tuyến bằng tracklog <code>.gpx</code> ghi từ đồng hồ thể thao hoặc ứng dụng GPS (đi qua bán kính 1,5 km quanh tuyến).
+                </div>
               </div>
 
               <div style={{ display: 'flex', gap: 10 }}>
@@ -1822,7 +2003,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                   disabled={submittingCheckin}
                   style={{ flex: 1.4 }}
                 >
-                  {submittingCheckin ? 'Đang đóng dấu...' : 'Xác Nhận Đóng Dấu'}
+                  {submittingCheckin ? 'Đang lưu...' : 'Lưu dấu đỉnh'}
                 </button>
               </div>
             </div>
@@ -1850,7 +2031,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                 <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                  Thẻ Hộ Chiếu Đỉnh Núi LOST
+                  Thẻ dấu đỉnh của bạn
                 </h3>
                 <button
                   type="button"
@@ -1875,7 +2056,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
                   <div style={{ flex: 1, minWidth: 220 }}>
                     <div style={{ fontSize: '0.68rem', fontWeight: 800, color: 'var(--color-primary)', letterSpacing: '0.12em', textTransform: 'uppercase' }}>
-                      LOST VIETNAM · SUMMIT PASSPORT
+                      LOST VIETNAM · SỔ DẤU ĐỈNH
                     </div>
                     <div className="font-editorial" style={{ fontSize: '1.45rem', color: 'var(--color-text-main)', marginTop: 4 }}>
                       {currentUser?.fullName || currentUser?.username || 'Trekker LOST'}
@@ -1889,6 +2070,11 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                         {highestPeak ? `${highestPeak.name} (${highestPeak.maxAltitudeM}m)` : 'Chưa đóng dấu'}
                       </strong>
                     </div>
+                    {!hasVerifiedAccountCode && (
+                      <div style={{ marginTop: 8, fontSize: '0.72rem', color: 'var(--color-text-dim)' }}>
+                        Đăng nhập tài khoản LOST để cấp mã QR xác thực chính chủ.
+                      </div>
+                    )}
                   </div>
                   <div
                     style={{
@@ -1933,7 +2119,7 @@ export const PeakPassportView: React.FC<PeakPassportViewProps> = ({
                   onClick={handleDownloadPassportPng}
                   style={{ flex: 1.4 }}
                 >
-                  <IconDownload size={15} /> Tải Ảnh Thẻ PNG
+                  <IconDownload size={15} /> Tải ảnh thẻ PNG
                 </button>
               </div>
             </div>

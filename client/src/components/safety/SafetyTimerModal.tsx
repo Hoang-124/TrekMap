@@ -3,7 +3,9 @@ import { createPortal } from 'react-dom';
 import type { Trail, UserProfile } from '../../types.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import { buildOfflineSosSmsUri } from '../../utils/geoMath.js';
+import { scopedStorageKey } from '../../utils/storageScope.js';
 import { isTopmostFocusTrap, useFocusTrap } from '../../hooks/useFocusTrap.js';
+import { useSocket } from '../../hooks/useSocket.js';
 import {
   IconShieldAlert,
   IconShieldCheck,
@@ -27,6 +29,76 @@ interface SafetyTimerRecord {
   lastKnownLng?: number;
   notes?: string;
   status: 'active' | 'checked_in_safe' | 'overdue_alerted' | 'cancelled';
+  emailAlertStatus?: 'none' | 'pending' | 'sent' | 'failed';
+  emailRetryCount?: number;
+  emailLastError?: string;
+  alertedAt?: string;
+}
+
+const SAFETY_TIMERS_CACHE_BASE_KEY = 'lost_safety_timers_cache_v1';
+const EMAIL_BASIC_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function loadCachedSafetyTimers(uid: string): SafetyTimerRecord[] {
+  if (!uid || typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(scopedStorageKey(SAFETY_TIMERS_CACHE_BASE_KEY, uid));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as SafetyTimerRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCachedSafetyTimers(uid: string, list: SafetyTimerRecord[]) {
+  if (!uid || typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(
+      scopedStorageKey(SAFETY_TIMERS_CACHE_BASE_KEY, uid),
+      JSON.stringify(list.slice(0, 15))
+    );
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function copyTextViaExecCommand(text: string): boolean {
+  if (typeof document === 'undefined' || !document.body) return false;
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', 'true');
+    textarea.style.position = 'fixed';
+    textarea.style.top = '-9999px';
+    textarea.style.left = '-9999px';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+function copyTextWithFallback(text: string): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    return navigator.clipboard
+      .writeText(text)
+      .then(() => true)
+      .catch(() => copyTextViaExecCommand(text));
+  }
+  return Promise.resolve(copyTextViaExecCommand(text));
+}
+
+function classifyVietnamSmsRecipient(rawPhone: string): 'empty' | 'voice_only' | 'landline' | 'mobile' {
+  const digits = String(rawPhone || '').replace(/[^\d+]/g, '');
+  if (!digits) return 'empty';
+  if (/^(112|113|114|115)$/.test(digits)) return 'voice_only';
+  if (/^(02\d{7,10}|\+?842\d{7,10})$/.test(digits)) return 'landline';
+  return 'mobile';
 }
 
 interface SafetyTimerModalProps {
@@ -66,12 +138,16 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
   onShowToast,
   onRequireAuth,
 }) => {
+  const currentUserId = String(currentUser?.id || (currentUser as (UserProfile & { _id?: string }) | null)?._id || '');
+  const { socket } = useSocket();
   const [activeTab, setActiveTab] = useState<'timer' | 'sos'>('timer');
-  const [timers, setTimers] = useState<SafetyTimerRecord[]>([]);
+  const [timers, setTimers] = useState<SafetyTimerRecord[]>(() => loadCachedSafetyTimers(currentUserId));
+  const [usingOfflineCache, setUsingOfflineCache] = useState<boolean>(false);
   const [timersRefreshTick, setTimersRefreshTick] = useState(0);
   const [loadedTimersKey, setLoadedTimersKey] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const [showCreateFormOverride, setShowCreateFormOverride] = useState(false);
 
   // Timer form fields — initialized once per modal open so user edits/clears to contactPhone are NEVER overwritten
   const [trailName, setTrailName] = useState(selectedTrail?.name || '');
@@ -91,7 +167,8 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
   const closeBtnRef = useRef<HTMLButtonElement>(null);
   const isMountedRef = useRef(true);
   const isSubmittingRef = useRef(false);
-  const currentUserId = String(currentUser?.id || (currentUser as (UserProfile & { _id?: string }) | null)?._id || '');
+  const autoRequestedSosGpsRef = useRef(false);
+  const lastOverdueSyncMsRef = useRef(0);
   const timersRequestKey = currentUserId ? `${currentUserId}:${timersRefreshTick}` : '';
   const isLoading = Boolean(currentUserId) && loadedTimersKey !== timersRequestKey;
 
@@ -104,11 +181,11 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
     };
   }, []);
 
-  // Live GPS state for SOS SMS & Timer
+  // Live GPS state for SOS SMS & Timer (never pre-populate voice-only 112 as SMS recipient)
   const [gpsCoords, setGpsCoords] = useState<{ lat: number; lng: number; alt: number | null } | null>(null);
   const [isLocating, setIsLocating] = useState(false);
-  const [sosTargetPhone, setSosTargetPhone] = useState('112');
-  const [sosNote, setSosNote] = useState('Cần hỗ trợ khẩn cấp trên đường trekking.');
+  const [sosTargetPhone, setSosTargetPhone] = useState(currentUser?.emergencyContact || '');
+  const [sosNote, setSosNote] = useState('Can ho tro khan cap tren duong trekking.');
 
   // Escape key close (strict LIFO via topmost focus trap + IME guard)
   useEffect(() => {
@@ -140,14 +217,25 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
       headers: getApiHeaders(),
       signal: controller.signal,
     })
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
       .then((data) => {
         if (!controller.signal.aborted && isMountedRef.current && data.success && Array.isArray(data.data)) {
           setTimers(data.data);
+          setUsingOfflineCache(false);
+          saveCachedSafetyTimers(currentUserId, data.data);
         }
       })
       .catch(() => {
-        // offline safe or aborted
+        if (!controller.signal.aborted && isMountedRef.current) {
+          const cached = loadCachedSafetyTimers(currentUserId);
+          if (cached.length > 0) {
+            setTimers(cached);
+            setUsingOfflineCache(true);
+          }
+        }
       })
       .finally(() => {
         if (!controller.signal.aborted && isMountedRef.current) {
@@ -158,20 +246,43 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
     return () => controller.abort();
   }, [isOpen, currentUserId, timersRefreshTick]);
 
+  // Listen to real-time socket safetyTimerOverdue event so UI transitions immediately to overdue_alerted
+  useEffect(() => {
+    if (!isOpen || !socket || !currentUserId) return;
+    const handleSocketOverdue = () => {
+      reloadTimers();
+    };
+    socket.on('safetyTimerOverdue', handleSocketOverdue);
+    return () => {
+      socket.off('safetyTimerOverdue', handleSocketOverdue);
+    };
+  }, [isOpen, socket, currentUserId, reloadTimers]);
+
   const activeTimer = timers.find((t) => t.status === 'active' || t.status === 'overdue_alerted');
 
-  // Live 1-second ticking countdown while an active or overdue timer is displayed
+  // Live 1-second ticking countdown + server status re-sync once timer crosses 00:00:00
   useEffect(() => {
     if (!isOpen || !activeTimer) return;
+    const deadlineMs = new Date(activeTimer.expectedReturnAt).getTime();
     const interval = setInterval(() => {
-      setNowMs(Date.now());
+      const now = Date.now();
+      setNowMs(now);
+      if (
+        activeTimer.status === 'active' &&
+        Number.isFinite(deadlineMs) &&
+        now >= deadlineMs &&
+        now - lastOverdueSyncMsRef.current >= 15_000
+      ) {
+        lastOverdueSyncMsRef.current = now;
+        reloadTimers();
+      }
     }, 1000);
     return () => clearInterval(interval);
-  }, [isOpen, activeTimer]);
+  }, [isOpen, activeTimer, reloadTimers]);
 
-  const handleCaptureGps = () => {
-    if (!navigator.geolocation) {
-      onShowToast?.('Thiết bị không hỗ trợ cảm biến GPS.', 'error');
+  const handleCaptureGps = useCallback((silentError = false) => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      if (!silentError) onShowToast?.('Thiết bị không hỗ trợ cảm biến GPS.', 'error');
       return;
     }
     setIsLocating(true);
@@ -184,16 +295,28 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
           alt: pos.coords.altitude !== null ? Math.round(pos.coords.altitude) : null,
         });
         setIsLocating(false);
-        onShowToast?.('Đã chốt tọa độ GPS thực tế cho tín hiệu an toàn!', 'success');
+        if (!silentError) onShowToast?.('Đã chốt tọa độ GPS thực tế cho tín hiệu an toàn!', 'success');
       },
       () => {
         if (!isMountedRef.current) return;
         setIsLocating(false);
-        onShowToast?.('Không thể lấy tín hiệu GPS. Vui lòng bật định vị thiết bị.', 'error');
+        if (!silentError) {
+          onShowToast?.('Không thể lấy tín hiệu GPS. Vui lòng bật định vị thiết bị.', 'error');
+        }
       },
       { enableHighAccuracy: true, timeout: 10000 }
     );
-  };
+  }, [onShowToast]);
+
+  // Auto-request real GPS once when switching to SOS tab so coordinates are fresh without fabricating trailhead coords
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'sos' || gpsCoords || autoRequestedSosGpsRef.current) return;
+    autoRequestedSosGpsRef.current = true;
+    const tid = window.setTimeout(() => {
+      handleCaptureGps(true);
+    }, 0);
+    return () => window.clearTimeout(tid);
+  }, [isOpen, activeTab, gpsCoords, handleCaptureGps]);
 
   const handleCreateTimer = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -207,6 +330,15 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
     const finalTrailName = trailName.trim() || selectedDropdownTrail?.name || '';
     if (!finalTrailName) {
       onShowToast?.('Vui lòng chọn hoặc nhập tên cung đường trekking.', 'error');
+      return;
+    }
+
+    const cleanEmail = contactEmail.trim();
+    if (!cleanEmail || !EMAIL_BASIC_REGEX.test(cleanEmail)) {
+      onShowToast?.(
+        'Vui lòng nhập email hợp lệ của người thân — hệ thống hiện gửi cảnh báo quá hạn tự động qua email.',
+        'error'
+      );
       return;
     }
 
@@ -225,9 +357,8 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
           expectedReturnAt,
           emergencyContactName: contactName.trim(),
           emergencyContactPhone: contactPhone.trim(),
-          emergencyContactEmail: contactEmail.trim(),
-          lastKnownLat: gpsCoords?.lat ?? selectedDropdownTrail?.startLat,
-          lastKnownLng: gpsCoords?.lng ?? selectedDropdownTrail?.startLng,
+          emergencyContactEmail: cleanEmail,
+          ...(gpsCoords ? { lastKnownLat: gpsCoords.lat, lastKnownLng: gpsCoords.lng } : {}),
           notes: notes.trim(),
         }),
       });
@@ -235,9 +366,10 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
       if (!res.ok || !data.success) {
         throw new Error(data.message || 'Không thể kích hoạt lịch hẹn.');
       }
-      onShowToast?.(data.message || 'Đã kích hoạt Hẹn Giờ Báo Bình An!', 'success');
+      onShowToast?.(data.message || 'Đã kích hoạt hẹn giờ báo bình an!', 'success');
       if (isMountedRef.current) {
         setNotes('');
+        setShowCreateFormOverride(false);
         reloadTimers();
       }
     } catch (err: unknown) {
@@ -329,21 +461,26 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
   const remainingMs = activeTimer ? activeDeadlineMs - nowMs : 0;
   const isOverdue = Boolean(activeTimer && (activeTimer.status === 'overdue_alerted' || remainingMs <= 0));
   const historicalTimers = timers.filter((t) => t._id !== activeTimer?._id);
+  const shouldShowCreateForm = !activeTimer || (showCreateFormOverride && activeTimer.status !== 'overdue_alerted');
 
+  // Life-safety P0: NEVER mix trailhead startLat/startLng with summit maxAltitudeM in SOS SMS
   const sosPayload = buildOfflineSosSmsUri({
-    phone: sosTargetPhone,
-    trailName: trailName || selectedDropdownTrail?.name || 'Rừng núi Việt Nam',
-    lat: gpsCoords?.lat ?? selectedDropdownTrail?.startLat ?? null,
-    lng: gpsCoords?.lng ?? selectedDropdownTrail?.startLng ?? null,
-    altitudeM: gpsCoords?.alt ?? selectedDropdownTrail?.maxAltitudeM ?? null,
+    phone: sosTargetPhone.trim(),
+    trailName: trailName || selectedDropdownTrail?.name || '',
+    lat: gpsCoords ? gpsCoords.lat : null,
+    lng: gpsCoords ? gpsCoords.lng : null,
+    altitudeM: gpsCoords ? gpsCoords.alt : null,
     note: sosNote,
   });
 
+  const sosRecipientKind = classifyVietnamSmsRecipient(sosTargetPhone);
+  const cleanSosDial = sosTargetPhone.replace(/[^\d+]/g, '');
+
   const handleCopySos = async () => {
-    try {
-      await navigator.clipboard.writeText(sosPayload.body);
-      onShowToast?.('Đã sao chép nội dung tin nhắn SOS chứa tọa độ GPS!', 'success');
-    } catch {
+    const ok = await copyTextWithFallback(sosPayload.body);
+    if (ok) {
+      onShowToast?.('Đã sao chép nội dung tin nhắn SOS!', 'success');
+    } else {
       onShowToast?.('Không thể tự động sao chép. Hãy chọn nội dung bên dưới.', 'info');
     }
   };
@@ -418,10 +555,10 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
             </div>
             <div>
               <h3 className="font-editorial" style={{ margin: 0, fontSize: '1.3rem', fontWeight: 600, color: 'var(--color-text-main)' }}>
-                An Toàn Hành Trình &amp; SOS Ngoại Tuyến
+                An toàn hành trình &amp; SOS ngoại tuyến
               </h3>
               <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)' }}>
-                Hẹn giờ báo bình an tự động (Dead-Man&apos;s Switch) &amp; Tin nhắn SMS SOS sóng 2G
+                Tự động báo email người thân nếu quá giờ về &amp; tin nhắn SOS sóng 2G
               </div>
             </div>
           </div>
@@ -456,7 +593,7 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
             style={{ justifyContent: 'center', fontSize: '0.82rem', padding: '9px 12px', borderRadius: 4 }}
           >
             <IconClock size={15} />
-            <span>Hẹn Giờ Báo Bình An</span>
+            <span>Hẹn giờ báo bình an</span>
           </button>
           <button
             type="button"
@@ -465,7 +602,7 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
             style={{ justifyContent: 'center', fontSize: '0.82rem', padding: '9px 12px', borderRadius: 4 }}
           >
             <IconPhone size={15} />
-            <span>SOS SMS Ngoại Tuyến (2G)</span>
+            <span>SOS SMS ngoại tuyến (2G)</span>
           </button>
         </div>
 
@@ -556,9 +693,64 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
                   </div>
                 </div>
 
-                <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginBottom: activeTimer.notes ? 6 : 12 }}>
-                  Người nhận cảnh báo quá hạn: <strong style={{ color: 'var(--color-text-main)' }}>{activeTimer.emergencyContactName}</strong> ({activeTimer.emergencyContactPhone}
-                  {activeTimer.emergencyContactEmail ? ` • ${activeTimer.emergencyContactEmail}` : ''})
+                {usingOfflineCache && (
+                  <div
+                    role="status"
+                    style={{
+                      padding: '6px 10px',
+                      marginBottom: 10,
+                      borderRadius: 4,
+                      background: 'var(--color-bg-card)',
+                      border: '1px solid var(--color-border)',
+                      color: 'var(--color-text-muted)',
+                      fontSize: '0.74rem',
+                    }}
+                  >
+                    Đang hiển thị bản lưu ngoại tuyến trên máy. Cần có sóng mạng để gửi xác nhận bình an lên máy chủ.
+                  </div>
+                )}
+
+                {(!activeTimer.emergencyContactEmail ||
+                  activeTimer.emailAlertStatus === 'failed' ||
+                  activeTimer.emailAlertStatus === 'none' ||
+                  (activeTimer.status === 'overdue_alerted' && activeTimer.emailAlertStatus === 'pending')) && (
+                  <div
+                    role="alert"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 8,
+                      padding: '8px 10px',
+                      marginBottom: 10,
+                      borderRadius: 4,
+                      background: 'var(--banner-danger-bg)',
+                      border: '1px solid var(--banner-danger-border)',
+                      color: 'var(--banner-danger-text)',
+                      fontSize: '0.76rem',
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    <IconAlertTriangle size={15} color="var(--color-error-text, var(--color-error))" style={{ flexShrink: 0, marginTop: 2 }} />
+                    <span>
+                      {activeTimer.emailAlertStatus === 'failed'
+                        ? `Không gửi được email cảnh báo quá hạn${activeTimer.emailLastError ? ` (${activeTimer.emailLastError})` : ''}. Hãy gọi hoặc nhắn SMS 2G trực tiếp cho người thân.`
+                        : activeTimer.status === 'overdue_alerted' && activeTimer.emailAlertStatus === 'pending'
+                          ? `Hệ thống đang thử gửi lại email cảnh báo quá hạn${activeTimer.emailRetryCount ? ` (lần thử ${activeTimer.emailRetryCount})` : ''}. Nếu gặp sự cố, hãy chuyển sang tab SOS 2G để nhắn trực tiếp.`
+                          : 'Lịch hẹn này chưa có email người thân — hệ thống hiện chỉ gửi cảnh báo quá hạn tự động qua email (SĐT chỉ dùng để cứu hộ gọi tay).'}
+                    </span>
+                  </div>
+                )}
+
+                <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginBottom: activeTimer.notes ? 6 : 12, lineHeight: 1.5 }}>
+                  <div>
+                    Người thân liên hệ: <strong style={{ color: 'var(--color-text-main)' }}>{activeTimer.emergencyContactName}</strong> — SĐT gọi cứu hộ: <strong style={{ color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>{activeTimer.emergencyContactPhone}</strong>
+                  </div>
+                  <div>
+                    Email nhận cảnh báo tự động:{' '}
+                    <strong style={{ color: activeTimer.emergencyContactEmail ? 'var(--color-text-main)' : 'var(--color-error-text, var(--color-error))' }}>
+                      {activeTimer.emergencyContactEmail || 'Chưa thiết lập (không gửi được cảnh báo tự động)'}
+                    </strong>
+                  </div>
                 </div>
 
                 {activeTimer.notes && (
@@ -627,7 +819,7 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
                     onClick={() => handleMarkSafe(activeTimer._id)}
                     style={{ flex: 1, justifyContent: 'center', fontSize: '0.84rem', borderRadius: 4 }}
                   >
-                    <IconCheckCircle size={16} /> Tôi Đã Ra Khỏi Rừng An Toàn
+                    <IconCheckCircle size={16} /> Tôi đã ra khỏi rừng an toàn
                   </button>
                   {activeTimer.status !== 'overdue_alerted' && (
                     <button
@@ -637,14 +829,50 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
                       onClick={() => handleCancelTimer(activeTimer._id)}
                       style={{ fontSize: '0.8rem', borderRadius: 4 }}
                     >
-                      Hủy Lịch
+                      Hủy lịch
                     </button>
                   )}
                 </div>
               </div>
             )}
 
+            {/* Collapsed create-form guard when a timer is already active/overdue */}
+            {activeTimer && !shouldShowCreateForm && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                  flexWrap: 'wrap',
+                  padding: '10px 12px',
+                  borderRadius: 4,
+                  background: 'var(--color-bg-main)',
+                  border: '1px solid var(--color-border)',
+                  fontSize: '0.76rem',
+                  color: 'var(--color-text-muted)',
+                }}
+              >
+                <span>
+                  {activeTimer.status === 'overdue_alerted'
+                    ? 'Lịch hẹn hiện tại đang ở trạng thái quá hạn. Hãy xác nhận an toàn trước khi tạo lịch mới.'
+                    : 'Biểu mẫu tạo lịch mới được thu gọn để tránh ghi đè lịch đang chạy.'}
+                </span>
+                {activeTimer.status !== 'overdue_alerted' && (
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={() => setShowCreateFormOverride(true)}
+                    style={{ padding: '4px 10px', fontSize: '0.74rem', borderRadius: 4 }}
+                  >
+                    Đặt lịch mới (thay lịch hiện tại)
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* Create New Timer Form */}
+            {shouldShowCreateForm && (
             <form onSubmit={handleCreateTimer} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
                 {trails.length > 0 && (
@@ -710,7 +938,7 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
                 </div>
 
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">SĐT người thân *</label>
+                  <label className="form-label">SĐT người thân (cứu hộ gọi tay) *</label>
                   <input
                     className="form-input"
                     style={{ borderRadius: 4 }}
@@ -722,7 +950,7 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
                 </div>
 
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label">Email người thân (nhận cảnh báo tự động)</label>
+                  <label className="form-label">Email người thân (nhận cảnh báo tự động) *</label>
                   <input
                     type="email"
                     className="form-input"
@@ -730,8 +958,23 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
                     value={contactEmail}
                     onChange={(e) => setContactEmail(e.target.value)}
                     placeholder="nguoithan@domain.com"
+                    required
                   />
                 </div>
+              </div>
+
+              <div
+                style={{
+                  padding: '8px 10px',
+                  borderRadius: 4,
+                  background: 'var(--color-bg-main)',
+                  border: '1px solid var(--color-border)',
+                  fontSize: '0.74rem',
+                  color: 'var(--color-text-muted)',
+                  lineHeight: 1.45,
+                }}
+              >
+                <strong style={{ color: 'var(--color-text-main)' }}>Cách hệ thống báo quá hạn:</strong> Cảnh báo tự động khi hết giờ hiện được gửi qua <strong>email</strong> tới người thân và thông báo tới quản trị viên LOST. Số điện thoại được lưu để cứu hộ gọi trực tiếp khi cần (chưa tự động gửi SMS/Zalo).
               </div>
 
               <div className="form-group" style={{ marginBottom: 0 }}>
@@ -750,7 +993,7 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
                 <button
                   type="button"
                   className="btn btn-outline"
-                  onClick={handleCaptureGps}
+                  onClick={() => handleCaptureGps(false)}
                   disabled={isLocating}
                   style={{ fontSize: '0.78rem', padding: '7px 12px', borderRadius: 4 }}
                 >
@@ -760,15 +1003,16 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
                       ? 'Đang lấy GPS...'
                       : gpsCoords
                         ? `GPS: ${gpsCoords.lat.toFixed(4)}, ${gpsCoords.lng.toFixed(4)}`
-                        : 'Gắn Tọa Độ GPS Hiện Tại'}
+                        : 'Gắn tọa độ GPS hiện tại'}
                   </span>
                 </button>
 
                 <button type="submit" className="btn btn-primary" disabled={isSubmitting} style={{ fontSize: '0.84rem', borderRadius: 4 }}>
-                  {isSubmitting ? 'Đang kích hoạt...' : 'Kích Hoạt Hẹn Giờ Báo Bình An'}
+                  {isSubmitting ? 'Đang kích hoạt...' : 'Kích hoạt hẹn giờ báo bình an'}
                 </button>
               </div>
             </form>
+            )}
 
             {isLoading && (
               <div style={{ fontSize: '0.78rem', color: 'var(--color-text-dim)', textAlign: 'center' }}>
@@ -897,18 +1141,19 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
                 lineHeight: 1.5,
               }}
             >
-              <strong>Hoạt động khi mất 4G/Internet:</strong> Tạo sẵn tin nhắn SMS chứa tọa độ GPS thập phân và đường dẫn Google Maps để gửi qua sóng di động 2G tới Tổng đài Cứu nạn <strong>112</strong>, <strong>114</strong> hoặc người thân.
+              <strong>Hoạt động khi mất 4G/Internet:</strong> Tạo sẵn tin nhắn SMS không dấu (chuẩn GSM-7 sóng 2G) kèm tọa độ GPS thực tế gửi tới <strong>số di động người thân hoặc kiểm lâm</strong>. Đầu số 112/114/115 chỉ hỗ trợ gọi thoại trực tiếp.
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
               <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label">Số nhận tin SOS</label>
+                <label className="form-label">Số di động nhận tin SOS</label>
                 <input
+                  type="tel"
                   className="form-input"
                   style={{ borderRadius: 4 }}
                   value={sosTargetPhone}
                   onChange={(e) => setSosTargetPhone(e.target.value)}
-                  placeholder="112 hoặc SĐT người thân"
+                  placeholder="Nhập SĐT di động (09x, 08x, 03x...)"
                 />
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
@@ -916,15 +1161,74 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
                 <button
                   type="button"
                   className="btn btn-outline"
-                  onClick={handleCaptureGps}
+                  onClick={() => handleCaptureGps(false)}
                   disabled={isLocating}
                   style={{ width: '100%', justifyContent: 'center', height: 42, fontSize: '0.8rem', borderRadius: 4 }}
                 >
                   <IconCompass size={15} color="var(--color-sky)" />
-                  <span>{isLocating ? 'Đang đo GPS...' : 'Cập Nhật Tọa Độ GPS'}</span>
+                  <span>
+                    {isLocating
+                      ? 'Đang đo GPS...'
+                      : gpsCoords
+                        ? `GPS: ${gpsCoords.lat.toFixed(4)}, ${gpsCoords.lng.toFixed(4)}`
+                        : 'Cập nhật tọa độ GPS'}
+                  </span>
                 </button>
               </div>
             </div>
+
+            {!gpsCoords && (
+              <div
+                role="status"
+                style={{
+                  padding: '8px 11px',
+                  borderRadius: 4,
+                  background: 'color-mix(in srgb, var(--color-sun) 14%, var(--color-bg-card))',
+                  border: '1px solid color-mix(in srgb, var(--color-sun) 42%, var(--color-border))',
+                  color: 'var(--color-text-main)',
+                  fontSize: '0.76rem',
+                  lineHeight: 1.45,
+                }}
+              >
+                Chưa khóa được tọa độ GPS thực tế — hệ thống sẽ không tự điền tọa độ mẫu vào tin SOS để tránh báo sai vị trí. Hãy bước ra chỗ thoáng và bấm &ldquo;Cập nhật tọa độ GPS&rdquo;.
+              </div>
+            )}
+
+            {(sosRecipientKind === 'voice_only' || sosRecipientKind === 'landline') && (
+              <div
+                role="alert"
+                style={{
+                  padding: '9px 11px',
+                  borderRadius: 4,
+                  background: 'var(--banner-danger-bg)',
+                  border: '1px solid var(--banner-danger-border)',
+                  color: 'var(--banner-danger-text)',
+                  fontSize: '0.76rem',
+                  lineHeight: 1.45,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <span>
+                  {sosRecipientKind === 'voice_only'
+                    ? `Đầu số ${cleanSosDial} tại Việt Nam chỉ hỗ trợ gọi thoại, nhà mạng không nhận SMS. Hãy gọi trực tiếp hoặc nhập số di động người thân.`
+                    : `Số máy bàn ${sosTargetPhone} thường không nhận được tin nhắn SMS 2G. Hãy gọi trực tiếp hoặc đổi sang số di động (09x/08x/03x).`}
+                </span>
+                {cleanSosDial && (
+                  <a
+                    href={`tel:${cleanSosDial}`}
+                    className="btn btn-danger"
+                    style={{ padding: '5px 10px', fontSize: '0.74rem', textDecoration: 'none', borderRadius: 4 }}
+                  >
+                    <IconPhone size={13} color="var(--color-on-danger)" />
+                    Gọi thoại {cleanSosDial}
+                  </a>
+                )}
+              </div>
+            )}
 
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label">Tình trạng khẩn cấp</label>
@@ -933,7 +1237,7 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
                 style={{ borderRadius: 4 }}
                 value={sosNote}
                 onChange={(e) => setSosNote(e.target.value)}
-                placeholder="VD: Chấn thương cổ chân, cần hỗ trợ tại lán 2..."
+                placeholder="VD: Chan thuong co chan, can ho tro tai lan 2..."
               />
             </div>
 
@@ -958,7 +1262,7 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
                 className="btn btn-danger"
                 style={{ flex: 1.3, justifyContent: 'center', fontSize: '0.85rem', textDecoration: 'none', borderRadius: 4 }}
               >
-                <IconPhone size={16} color="var(--color-on-danger)" /> Mở Ứng Dụng SMS Gửi SOS Ngay
+                <IconPhone size={16} color="var(--color-on-danger)" /> Mở ứng dụng SMS gửi SOS
               </a>
               <button
                 type="button"
@@ -966,7 +1270,7 @@ const SafetyTimerModalInner: React.FC<SafetyTimerModalProps> = ({
                 onClick={handleCopySos}
                 style={{ flex: 1, justifyContent: 'center', fontSize: '0.82rem', borderRadius: 4 }}
               >
-                Sao Chép Tọa Độ SOS
+                Sao chép nội dung SOS
               </button>
             </div>
           </div>

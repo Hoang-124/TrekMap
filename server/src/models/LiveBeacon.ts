@@ -94,6 +94,8 @@ const liveBeaconSchema = new Schema<ILiveBeacon>(
 );
 
 liveBeaconSchema.index({ userId: 1, status: 1, updatedAt: -1 });
+liveBeaconSchema.index({ status: 1, updatedAt: -1 });
+liveBeaconSchema.index({ updatedAt: -1 });
 liveBeaconSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export const LiveBeaconModel = model<ILiveBeacon>('LiveBeacon', liveBeaconSchema);

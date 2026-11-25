@@ -1,6 +1,5 @@
 import crypto from 'crypto';
 import { promisify } from 'util';
-import { Request, Response, NextFunction } from 'express';
 
 const pbkdf2Async = promisify(crypto.pbkdf2);
 
@@ -108,6 +107,19 @@ export const verifyPasswordAsync = async (password: string, storedHash: string):
   }
 
   return false;
+};
+
+/**
+ * Returns true if a stored password hash uses legacy iteration count (< 100,000 PBKDF2 rounds)
+ * so login can transparently rehash with modern parameters.
+ */
+export const needsPasswordRehash = (storedHash: string): boolean => {
+  if (!storedHash || typeof storedHash !== 'string') return false;
+  if (!storedHash.startsWith('pbkdf2:')) return true;
+  const parts = storedHash.split(':');
+  if (parts.length !== 4) return true;
+  const iterations = parseInt(parts[1], 10);
+  return !Number.isFinite(iterations) || iterations < PBKDF2_ITERATIONS;
 };
 
 export type UserRole = 'user' | 'guide' | 'admin' | 'moderator';
@@ -249,25 +261,4 @@ export const parseCookieValue = (cookieHeader: string | undefined, name: string)
     }
   }
   return null;
-};
-
-export interface AuthRequest extends Request {
-  user?: DecodedTokenPayload;
-}
-
-export const authenticateToken = (req: AuthRequest, res: Response, next: NextFunction) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.substring(7) : null;
-
-  if (!token) {
-    return res.status(401).json({ success: false, message: 'Yêu cầu Token xác thực.' });
-  }
-
-  const decoded = verifyToken(token);
-  if (!decoded) {
-    return res.status(401).json({ success: false, message: 'Token xác thực không hợp lệ hoặc đã hết hạn.' });
-  }
-
-  req.user = decoded;
-  return next();
 };

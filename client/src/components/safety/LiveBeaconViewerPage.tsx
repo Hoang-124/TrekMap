@@ -1,14 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  CircleMarker,
-  FreeBasemapLayer,
-  MapContainer,
-  Marker,
-  Polyline,
-  Popup,
-  useMap,
-} from '../map/LeafletPrimitives.js';
-import L from 'leaflet';
+  LostVectorMap,
+  type LostMapCircleItem,
+  type LostMapMarkerItem,
+  type LostMapPolylineItem,
+} from '../map/LostVectorMap.js';
 import { FREE_BASEMAPS, FREE_BASEMAP_ORDER, type BasemapKey } from '../../utils/mapTiles.js';
 import type { Trail } from '../../types.js';
 import { VIETNAM_RANGER_STATIONS, type RangerStationSeed } from '../../data/vietnamDirectory.js';
@@ -259,12 +255,12 @@ function normalizeLiveBeaconPayload(rawJson: unknown, fallbackToken: string): No
     displayName:
       typeof src.displayName === 'string' && src.displayName.trim()
         ? src.displayName.trim()
-        : 'Nhà thám hiểm LOST',
+        : 'Người đi rừng',
     trailId: typeof src.trailId === 'string' && src.trailId.trim() ? src.trailId.trim() : null,
     trailName:
       typeof src.trailName === 'string' && src.trailName.trim()
         ? src.trailName.trim()
-        : 'Hành trình leo núi LOST',
+        : 'Hành trình leo núi',
     status,
     batteryPercent,
     distanceKm: Number.isFinite(distNum) && distNum >= 0 ? Math.round(distNum * 100) / 100 : 0,
@@ -302,36 +298,36 @@ function formatTimestampVi(iso: string | null): string {
 }
 
 function sanitizeSingleDialPhone(raw: string): string {
-  const firstSegment = (raw || '').split(/[/,;|\-–—]/)[0] || raw || '';
+  // Split only on multi-number separators (/, ;, |, en/em dash, or spaced hyphen) — preserve hyphenated VN numbers like 0214-3871-494
+  const firstSegment = (raw || '').split(/[/,;|–—]|\s+-\s+/)[0] || raw || '';
   const cleaned = firstSegment.replace(/[^\d+]/g, '');
-  return cleaned || '115';
+  return cleaned.length >= 3 ? cleaned : '115';
 }
 
-function createPulsingBeaconIcon(status: BeaconStatus): L.DivIcon {
-  const fillVar =
-    status === 'sos'
-      ? 'var(--color-error)'
-      : status === 'paused'
-      ? 'var(--color-sun)'
-      : status === 'safe'
-      ? 'var(--color-sky)'
-      : 'var(--color-primary)';
+function computeBeaconBounds(
+  pts: [number, number][]
+): [[number, number], [number, number]] | null {
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLng = Infinity;
+  let maxLng = -Infinity;
+  let validCount = 0;
 
-  const pulseRing =
-    status === 'active' || status === 'sos'
-      ? `<circle cx="20" cy="20" r="8" fill="${fillVar}" opacity="0.36">
-          <animate attributeName="r" from="7" to="19" dur="${status === 'sos' ? '1.1s' : '1.9s'}" repeatCount="indefinite" />
-          <animate attributeName="opacity" from="0.55" to="0" dur="${status === 'sos' ? '1.1s' : '1.9s'}" repeatCount="indefinite" />
-        </circle>`
-      : '';
+  for (const [lat, lng] of pts) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+    if (lng < minLng) minLng = lng;
+    if (lng > maxLng) maxLng = lng;
+    validCount += 1;
+  }
 
-  return L.divIcon({
-    className: 'lost-live-beacon-marker',
-    iconSize: [40, 40],
-    iconAnchor: [20, 20],
-    popupAnchor: [0, -16],
-    html: `<svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">${pulseRing}<circle cx="20" cy="20" r="9.5" fill="var(--color-bg-card)" stroke="${fillVar}" stroke-width="2.5" /><circle cx="20" cy="20" r="5.5" fill="${fillVar}" /></svg>`,
-  });
+  if (validCount < 2) return null;
+  if (Math.abs(maxLat - minLat) < 1e-6 && Math.abs(maxLng - minLng) < 1e-6) return null;
+  return [
+    [minLat, minLng],
+    [maxLat, maxLng],
+  ];
 }
 
 function copyTextWithFallback(text: string): Promise<boolean> {
@@ -365,41 +361,12 @@ function copyTextViaExecCommand(text: string): boolean {
   }
 }
 
-const BeaconMapViewportController: React.FC<{
-  token: string;
-  boundsPoints: [number, number][];
-  recenterSignal: number;
-}> = ({ token, boundsPoints, recenterSignal }) => {
-  const map = useMap();
-  const lastFittedTokenRef = useRef<string>('');
-  const lastHandledSignalRef = useRef<number>(0);
-
-  useEffect(() => {
-    if (boundsPoints.length === 0) return;
-    const needsInitialFit = lastFittedTokenRef.current !== token;
-    const needsRecenter = recenterSignal > lastHandledSignalRef.current;
-    if (!needsInitialFit && !needsRecenter) return;
-
-    lastFittedTokenRef.current = token;
-    lastHandledSignalRef.current = recenterSignal;
-
-    if (boundsPoints.length === 1) {
-      map.setView(boundsPoints[0], 14, { animate: true });
-    } else {
-      const bounds = L.latLngBounds(boundsPoints);
-      if (bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [36, 36], maxZoom: 15 });
-      }
-    }
-  }, [map, token, boundsPoints, recenterSignal]);
-
-  return null;
-};
-
 interface BeaconFetchOutcome {
   kind: 'ready' | 'expired' | 'error' | 'aborted';
   beacon: NormalizedLiveBeacon | null;
   errorDetail: string;
+  status?: number;
+  retryAfterSec?: number;
 }
 
 async function loadLiveBeaconOnce(cleanToken: string, signal: AbortSignal): Promise<BeaconFetchOutcome> {
@@ -417,7 +384,21 @@ async function loadLiveBeaconOnce(cleanToken: string, signal: AbortSignal): Prom
       return {
         kind: 'expired',
         beacon: null,
-        errorDetail: 'Liên kết Live Beacon này đã hết hạn sau 48 giờ hoặc không tồn tại trên hệ thống LOST.',
+        errorDetail: 'Liên kết chia sẻ vị trí này đã hết hạn sau 48 giờ hoặc không còn tồn tại.',
+        status: res.status,
+      };
+    }
+
+    if (res.status === 429) {
+      const retryHeader = res.headers.get('Retry-After');
+      const parsedRetry = retryHeader ? Number.parseInt(retryHeader, 10) : NaN;
+      const retryAfterSec = Number.isFinite(parsedRetry) && parsedRetry > 0 ? Math.min(180, parsedRetry) : 45;
+      return {
+        kind: 'error',
+        beacon: null,
+        errorDetail: `Nhiều thiết bị đang cùng xem liên kết này (giới hạn 429). Tự động giãn nhịp cập nhật sau ${retryAfterSec} giây.`,
+        status: 429,
+        retryAfterSec,
       };
     }
 
@@ -430,8 +411,8 @@ async function loadLiveBeaconOnce(cleanToken: string, signal: AbortSignal): Prom
       const msg =
         json && typeof json.message === 'string'
           ? json.message
-          : `Không thể tải tín hiệu trực tiếp (Mã ${res.status}).`;
-      return { kind: 'error', beacon: null, errorDetail: msg };
+          : `Chưa tải được tín hiệu vị trí (mã ${res.status}).`;
+      return { kind: 'error', beacon: null, errorDetail: msg, status: res.status };
     }
 
     const normalized = normalizeLiveBeaconPayload(json, cleanToken);
@@ -439,11 +420,11 @@ async function loadLiveBeaconOnce(cleanToken: string, signal: AbortSignal): Prom
       return {
         kind: 'expired',
         beacon: null,
-        errorDetail: 'Dữ liệu hành trình trực tiếp không hợp lệ hoặc đã được thu hồi.',
+        errorDetail: 'Liên kết hành trình này không hợp lệ hoặc đã được người đi dừng chia sẻ.',
       };
     }
 
-    return { kind: 'ready', beacon: normalized, errorDetail: '' };
+    return { kind: 'ready', beacon: normalized, errorDetail: '', status: res.status };
   } catch (err) {
     if (signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
       return { kind: 'aborted', beacon: null, errorDetail: '' };
@@ -451,9 +432,15 @@ async function loadLiveBeaconOnce(cleanToken: string, signal: AbortSignal): Prom
     return {
       kind: 'error',
       beacon: null,
-      errorDetail: 'Không kết nối được tới máy chủ LOST. Kiểm tra kết nối mạng và thử lại.',
+      errorDetail: 'Mạng đang chập chờn, chưa kết nối được với máy chủ. Bạn thử tải lại nhé.',
     };
   }
+}
+
+function detectDesktopPointer(): boolean {
+  if (typeof window === 'undefined') return false;
+  const coarse = typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+  return window.innerWidth >= 768 && !coarse;
 }
 
 export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
@@ -463,18 +450,35 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
   onSelectTrail,
 }) => {
   const cleanToken = token.trim();
-  const [beacon, setBeacon] = useState<NormalizedLiveBeacon | null>(null);
+  const [beaconRecord, setBeaconRecord] = useState<{
+    forToken: string;
+    data: NormalizedLiveBeacon;
+  } | null>(null);
   const [loadState, setLoadState] = useState<{
     forToken: string;
     state: 'ready' | 'expired' | 'error';
   } | null>(null);
-  const [errorDetail, setErrorDetail] = useState<string>('');
+  const [errorRecord, setErrorRecord] = useState<{
+    forToken: string;
+    message: string;
+    isRateLimited: boolean;
+  } | null>(null);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
-  const [lastPolledAt, setLastPolledAt] = useState<string | null>(null);
+  const [lastPolledRecord, setLastPolledRecord] = useState<{
+    forToken: string;
+    iso: string;
+  } | null>(null);
   const [tileKey, setTileKey] = useState<TileLayerKey>('topo');
   const [recenterSignal, setRecenterSignal] = useState<number>(0);
   const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
   const [clockNowMs, setClockNowMs] = useState<number>(() => Date.now());
+  const [enableScrollZoom, setEnableScrollZoom] = useState<boolean>(detectDesktopPointer);
+
+  // Token-scoped derived state guarantees switching `token` NEVER shows stale beacon/error/poll data
+  const beacon = beaconRecord && beaconRecord.forToken === cleanToken ? beaconRecord.data : null;
+  const errorDetail = errorRecord && errorRecord.forToken === cleanToken ? errorRecord.message : '';
+  const isRateLimited = Boolean(errorRecord && errorRecord.forToken === cleanToken && errorRecord.isRateLimited);
+  const lastPolledAt = lastPolledRecord && lastPolledRecord.forToken === cleanToken ? lastPolledRecord.iso : null;
 
   const effectiveLoadState: 'loading' | 'ready' | 'expired' | 'error' = !cleanToken
     ? 'expired'
@@ -486,15 +490,21 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
   const isMountedRef = useRef<boolean>(true);
   const beaconStatusRef = useRef<BeaconStatus | null>(null);
   const loadStateRef = useRef<'loading' | 'ready' | 'expired' | 'error'>(effectiveLoadState);
+  const nextAllowedPollMsRef = useRef<number>(0);
 
   useEffect(() => {
     isMountedRef.current = true;
     const clockId = window.setInterval(() => {
       setClockNowMs(Date.now());
     }, 30_000);
+    const handleResize = () => {
+      setEnableScrollZoom(detectDesktopPointer());
+    };
+    window.addEventListener('resize', handleResize);
     return () => {
       isMountedRef.current = false;
       window.clearInterval(clockId);
+      window.removeEventListener('resize', handleResize);
       if (copiedTimerRef.current !== null) {
         window.clearTimeout(copiedTimerRef.current);
         copiedTimerRef.current = null;
@@ -521,65 +531,118 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
     if (controller.signal.aborted || result.kind === 'aborted') return;
 
     if (result.kind === 'ready' && result.beacon) {
-      setBeacon(result.beacon);
+      nextAllowedPollMsRef.current = 0;
+      setBeaconRecord({ forToken: cleanToken, data: result.beacon });
       setLoadState({ forToken: cleanToken, state: 'ready' });
-      setErrorDetail('');
-      setLastPolledAt(new Date().toISOString());
+      setErrorRecord(null);
+      setLastPolledRecord({ forToken: cleanToken, iso: new Date().toISOString() });
     } else if (result.kind === 'expired') {
-      setBeacon(null);
+      setBeaconRecord(null);
       setLoadState({ forToken: cleanToken, state: 'expired' });
-      setErrorDetail(result.errorDetail);
+      setErrorRecord({ forToken: cleanToken, message: result.errorDetail, isRateLimited: false });
     } else {
+      if (result.status === 429) {
+        nextAllowedPollMsRef.current = Date.now() + (result.retryAfterSec ?? 45) * 1000;
+      }
       if (loadStateRef.current !== 'ready') {
         setLoadState({ forToken: cleanToken, state: 'error' });
       }
-      setErrorDetail(result.errorDetail);
+      setErrorRecord({
+        forToken: cleanToken,
+        message: result.errorDetail,
+        isRateLimited: result.status === 429,
+      });
     }
     setIsRefreshing(false);
   };
 
-  // Initial load + 15s auto-polling (pauses when status === 'safe' or document.hidden; cleans up on unmount)
+  // Initial load + adaptive auto-polling with 429 & transient-error backoff (pauses on 'safe' or hidden tab)
   useEffect(() => {
     if (!cleanToken) return;
+    let cancelled = false;
+    let timerId: number | null = null;
+    let consecutiveErrors = 0;
+    nextAllowedPollMsRef.current = 0;
+
+    const scheduleNext = (delayMs: number) => {
+      if (cancelled) return;
+      if (timerId !== null) window.clearTimeout(timerId);
+      timerId = window.setTimeout(() => {
+        timerId = null;
+        if (cancelled) return;
+        if (typeof document !== 'undefined' && document.hidden) {
+          scheduleNext(POLL_INTERVAL_MS);
+          return;
+        }
+        if (beaconStatusRef.current === 'safe' || loadStateRef.current === 'expired') return;
+        void runPoll();
+      }, delayMs);
+    };
 
     const runPoll = async () => {
+      if (cancelled) return;
       activeFetchRef.current?.abort();
       const controller = new AbortController();
       activeFetchRef.current = controller;
 
       const result = await loadLiveBeaconOnce(cleanToken, controller.signal);
-      if (controller.signal.aborted || result.kind === 'aborted') return;
+      if (cancelled || controller.signal.aborted || result.kind === 'aborted') return;
+
+      let nextDelayMs = POLL_INTERVAL_MS;
 
       if (result.kind === 'ready' && result.beacon) {
-        setBeacon(result.beacon);
+        consecutiveErrors = 0;
+        nextAllowedPollMsRef.current = 0;
+        setBeaconRecord({ forToken: cleanToken, data: result.beacon });
         setLoadState({ forToken: cleanToken, state: 'ready' });
-        setErrorDetail('');
-        setLastPolledAt(new Date().toISOString());
-      } else if (result.kind === 'expired') {
-        setBeacon(null);
-        setLoadState({ forToken: cleanToken, state: 'expired' });
-        setErrorDetail(result.errorDetail);
-      } else {
-        if (loadStateRef.current !== 'ready') {
-          setLoadState({ forToken: cleanToken, state: 'error' });
+        setErrorRecord(null);
+        setLastPolledRecord({ forToken: cleanToken, iso: new Date().toISOString() });
+        setIsRefreshing(false);
+        if (result.beacon.status !== 'safe') {
+          scheduleNext(nextDelayMs);
         }
-        setErrorDetail(result.errorDetail);
+        return;
       }
+
+      if (result.kind === 'expired') {
+        setBeaconRecord(null);
+        setLoadState({ forToken: cleanToken, state: 'expired' });
+        setErrorRecord({ forToken: cleanToken, message: result.errorDetail, isRateLimited: false });
+        setIsRefreshing(false);
+        return;
+      }
+
+      consecutiveErrors += 1;
+      if (result.status === 429) {
+        const baseBackoffMs = Math.max(45_000, (result.retryAfterSec ?? 45) * 1000);
+        nextDelayMs = Math.min(120_000, baseBackoffMs * Math.min(3, consecutiveErrors));
+        nextAllowedPollMsRef.current = Date.now() + nextDelayMs;
+      } else {
+        nextDelayMs = Math.min(60_000, POLL_INTERVAL_MS * Math.pow(2, Math.min(2, consecutiveErrors)));
+      }
+
+      if (loadStateRef.current !== 'ready') {
+        setLoadState({ forToken: cleanToken, state: 'error' });
+      }
+      setErrorRecord({
+        forToken: cleanToken,
+        message: result.errorDetail,
+        isRateLimited: result.status === 429,
+      });
       setIsRefreshing(false);
+      scheduleNext(nextDelayMs);
     };
 
     void runPoll();
 
-    const intervalId = window.setInterval(() => {
-      if (typeof document !== 'undefined' && document.hidden) return;
-      if (beaconStatusRef.current === 'safe') return;
-      if (loadStateRef.current === 'expired') return;
-      void runPoll();
-    }, POLL_INTERVAL_MS);
-
     const handleVisibilityChange = () => {
-      if (typeof document === 'undefined' || document.hidden) return;
+      if (typeof document === 'undefined' || document.hidden || cancelled) return;
       if (beaconStatusRef.current === 'safe' || loadStateRef.current === 'expired') return;
+      const waitRemaining = nextAllowedPollMsRef.current - Date.now();
+      if (waitRemaining > 1000) {
+        scheduleNext(waitRemaining);
+        return;
+      }
       void runPoll();
     };
 
@@ -588,7 +651,8 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
     }
 
     return () => {
-      window.clearInterval(intervalId);
+      cancelled = true;
+      if (timerId !== null) window.clearTimeout(timerId);
       if (typeof document !== 'undefined') {
         document.removeEventListener('visibilitychange', handleVisibilityChange);
       }
@@ -656,7 +720,9 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
     return out;
   }, [breadcrumbCoords, referenceTrack, beacon]);
 
-  const nearestRangers = useMemo<Array<{ station: RangerStationSeed; distanceKm: number }>>(() => {
+  const nearestRangers = useMemo<
+    Array<{ station: RangerStationSeed; distanceKm: number; coversTrail: boolean }>
+  >(() => {
     const anchor = beacon?.lastPosition
       ? { lat: beacon.lastPosition.lat, lng: beacon.lastPosition.lng }
       : matchedTrail
@@ -665,29 +731,155 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
       ? { lat: beacon.trailSummary.startLat, lng: beacon.trailSummary.startLng }
       : { lat: 22.3364, lng: 103.8438 };
 
-    return VIETNAM_RANGER_STATIONS.map((station) => ({
-      station,
-      distanceKm: calculateHaversineKm(
-        anchor.lat,
-        anchor.lng,
-        station.coordinates.lat,
-        station.coordinates.lng
-      ),
-    }))
-      .sort((a, b) => a.distanceKm - b.distanceKm)
+    const targetTrailSlug = matchedTrail?.id || beacon?.trailId || beacon?.trailSummary?.id || '';
+
+    return VIETNAM_RANGER_STATIONS.filter((station) => station.region !== 'Toàn Quốc')
+      .map((station) => ({
+        station,
+        coversTrail: Boolean(targetTrailSlug && station.coveredTrailSlugs.includes(targetTrailSlug)),
+        distanceKm: calculateHaversineKm(
+          anchor.lat,
+          anchor.lng,
+          station.coordinates.lat,
+          station.coordinates.lng
+        ),
+      }))
+      .sort((a, b) => {
+        if (a.coversTrail !== b.coversTrail) return a.coversTrail ? -1 : 1;
+        return a.distanceKm - b.distanceKm;
+      })
       .slice(0, 3);
   }, [beacon, matchedTrail]);
 
-  const pulsingIcon = useMemo(
-    () => createPulsingBeaconIcon(beacon?.status ?? 'active'),
-    [beacon?.status]
+  const beaconFitBounds = useMemo(
+    () => computeBeaconBounds(mapBoundsPoints),
+    [mapBoundsPoints]
   );
+
+  // Initial overview uses fitBoundsKey={beacon.token}; clicking "Về vị trí hiện tại" flies straight to lastPosition
+  const beaconFlyTo = useMemo(() => {
+    if (!beacon?.lastPosition) return null;
+    if (recenterSignal > 0) {
+      return {
+        lat: beacon.lastPosition.lat,
+        lng: beacon.lastPosition.lng,
+        zoom: 15,
+        key: `${beacon.token}-pos-${recenterSignal}`,
+      };
+    }
+    if (!beaconFitBounds) {
+      return {
+        lat: beacon.lastPosition.lat,
+        lng: beacon.lastPosition.lng,
+        zoom: 14,
+        key: `${beacon.token}-init`,
+      };
+    }
+    return null;
+  }, [beaconFitBounds, beacon, recenterSignal]);
+
+  const mapPolylines = useMemo<LostMapPolylineItem[]>(() => {
+    const items: LostMapPolylineItem[] = [];
+    if (referenceTrack.length >= 2) {
+      items.push({
+        id: 'beacon-ref-track',
+        coords: referenceTrack,
+        color: 'info',
+        width: 3,
+        dashed: true,
+        opacity: 0.72,
+      });
+    }
+    if (breadcrumbCoords.length >= 2) {
+      items.push({
+        id: 'beacon-breadcrumbs',
+        coords: breadcrumbCoords,
+        color: beacon?.status === 'sos' ? 'danger' : 'primary',
+        width: 4,
+        opacity: 0.95,
+      });
+    }
+    return items;
+  }, [referenceTrack, breadcrumbCoords, beacon?.status]);
+
+  const mapCircles = useMemo<LostMapCircleItem[]>(() => {
+    if (!beacon?.lastPosition) return [];
+    const { lat, lng, accuracyM } = beacon.lastPosition;
+    if (beacon.status === 'sos') {
+      return [
+        {
+          id: 'beacon-sos-halo',
+          lat,
+          lng,
+          radiusMeters: Math.max(90, accuracyM ?? 90),
+          color: 'danger',
+          dashed: true,
+          fillOpacity: 0.16,
+        },
+      ];
+    }
+    if (typeof accuracyM === 'number' && accuracyM > 12) {
+      return [
+        {
+          id: 'beacon-gps-accuracy',
+          lat,
+          lng,
+          radiusMeters: Math.min(400, accuracyM),
+          color: beacon.status === 'paused' ? 'warn' : beacon.status === 'safe' ? 'info' : 'primary',
+          fillOpacity: 0.08,
+        },
+      ];
+    }
+    return [];
+  }, [beacon]);
+
+  const mapMarkers = useMemo<LostMapMarkerItem[]>(() => {
+    if (!beacon) return [];
+    const items: LostMapMarkerItem[] = [];
+    if (breadcrumbCoords.length >= 2) {
+      items.push({
+        id: 'beacon-start',
+        lat: breadcrumbCoords[0][0],
+        lng: breadcrumbCoords[0][1],
+        label: 'Điểm bắt đầu phát tín hiệu',
+        sublabel: formatTimestampVi(beacon.breadcrumbs[0]?.recordedAt || null),
+        color: 'warn',
+        size: 'sm',
+        badge: 'XP',
+      });
+    }
+    if (beacon.lastPosition) {
+      const statusColor: LostMapMarkerItem['color'] =
+        beacon.status === 'sos'
+          ? 'danger'
+          : beacon.status === 'paused'
+          ? 'warn'
+          : beacon.status === 'safe'
+          ? 'info'
+          : 'primary';
+      items.push({
+        id: 'beacon-live-pos',
+        lat: beacon.lastPosition.lat,
+        lng: beacon.lastPosition.lng,
+        label: beacon.displayName,
+        sublabel: `${beacon.lastPosition.lat.toFixed(5)}, ${beacon.lastPosition.lng.toFixed(5)}${
+          beacon.lastPosition.altitudeM !== null ? ` · ${beacon.lastPosition.altitudeM}m` : ''
+        }`,
+        color: statusColor,
+        size: 'lg',
+        pulse: beacon.status === 'active' || beacon.status === 'sos',
+        active: true,
+        badge: beacon.status === 'sos' ? 'SOS' : undefined,
+      });
+    }
+    return items;
+  }, [beacon, breadcrumbCoords]);
 
   const handleCopyText = (text: string, label: string) => {
     void copyTextWithFallback(text).then((ok) => {
       if (!isMountedRef.current) return;
       setCopiedNotice(
-        ok ? `Đã sao chép ${label}.` : 'Không thể sao chép tự động — hãy chọn và sao chép thủ công.'
+        ok ? `Đã chép ${label}.` : 'Chưa chép tự động được — bạn bôi đen và chép tay giúp mình nhé.'
       );
       if (copiedTimerRef.current !== null) {
         window.clearTimeout(copiedTimerRef.current);
@@ -704,17 +896,17 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
   // Loading Skeleton View
   if (effectiveLoadState === 'loading') {
     return (
-      <section className="hub-container page-view-slide" aria-label="Đang tải tín hiệu Live Beacon LOST">
+      <section className="hub-container page-view-slide" aria-label="Đang kết nối tín hiệu vị trí trực tiếp">
         <div className="card" style={{ padding: '32px 24px', textAlign: 'center', maxWidth: 640, margin: '32px auto' }}>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, color: 'var(--color-primary)', marginBottom: 12 }}>
             <IconRadio size={26} />
-            <span className="section-eyebrow" style={{ margin: 0 }}>LOST LIVE FAMILY BEACON</span>
+            <span className="section-eyebrow" style={{ margin: 0 }}>Tín hiệu vị trí trực tiếp · LOST</span>
           </div>
           <h1 className="font-editorial" style={{ fontSize: '1.45rem', color: 'var(--color-text-main)', marginBottom: 8 }}>
-            Đang kết nối tín hiệu hành trình trực tiếp...
+            Đang kết nối tín hiệu từ trên núi...
           </h1>
           <p style={{ fontSize: '0.88rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-            Mã phiên theo dõi: {cleanToken.slice(0, 12)}...
+            Mã chia sẻ: {cleanToken.slice(0, 12)}...
           </p>
         </div>
       </section>
@@ -725,7 +917,7 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
   if (effectiveLoadState === 'expired' || effectiveLoadState === 'error' || !beacon) {
     const isExpired = effectiveLoadState === 'expired';
     return (
-      <section className="hub-container page-view-slide" aria-label="Trạng thái liên kết Live Beacon">
+      <section className="hub-container page-view-slide" aria-label="Trạng thái liên kết chia sẻ vị trí">
         <div
           className="card"
           style={{
@@ -760,19 +952,19 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
             </div>
             <div>
               <div className="section-eyebrow" style={{ marginBottom: 2 }}>
-                LOST LIVE FAMILY BEACON
+                Tín hiệu vị trí trực tiếp · LOST
               </div>
               <h1 className="font-editorial" style={{ fontSize: '1.35rem', color: 'var(--color-text-main)' }}>
                 {isExpired
-                  ? 'Liên Kết Theo Dõi Đã Hết Hạn Hoặc Không Tồn Tại'
-                  : 'Tạm Thời Không Tải Được Tín Hiệu Trực Tiếp'}
+                  ? 'Liên kết theo dõi đã hết hạn hoặc không còn hiệu lực'
+                  : 'Chưa kết nối được tín hiệu lúc này'}
               </h1>
             </div>
           </div>
 
           <p style={{ fontSize: '0.88rem', color: 'var(--color-text-muted)', lineHeight: 1.6 }}>
             {errorDetail ||
-              'Vì lý do bảo mật vị trí cá nhân, mỗi phiên chia sẻ vị trí Live Beacon trên LOST tự động hết hạn sau 48 giờ kể từ khi khởi tạo.'}
+              'Để bảo vệ sự riêng tư cho người đi rừng, mỗi liên kết chia sẻ vị trí trên LOST sẽ tự động đóng sau 48 giờ.'}
           </p>
 
           <div
@@ -786,11 +978,11 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
               lineHeight: 1.55,
             }}
           >
-            Nếu bạn đang lo lắng về an toàn của người thân trên núi, hãy gọi trực tiếp đường dây nóng cấp cứu quốc gia{' '}
+            Nếu bạn đang lo lắng cho người thân trên núi, hãy gọi ngay đường dây nóng cấp cứu{' '}
             <a href="tel:115" style={{ color: 'var(--color-error-text, var(--banner-danger-text))', fontWeight: 700, textDecoration: 'underline' }}>
               115
             </a>{' '}
-            hoặc Cứu nạn cứu hộ{' '}
+            hoặc cứu nạn cứu hộ{' '}
             <a href="tel:114" style={{ color: 'var(--color-error-text, var(--banner-danger-text))', fontWeight: 700, textDecoration: 'underline' }}>
               114
             </a>
@@ -801,13 +993,13 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
             {cleanToken && (
               <button type="button" className="btn btn-primary" onClick={handleManualRefresh}>
                 <IconRotateCw size={15} />
-                Thử Tải Lại
+                Thử tải lại
               </button>
             )}
             {onBack && (
               <button type="button" className="btn btn-secondary" onClick={onBack}>
                 <IconArrowLeft size={15} />
-                Về Trang Chủ LOST
+                Về trang chủ
               </button>
             )}
           </div>
@@ -841,10 +1033,10 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
           border: 'var(--banner-danger-border)',
           text: 'var(--banner-danger-text)',
           badgeClass: 'badge-error',
-          title: 'CẢNH BÁO SOS KHẨN CẤP',
+          title: 'Cảnh báo khẩn cấp SOS',
           subtitle:
             beacon.emergencyNote ||
-            'Người leo núi đã kích hoạt tín hiệu SOS khẩn cấp. Hãy liên hệ ngay Kiểm lâm / Cứu hộ gần nhất bên dưới và cung cấp chính xác tọa độ GPS.',
+            'Người leo núi vừa phát tín hiệu cầu cứu SOS. Hãy gọi ngay trạm Kiểm lâm hoặc cứu hộ gần nhất bên dưới và đọc rõ tọa độ GPS.',
           icon: <IconShieldAlert size={22} />,
         }
       : beacon.status === 'safe'
@@ -853,8 +1045,8 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
           border: 'color-mix(in srgb, var(--color-sky) 42%, var(--color-border))',
           text: 'var(--color-text-main)',
           badgeClass: 'badge-info',
-          title: 'Đã Về Đích An Toàn',
-          subtitle: 'Người leo núi đã xác nhận kết thúc hành trình an toàn. Tự động cập nhật đã tạm dừng.',
+          title: 'Đã xuống núi an toàn',
+          subtitle: 'Người đi đã báo kết thúc chuyến đi an toàn. Trang đã dừng tự động làm mới.',
           icon: <IconCheckCircle size={22} color="var(--color-sky)" />,
         }
       : beacon.status === 'paused'
@@ -863,8 +1055,8 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
           border: 'color-mix(in srgb, var(--color-sun) 44%, var(--color-border))',
           text: 'var(--color-text-main)',
           badgeClass: 'badge-sun',
-          title: 'Tạm Dừng Nghỉ Chân',
-          subtitle: 'Thiết bị đang tạm dừng ghi GPS. Trang vẫn tự động làm mới mỗi 15 giây.',
+          title: 'Đang dừng nghỉ chân',
+          subtitle: 'Thiết bị đang tạm nghỉ ghi GPS. Trang vẫn tự kiểm tra tín hiệu mới mỗi 15 giây.',
           icon: <IconClock size={22} color="var(--color-sun)" />,
         }
       : {
@@ -872,8 +1064,8 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
           border: 'var(--color-border-glow)',
           text: 'var(--color-text-main)',
           badgeClass: 'badge-success',
-          title: 'Đang Di Chuyển — Phát Tín Hiệu Trực Tiếp',
-          subtitle: 'Tự động cập nhật vị trí GPS mỗi 15 giây khi đang mở trang.',
+          title: 'Đang di chuyển trên cung',
+          subtitle: 'Vị trí GPS tự cập nhật mỗi 15 giây khi bạn mở trang này.',
           icon: <IconRadio size={22} color="var(--color-primary)" />,
         };
 
@@ -906,7 +1098,7 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
         }}
       >
         <div>
-          <div className="section-eyebrow">LOST LIVE FAMILY BEACON • THEO DÕI AN TOÀN TRỰC TIẾP</div>
+          <div className="section-eyebrow">Tín hiệu vị trí trực tiếp · LOST</div>
           <h1
             className="font-editorial"
             style={{
@@ -919,8 +1111,8 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
             {beacon.displayName} — {beacon.trailName}
           </h1>
           <p style={{ fontSize: '0.84rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-            Cập nhật gần nhất: <strong>{formatRelativeMinutesVi(liveMinutesSinceLastPing)}</strong> ({formatTimestampVi(beacon.updatedAt)})
-            {lastPolledAt ? ` • Đồng bộ trang lúc ${formatTimestampVi(lastPolledAt)}` : ''}
+            Tín hiệu gần nhất: <strong>{formatRelativeMinutesVi(liveMinutesSinceLastPing)}</strong> ({formatTimestampVi(beacon.updatedAt)})
+            {lastPolledAt ? ` · Đã kiểm tra lúc ${formatTimestampVi(lastPolledAt)}` : ''}
           </p>
         </div>
 
@@ -932,20 +1124,20 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
             onClick={handleManualRefresh}
           >
             <IconRotateCw size={15} />
-            {isRefreshing ? 'Đang tải...' : 'Làm Mới'}
+            {isRefreshing ? 'Đang tải...' : 'Cập nhật'}
           </button>
           <button
             type="button"
             className="btn btn-secondary"
-            onClick={() => handleCopyText(shareUrl, 'liên kết theo dõi Live Beacon')}
+            onClick={() => handleCopyText(shareUrl, 'liên kết theo dõi')}
           >
             <IconShare size={15} />
-            Sao Chép Link
+            Chép liên kết
           </button>
           {onBack && (
             <button type="button" className="btn btn-outline" onClick={onBack}>
               <IconArrowLeft size={15} />
-              Trang Chủ
+              Trang chủ
             </button>
           )}
         </div>
@@ -966,6 +1158,46 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
           }}
         >
           {copiedNotice}
+        </div>
+      )}
+
+      {/* Visible Poll Error / 429 Rate-Limit Backoff Banner while displaying last known position */}
+      {errorDetail && (
+        <div
+          role="alert"
+          style={{
+            marginBottom: 12,
+            padding: '10px 14px',
+            borderRadius: 6,
+            background: isRateLimited
+              ? 'color-mix(in srgb, var(--color-sun) 15%, var(--color-bg-card))'
+              : 'var(--banner-danger-bg)',
+            border: isRateLimited
+              ? '1px solid color-mix(in srgb, var(--color-sun) 48%, var(--color-border))'
+              : '1px solid var(--banner-danger-border)',
+            color: isRateLimited ? 'var(--color-text-main)' : 'var(--banner-danger-text)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 10,
+            flexWrap: 'wrap',
+            fontSize: '0.82rem',
+          }}
+        >
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, lineHeight: 1.45 }}>
+            <IconAlertTriangle size={16} color={isRateLimited ? 'var(--color-sun)' : 'var(--color-error-text, var(--banner-danger-text))'} />
+            <span>{errorDetail}</span>
+          </span>
+          <button
+            type="button"
+            className="btn btn-outline"
+            disabled={isRefreshing}
+            onClick={handleManualRefresh}
+            style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+          >
+            <IconRotateCw size={13} />
+            Thử cập nhật lại
+          </button>
         </div>
       )}
 
@@ -995,10 +1227,10 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
                 {beacon.status === 'sos'
                   ? 'SOS'
                   : beacon.status === 'safe'
-                  ? 'AN TOÀN'
+                  ? 'An toàn'
                   : beacon.status === 'paused'
-                  ? 'TẠM DỪNG'
-                  : 'LIVE 15s'}
+                  ? 'Tạm nghỉ'
+                  : 'Trực tiếp · 15s'}
               </span>
             </div>
             <p style={{ fontSize: '0.84rem', lineHeight: 1.5, margin: 0, opacity: 0.94 }}>
@@ -1016,7 +1248,7 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
             style={{ textDecoration: 'none', whiteSpace: 'nowrap' }}
           >
             <IconPhoneCall size={15} />
-            Gọi Khẩn Kiểm Lâm Gần Nhất
+            Gọi Kiểm lâm gần nhất
           </a>
         )}
       </div>
@@ -1040,12 +1272,11 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
           <IconAlertTriangle size={20} color="var(--color-sun)" style={{ flexShrink: 0, marginTop: 2 }} />
           <div style={{ fontSize: '0.84rem', lineHeight: 1.55 }}>
             <strong style={{ display: 'block', marginBottom: 2 }}>
-              Cảnh báo tín hiệu chậm ({formatRelativeMinutesVi(liveMinutesSinceLastPing)})
+              Tín hiệu đã lâu chưa cập nhật ({formatRelativeMinutesVi(liveMinutesSinceLastPing)})
             </strong>
             <span>
-              Chưa nhận được ping GPS mới trong hơn 45 phút. Các sườn núi cao hoặc thung lũng rừng sâu tại Việt Nam thường
-              mất sóng 4G/2G tạm thời — hãy đối chiếu lịch trình dự kiến và liên hệ trạm Kiểm lâm gần nhất bên dưới nếu quá
-              giờ hẹn an toàn.
+              Hơn 45 phút chưa thấy vị trí mới. Ở sườn núi cao hay thung sâu thường mất sóng di động tạm thời — bạn cứ
+              đối chiếu giờ hẹn của đoàn, nếu quá hẹn hãy gọi trạm Kiểm lâm gần nhất bên dưới.
             </span>
           </div>
         </div>
@@ -1056,20 +1287,20 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
         <div className="editorial-stat-cell">
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
             <IconClock size={12} />
-            Tín Hiệu Cuối
+            Tín hiệu cuối
           </span>
           <strong style={{ fontSize: '1.1rem', color: 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
             {formatRelativeMinutesVi(liveMinutesSinceLastPing)}
           </strong>
           <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-            {formatTimestampVi(beacon.updatedAt)} • {beacon.breadcrumbs.length} điểm vệt
+            {formatTimestampVi(beacon.updatedAt)} · {beacon.breadcrumbs.length} điểm đã ghi
           </span>
         </div>
 
         <div className="editorial-stat-cell">
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
             <IconMountain size={12} />
-            Cao Độ / Leo Tích Lũy
+            Cao độ hiện tại
           </span>
           <strong style={{ fontSize: '1.3rem', color: 'var(--color-earth)', fontVariantNumeric: 'tabular-nums' }}>
             {beacon.lastPosition?.altitudeM !== null && beacon.lastPosition?.altitudeM !== undefined
@@ -1077,14 +1308,14 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
               : '--'}
           </strong>
           <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-            +{beacon.elevationGainM}m • Quãng đường {beacon.distanceKm.toFixed(2)} km
+            Leo +{beacon.elevationGainM}m · Đã đi {beacon.distanceKm.toFixed(2)} km
           </span>
         </div>
 
         <div className="editorial-stat-cell" style={{ minWidth: 0 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
             <IconMapPin size={12} />
-            Tọa Độ WGS84
+            Tọa độ GPS (WGS84)
           </span>
           <strong
             style={{
@@ -1108,14 +1339,14 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
               wordBreak: 'break-word',
             }}
           >
-            {latDms && lngDms ? `${latDms.formatted} • ${lngDms.formatted}` : 'Đang chờ vệ tinh GPS'}
+            {latDms && lngDms ? `${latDms.formatted} · ${lngDms.formatted}` : 'Đang chờ bắt vệ tinh GPS'}
           </span>
         </div>
 
         <div className="editorial-stat-cell">
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.7rem', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
             <IconBatterySvg percent={beacon.batteryPercent} size={14} />
-            Pin Thiết Bị
+            Pin điện thoại
           </span>
           <strong
             style={{
@@ -1127,11 +1358,11 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
               fontVariantNumeric: 'tabular-nums',
             }}
           >
-            {beacon.batteryPercent !== null ? `${beacon.batteryPercent}%` : 'Không rõ'}
+            {beacon.batteryPercent !== null ? `${beacon.batteryPercent}%` : 'Chưa rõ'}
           </strong>
           <span style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
             {beacon.lastPosition?.accuracyM !== null && beacon.lastPosition?.accuracyM !== undefined
-              ? `Độ chính xác ±${beacon.lastPosition.accuracyM}m`
+              ? `Sai số ±${beacon.lastPosition.accuracyM}m`
               : beacon.expiresAt
               ? `Hết hạn ${formatTimestampVi(beacon.expiresAt)}`
               : 'Hiệu lực 48 giờ'}
@@ -1139,9 +1370,9 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
         </div>
       </div>
 
-      {/* Interactive Live Leaflet Map + Right Tactical Sidebar */}
+      {/* Interactive Native Vector Map + Right Safety Sidebar */}
       <div className="route-planner-split" style={{ gap: 16 }}>
-        {/* Left: Interactive Leaflet Map */}
+        {/* Left: Native MapLibre GPU Map */}
         <div className="card" style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -1162,11 +1393,12 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
               <button
                 type="button"
                 className="btn btn-outline"
+                disabled={!beacon.lastPosition}
                 style={{ padding: '5px 9px', fontSize: '0.75rem' }}
                 onClick={() => setRecenterSignal((c) => c + 1)}
               >
                 <IconCrosshairSvg size={14} />
-                Căn Giữa Vị Trí
+                Về vị trí hiện tại
               </button>
               {beacon.lastPosition && (
                 <button
@@ -1181,7 +1413,7 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
                   }
                 >
                   <IconCopy size={13} />
-                  Chép GPS
+                  Chép tọa độ
                 </button>
               )}
               {googleMapsUrl && (
@@ -1193,7 +1425,7 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
                   style={{ padding: '5px 9px', fontSize: '0.75rem', textDecoration: 'none' }}
                 >
                   <IconExternalSvg size={13} />
-                  Google Maps
+                  Mở Google Maps
                 </a>
               )}
             </div>
@@ -1208,91 +1440,19 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
               border: '1px solid var(--color-border)',
             }}
           >
-            <MapContainer
+            <LostVectorMap
               key={beacon.token}
               center={initialMapCenter}
               zoom={13}
-              style={{ height: '100%', width: '100%' }}
-              scrollWheelZoom
-            >
-              <FreeBasemapLayer basemap={tileKey} />
-              <BeaconMapViewportController
-                token={beacon.token}
-                boundsPoints={mapBoundsPoints}
-                recenterSignal={recenterSignal}
-              />
-
-              {/* Canonical LOST Reference GPX Track (dashed) */}
-              {referenceTrack.length >= 2 && (
-                <Polyline
-                  positions={referenceTrack}
-                  pathOptions={{
-                    color: 'var(--color-sky)',
-                    weight: 3,
-                    opacity: 0.72,
-                    dashArray: '6 6',
-                  }}
-                />
-              )}
-
-              {/* Live Hiker Breadcrumbs Track */}
-              {breadcrumbCoords.length >= 2 && (
-                <Polyline
-                  positions={breadcrumbCoords}
-                  pathOptions={{
-                    color: beacon.status === 'sos' ? 'var(--color-error)' : 'var(--color-primary)',
-                    weight: 4,
-                    opacity: 0.95,
-                  }}
-                />
-              )}
-
-              {/* First Recorded Breadcrumb Anchor */}
-              {breadcrumbCoords.length >= 2 && (
-                <CircleMarker
-                  center={breadcrumbCoords[0]}
-                  radius={5}
-                  pathOptions={{
-                    color: 'var(--color-on-media)',
-                    fillColor: 'var(--color-earth)',
-                    fillOpacity: 1,
-                    weight: 2,
-                  }}
-                >
-                  <Popup>
-                    <strong>Điểm bắt đầu phát tín hiệu</strong>
-                    <br />
-                    {formatTimestampVi(beacon.breadcrumbs[0]?.recordedAt || null)}
-                  </Popup>
-                </CircleMarker>
-              )}
-
-              {/* Pulsing Current Hiker Position Marker */}
-              {beacon.lastPosition && (
-                <Marker
-                  position={[beacon.lastPosition.lat, beacon.lastPosition.lng]}
-                  icon={pulsingIcon}
-                >
-                  <Popup>
-                    <div style={{ fontSize: '0.82rem', lineHeight: 1.45 }}>
-                      <strong>{beacon.displayName}</strong>
-                      <br />
-                      {beacon.trailName}
-                      <br />
-                      Tọa độ: {beacon.lastPosition.lat.toFixed(5)}, {beacon.lastPosition.lng.toFixed(5)}
-                      {beacon.lastPosition.altitudeM !== null ? (
-                        <>
-                          <br />
-                          Cao độ: {beacon.lastPosition.altitudeM}m
-                        </>
-                      ) : null}
-                      <br />
-                      Cập nhật: {formatTimestampVi(beacon.lastPosition.recordedAt || beacon.updatedAt)}
-                    </div>
-                  </Popup>
-                </Marker>
-              )}
-            </MapContainer>
+              basemap={tileKey}
+              scrollZoom={enableScrollZoom}
+              polylines={mapPolylines}
+              circles={mapCircles}
+              markers={mapMarkers}
+              fitBounds={beaconFitBounds}
+              fitBoundsKey={beacon.token}
+              flyTo={beaconFlyTo}
+            />
           </div>
 
           <div
@@ -1314,7 +1474,7 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
                   borderRadius: 2,
                 }}
               />
-              Vệt GPS thực tế ({breadcrumbCoords.length} điểm)
+              Vệt chân đã đi ({breadcrumbCoords.length} điểm)
             </span>
             {referenceTrack.length >= 2 && (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -1326,7 +1486,7 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
                     display: 'inline-block',
                   }}
                 />
-                Tuyến GPX chuẩn LOST
+                Đường GPX tham chiếu
               </span>
             )}
           </div>
@@ -1339,7 +1499,7 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <IconCompass size={17} color="var(--color-primary)" />
               <h2 style={{ fontSize: '0.96rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                Thông Tin Cung Đường
+                Thông tin cung đường
               </h2>
             </div>
 
@@ -1349,17 +1509,17 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
               </strong>
               {matchedTrail ? (
                 <span style={{ fontVariantNumeric: 'tabular-nums' }}>
-                  {matchedTrail.province} • {matchedTrail.distanceKm} km • Đỉnh {matchedTrail.maxAltitudeM}m • Leo +
+                  {matchedTrail.province} · {matchedTrail.distanceKm} km · Đỉnh {matchedTrail.maxAltitudeM}m · Leo +
                   {matchedTrail.elevationGainM}m
                 </span>
               ) : beacon.trailSummary ? (
                 <span style={{ fontVariantNumeric: 'tabular-nums' }}>
-                  {beacon.trailSummary.province ? `${beacon.trailSummary.province} • ` : ''}
-                  {beacon.trailSummary.distanceKm} km • Đỉnh {beacon.trailSummary.maxAltitudeM}m • Leo +
+                  {beacon.trailSummary.province ? `${beacon.trailSummary.province} · ` : ''}
+                  {beacon.trailSummary.distanceKm} km · Đỉnh {beacon.trailSummary.maxAltitudeM}m · Leo +
                   {beacon.trailSummary.elevationGainM}m
                 </span>
               ) : (
-                <span>Hành trình tự thiết kế hoặc leo núi tự do trên hệ thống LOST.</span>
+                <span>Chuyến đi tự vẽ hoặc hành trình độc lập chia sẻ qua LOST.</span>
               )}
             </div>
 
@@ -1370,7 +1530,7 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
                 style={{ alignSelf: 'flex-start', padding: '7px 12px', fontSize: '0.8rem' }}
                 onClick={() => onSelectTrail(matchedTrail)}
               >
-                Xem Chi Tiết Cung Đường
+                Xem thông tin cung
                 <IconArrowRight size={14} />
               </button>
             )}
@@ -1382,18 +1542,18 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <IconShieldCheck size={17} color="var(--color-error-text, var(--color-error))" />
                 <h2 style={{ fontSize: '0.96rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-                  Trạm Kiểm Lâm & Cứu Hộ Gần Nhất
+                  Trạm Kiểm lâm và cứu hộ gần nhất
                 </h2>
               </div>
-              <span className="badge badge-cloud">Xác thực 100%</span>
+              <span className="badge badge-cloud">Đã xác minh</span>
             </div>
 
             <p style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', lineHeight: 1.45, margin: 0 }}>
-              Tự động sắp xếp theo khoảng cách thực tế tới tọa độ GPS cuối cùng của người leo núi.
+              Ưu tiên trạm phụ trách trực tiếp cung đường, tiếp theo là các vườn quốc gia và hạt kiểm lâm gần tọa độ cuối cùng nhất.
             </p>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
-              {nearestRangers.map(({ station, distanceKm }) => {
+              {nearestRangers.map(({ station, distanceKm, coversTrail }) => {
                 const dialNumber = sanitizeSingleDialPhone(station.emergencyPhone || station.hotlinePhone);
                 return (
                   <div
@@ -1402,16 +1562,23 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
                       padding: '10px 12px',
                       borderRadius: 6,
                       background: 'var(--color-surface-elevated)',
-                      border: '1px solid var(--color-border)',
+                      border: coversTrail ? '1px solid var(--color-border-glow)' : '1px solid var(--color-border)',
                       display: 'flex',
                       flexDirection: 'column',
                       gap: 6,
                     }}
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                      <strong style={{ fontSize: '0.84rem', color: 'var(--color-text-main)', lineHeight: 1.35 }}>
-                        {station.name}
-                      </strong>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                        <strong style={{ fontSize: '0.84rem', color: 'var(--color-text-main)', lineHeight: 1.35 }}>
+                          {station.name}
+                        </strong>
+                        {coversTrail && (
+                          <span className="badge badge-success" style={{ alignSelf: 'flex-start', fontSize: '0.66rem' }}>
+                            Phụ trách cung này
+                          </span>
+                        )}
+                      </div>
                       <span
                         style={{
                           fontSize: '0.74rem',
@@ -1426,7 +1593,7 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
                     </div>
 
                     <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-                      {station.district}, {station.province} • {station.officeHours}
+                      {station.district}, {station.province} · {station.officeHours}
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
@@ -1439,7 +1606,7 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
                         style={{ padding: '5px 10px', fontSize: '0.74rem', textDecoration: 'none' }}
                       >
                         <IconPhoneCall size={13} />
-                        Gọi Ngay
+                        Gọi ngay
                       </a>
                     </div>
                   </div>
@@ -1458,9 +1625,9 @@ export const LiveBeaconViewerPage: React.FC<LiveBeaconViewerPageProps> = ({
               }}
             >
               {[
-                { num: '115', label: 'Cấp Cứu' },
-                { num: '114', label: 'Cứu Nạn' },
-                { num: '112', label: 'Tìm Kiếm VN' },
+                { num: '115', label: 'Cấp cứu' },
+                { num: '114', label: 'Cứu nạn' },
+                { num: '112', label: 'Tìm kiếm VN' },
               ].map((em) => (
                 <a
                   key={em.num}

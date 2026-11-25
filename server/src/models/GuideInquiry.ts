@@ -46,5 +46,7 @@ const guideInquirySchema = new Schema<IGuideInquiry>(
 
 guideInquirySchema.index({ userId: 1, createdAt: -1 });
 guideInquirySchema.index({ guideId: 1, status: 1, createdAt: -1 });
+guideInquirySchema.index({ status: 1, createdAt: -1 });
+guideInquirySchema.index({ createdAt: -1 });
 
 export const GuideInquiryModel = model<IGuideInquiry>('GuideInquiry', guideInquirySchema);

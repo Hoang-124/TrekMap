@@ -56,7 +56,7 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = React.mem
 
   const [trackedTrailId, setTrackedTrailId] = useState<string | undefined>(trailId);
   const [demPoints, setDemPoints] = useState<ElevationSamplePoint[] | null>(null);
-  const [demSource, setDemSource] = useState<'open-meteo-dem' | 'interpolated-fallback' | 'local'>('local');
+  const [demSource, setDemSource] = useState<'aws-terrarium-dem' | 'interpolated-fallback' | 'local'>('local');
   const [hoveredPoint, setHoveredPoint] = useState<{
     x: number;
     y: number;
@@ -96,7 +96,10 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = React.mem
         if (cancelled || controller.signal.aborted) return;
         if (json?.success && Array.isArray(json.data?.points) && json.data.points.length >= 2) {
           setDemPoints(json.data.points);
-          setDemSource(json.data.source === 'open-meteo-dem' ? 'open-meteo-dem' : 'interpolated-fallback');
+          const rawSrc = String(json.data.source || '').toLowerCase();
+          setDemSource(
+            rawSrc.includes('dem') && !rawSrc.includes('fallback') ? 'aws-terrarium-dem' : 'interpolated-fallback'
+          );
         }
       })
       .catch(() => {
@@ -402,7 +405,7 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = React.mem
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.8rem', fontWeight: 800, color: 'var(--color-primary)' }}>
           <IconMountain size={16} color="var(--color-primary)" />
           <span>TRẮC DIỆN CAO ĐỘ THỰC ĐỊA</span>
-          {demSource === 'open-meteo-dem' && (
+          {demSource === 'aws-terrarium-dem' && (
             <span
               style={{
                 fontSize: '0.66rem',
@@ -414,7 +417,7 @@ export const ElevationProfileSVG: React.FC<ElevationProfileSVGProps> = React.mem
                 fontWeight: 700,
               }}
             >
-              DEM Thực Tế
+              AWS Open Data Terrarium DEM
             </span>
           )}
         </div>

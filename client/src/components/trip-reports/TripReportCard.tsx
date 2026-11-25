@@ -11,7 +11,9 @@ import {
 } from '../common/SvgIcons.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import type { UserProfile } from '../../types.js';
+import { AuthorProfileModal } from '../forum/AuthorProfileModal.js';
 import { TripReportDetailModal } from './TripReportDetailModal.js';
+import { safeLocalStorageGet } from '../../utils/storageScope.js';
 
 export interface TripReportCommentItem {
   _id: string;
@@ -69,6 +71,9 @@ export interface TripReportItem {
 interface TripReportCardProps {
   report: TripReportItem;
   currentUser?: UserProfile | null;
+  onReportDeleted?: (reportId: string) => void;
+  onReportUpdated?: (updated: TripReportItem) => void;
+  onOpenAuthorProfile?: (author: { name: string; avatar: string; userId?: string }) => void;
 }
 
 function getInitialUserReaction(report: TripReportItem, currentUserId: string): 'like' | 'love' | 'wow' | null {
@@ -82,10 +87,17 @@ function getInitialUserReaction(report: TripReportItem, currentUserId: string): 
   return null;
 }
 
-export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentUser }) => {
+export const TripReportCard: React.FC<TripReportCardProps> = ({
+  report,
+  currentUser,
+  onReportDeleted,
+  onReportUpdated,
+  onOpenAuthorProfile,
+}) => {
   const loggedInUser = currentUser || null;
   const currentUserId = String(loggedInUser?.id || (loggedInUser as (UserProfile & { _id?: string }) | null)?._id || '');
 
+  const [reportOverride, setReportOverride] = useState<TripReportItem | null>(null);
   const [reactionOverride, setReactionOverride] = useState<{
     reportId: string;
     userId: string;
@@ -98,35 +110,45 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
   } | null>(null);
   const [isReacting, setIsReacting] = useState(false);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
-  const [coverFailed, setCoverFailed] = useState(false);
+  const [failedCoverKey, setFailedCoverKey] = useState<string | null>(null);
+  const [failedAvatarKey, setFailedAvatarKey] = useState<string | null>(null);
+  const [inspectedAuthor, setInspectedAuthor] = useState<{
+    name: string;
+    avatar: string;
+    userId?: string;
+  } | null>(null);
+
+  const effectiveReport = reportOverride && reportOverride._id === report._id ? reportOverride : report;
 
   const hasReactionOverride =
     reactionOverride !== null &&
-    reactionOverride.reportId === report._id &&
+    reactionOverride.reportId === effectiveReport._id &&
     reactionOverride.userId === currentUserId;
   const reactions = hasReactionOverride
     ? reactionOverride.reactions
     : {
-      like: report.reactions?.like || 0,
-      love: report.reactions?.love || 0,
-      wow: report.reactions?.wow || 0,
+      like: effectiveReport.reactions?.like || 0,
+      love: effectiveReport.reactions?.love || 0,
+      wow: effectiveReport.reactions?.wow || 0,
     };
   const userReaction = hasReactionOverride
     ? reactionOverride.userReaction
-    : getInitialUserReaction(report, currentUserId);
+    : getInitialUserReaction(effectiveReport, currentUserId);
   const displayedCommentsCount =
-    commentsCountOverride && commentsCountOverride.reportId === report._id
+    commentsCountOverride && commentsCountOverride.reportId === effectiveReport._id
       ? commentsCountOverride.count
-      : report.commentsCount || 0;
+      : effectiveReport.commentsCount || 0;
 
   const isAuthorSelf = Boolean(
-    currentUserId && report.authorId?._id && String(report.authorId._id) === currentUserId
+    currentUserId && effectiveReport.authorId?._id && String(effectiveReport.authorId._id) === currentUserId
   );
-  const authorName = report.authorId?.fullName || 'Thành viên cộng đồng';
+  const authorName = effectiveReport.authorId?.fullName || 'Bạn đồng hành';
   const effectiveAuthorAvatar =
     isAuthorSelf && (loggedInUser?.avatarUrl || loggedInUser?.avatar)
       ? loggedInUser.avatarUrl || loggedInUser.avatar
-      : report.authorId?.avatarUrl || '';
+      : effectiveReport.authorId?.avatarUrl || '';
+  const avatarKey = `${effectiveReport._id}:${effectiveAuthorAvatar}`;
+  const showAuthorAvatar = Boolean(effectiveAuthorAvatar) && failedAvatarKey !== avatarKey;
 
   const hasActiveReaction = userReaction !== null;
   const activeReactionAccent =
@@ -137,38 +159,53 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
         : 'var(--color-primary)';
   const activeReactionLabel =
     userReaction === 'love'
-      ? 'Yêu thích'
+      ? 'yêu thích'
       : userReaction === 'wow'
-        ? 'Ấn tượng'
+        ? 'ấn tượng'
         : userReaction === 'like'
-          ? 'Hữu ích'
-          : 'Cảm xúc';
+          ? 'hữu ích'
+          : 'lượt thích';
   const totalReactions = (reactions.like || 0) + (reactions.love || 0) + (reactions.wow || 0);
 
   const handleReact = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (isReacting) return;
 
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!token) {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: 'Vui lòng đăng nhập để thả cảm xúc cho nhật ký.', type: 'info' },
+          detail: { message: 'Đăng nhập để bày tỏ cảm xúc với bài viết này nhé.', type: 'info' },
         })
       );
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
       return;
     }
 
+    const prevOverride = reactionOverride;
+    const targetType: 'like' | 'love' | 'wow' = userReaction || 'like';
+    const isRemoving = userReaction === targetType;
+    const optimisticUserReaction: 'like' | 'love' | 'wow' | null = isRemoving ? null : targetType;
+    const optimisticReactions = {
+      ...reactions,
+      [targetType]: Math.max(0, (reactions[targetType] || 0) + (isRemoving ? -1 : 1)),
+    };
+
+    setReactionOverride({
+      reportId: effectiveReport._id,
+      userId: currentUserId,
+      reactions: optimisticReactions,
+      userReaction: optimisticUserReaction,
+    });
     setIsReacting(true);
+
     try {
-      const targetType: 'like' | 'love' | 'wow' = userReaction || 'like';
-      const res = await fetch(`/api/trip-reports/${encodeURIComponent(report._id)}/react`, {
+      const res = await fetch(`/api/trip-reports/${encodeURIComponent(effectiveReport._id)}/react`, {
         method: 'POST',
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ type: targetType }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok && data.success && data.reactions) {
         const nextReactions = {
           like: Number(data.reactions.like) || 0,
@@ -180,18 +217,40 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
             ? data.userReaction === 'like' || data.userReaction === 'love' || data.userReaction === 'wow'
               ? data.userReaction
               : null
-            : userReaction;
+            : optimisticUserReaction;
         setReactionOverride({
-          reportId: report._id,
+          reportId: effectiveReport._id,
           userId: currentUserId,
           reactions: nextReactions,
           userReaction: nextUserReaction,
         });
+      } else {
+        setReactionOverride(prevOverride);
+        const isAuthError = res.status === 401;
+        const isRateLimit = res.status === 429;
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: {
+              message:
+                data?.message ||
+                (isAuthError
+                  ? 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'
+                  : isRateLimit
+                    ? 'Bạn thao tác hơi nhanh, vui lòng thử lại sau vài giây.'
+                    : 'Chưa lưu được tương tác, bạn thử lại nhé.'),
+              type: isAuthError || isRateLimit ? 'info' : 'error',
+            },
+          })
+        );
+        if (isAuthError) {
+          window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
+        }
       }
     } catch {
+      setReactionOverride(prevOverride);
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: 'Không thể gửi cảm xúc lúc này.', type: 'error' },
+          detail: { message: 'Chưa lưu được tương tác, bạn thử lại nhé.', type: 'error' },
         })
       );
     } finally {
@@ -200,21 +259,31 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
   };
 
   const formattedDate = (() => {
-    const d = new Date(report.tripDate);
-    if (Number.isNaN(d.getTime())) return report.tripDate || 'Gần đây';
-    return d.toLocaleDateString('vi-VN', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-    });
+    const d = new Date(effectiveReport.tripDate);
+    if (Number.isNaN(d.getTime())) return effectiveReport.tripDate || 'Gần đây';
+    try {
+      return d.toLocaleDateString('vi-VN', {
+        timeZone: 'Asia/Ho_Chi_Minh',
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+      });
+    } catch {
+      return d.toLocaleDateString('vi-VN', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+      });
+    }
   })();
 
   const rawCoverPhoto =
-    report.photos && report.photos.length > 0
-      ? report.photos[0]
-      : report.trailId?.coverImage || '';
-  const showImageCover = Boolean(rawCoverPhoto) && !coverFailed;
-  const ratingVal = Math.min(5, Math.max(1, Number(report.rating) || 5));
+    effectiveReport.photos && effectiveReport.photos.length > 0
+      ? effectiveReport.photos[0]
+      : effectiveReport.trailId?.coverImage || '';
+  const coverKey = `${effectiveReport._id}:${rawCoverPhoto}`;
+  const showImageCover = Boolean(rawCoverPhoto) && failedCoverKey !== coverKey;
+  const ratingVal = Math.min(5, Math.max(1, Number(effectiveReport.rating) || 5));
 
   return (
     <>
@@ -255,8 +324,8 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
             {showImageCover ? (
               <img
                 src={rawCoverPhoto}
-                alt={report.title}
-                onError={() => setCoverFailed(true)}
+                alt={effectiveReport.title}
+                onError={() => setFailedCoverKey(coverKey)}
                 style={{
                   width: '100%',
                   height: '100%',
@@ -316,10 +385,10 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
               }}
             >
               <IconBookOpen size={11} color="var(--color-primary)" />
-              <span>Nhật Ký</span>
+              <span>Nhật ký</span>
             </div>
 
-            {report.duration && (
+            {effectiveReport.duration && (
               <div
                 style={{
                   position: 'absolute',
@@ -334,7 +403,7 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
                   color: 'var(--color-text-main)',
                 }}
               >
-                {report.duration}
+                {effectiveReport.duration}
               </div>
             )}
           </div>
@@ -344,11 +413,12 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
             {/* Author Header */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                {effectiveAuthorAvatar ? (
+                {showAuthorAvatar ? (
                   <img
                     src={effectiveAuthorAvatar}
                     alt={authorName}
                     referrerPolicy="no-referrer"
+                    onError={() => setFailedAvatarKey(avatarKey)}
                     style={{
                       width: 26,
                       height: 26,
@@ -383,10 +453,16 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      const target = report.authorId?._id || authorName;
-                      if (!target) return;
-                      window.history.pushState(null, '', `#profile-${encodeURIComponent(target)}`);
-                      window.dispatchEvent(new HashChangeEvent('hashchange'));
+                      const authorPayload = {
+                        name: authorName,
+                        avatar: effectiveAuthorAvatar || '',
+                        userId: effectiveReport.authorId?._id,
+                      };
+                      if (onOpenAuthorProfile) {
+                        onOpenAuthorProfile(authorPayload);
+                      } else {
+                        setInspectedAuthor(authorPayload);
+                      }
                     }}
                     title={`Xem hồ sơ ${authorName}`}
                     style={{
@@ -420,10 +496,10 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
               </span>
             </div>
 
-            {report.trailId?.name && (
+            {effectiveReport.trailId?.name && (
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.7rem', fontWeight: 700, color: 'var(--color-sky)', marginBottom: 6 }}>
                 <IconMountain size={12} color="var(--color-sky)" />
-                <span>{report.trailId.name}</span>
+                <span>{effectiveReport.trailId.name}</span>
               </div>
             )}
 
@@ -441,7 +517,7 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
                 overflow: 'hidden',
               }}
             >
-              {report.title}
+              {effectiveReport.title}
             </h3>
 
             {/* Summary */}
@@ -457,7 +533,7 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
                 overflow: 'hidden',
               }}
             >
-              {report.summary || report.content}
+              {effectiveReport.summary || effectiveReport.content}
             </p>
           </div>
         </div>
@@ -486,7 +562,7 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
               cursor: isReacting ? 'wait' : 'pointer',
               transition: 'background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease',
             }}
-            title={hasActiveReaction ? `Bấm để bỏ cảm xúc (${activeReactionLabel})` : 'Thả cảm xúc hữu ích'}
+            title={hasActiveReaction ? `Bấm để bỏ đánh dấu (${activeReactionLabel})` : 'Đánh dấu bài viết hữu ích'}
           >
             {userReaction === 'wow' ? (
               <IconSparkles size={13} color={activeReactionAccent} />
@@ -512,7 +588,7 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
 
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <IconEye size={13} color="var(--color-text-dim)" />
-              <span>{report.viewsCount || 1}</span>
+              <span>{effectiveReport.viewsCount || 1}</span>
             </span>
           </div>
         </div>
@@ -520,21 +596,40 @@ export const TripReportCard: React.FC<TripReportCardProps> = ({ report, currentU
 
       {isDetailOpen && (
         <TripReportDetailModal
-          report={{ ...report, reactions, userReaction, commentsCount: displayedCommentsCount }}
+          report={{ ...effectiveReport, reactions, userReaction, commentsCount: displayedCommentsCount }}
           currentUser={currentUser}
           onClose={() => setIsDetailOpen(false)}
           onReactionUpdated={(_id, updatedReactions, updatedUserReaction) => {
             setReactionOverride({
-              reportId: report._id,
+              reportId: effectiveReport._id,
               userId: currentUserId,
               reactions: updatedReactions,
               userReaction: updatedUserReaction,
             });
           }}
           onReportUpdated={(updated) => {
+            setReportOverride(updated);
             if (typeof updated.commentsCount === 'number') {
-              setCommentsCountOverride({ reportId: report._id, count: updated.commentsCount });
+              setCommentsCountOverride({ reportId: effectiveReport._id, count: updated.commentsCount });
             }
+            onReportUpdated?.(updated);
+          }}
+          onReportDeleted={(deletedId) => {
+            setIsDetailOpen(false);
+            onReportDeleted?.(deletedId);
+          }}
+        />
+      )}
+
+      {inspectedAuthor && (
+        <AuthorProfileModal
+          author={inspectedAuthor}
+          currentUser={currentUser}
+          onClose={() => setInspectedAuthor(null)}
+          onStartChat={() => {
+            setInspectedAuthor(null);
+            window.history.pushState({ view: 'messages' }, '', '/messages');
+            window.dispatchEvent(new PopStateEvent('popstate'));
           }}
         />
       )}

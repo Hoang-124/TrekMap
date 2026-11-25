@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Trail, User } from '../../types.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
-import { scopedStorageKey } from '../../utils/storageScope.js';
+import { safeLocalStorageGet, safeLocalStorageRemove, safeLocalStorageSet, scopedStorageKey } from '../../utils/storageScope.js';
 import {
   IconAlertTriangle,
   IconArrowLeft,
@@ -18,10 +18,25 @@ import {
   IconTrash,
 } from '../common/SvgIcons.js';
 
+function parseLocalDateOnly(raw?: string): Date | null {
+  if (!raw) return null;
+  const dateOnlyMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw.trim());
+  if (dateOnlyMatch) {
+    const y = Number(dateOnlyMatch[1]);
+    const m = Number(dateOnlyMatch[2]);
+    const d = Number(dateOnlyMatch[3]);
+    const dt = new Date(y, m - 1, d);
+    return Number.isNaN(dt.getTime()) ? null : dt;
+  }
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+}
+
 function formatDateVi(raw?: string): string {
   if (!raw) return 'Chưa xác định';
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return raw;
+  const d = parseLocalDateOnly(raw);
+  if (!d) return raw;
   return d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
@@ -80,21 +95,21 @@ const DAY_LABELS: Record<number, string> = {
   4: 'Thứ 5',
   5: 'Thứ 6',
   6: 'Thứ 7',
-  7: 'Chủ Nhật',
+  7: 'Chủ nhật',
 };
 
 const CATEGORY_META: Record<SessionCategory, { label: string; color: string; weight: number }> = {
-  stair_elevation: { label: 'Leo Dốc / Cầu Thang', color: 'var(--color-earth)', weight: 30 },
-  pack_walk: { label: 'Đi Bộ Gùi Balo', color: 'var(--color-primary)', weight: 30 },
-  cardio: { label: 'Sức Bền Tim Mạch', color: 'var(--color-sky)', weight: 20 },
-  leg_strength: { label: 'Cơ Chân & Gối', color: 'var(--color-sun)', weight: 15 },
-  recovery: { label: 'Giãn Cơ & Hồi Phục', color: 'var(--color-stream)', weight: 5 },
+  stair_elevation: { label: 'Leo dốc & cầu thang', color: 'var(--color-earth)', weight: 30 },
+  pack_walk: { label: 'Đi bộ mang balo', color: 'var(--color-primary)', weight: 30 },
+  cardio: { label: 'Chạy bền & nhịp thở', color: 'var(--color-sky)', weight: 20 },
+  leg_strength: { label: 'Khỏe đùi & giữ gối', color: 'var(--color-sun)', weight: 15 },
+  recovery: { label: 'Giãn cơ & hồi phục', color: 'var(--color-stream)', weight: 5 },
 };
 
 const FITNESS_LABELS: Record<FitnessLevel, { label: string; desc: string }> = {
-  beginner: { label: 'Người Mới', desc: 'Chưa quen mang tải dốc dài — tăng tiến êm và bảo vệ gối' },
-  intermediate: { label: 'Trung Bình', desc: 'Chạy bộ / vận động 2–3 buổi/tuần, đã từng đi núi 1N' },
-  advanced: { label: 'Nâng Cao', desc: 'Hướng tới đỉnh >2.800m hoặc hành trình 3N2Đ khắc nghiệt' },
+  beginner: { label: 'Mới bắt đầu', desc: 'Chưa quen mang tải leo dốc dài — tăng nhịp từ tốn để êm gối' },
+  intermediate: { label: 'Đã có nền tảng', desc: 'Vận động 2–3 buổi/tuần, đã từng đi núi trong ngày' },
+  advanced: { label: 'Sức bền tốt', desc: 'Chuẩn bị cho đỉnh trên 2.800m hoặc cung 3N2Đ dài hơi' },
 };
 
 function getDefaultTargetDate(weeks: number): string {
@@ -131,107 +146,122 @@ function generateDeterministicPlan(params: {
   targetDate: string;
 }): TrainingPlanRecord {
   const { trail, durationWeeks, fitnessLevel, targetDate } = params;
-  const levelFactor = fitnessLevel === 'beginner' ? 0.72 : fitnessLevel === 'advanced' ? 1.15 : 0.94;
+  const mult = fitnessLevel === 'beginner' ? 0.78 : fitnessLevel === 'advanced' ? 1.22 : 1.0;
   const safeElevGain =
     Number.isFinite(trail.elevationGainM) && trail.elevationGainM > 0 ? trail.elevationGainM : 800;
+  const safeDistanceKm =
+    Number.isFinite(trail.distanceKm) && trail.distanceKm > 0 ? trail.distanceKm : 12;
   const safeDurationDays =
     Number.isFinite(trail.durationDays) && trail.durationDays > 0 ? trail.durationDays : 1;
-  const dailyGainTarget = Math.max(
-    250,
-    Math.round((safeElevGain / safeDurationDays) * levelFactor)
-  );
-  const basePackKg = fitnessLevel === 'beginner' ? 4 : fitnessLevel === 'advanced' ? 8 : 6;
-  const maxPackKg = Math.min(
+  const safeDifficulty =
+    Number.isFinite(trail.difficultyLevel) && trail.difficultyLevel >= 1 ? trail.difficultyLevel : 3;
+  const isHighAltitude = (trail.maxAltitudeM || 0) >= 2500;
+
+  const basePackKg = Math.min(
     14,
-    basePackKg + (safeDurationDays >= 3 ? 5 : safeDurationDays === 2 ? 4 : 2)
+    Math.max(4, Math.round((safeDurationDays >= 2 ? 7.5 : 4.5) + safeDifficulty * 0.9))
   );
+  const peakElevTarget = Math.max(250, Math.min(1800, Math.round(safeElevGain * 0.65 * mult)));
 
   const sessions: TrainingSessionItem[] = [];
 
   for (let week = 1; week <= durationWeeks; week++) {
     const isTaper = week === durationWeeks;
-    const progress = (week - 1) / Math.max(1, durationWeeks - 2);
-    const loadRatio = isTaper ? 0.5 : Math.min(1, 0.52 + progress * 0.48);
+    const progressFactor = isTaper
+      ? 0.55
+      : 0.6 + ((week - 1) / Math.max(1, durationWeeks - 2)) * 0.4;
 
-    const stairElev = Math.round((dailyGainTarget * 0.45 * loadRatio) / 10) * 10;
-    const packElev = Math.round((dailyGainTarget * 0.72 * loadRatio) / 10) * 10;
-    const packKg = isTaper
-      ? Math.max(3, Math.round(basePackKg * 0.7))
-      : Math.min(maxPackKg, Math.round(basePackKg + (maxPackKg - basePackKg) * progress));
+    const cardioMin = Math.max(20, Math.round(35 * mult * progressFactor + (isHighAltitude ? 10 : 0)));
+    const strengthMin = Math.max(20, Math.round(35 * mult * progressFactor));
+    const stairElev = Math.max(150, Math.round((peakElevTarget * progressFactor) / 10) * 10);
+    const stairMin = Math.max(25, Math.round(stairElev / 16 + 15));
+    const packKg = Math.max(
+      3,
+      Math.round(basePackKg * (isTaper ? 0.5 : Math.min(1.05, progressFactor + 0.1)))
+    );
+    const packWalkMin = Math.max(
+      45,
+      Math.round((safeDistanceKm * 5.5 + safeDurationDays * 25) * progressFactor * mult)
+    );
+    const packElev = Math.round((stairElev * (isTaper ? 0.4 : 0.8)) / 10) * 10;
 
-    // Mon: Cardio Zone 2
-    sessions.push({
-      id: `w${week}-d1`,
-      week,
-      dayOfWeek: 1,
-      title: isTaper ? 'Chạy Nhẹ Nhịp Zone 2 (Giữ Nhịp Tim)' : 'Chạy Bộ Sức Bền Hô Hấp Zone 2',
-      category: 'cardio',
-      durationMin: Math.round((35 + (isTaper ? -5 : week * 4)) * levelFactor),
-      notes: isTaper
-        ? 'Giữ nhịp tim thấp (65% HRmax), tập thở mũi 2:2, không chạy nước rút.'
-        : 'Giữ nhịp thở đều 2 bước hít - 2 bước thở để tăng dung tích phổi khi lên cao.',
-      completed: false,
-    });
-
-    // Tue: Leg Strength & Knee Stability
+    // Day 2 (Tue): Cardio Zone 2 — matches server trainingPlan.service.ts (w{w}-d2)
     sessions.push({
       id: `w${week}-d2`,
       week,
       dayOfWeek: 2,
-      title: isTaper ? 'Kích Hoạt Cơ Đùi & Ổn Định Cổ Chân' : 'Sức Mạnh Đùi Trước, Mông & Bảo Vệ Khớp Gối',
-      category: 'leg_strength',
-      durationMin: isTaper ? 25 : Math.round(35 + week * 2),
-      notes: isTaper
-        ? '2 hiệp nhẹ Bodyweight Squats, Step-downs chậm và giữ thăng bằng 1 chân.'
-        : '3–4 hiệp Squats, Bulgarian Split Squats, Calf Raises & Plank bảo vệ gối khi đổ dốc.',
+      title: isTaper
+        ? `Chạy nhẹ giữ nhịp tim Zone 2 (${cardioMin} phút)`
+        : `Chạy bền giữ hơi thở đều Zone 2 (${cardioMin} phút)`,
+      category: 'cardio',
+      durationMin: cardioMin,
+      notes: isHighAltitude
+        ? 'Giữ nhịp tim 65–75% tối đa, hít thở sâu đều qua mũi để thích nghi sức bền độ cao >2.500m.'
+        : 'Giữ nhịp thở 2 bước hít – 2 bước thở (Zone 2) để xây nền tim mạch ổn định.',
       completed: false,
     });
 
-    // Thu: Stair / Elevation Climb
+    // Day 3 (Wed): Leg Strength & Knee Stability — matches server (w{w}-d3)
     sessions.push({
-      id: `w${week}-d4`,
+      id: `w${week}-d3`,
       week,
-      dayOfWeek: 4,
-      title: isTaper ? 'Leo Cầu Thang Nhẹ Duy Trì Cảm Giác Dốc' : `Leo Cầu Thang / Dốc Gắt Tích Lũy +${stairElev}m`,
-      category: 'stair_elevation',
-      durationMin: isTaper ? 30 : Math.round(45 + week * 4),
-      targetElevationM: stairElev,
-      packWeightKg: Math.max(3, packKg - 2),
+      dayOfWeek: 3,
+      title: isTaper
+        ? `Làm nóng cơ đùi & cổ chân nhẹ (${strengthMin} phút)`
+        : `Tập đùi trước, mông & giữ vững khớp gối (${strengthMin} phút)`,
+      category: 'leg_strength',
+      durationMin: strengthMin,
       notes: isTaper
-        ? 'Leo nhịp chậm, xuống bằng thang máy để bảo toàn sụn gối trước ngày xuất phát.'
-        : `Mang balo ${Math.max(3, packKg - 2)}kg, tập bước Rest-Step trụ thẳng chân sau, ưu tiên xuống thang máy.`,
+        ? '2 hiệp squat không tạ nhẹ nhàng, bước hạ bục chậm và đứng thăng bằng 1 chân.'
+        : '3–4 hiệp Squat, Step-up, Lunge, nhón bắp chân và Plank để giữ gối chắc lúc đổ dốc dài.',
       completed: false,
     });
 
-    // Sat: Long Pack Walk / Simulation Hike
+    // Day 5 (Fri): Stair / Elevation Climb — matches server (w{w}-d5)
+    sessions.push({
+      id: `w${week}-d5`,
+      week,
+      dayOfWeek: 5,
+      title: isTaper ? 'Leo cầu thang nhẹ giữ cảm giác chân' : `Leo cầu thang hoặc dốc gắt (+${stairElev}m)`,
+      category: 'stair_elevation',
+      durationMin: stairMin,
+      targetElevationM: stairElev,
+      packWeightKg: Math.max(2, Math.round(packKg * 0.7)),
+      notes: isTaper
+        ? 'Leo chậm rãi, lúc xuống nên đi thang máy để giữ sụn gối êm trước ngày xuất phát.'
+        : `Mang balo ${Math.max(2, Math.round(packKg * 0.7))}kg, tập bước nghỉ Rest-Step và ưu tiên xuống bằng thang máy.`,
+      completed: false,
+    });
+
+    // Day 6 (Sat): Long Pack Walk / Simulation Hike — matches server (w{w}-d6)
     sessions.push({
       id: `w${week}-d6`,
       week,
       dayOfWeek: 6,
       title: isTaper
-        ? 'Đi Bộ Thử Giày & Balo (Kiểm Tra Ma Sát)'
-        : `Hành Quân Mô Phỏng Balo ${packKg}kg (+${packElev}m)`,
+        ? `Đi bộ thử giày & balo (${packWalkMin} phút, ${packKg}kg)`
+        : `Đi bộ đường dài mang balo ${packKg}kg (${packWalkMin} phút, +${packElev}m)`,
       category: 'pack_walk',
-      durationMin: isTaper ? 45 : Math.round(75 + week * 12),
-      targetElevationM: isTaper ? Math.round(stairElev * 0.6) : packElev,
+      durationMin: packWalkMin,
+      targetElevationM: packElev,
       packWeightKg: packKg,
       notes: isTaper
-        ? 'Mang đúng đôi giày & vớ trekking sẽ dùng, kiểm tra dây đai hông và điểm cọ xát.'
-        : `Đi liên tục kèm gậy trekking, thử nạp nước điện giải mỗi 25 phút và kiểm tra nhịp bước.`,
+        ? 'Mang đúng đôi giày và đôi vớ sẽ đi rừng, chỉnh lại đai hông xem có chỗ nào cấn vai hay phồng chân không.'
+        : `Đi liền mạch cùng gậy trekking trên cung tập tương đương ${safeDistanceKm} km, nhấp nước điện giải mỗi 25 phút.`,
       completed: false,
     });
 
-    // Sun: Mobility & Active Recovery
+    // Day 7 (Sun): Mobility & Active Recovery — matches server (w{w}-d7)
     sessions.push({
       id: `w${week}-d7`,
       week,
       dayOfWeek: 7,
-      title: isTaper ? 'Nghỉ Ngơi Hoàn Toàn, Ngủ 8 Tiếng & Tích Tinh Bột' : 'Giãn Cơ Chủ Động, Lăn Ống & Hồi Phục Gân Khoeo',
+      title: isTaper ? 'Nghỉ hẳn, ngủ đủ 8 tiếng & nạp tinh bột' : 'Giãn cơ, lăn ống & thả lỏng gân kheo',
       category: 'recovery',
       durationMin: 25,
       notes: isTaper
-        ? 'Kiểm tra lại Checklist đồ, bổ sung chuối/Magie và ngủ đủ giấc trước khi khởi hành.'
-        : 'Giãn cơ bắp chân, gân Achilles, cơ gập hông và thả lỏng lưng dưới sau buổi hành quân.',
+        ? 'Rà lại đồ đạc lần cuối, ăn thêm chuối hoặc bổ sung Magie và đi ngủ sớm trước giờ lên đường.'
+        : 'Giãn kỹ bắp chân, gân gót chân, cơ gập hông và thả lỏng lưng dưới sau buổi đi tải dài.',
       completed: false,
     });
   }
@@ -251,10 +281,10 @@ function generateDeterministicPlan(params: {
 }
 
 function getReadinessTier(score: number): { label: string; color: string } {
-  if (score >= 80) return { label: 'Sẵn Sàng Xuất Phát', color: 'var(--color-primary)' };
-  if (score >= 55) return { label: 'Đủ Nền Tảng Cơ Bản', color: 'var(--color-sky)' };
-  if (score >= 25) return { label: 'Đang Tích Lũy Thể Lực', color: 'var(--color-earth)' };
-  return { label: 'Mới Khởi Động Giáo Án', color: 'var(--color-text-muted)' };
+  if (score >= 80) return { label: 'Sẵn sàng lên đường', color: 'var(--color-primary)' };
+  if (score >= 55) return { label: 'Nền tảng khá ổn', color: 'var(--color-sky)' };
+  if (score >= 25) return { label: 'Đang tích lũy sức', color: 'var(--color-earth)' };
+  return { label: 'Mới khởi động', color: 'var(--color-text-muted)' };
 }
 
 function readTrailIdFromUrl(): string {
@@ -313,7 +343,12 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
   const persistLocalPlans = useCallback(
     (nextPlans: TrainingPlanRecord[]) => {
       try {
-        localStorage.setItem(storageKey, JSON.stringify(nextPlans));
+        const localOnly = nextPlans.filter((p) => p.isLocalOnly);
+        if (localOnly.length > 0) {
+          localStorage.setItem(storageKey, JSON.stringify(localOnly));
+        } else {
+          localStorage.removeItem(storageKey);
+        }
       } catch {
         // ignore storage quota errors
       }
@@ -455,7 +490,7 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
       setSelectedWeek(1);
       setShowBuilder(false);
       setIsCreating(false);
-      onShowToast?.(`Đã tạo giáo án ${builderWeeks} tuần chinh phục ${builderTrail.name}!`, 'success');
+      onShowToast?.(`Đã lập lịch tập ${builderWeeks} tuần cho cung ${builderTrail.name}.`, 'success');
       return;
     }
 
@@ -479,18 +514,27 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
         setActivePlanId(created._id);
         setSelectedWeek(1);
         setShowBuilder(false);
-        onShowToast?.(`Đã tạo và đồng bộ giáo án ${builderWeeks} tuần lên đám mây!`, 'success');
+        onShowToast?.(`Đã lập và lưu lịch tập ${builderWeeks} tuần vào tài khoản.`, 'success');
         return;
       }
 
-      // Graceful local fallback if server endpoint unavailable
+      // Surface client validation/limit errors (HTTP 4xx) instead of silently falling back to localStorage
+      if (res.status >= 400 && res.status < 500) {
+        onShowToast?.(
+          json?.message || 'Thông tin lịch tập chưa hợp lệ (kiểm tra ngày khởi hành hoặc giới hạn giáo án).',
+          'error'
+        );
+        return;
+      }
+
+      // Graceful local fallback only when server is unavailable (5xx)
       const next = [localFallbackPlan, ...plans].slice(0, 5);
       setPlans(next);
       persistLocalPlans(next);
       setActivePlanId(localFallbackPlan._id);
       setSelectedWeek(1);
       setShowBuilder(false);
-      onShowToast?.('Đã tạo giáo án và lưu cục bộ trên trình duyệt.', 'info');
+      onShowToast?.('Máy chủ tạm gián đoạn — đã lập lịch tập và lưu sẵn trên trình duyệt.', 'info');
     } catch {
       const next = [localFallbackPlan, ...plans].slice(0, 5);
       setPlans(next);
@@ -498,7 +542,7 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
       setActivePlanId(localFallbackPlan._id);
       setSelectedWeek(1);
       setShowBuilder(false);
-      onShowToast?.('Đã tạo giáo án ngoại tuyến (tự lưu trên thiết bị).', 'info');
+      onShowToast?.('Đã lập lịch tập ngoại tuyến và lưu trên máy này.', 'info');
     } finally {
       setIsCreating(false);
     }
@@ -507,15 +551,19 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
   const handleToggleSession = async (sessionId: string) => {
     if (!activePlan) return;
 
+    const previousPlan = activePlan;
     const updatedSessions = activePlan.sessions.map((s) =>
       s.id === sessionId
         ? { ...s, completed: !s.completed, completedAt: !s.completed ? new Date().toISOString() : undefined }
         : s
     );
+    const prevDoneAny = activePlan.sessions.some((s) => s.completed);
     const prevBase = computeReadinessScore(activePlan.sessions);
-    const expBonus = !activePlan.isLocalOnly ? Math.max(0, (activePlan.readinessScore || 0) - prevBase) : 0;
+    const expBonus =
+      !activePlan.isLocalOnly && prevDoneAny ? Math.max(0, (activePlan.readinessScore || 0) - prevBase) : 0;
     const updatedBaseScore = computeReadinessScore(updatedSessions);
-    const updatedScore = Math.min(100, updatedBaseScore + expBonus);
+    const updatedDoneAny = updatedSessions.some((s) => s.completed);
+    const updatedScore = updatedDoneAny ? Math.min(100, updatedBaseScore + expBonus) : 0;
     const updatedPlan: TrainingPlanRecord = {
       ...activePlan,
       sessions: updatedSessions,
@@ -527,7 +575,7 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
     setPlans(nextPlans);
 
     if (activePlan.isLocalOnly || !currentUser) {
-      persistLocalPlans(nextPlans.filter((p) => p.isLocalOnly));
+      persistLocalPlans(nextPlans);
       return;
     }
 
@@ -542,32 +590,34 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
           }),
         }
       );
-      if (res.ok) {
-        const json = await res.json().catch(() => null);
-        if (json?.success && json.data?._id) {
-          setPlans((curr) => curr.map((p) => (p._id === activePlan._id ? json.data : p)));
-        }
+      const json = await res.json().catch(() => null);
+      if (res.ok && json?.success && json.data?._id) {
+        setPlans((curr) => curr.map((p) => (p._id === previousPlan._id ? json.data : p)));
+      } else if (!res.ok) {
+        setPlans((curr) => curr.map((p) => (p._id === previousPlan._id ? previousPlan : p)));
+        onShowToast?.(json?.message || 'Không thể lưu tiến độ buổi tập lên máy chủ.', 'error');
       }
     } catch {
-      // Optimistic state already applied
+      setPlans((curr) => curr.map((p) => (p._id === previousPlan._id ? previousPlan : p)));
+      onShowToast?.('Mất kết nối máy chủ — chưa lưu được tiến độ buổi tập.', 'error');
     }
   };
 
   const handleUpdatePlanStatus = async (plan: TrainingPlanRecord, nextStatus: TrainingPlanRecord['status']) => {
     if (updatingStatus) return;
     setUpdatingStatus(true);
-    const optimistic = plans.map((p) => (p._id === plan._id ? { ...p, status: nextStatus } : p));
-    setPlans(optimistic);
+    const prevStatus = plan.status;
+    setPlans((curr) => curr.map((p) => (p._id === plan._id ? { ...p, status: nextStatus } : p)));
 
     const statusMsg =
       nextStatus === 'completed'
-        ? 'Đã đánh dấu hoàn thành giáo án!'
+        ? 'Chúc mừng, bạn đã hoàn thành lịch tập!'
         : nextStatus === 'abandoned'
-          ? 'Đã tạm dừng giáo án.'
-          : 'Đã kích hoạt lại giáo án!';
+          ? 'Đã tạm dừng lịch tập.'
+          : 'Đã mở lại lịch tập để tiếp tục.';
 
     if (plan.isLocalOnly || !currentUser) {
-      persistLocalPlans(optimistic.filter((p) => p.isLocalOnly));
+      persistLocalPlans(plans.map((p) => (p._id === plan._id ? { ...p, status: nextStatus } : p)));
       setUpdatingStatus(false);
       onShowToast?.(statusMsg, 'success');
       return;
@@ -586,11 +636,11 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
         }
         onShowToast?.(json.message || statusMsg, 'success');
       } else {
-        setPlans(plans);
+        setPlans((curr) => curr.map((p) => (p._id === plan._id ? { ...p, status: prevStatus } : p)));
         onShowToast?.(json?.message || 'Không thể cập nhật trạng thái giáo án.', 'error');
       }
     } catch {
-      setPlans(plans);
+      setPlans((curr) => curr.map((p) => (p._id === plan._id ? { ...p, status: prevStatus } : p)));
       onShowToast?.('Lỗi kết nối máy chủ khi cập nhật trạng thái giáo án.', 'error');
     } finally {
       setUpdatingStatus(false);
@@ -618,8 +668,23 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
       }
 
       let syncedPlan: TrainingPlanRecord = json.data;
-      const completedSessionIds = localPlan.sessions.filter((s) => s.completed).map((s) => s.id);
-      for (const sid of completedSessionIds) {
+      // Map each completed local session by (week, category) against server sessions so 0 sessions drop or corrupt
+      const completedLocalSessions = localPlan.sessions.filter((s) => s.completed);
+      const serverSessionIdsToPatch: string[] = [];
+      const seenPatchIds = new Set<string>();
+      for (const localSession of completedLocalSessions) {
+        const matchedServerSession =
+          syncedPlan.sessions.find(
+            (ss) => ss.week === localSession.week && ss.category === localSession.category && !seenPatchIds.has(ss.id)
+          ) ||
+          syncedPlan.sessions.find((ss) => ss.id === localSession.id && !seenPatchIds.has(ss.id));
+        if (matchedServerSession) {
+          seenPatchIds.add(matchedServerSession.id);
+          serverSessionIdsToPatch.push(matchedServerSession.id);
+        }
+      }
+
+      for (const sid of serverSessionIdsToPatch) {
         const sRes = await fetch(
           `/api/training-plans/${encodeURIComponent(syncedPlan._id)}/sessions/${encodeURIComponent(sid)}`,
           {
@@ -639,18 +704,17 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
       const nextPlans = [syncedPlan, ...plans.filter((p) => p._id !== localPlan._id)];
       setPlans(nextPlans);
       setActivePlanId(syncedPlan._id);
-      const remainingLocal = nextPlans.filter((p) => p.isLocalOnly);
-      persistLocalPlans(remainingLocal);
+      persistLocalPlans(nextPlans);
       try {
         const guestKey = scopedStorageKey(LOCAL_STORAGE_KEY, null);
         const removeFromKey = (k: string) => {
-          const raw = localStorage.getItem(k);
+          const raw = safeLocalStorageGet(k);
           if (!raw) return;
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed)) {
             const cleaned = parsed.filter((x: TrainingPlanRecord) => x._id !== localPlan._id);
-            if (cleaned.length > 0) localStorage.setItem(k, JSON.stringify(cleaned));
-            else localStorage.removeItem(k);
+            if (cleaned.length > 0) safeLocalStorageSet(k, JSON.stringify(cleaned));
+            else safeLocalStorageRemove(k);
           }
         };
         removeFromKey(guestKey);
@@ -658,9 +722,9 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
       } catch {
         // ignore storage errors
       }
-      onShowToast?.(`Đã đồng bộ giáo án "${syncedPlan.targetTrailName}" lên LOST Cloud!`, 'success');
+      onShowToast?.(`Đã lưu lịch tập "${syncedPlan.targetTrailName}" lên tài khoản.`, 'success');
     } catch (err: unknown) {
-      onShowToast?.(err instanceof Error ? err.message : 'Lỗi khi đồng bộ giáo án lên Cloud.', 'error');
+      onShowToast?.(err instanceof Error ? err.message : 'Chưa lưu được lịch tập lên tài khoản lúc này.', 'error');
     } finally {
       setSyncingCloudPlanId(null);
     }
@@ -670,12 +734,12 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
     setConfirmDeletePlanId(null);
     const target = plans.find((p) => p._id === planId);
     const remaining = plans.filter((p) => p._id !== planId);
-    setPlans(remaining);
-    setActivePlanId(remaining[0]?._id || '');
-    if (remaining.length === 0) setShowBuilder(true);
 
     if (!target || target.isLocalOnly || !currentUser) {
-      persistLocalPlans(remaining.filter((p) => p.isLocalOnly));
+      setPlans(remaining);
+      setActivePlanId(remaining[0]?._id || '');
+      if (remaining.length === 0) setShowBuilder(true);
+      persistLocalPlans(remaining);
       try {
         const guestKey = scopedStorageKey(LOCAL_STORAGE_KEY, null);
         for (const k of [guestKey, LOCAL_STORAGE_KEY]) {
@@ -695,14 +759,29 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
       return;
     }
 
+    setPlans(remaining);
+    setActivePlanId(remaining[0]?._id || '');
+    if (remaining.length === 0) setShowBuilder(true);
+
     try {
-      await fetch(`/api/training-plans/${encodeURIComponent(planId)}`, {
+      const res = await fetch(`/api/training-plans/${encodeURIComponent(planId)}`, {
         method: 'DELETE',
         headers: getApiHeaders(),
       });
-      onShowToast?.('Đã xóa giáo án tập luyện.', 'info');
+      if (res.ok || res.status === 404) {
+        onShowToast?.('Đã xóa giáo án tập luyện.', 'info');
+      } else {
+        const json = await res.json().catch(() => null);
+        setPlans((curr) => [target, ...curr.filter((p) => p._id !== target._id)]);
+        setActivePlanId(target._id);
+        setShowBuilder(false);
+        onShowToast?.(json?.message || 'Không thể xóa giáo án trên máy chủ.', 'error');
+      }
     } catch {
-      onShowToast?.('Đã xóa khỏi danh sách hiện tại.', 'info');
+      setPlans((curr) => [target, ...curr.filter((p) => p._id !== target._id)]);
+      setActivePlanId(target._id);
+      setShowBuilder(false);
+      onShowToast?.('Mất kết nối máy chủ — chưa xóa được giáo án.', 'error');
     }
   };
 
@@ -715,8 +794,11 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
 
   const daysUntilDeparture = useMemo(() => {
     if (!activePlan?.targetDate) return null;
-    const diffMs = new Date(activePlan.targetDate).getTime() - todayMs;
-    return Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+    const targetLocal = parseLocalDateOnly(activePlan.targetDate);
+    if (!targetLocal) return null;
+    const now = new Date(todayMs);
+    const todayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return Math.round((targetLocal.getTime() - todayLocal.getTime()) / (24 * 60 * 60 * 1000));
   }, [activePlan, todayMs]);
 
   const weeklyStats = useMemo(() => {
@@ -810,16 +892,16 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
               marginBottom: 4,
             }}
           >
-            LOST Expedition Prep • Giáo Án Thể Lực Khoa Học 4–8 Tuần
+            Chuẩn bị thể lực • Lịch tập 4–8 tuần
           </div>
           <h1
             className="font-editorial"
             style={{ margin: 0, fontSize: 'clamp(1.45rem, 2.6vw, 2rem)', fontWeight: 600, lineHeight: 1.2 }}
           >
-            Lộ Trình Rèn Thể Lực Chinh Phục Đỉnh Cao
+            Rèn sức trước chuyến đi
           </h1>
           <p style={{ margin: '6px 0 0', fontSize: '0.86rem', color: 'var(--color-text-muted)', maxWidth: 740, lineHeight: 1.55 }}>
-            Tự động hiệu chỉnh tải trọng balo, độ dốc tích lũy cầu thang và tuần giảm tải (Taper Week) theo đúng thông số thực địa của {trails.length} đỉnh núi &amp; cung đường Việt Nam.
+            Lịch tập tự căn theo độ cao, độ dốc và số ngày đi của {trails.length} cung núi Việt Nam — có sẵn tuần giảm tải ngay trước ngày xuất phát để chân nhẹ và khớp gối khỏe.
           </p>
         </div>
 
@@ -831,7 +913,7 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
             style={{ borderRadius: 4, fontSize: '0.8rem', padding: '8px 13px' }}
           >
             <IconPlus size={14} color="var(--color-on-primary)" />
-            <span>{showBuilder && activePlan ? 'Ẩn Trình Tạo Giáo Án' : 'Tạo Giáo Án Mới'}</span>
+            <span>{showBuilder && activePlan ? 'Thu gọn khung tạo lịch' : 'Tạo lịch tập mới'}</span>
           </button>
         </div>
       </div>
@@ -854,7 +936,7 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
           }}
         >
           <span style={{ color: 'var(--color-text-main)' }}>
-            Chế độ khách: Giáo án và tiến độ đánh dấu buổi tập được tự động lưu trên thiết bị này. Đăng nhập để đồng bộ lên tài khoản LOST.
+            Bạn chưa đăng nhập: lịch tập và các buổi đã đánh dấu vẫn được lưu trên máy này. Đăng nhập nếu muốn mở tiếp trên điện thoại khác.
           </span>
           <button
             type="button"
@@ -862,7 +944,7 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
             onClick={() => window.dispatchEvent(new CustomEvent('lost:open-auth-modal'))}
             style={{ padding: '5px 11px', fontSize: '0.75rem', borderRadius: 4 }}
           >
-            Đăng Nhập Đồng Bộ
+            Đăng nhập để lưu
           </button>
         </div>
       )}
@@ -884,7 +966,7 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
           }}
         >
           <div style={{ fontSize: '0.92rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
-            Thiết Lập Giáo Án Theo Đỉnh Mục Tiêu
+            Chọn cung núi để lập lịch tập
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(220px, 100%), 1fr))', gap: 12 }}>
@@ -948,7 +1030,7 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
                         fontFamily: 'var(--font-family)',
                       }}
                     >
-                      {w} Tuần
+                      {w} tuần
                     </button>
                   );
                 })}
@@ -1020,7 +1102,7 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
                 style={{ borderRadius: 4, fontSize: '0.82rem', padding: '8px 16px' }}
               >
                 <IconHiking size={15} color="var(--color-on-primary)" />
-                <span>{isCreating ? 'Đang khởi tạo...' : `Khởi Tạo Giáo Án ${builderWeeks} Tuần`}</span>
+                <span>{isCreating ? 'Đang lập lịch...' : `Lập lịch tập ${builderWeeks} tuần`}</span>
               </button>
             </div>
           )}
@@ -1097,7 +1179,7 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
             >
               <span style={{ color: 'var(--color-text-main)', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
                 <IconCloud size={15} color="var(--color-primary)" />
-                <span>Giáo án này đang lưu cục bộ trên trình duyệt — đồng bộ lên LOST Cloud để lưu tiến độ đa thiết bị.</span>
+                <span>Lịch tập này mới lưu trên trình duyệt — bấm lưu vào tài khoản để xem tiếp trên máy khác.</span>
               </span>
               <button
                 type="button"
@@ -1108,7 +1190,7 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
               >
                 <IconCloud size={13} color="var(--color-on-primary)" />
                 <span>
-                  {syncingCloudPlanId === activePlan._id ? 'Đang đồng bộ...' : 'Đồng bộ giáo án lên Cloud'}
+                  {syncingCloudPlanId === activePlan._id ? 'Đang lưu...' : 'Lưu lên tài khoản'}
                 </span>
               </button>
             </div>
@@ -1132,7 +1214,7 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-primary)' }}>
-                      Chỉ Số Sẵn Sàng Thực Địa
+                      Độ sẵn sàng trước ngày đi
                     </span>
                     <span
                       style={{
@@ -1170,7 +1252,11 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
                     </span>
                     {daysUntilDeparture !== null && (
                       <span style={{ fontWeight: 700, color: daysUntilDeparture <= 7 ? 'var(--color-earth)' : 'var(--color-sky)', fontVariantNumeric: 'tabular-nums' }}>
-                        {daysUntilDeparture > 0 ? `Còn ${daysUntilDeparture} ngày` : 'Đã đến ngày khởi hành'}
+                        {daysUntilDeparture > 0
+                          ? `Còn ${daysUntilDeparture} ngày`
+                          : daysUntilDeparture === 0
+                            ? 'Hôm nay khởi hành'
+                            : `Đã qua ${Math.abs(daysUntilDeparture)} ngày`}
                       </span>
                     )}
                   </div>
@@ -1348,16 +1434,16 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
             >
               <div>
                 <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-earth)' }}>
-                  Tải Trọng Độ Cao &amp; Thời Lượng Theo Tuần
+                  Độ dốc &amp; thời lượng tập từng tuần
                 </div>
                 <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginTop: 3 }}>
-                  Tăng tiến khoa học từ Tuần 1–{activePlan.durationWeeks - 1} và giảm tải hồi phục ở Tuần {activePlan.durationWeeks} (Taper Week).
+                  Tăng dần từ tuần 1 đến tuần {activePlan.durationWeeks - 1}, rồi giảm tải ở tuần {activePlan.durationWeeks} để cơ thể hồi hẳn trước giờ lên đường.
                 </div>
               </div>
 
               <svg
                 viewBox="0 0 520 190"
-                role="img"
+                role="group"
                 aria-label="Biểu đồ tải trọng độ cao theo tuần"
                 style={{ display: 'block', width: '100%', height: 'auto', maxWidth: '100%' }}
               >
@@ -1457,9 +1543,9 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
               </svg>
 
               <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, fontSize: '0.72rem', color: 'var(--color-text-dim)' }}>
-                <span>Bấm vào cột tuần để xem giáo án chi tiết • *T{activePlan.durationWeeks}: Tuần giảm tải (Taper)</span>
+                <span>Bấm vào cột tuần để xem từng buổi • *T{activePlan.durationWeeks}: tuần giảm tải</span>
                 <span style={{ fontVariantNumeric: 'tabular-nums' }}>
-                  Hoàn thành: {activePlan.sessions.filter((s) => s.completed).length}/{activePlan.sessions.length} buổi
+                  Đã tập: {activePlan.sessions.filter((s) => s.completed).length}/{activePlan.sessions.length} buổi
                 </span>
               </div>
             </div>
@@ -1483,8 +1569,8 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
                 <IconAlertTriangle size={18} color="var(--color-earth)" />
               </span>
               <div style={{ fontSize: '0.8rem', lineHeight: 1.55, color: 'var(--color-text-main)' }}>
-                <strong>Lưu ý thích nghi độ cao cho đỉnh {activeTrail.maxAltitudeM.toLocaleString('vi-VN')}m: </strong>
-                Giữ nhịp thở 2:2 trên 2.200m, uống 3–4 lít nước + điện giải/ngày, không tăng tốc đột ngột sau 2.500m để phòng Sốc độ cao (AMS). Chuẩn bị hệ thống 3 lớp áo chống gió lạnh và đôi gậy bảo vệ khớp gối khi đổ dốc.
+                <strong>Lưu ý khi lên cao trên {activeTrail.maxAltitudeM.toLocaleString('vi-VN')}m: </strong>
+                Qua mốc 2.200m cứ giữ nhịp thở đều 2 bước hít – 2 bước thở, uống 3–4 lít nước pha điện giải mỗi ngày và đừng cố bứt tốc sau 2.500m để tránh say độ cao (AMS). Nhớ mang đủ 3 lớp áo chắn gió rét và đôi gậy đỡ gối lúc xuống dốc.
               </div>
             </div>
           )}
@@ -1518,7 +1604,7 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
                     fontVariantNumeric: 'tabular-nums',
                   }}
                 >
-                  <span>Tuần {ws.week}{ws.isTaper ? ' (Giảm Tải)' : ''}</span>
+                  <span>Tuần {ws.week}{ws.isTaper ? ' (giảm tải)' : ''}</span>
                   <span
                     style={{
                       fontSize: '0.7rem',
@@ -1643,6 +1729,37 @@ export const TrainingPlannerView: React.FC<TrainingPlannerViewProps> = ({
               );
             })}
           </div>
+        </div>
+      ) : !showBuilder ? (
+        <div
+          style={{
+            background: 'var(--color-bg-card)',
+            border: '1px dashed var(--color-border-strong)',
+            borderRadius: 6,
+            padding: '32px 20px',
+            textAlign: 'center',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 10,
+          }}
+        >
+          <IconHiking size={28} color="var(--color-primary)" />
+          <div style={{ fontSize: '0.96rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
+            Bạn chưa có giáo án tập luyện nào
+          </div>
+          <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--color-text-muted)', maxWidth: 460, lineHeight: 1.55 }}>
+            Chọn một cung núi sắp đi và số tuần chuẩn bị — hệ thống sẽ tự chia lịch chạy bền, bổ trợ gối, leo dốc và tuần giảm tải trước giờ xuất phát.
+          </p>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => setShowBuilder(true)}
+            style={{ borderRadius: 4, fontSize: '0.82rem', padding: '8px 16px', marginTop: 4 }}
+          >
+            <IconPlus size={14} color="var(--color-on-primary)" />
+            <span>Tạo lịch tập đầu tiên</span>
+          </button>
         </div>
       ) : null}
     </section>

@@ -13,6 +13,20 @@ export function applyDocumentTheme(theme: ThemeMode): void {
   if (root.style.colorScheme !== theme) {
     root.style.colorScheme = theme;
   }
+  if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+    const resolvedBg = window
+      .getComputedStyle(root)
+      .getPropertyValue('--color-bg-main')
+      .trim();
+    if (resolvedBg) {
+      const themeMetas = document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]');
+      themeMetas.forEach((meta) => {
+        if (meta.getAttribute('content') !== resolvedBg) {
+          meta.setAttribute('content', resolvedBg);
+        }
+      });
+    }
+  }
   try {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem('theme', theme);
@@ -27,7 +41,7 @@ export function applyDocumentTheme(theme: ThemeMode): void {
  *
  * Theme switching is intentionally instantaneous (1 single paint frame) with
  * NO universal `*` CSS transition, NO `box-shadow` transition, and NO full-viewport
- * ViewTransition screenshot stall across dense DOM trees and Leaflet map tiles.
+ * ViewTransition screenshot stall across dense DOM trees and MapLibre WebGL map tiles.
  * Visual transition polish lives on the ThemeToggle SVG icon (`.theme-icon-enter`).
  */
 export function triggerSmoothThemeTransition(): void {

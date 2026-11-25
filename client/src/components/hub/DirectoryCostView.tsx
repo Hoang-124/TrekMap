@@ -19,6 +19,7 @@ import {
   IconClock,
   IconCompass,
   IconCopy,
+  IconDownload,
   IconFileText,
   IconMapPin,
   IconMountain,
@@ -46,7 +47,7 @@ export interface DirectoryCostViewProps {
 
 type ActiveTab = 'rangers' | 'guides' | 'cost';
 type RegionFilter = 'Tất Cả' | 'Miền Bắc' | 'Miền Trung' | 'Miền Nam';
-type AuthorityFilter = 'all' | 'national_park' | 'ranger_station' | 'rescue_center';
+type AuthorityFilter = 'all' | 'national_park' | 'ranger_station' | 'border_guard' | 'rescue_center';
 type GuideSort = 'rating' | 'experience' | 'price_asc' | 'price_desc';
 type TransportMode = 'xe_khach' | 'limousine' | 'tu_lai';
 
@@ -115,6 +116,100 @@ interface CostEstimateSummary {
   totalGroupVnd: number;
   perPersonVnd: number;
   source: 'api' | 'local';
+  requestKey?: string;
+}
+
+interface PermitTemplatePayload {
+  trailId: string;
+  trailName: string;
+  province: string;
+  permitRequired: boolean;
+  authority: string;
+  isBorderZone: boolean;
+  isNationalPark: boolean;
+  rescueContact?: {
+    name?: string;
+    phone?: string;
+    rangerContact?: string;
+  };
+  checklist: string[];
+  registrationTemplateText: string;
+}
+
+function escapePrintHtml(text: string): string {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function buildOfflinePermitFallback(trail: Trail): PermitTemplatePayload {
+  const hay = `${trail.name || ''} ${trail.permitInfo || ''} ${trail.province || ''}`.toLowerCase();
+  const isBorderZone =
+    hay.includes('biên phòng') ||
+    hay.includes('mốc') ||
+    hay.includes('khang su') ||
+    hay.includes('pu si lung') ||
+    hay.includes('y tý');
+  const isNationalPark =
+    hay.includes('vườn quốc gia') ||
+    hay.includes('vqg') ||
+    hay.includes('hoàng liên') ||
+    hay.includes('bidoup') ||
+    hay.includes('bạch mã') ||
+    hay.includes('cát tiên') ||
+    hay.includes('cúc phương') ||
+    hay.includes('chư yang sin');
+
+  const checklist: string[] = [
+    'CCCD gắn chip hoặc hộ chiếu bản gốc (kèm 02 bản photo theo yêu cầu trạm kiểm lâm).',
+    'Danh sách thành viên đoàn: họ tên, ngày sinh, số CCCD, địa chỉ thường trú, SĐT cá nhân và SĐT người thân khẩn cấp.',
+    'Lịch trình dự kiến chi tiết: ngày vào rừng, điểm hạ trại qua đêm và thời gian dự kiến ra khỏi rừng.',
+  ];
+  if (isNationalPark) {
+    checklist.push('Phiếu đăng ký tuyến du lịch sinh thái, lệ phí bảo vệ rừng và bảo hiểm tại Ban Quản lý VQG.');
+    checklist.push('Cam kết phòng chống cháy rừng và mang toàn bộ rác ra khỏi rừng (Leave No Trace).');
+  }
+  if (isBorderZone) {
+    checklist.push('Đơn xin phép vào khu vực biên giới nộp tại Đồn Biên phòng hoặc Công an tỉnh trước khởi hành 3–5 ngày.');
+  }
+  if ((trail.difficultyLevel || 0) >= 4) {
+    checklist.push('Xác nhận đi cùng hướng dẫn viên hoặc porter địa phương am hiểu địa hình và sơ cứu.');
+  }
+
+  const authority =
+    trail.permitInfo ||
+    (isNationalPark ? `Ban Quản lý VQG khu vực ${trail.province}` : `UBND xã / Trạm Kiểm lâm ${trail.province}`);
+
+  return {
+    trailId: trail.id,
+    trailName: trail.name,
+    province: trail.province,
+    permitRequired: Boolean(trail.permitRequired),
+    authority,
+    isBorderZone,
+    isNationalPark,
+    rescueContact: trail.rescueContact || {
+      name: `Tổng đài cứu nạn & Kiểm lâm ${trail.province}`,
+      phone: '112 / 114',
+      rangerContact: '115',
+    },
+    checklist,
+    registrationTemplateText: [
+      'CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM',
+      'Độc lập - Tự do - Hạnh phúc',
+      '---',
+      `ĐƠN ĐĂNG KÝ KHÁM PHÁ TUYẾN TREKKING: ${String(trail.name || '').toUpperCase()}`,
+      `Kính gửi: ${authority}`,
+      `1. Địa bàn tuyến: ${trail.district ? `${trail.district}, ` : ''}${trail.province}`,
+      `2. Cự ly / Thời lượng dự kiến: ${trail.distanceKm} km (${trail.durationHoursNote || `${trail.durationDays} ngày`})`,
+      '3. Trưởng đoàn / Người đại diện: [Điền Họ tên - Số CCCD - SĐT]',
+      '4. Số lượng thành viên: [Điền số người] (Đính kèm danh sách trích ngang)',
+      '5. Cam kết: Tuân thủ tuyệt đối nội quy bảo vệ rừng, PCCC rừng, mang toàn bộ rác ra khỏi rừng và báo cáo kiểm lâm khi kết thúc hành trình.',
+    ].join('\n'),
+  };
 }
 
 const REGION_OPTIONS: RegionFilter[] = ['Tất Cả', 'Miền Bắc', 'Miền Trung', 'Miền Nam'];
@@ -232,13 +327,13 @@ function getAuthorityMeta(type: RangerStationSeed['authorityType']): {
     case 'national_park':
       return { label: 'VQG / KBT', accent: 'var(--color-primary)', textColor: 'var(--color-primary)' };
     case 'ranger_station':
-      return { label: 'Kiểm Lâm', accent: 'var(--color-earth)', textColor: 'var(--color-earth)' };
+      return { label: 'Kiểm lâm', accent: 'var(--color-earth)', textColor: 'var(--color-earth)' };
     case 'border_guard':
-      return { label: 'Biên Phòng', accent: 'var(--color-sky)', textColor: 'var(--color-sky)' };
+      return { label: 'Biên phòng', accent: 'var(--color-sky)', textColor: 'var(--color-sky)' };
     case 'rescue_center':
     default:
       return {
-        label: 'Cứu Nạn 24/7',
+        label: 'Cứu nạn 24/7',
         accent: 'var(--color-error)',
         textColor: 'var(--color-error-text, var(--color-error))',
       };
@@ -384,22 +479,23 @@ function estimateLocalTripCost(params: {
         : 'Xe khách giường nằm khứ hồi + xe ôm vào bản';
   const transportTotal = transportPerPerson * safeGroup;
 
-  // 4. Food, water, mountain hut / camp fee & optional homestay
+  // 4. Food, water, mountain hut / camp fee & optional homestay (aligned with backend rates)
   const foodPerPerson = safeDays * 220000;
-  const hutPerPerson = nights * 130000;
+  const hutPerPerson = nights * 100000;
   const homestayPerPerson = includeHomestay ? 220000 : 0;
   const foodCampTotal = (foodPerPerson + hutPerPerson + homestayPerPerson) * safeGroup;
   const foodCampParts = [`Thực phẩm & điện giải (${safeDays}N)`];
   if (nights > 0) foodCampParts.push(`Lán gỗ / bãi hạ trại (${nights} đêm)`);
   if (includeHomestay) foodCampParts.push('Homestay tắm nóng & nghỉ chân bản');
 
-  // 5. Optional gear rental + 5% safety reserve
-  const gearRentalTotal = includeGearRental ? safeGroup * (180000 + nights * 70000) : 0;
+  // 5. Optional gear rental (aligned: +80k/night for camp rental on multi-day trips, 120k/person for 1-day gear)
+  const gearRentalPerPerson = includeGearRental ? (nights > 0 ? nights * 80000 : 120000) : 0;
+  const gearRentalTotal = gearRentalPerPerson * safeGroup;
 
   const items: CostLineItem[] = [
     {
       id: 'permit',
-      label: 'Vé VQG & Thủ Tục Kiểm Lâm',
+      label: 'Vé VQG & thủ tục kiểm lâm',
       category: 'permit',
       detail: permitNote,
       totalVnd: permitTotal,
@@ -408,7 +504,7 @@ function estimateLocalTripCost(params: {
     },
     {
       id: 'guide',
-      label: 'HDV Chính Thức & Porter Hậu Cần',
+      label: 'HDV & porter đi cùng',
       category: 'guide',
       detail: guideDetailParts.length ? guideDetailParts.join(' + ') : 'Tự dẫn đoàn (không thuê HDV/Porter)',
       totalVnd: guideAndPorterTotal,
@@ -417,7 +513,7 @@ function estimateLocalTripCost(params: {
     },
     {
       id: 'transport',
-      label: 'Di Chuyển Khứ Hồi & Trung Chuyển',
+      label: 'Đi lại khứ hồi & trung chuyển',
       category: 'transport',
       detail: transportLabel,
       totalVnd: transportTotal,
@@ -426,7 +522,7 @@ function estimateLocalTripCost(params: {
     },
     {
       id: 'food_camp',
-      label: 'Thực Phẩm, Nước Uống & Lán Nghỉ',
+      label: 'Ăn uống, nước & lán nghỉ',
       category: 'food_camp',
       detail: foodCampParts.join(' • '),
       totalVnd: foodCampTotal,
@@ -438,11 +534,14 @@ function estimateLocalTripCost(params: {
   if (includeGearRental) {
     items.push({
       id: 'gear',
-      label: 'Thuê Đồ Dã Ngoại (Lều, Túi Ngủ, Gậy)',
+      label: nights > 0 ? 'Thuê đồ cắm trại (lều, túi ngủ, gậy)' : 'Thuê đồ trekking trong ngày (gậy, balo, đèn pin)',
       category: 'gear',
-      detail: 'Gói thuê đồ cơ bản giữ ấm & gậy trekking theo số ngày',
+      detail:
+        nights > 0
+          ? `Phụ phí thuê lều, túi ngủ, tấm cách nhiệt (${nights} đêm • 80.000 VNĐ/đêm/người)`
+          : 'Gói thuê gậy trekking, balo & đèn pin đi về trong ngày (120.000 VNĐ/người)',
       totalVnd: gearRentalTotal,
-      perPersonVnd: gearRentalTotal / safeGroup,
+      perPersonVnd: gearRentalPerPerson,
       color: 'var(--color-stream)',
     });
   }
@@ -491,11 +590,16 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
   const [guideRegion, setGuideRegion] = useState<RegionFilter>('Tất Cả');
   const [guideProvince, setGuideProvince] = useState('');
   const [guideSpecialty, setGuideSpecialty] = useState('');
-  const [guideMaxPrice, setGuideMaxPrice] = useState<number>(800000);
+  const [guideMaxPrice, setGuideMaxPrice] = useState<number | null>(null);
   const [guideSort, setGuideSort] = useState<GuideSort>('rating');
   const [guideSearch, setGuideSearch] = useState(() =>
     initialUrlParams.tab === 'guides' ? initialUrlParams.q : ''
   );
+  const guidePriceCeiling = useMemo(() => {
+    const highest = guides.reduce((mx, g) => Math.max(mx, Number(g.basePricePerDayVnd || 0)), 0);
+    return Math.ceil(Math.max(1_500_000, highest) / 50_000) * 50_000;
+  }, [guides]);
+  const effectiveGuideMaxPrice = guideMaxPrice ?? guidePriceCeiling;
 
   // Inquiry modal & drawer state
   const [inquiryGuide, setInquiryGuide] = useState<GuideDirectoryItem | null>(null);
@@ -537,19 +641,33 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
 
   const inquiriesAbortRef = useRef<AbortController | null>(null);
   const guideDetailAbortRef = useRef<AbortController | null>(null);
+  const permitAbortRef = useRef<AbortController | null>(null);
   const copiedTimerRef = useRef<number | null>(null);
   const lastSyncedTrailIdRef = useRef<string | undefined>(initialTrailId || initialUrlParams.trailId || undefined);
   const inquiryModalRef = useRef<HTMLDivElement | null>(null);
   const inquiriesDrawerRef = useRef<HTMLDivElement | null>(null);
+  const permitModalRef = useRef<HTMLDivElement | null>(null);
+
+  // 1-click Permit Template preview modal state (GET /api/trails/:id/permit-template)
+  const [permitModal, setPermitModal] = useState<{
+    trailId: string;
+    trailName: string;
+    candidateTrailIds: string[];
+  } | null>(null);
+  const [permitData, setPermitData] = useState<PermitTemplatePayload | null>(null);
+  const [permitLoading, setPermitLoading] = useState<boolean>(false);
+  const [permitSource, setPermitSource] = useState<'api' | 'offline'>('api');
 
   useFocusTrap(Boolean(inquiryGuide), inquiryModalRef);
   useFocusTrap(isInquiriesOpen, inquiriesDrawerRef);
+  useFocusTrap(Boolean(permitModal), permitModalRef);
 
-  // Cleanup timers & pending inquiry/detail requests on unmount
+  // Cleanup timers & pending inquiry/detail/permit requests on unmount
   useEffect(() => {
     return () => {
       inquiriesAbortRef.current?.abort();
       guideDetailAbortRef.current?.abort();
+      permitAbortRef.current?.abort();
       if (copiedTimerRef.current !== null) {
         window.clearTimeout(copiedTimerRef.current);
       }
@@ -727,6 +845,12 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
 
   useFocusTrap(Boolean(detailGuide), guideDetailModalRef);
 
+  const closeGuideDetailModal = useCallback(() => {
+    guideDetailAbortRef.current?.abort();
+    setLoadingGuideDetail(false);
+    setDetailGuide(null);
+  }, []);
+
   const openGuideDetailModal = useCallback(async (guide: GuideDirectoryItem) => {
     guideDetailAbortRef.current?.abort();
     const controller = new AbortController();
@@ -749,7 +873,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
       if (res.ok) {
         const json = await res.json().catch(() => null);
         if (!controller.signal.aborted && json?.success && json.data) {
-          setDetailGuide((prev) => ({ ...(prev || guide), ...(json.data as GuideDetailPayload) }));
+          setDetailGuide((prev) => (prev ? { ...prev, ...(json.data as GuideDetailPayload) } : null));
         }
       }
     } catch {
@@ -765,18 +889,18 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
     e.preventDefault();
     if (!detailGuide || submittingReview) return;
     if (!currentUser) {
-      onShowToast?.('Vui lòng đăng nhập để gửi đánh giá Hướng dẫn viên / Porter.', 'info');
+      onShowToast?.('Đăng nhập để viết đánh giá hướng dẫn viên / porter nhé.', 'info');
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
       return;
     }
     const targetGuideId = detailGuide._id || detailGuide.id || '';
     if (!/^[a-fA-F0-9]{24}$/.test(targetGuideId)) {
-      onShowToast?.('Đơn vị này đang hiển thị từ dữ liệu ngoại tuyến — cần kết nối máy chủ để gửi đánh giá.', 'info');
+      onShowToast?.('Mục này đang xem từ dữ liệu ngoại tuyến — cần có mạng để gửi đánh giá.', 'info');
       return;
     }
     const cleanComment = reviewComment.trim();
     if (cleanComment.length < 5) {
-      onShowToast?.('Vui lòng nhập nhận xét tối thiểu 5 ký tự.', 'error');
+      onShowToast?.('Viết thêm chút nhé — nhận xét cần ít nhất 5 ký tự.', 'error');
       return;
     }
 
@@ -805,26 +929,211 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
           );
         }
         setReviewComment('');
-        onShowToast?.(json.message || 'Đã gửi đánh giá Porter/Guide thành công!', 'success');
+        onShowToast?.(json.message || 'Cảm ơn bạn đã chia sẻ nhận xét!', 'success');
       } else {
-        onShowToast?.(json?.message || 'Không thể gửi đánh giá lúc này.', 'error');
+        onShowToast?.(json?.message || 'Chưa gửi được đánh giá lúc này.', 'error');
       }
     } catch {
-      onShowToast?.('Lỗi kết nối máy chủ khi gửi đánh giá.', 'error');
+      onShowToast?.('Mất kết nối máy chủ khi gửi đánh giá.', 'error');
     } finally {
       setSubmittingReview(false);
     }
   };
 
-  // Escape key closes topmost inquiry modal / drawer (LIFO focus-trap + IME safe)
+  const closePermitModal = useCallback(() => {
+    permitAbortRef.current?.abort();
+    setPermitLoading(false);
+    setPermitModal(null);
+  }, []);
+
+  const openPermitTemplateModal = useCallback(
+    async (trailId: string, candidateTrailIds?: string[]) => {
+      const targetTrail = trailById.get(trailId);
+      const cleanCandidates = Array.from(
+        new Set((candidateTrailIds && candidateTrailIds.length > 0 ? candidateTrailIds : [trailId]).filter((id) => trailById.has(id)))
+      );
+      permitAbortRef.current?.abort();
+      const controller = new AbortController();
+      permitAbortRef.current = controller;
+
+      setPermitModal({
+        trailId,
+        trailName: targetTrail?.name || trailId,
+        candidateTrailIds: cleanCandidates.length > 0 ? cleanCandidates : [trailId],
+      });
+      setPermitData(null);
+      setPermitLoading(true);
+      setPermitSource('api');
+
+      try {
+        const res = await fetch(`/api/trails/${encodeURIComponent(trailId)}/permit-template`, {
+          headers: getApiHeaders(),
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        const json = (await res.json().catch(() => null)) as {
+          success?: boolean;
+          data?: PermitTemplatePayload;
+        } | null;
+        if (res.ok && json?.success && json.data) {
+          setPermitData(json.data);
+          setPermitSource('api');
+          return;
+        }
+        if (targetTrail) {
+          setPermitData(buildOfflinePermitFallback(targetTrail));
+          setPermitSource('offline');
+        } else {
+          onShowToast?.('Chưa tải được mẫu đơn kiểm lâm lúc này.', 'error');
+        }
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') return;
+        if (targetTrail) {
+          setPermitData(buildOfflinePermitFallback(targetTrail));
+          setPermitSource('offline');
+        } else {
+          onShowToast?.('Mất kết nối khi tải mẫu đơn kiểm lâm.', 'error');
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setPermitLoading(false);
+        }
+      }
+    },
+    [trailById, onShowToast]
+  );
+
+  const handlePrintPermitTemplate = useCallback(() => {
+    if (!permitData) return;
+    const checklistHtml = (permitData.checklist || [])
+      .map((item) => `<li>${escapePrintHtml(item)}</li>`)
+      .join('');
+    const htmlDoc = `<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<title>Mẫu đơn Kiểm lâm — ${escapePrintHtml(permitData.trailName)}</title>
+<style>
+  @page { size: A4; margin: 18mm; }
+  body { font-family: 'Plus Jakarta Sans', 'Inter', system-ui, -apple-system, sans-serif; color: black; background: white; margin: 0; padding: 0; line-height: 1.55; }
+  .header { border-bottom: 2px solid black; padding-bottom: 10px; margin-bottom: 14px; }
+  .eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: dimgray; font-weight: 700; }
+  h1 { font-size: 18px; margin: 4px 0; }
+  .meta { font-size: 13px; color: dimgray; }
+  h2 { font-size: 14px; margin: 14px 0 6px 0; }
+  ul { margin: 0 0 14px 0; padding-left: 20px; font-size: 13px; }
+  pre { white-space: pre-wrap; font-family: inherit; font-size: 13px; border: 1px solid silver; padding: 14px; border-radius: 4px; background: whitesmoke; line-height: 1.6; }
+  .footer { margin-top: 14px; font-size: 11px; color: gray; text-align: right; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="eyebrow">Hồ sơ thủ tục rừng &amp; biên giới Việt Nam · LOST</div>
+    <h1>${escapePrintHtml(permitData.trailName)} — ${escapePrintHtml(permitData.province)}</h1>
+    <div class="meta">Cơ quan tiếp nhận: <strong>${escapePrintHtml(permitData.authority)}</strong></div>
+  </div>
+  <h2>Danh mục giấy tờ chuẩn bị trước chốt kiểm lâm</h2>
+  <ul>${checklistHtml}</ul>
+  <h2>Mẫu đơn đăng ký đoàn leo núi</h2>
+  <pre>${escapePrintHtml(permitData.registrationTemplateText)}</pre>
+  <div class="footer">Xuất từ LOST Việt Nam (https://lost.vn) — Phiếu đăng ký thực địa độc lập</div>
+</body>
+</html>`;
+
+    // Note: Do NOT pass 'noopener' to window.open here because the spec forces window.open to return null,
+    // which would open a blank tab and fall back to printing the dark-mode app page instead of the A4 template.
+    const printWin = window.open('', '_blank', 'width=840,height=920');
+    if (printWin) {
+      printWin.document.open();
+      printWin.document.write(htmlDoc);
+      printWin.document.close();
+      try {
+        printWin.opener = null;
+      } catch {
+        // Ignore read-only opener in strict browsers
+      }
+      printWin.focus();
+      window.setTimeout(() => {
+        try {
+          printWin.print();
+        } catch {
+          // ignore print dialog close
+        }
+      }, 250);
+      return;
+    }
+
+    // Popup-blocker safe fallback: print the clean A4 sheet via a temporary hidden iframe
+    if (typeof document !== 'undefined' && document.body) {
+      const iframe = document.createElement('iframe');
+      iframe.setAttribute('aria-hidden', 'true');
+      iframe.tabIndex = -1;
+      iframe.style.position = 'fixed';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      iframe.style.opacity = '0';
+      iframe.style.pointerEvents = 'none';
+      document.body.appendChild(iframe);
+      const printFrameWin = iframe.contentWindow;
+      const doc = iframe.contentDocument || printFrameWin?.document;
+      if (doc && printFrameWin) {
+        let cleanedUp = false;
+        let fallbackTimer: number | null = null;
+        const cleanupIframe = () => {
+          if (cleanedUp) return;
+          cleanedUp = true;
+          if (fallbackTimer !== null) {
+            window.clearTimeout(fallbackTimer);
+            fallbackTimer = null;
+          }
+          try {
+            printFrameWin.removeEventListener('afterprint', cleanupIframe);
+          } catch {
+            // Ignore detached iframe window listener cleanup
+          }
+          if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+        };
+
+        doc.open();
+        doc.write(htmlDoc);
+        doc.close();
+
+        try {
+          printFrameWin.addEventListener('afterprint', cleanupIframe, { once: true });
+        } catch {
+          // Rely on 30s safety fallback timer if browser disallows iframe afterprint listeners
+        }
+
+        window.setTimeout(() => {
+          fallbackTimer = window.setTimeout(cleanupIframe, 30_000);
+          try {
+            printFrameWin.focus();
+            printFrameWin.print();
+          } catch {
+            cleanupIframe();
+          }
+        }, 200);
+        return;
+      }
+      if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+    }
+    window.print();
+  }, [permitData]);
+
+  // Escape key closes topmost inquiry modal / drawer / permit modal (LIFO focus-trap + IME safe)
   useEffect(() => {
-    if (!inquiryGuide && !isInquiriesOpen && !detailGuide) return;
+    if (!inquiryGuide && !isInquiriesOpen && !detailGuide && !permitModal) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.isComposing) return;
-      if (detailGuide && isTopmostFocusTrap(guideDetailModalRef.current)) {
+      if (permitModal && isTopmostFocusTrap(permitModalRef.current)) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        if (!submittingReview) setDetailGuide(null);
+        closePermitModal();
+      } else if (detailGuide && isTopmostFocusTrap(guideDetailModalRef.current)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (!submittingReview) closeGuideDetailModal();
       } else if (inquiryGuide && isTopmostFocusTrap(inquiryModalRef.current)) {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -837,7 +1146,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [inquiryGuide, isInquiriesOpen, isSubmittingInquiry, detailGuide, submittingReview]);
+  }, [inquiryGuide, isInquiriesOpen, isSubmittingInquiry, detailGuide, submittingReview, closeGuideDetailModal, permitModal, closePermitModal]);
 
   // Local deterministic estimate + live backend cost estimate overlay
   const localEstimate = useMemo(
@@ -855,15 +1164,13 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
     [selectedCostTrail, groupSize, days, transportMode, needGuide, portersCount, includeGearRental, includeHomestay]
   );
 
+  const costRequestKey = `${selectedCostTrail?.id || ''}|${groupSize}|${days}|${needGuide}|${portersCount}|${includeGearRental}|${includeHomestay}|${transportMode}`;
+
   useEffect(() => {
     if (!selectedCostTrail || activeTab !== 'cost') return;
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       if (controller.signal.aborted) return;
-      if (transportMode !== 'xe_khach') {
-        setApiEstimate(null);
-        return;
-      }
       try {
         const qs = new URLSearchParams({
           trailId: selectedCostTrail.id,
@@ -894,30 +1201,66 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
               : null;
         if (json?.success && data && apiTotalVnd !== null && Array.isArray(data.breakdown)) {
           const safeGroup = Math.max(1, groupSize);
+          let transportDeltaVnd = 0;
           const mappedItems: CostLineItem[] = data.breakdown
             .filter((b: { totalVnd?: number }) => Number(b.totalVnd || 0) > 0)
             .map((b: { key?: string; label?: string; note?: string; totalVnd?: number; perPersonVnd?: number }, idx: number) => {
               const styleMeta = mapApiBreakdownCategory(b.key);
-              const totalVal = Number(b.totalVnd || 0);
+              const rawTotal = Number(b.totalVnd || 0);
+              const rawPerPerson =
+                typeof b.perPersonVnd === 'number' ? Math.round(b.perPersonVnd) : Math.round(rawTotal / safeGroup);
+
+              if (b.key === 'transport' && transportMode !== 'xe_khach') {
+                const multiplier = transportMode === 'limousine' ? 1.38 : 0.55;
+                const adjustedPerPerson = Math.max(100_000, Math.round((rawPerPerson * multiplier) / 10_000) * 10_000);
+                const adjustedTotal = adjustedPerPerson * safeGroup;
+                transportDeltaVnd += adjustedTotal - rawTotal;
+                return {
+                  id: b.key,
+                  label: b.label || 'Đi lại khứ hồi & trung chuyển',
+                  category: styleMeta.category,
+                  detail:
+                    transportMode === 'limousine'
+                      ? 'Xe Limousine khứ hồi + trung chuyển chân núi (quy đổi theo vùng)'
+                      : 'Xăng xe máy / ô tô tự lái khứ hồi + gửi xe bản địa',
+                  totalVnd: adjustedTotal,
+                  perPersonVnd: adjustedPerPerson,
+                  color: styleMeta.color,
+                };
+              }
+
               return {
                 id: b.key || `item-${idx}`,
                 label: b.label || 'Chi phí',
                 category: styleMeta.category,
                 detail: b.note || styleMeta.fallbackDetail,
-                totalVnd: totalVal,
-                perPersonVnd:
-                  typeof b.perPersonVnd === 'number' ? Math.round(b.perPersonVnd) : Math.round(totalVal / safeGroup),
+                totalVnd: rawTotal,
+                perPersonVnd: rawPerPerson,
                 color: styleMeta.color,
               };
             });
 
-          let finalGroupVnd = Number(apiTotalVnd);
+          let finalGroupVnd = Number(apiTotalVnd) + transportDeltaVnd;
+          if (includeGearRental && days <= 1) {
+            const dayGearPerPerson = 120_000;
+            const dayGearTotal = dayGearPerPerson * safeGroup;
+            finalGroupVnd += dayGearTotal;
+            mappedItems.push({
+              id: 'day_gear',
+              label: 'Thuê đồ trekking trong ngày (gậy, balo, đèn pin)',
+              category: 'gear',
+              detail: 'Gói thuê gậy trekking, balo & đèn pin đi về trong ngày (120.000 VNĐ/người)',
+              totalVnd: dayGearTotal,
+              perPersonVnd: dayGearPerPerson,
+              color: 'var(--color-stream)',
+            });
+          }
           if (includeHomestay) {
             const homestayTotal = 220000 * safeGroup;
             finalGroupVnd += homestayTotal;
             mappedItems.push({
               id: 'homestay',
-              label: 'Homestay Tắm Nóng & Nghỉ Chân Bản',
+              label: 'Homestay tắm nóng & nghỉ chân ở bản',
               category: 'food_camp',
               detail: 'Nghỉ chân homestay bản địa trước/sau khi xuống núi (220.000 VNĐ/người)',
               totalVnd: homestayTotal,
@@ -931,6 +1274,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
             totalGroupVnd: finalGroupVnd,
             perPersonVnd: Math.round(finalGroupVnd / safeGroup),
             source: 'api',
+            requestKey: costRequestKey,
           });
           return;
         }
@@ -945,9 +1289,10 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [selectedCostTrail, groupSize, days, needGuide, portersCount, transportMode, includeGearRental, includeHomestay, activeTab]);
+  }, [selectedCostTrail, groupSize, days, needGuide, portersCount, transportMode, includeGearRental, includeHomestay, activeTab, costRequestKey]);
 
-  const activeEstimate = apiEstimate || localEstimate;
+  const activeEstimate =
+    apiEstimate && apiEstimate.requestKey === costRequestKey ? apiEstimate : localEstimate;
 
   // Filtered Rangers
   const nationalHotlines = useMemo(
@@ -993,7 +1338,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
       if (guideProvince && !(g.provinces || []).includes(guideProvince)) return false;
       if (guideSpecialty && !(g.specialties || []).includes(guideSpecialty)) return false;
       const baseRate = Number(g.basePricePerDayVnd || 550000);
-      if (baseRate > guideMaxPrice) return false;
+      if (baseRate > effectiveGuideMaxPrice) return false;
       if (!q) return true;
       const hay = normalizeVn(
         [g.name, g.region, (g.provinces || []).join(' '), (g.specialties || []).join(' '), g.bio || '', g.phone].join(' ')
@@ -1007,7 +1352,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
       if (guideSort === 'experience') return (b.experienceYears || 0) - (a.experienceYears || 0);
       return (b.rating || 0) - (a.rating || 0) || (b.experienceYears || 0) - (a.experienceYears || 0);
     });
-  }, [guides, guideRegion, guideProvince, guideSpecialty, guideMaxPrice, guideSearch, guideSort]);
+  }, [guides, guideRegion, guideProvince, guideSpecialty, effectiveGuideMaxPrice, guideSearch, guideSort]);
 
   const handleCopyPhone = async (phone: string) => {
     const dial = extractPrimaryDialPhone(phone);
@@ -1048,13 +1393,13 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
     if (!inquiryGuide) return;
     if (!currentUser) {
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
-      onShowToast?.('Vui lòng đăng nhập để gửi yêu cầu tư vấn & theo dõi trạng thái.', 'info');
+      onShowToast?.('Đăng nhập để gửi hỏi lịch và theo dõi phản hồi nhé.', 'info');
       return;
     }
 
     const cleanPhone = inquiryPhone.trim();
     if (cleanPhone.length < 8) {
-      onShowToast?.('Vui lòng nhập số điện thoại liên hệ hợp lệ.', 'error');
+      onShowToast?.('Nhập số điện thoại liên hệ hợp lệ nhé.', 'error');
       return;
     }
 
@@ -1071,23 +1416,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
       notes: inquiryNotes.trim(),
     };
 
-    setIsSubmittingInquiry(true);
-    try {
-      const res = await fetch(`/api/directory/guides/${encodeURIComponent(guideTargetId)}/inquiries`, {
-        method: 'POST',
-        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify(payload),
-      });
-      const json = await res.json().catch(() => null);
-      if (res.ok && json?.success) {
-        onShowToast?.('Đã gửi yêu cầu tư vấn tới trung tâm HDV thành công!', 'success');
-        setInquiryGuide(null);
-        setInquiryNotes('');
-        openInquiriesDrawer();
-        return;
-      }
-
-      // Offline / non-ObjectId seed guide graceful fallback so user never loses request
+    const saveLocalDraftInquiry = (reasonMsg?: string) => {
       const localRecord: GuideInquiryRecord = {
         _id: `local-${Date.now()}`,
         guideName: inquiryGuide.name,
@@ -1111,15 +1440,50 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
         // ignore storage quota errors
       }
       onShowToast?.(
-        json?.message
-          ? `${json.message} — Đã lưu bản nháp cục bộ để bạn gọi trực tiếp ${inquiryGuide.phone}.`
-          : `Đã lưu yêu cầu cục bộ — bạn có thể gọi trực tiếp ${inquiryGuide.phone}.`,
+        reasonMsg || `Đã lưu bản nháp cục bộ — bạn có thể gọi trực tiếp ${inquiryGuide.phone}.`,
         'info'
       );
       setInquiryGuide(null);
+      setInquiryNotes('');
       openInquiriesDrawer();
+    };
+
+    setIsSubmittingInquiry(true);
+    try {
+      const res = await fetch(`/api/directory/guides/${encodeURIComponent(guideTargetId)}/inquiries`, {
+        method: 'POST',
+        headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json().catch(() => null);
+      if (res.ok && json?.success) {
+        onShowToast?.('Đã gửi yêu cầu tới đầu mối hướng dẫn viên.', 'success');
+        setInquiryGuide(null);
+        setInquiryNotes('');
+        openInquiriesDrawer();
+        return;
+      }
+
+      // Surface HTTP 4xx validation / auth errors directly instead of hiding behind a fake local draft
+      if (res.status >= 400 && res.status < 500 && res.status !== 404) {
+        onShowToast?.(
+          json?.message || 'Thông tin yêu cầu chưa hợp lệ — bạn kiểm tra lại ngày đi và số điện thoại nhé.',
+          'error'
+        );
+        return;
+      }
+
+      // 404 (seed-only guide not yet in DB) or 5xx: preserve draft locally so user never loses request
+      saveLocalDraftInquiry(
+        json?.message
+          ? `${json.message} — Đã lưu bản nháp cục bộ để bạn gọi trực tiếp ${inquiryGuide.phone}.`
+          : `Đầu mối này chưa hỗ trợ đặt trực tuyến — đã lưu bản nháp cục bộ để bạn gọi trực tiếp ${inquiryGuide.phone}.`
+      );
     } catch {
-      onShowToast?.(`Không thể kết nối máy chủ. Vui lòng gọi trực tiếp ${inquiryGuide.phone}.`, 'error');
+      // Real offline / network error: preserve draft locally instead of discarding user input
+      saveLocalDraftInquiry(
+        `Không thể kết nối máy chủ — đã lưu bản nháp cục bộ để bạn gọi trực tiếp ${inquiryGuide.phone}.`
+      );
     } finally {
       setIsSubmittingInquiry(false);
     }
@@ -1146,9 +1510,12 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ status: 'cancelled' }),
       });
+      const json = await res.json().catch(() => null);
       if (res.ok) {
         onShowToast?.('Đã hủy yêu cầu đặt lịch.', 'info');
         loadMyInquiries();
+      } else {
+        onShowToast?.(json?.message || 'Không thể hủy yêu cầu lúc này.', 'error');
       }
     } catch {
       onShowToast?.('Không thể hủy yêu cầu lúc này.', 'error');
@@ -1156,18 +1523,18 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
   };
 
   const buildBudgetShareText = (): string => {
-    const tName = selectedCostTrail?.name || 'Cung Trekking Việt Nam';
+    const tName = selectedCostTrail?.name || 'Cung trekking Việt Nam';
     const lines = [
-      `DU TRU CHI PHI TREKKING — ${tName.toUpperCase()}`,
-      `Quy mo: ${groupSize} nguoi | Thoi luong: ${days} ngay ${Math.max(0, days - 1)} dem`,
+      `DỰ TRÙ CHI PHÍ TREKKING — ${tName.toUpperCase()}`,
+      `Quy mô: ${groupSize} người | Thời lượng: ${days} ngày ${Math.max(0, days - 1)} đêm`,
       `---`,
       ...activeEstimate.items.map(
-        (it) => `- ${it.label}: ${formatVnd(it.totalVnd)} (${formatVnd(it.perPersonVnd)}/nguoi)`
+        (it) => `- ${it.label}: ${formatVnd(it.totalVnd)} (${formatVnd(it.perPersonVnd)}/người)`
       ),
       `---`,
-      `TONG CA DOAN: ${formatVnd(activeEstimate.totalGroupVnd)}`,
-      `BINH QUAN MOI NGUOI: ${formatVnd(activeEstimate.perPersonVnd)}`,
-      `Nguon: LOST — Vietnam Field Atlas`,
+      `TỔNG CẢ ĐOÀN: ${formatVnd(activeEstimate.totalGroupVnd)}`,
+      `BÌNH QUÂN MỖI NGƯỜI: ${formatVnd(activeEstimate.perPersonVnd)}`,
+      `Nguồn: LOST — Vietnam Field Atlas`,
     ];
     return lines.join('\n');
   };
@@ -1175,9 +1542,9 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
   const handleCopyBudget = async () => {
     const copied = await copyTextSafe(buildBudgetShareText());
     if (copied) {
-      onShowToast?.('Đã sao chép bảng dự trù chi phí để chia sẻ nhóm!', 'success');
+      onShowToast?.('Đã chép bảng dự trù chi phí — dán gửi vào nhóm đoàn nhé.', 'success');
     } else {
-      onShowToast?.('Không thể tự động sao chép bảng dự trù.', 'info');
+      onShowToast?.('Không thể tự sao chép bảng dự trù lúc này.', 'info');
     }
   };
 
@@ -1192,7 +1559,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
           detail: { trailId: selectedCostTrail.id, budgetNote: summary },
         })
       );
-      onShowToast?.('Đã sao lưu dự trù ngân sách cho chuyến đi ghép đoàn!', 'success');
+      onShowToast?.('Đã mang mức dự trù này sang tạo chuyến ghép đoàn.', 'success');
     }
   };
 
@@ -1249,7 +1616,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
               marginBottom: 4,
             }}
           >
-            LOST Field Atlas • Danh Bạ Thực Địa &amp; Hậu Cần Việt Nam
+            Danh bạ đường rừng &amp; dự trù chi phí
           </div>
           <h1
             className="font-editorial"
@@ -1261,10 +1628,10 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
               lineHeight: 1.2,
             }}
           >
-            Kiểm Lâm, HDV Chính Thức &amp; Dự Trù Chi Phí
+            Kiểm lâm, người dẫn đường &amp; tính chi phí
           </h1>
           <p style={{ margin: '6px 0 0', fontSize: '0.86rem', color: 'var(--color-text-muted)', maxWidth: 740, lineHeight: 1.55 }}>
-            Tra cứu 100% thực tế {rangers.length} đầu mối Vườn Quốc Gia &amp; Chi cục Kiểm lâm, {guides.length} trung tâm hướng dẫn viên chính thức và dự toán ngân sách VNĐ cho toàn bộ {trails.length} cung đường Việt Nam.
+            Tra số gọi trực tiếp {rangers.length} trạm kiểm lâm và Vườn quốc gia, {guides.length} đầu mối hướng dẫn viên địa phương, kèm bảng ước tính chi phí VNĐ cho cả {trails.length} cung núi Việt Nam.
           </p>
         </div>
 
@@ -1276,7 +1643,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
             style={{ borderRadius: 4, padding: '8px 13px', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
           >
             <IconFileText size={14} color="var(--color-sky)" />
-            <span>Yêu Cầu Đã Gửi</span>
+            <span>Yêu cầu đã gửi</span>
           </button>
         </div>
       </div>
@@ -1285,7 +1652,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
       <div
         ref={dirTabTrackRef}
         role="tablist"
-        aria-label="Danh mục Danh bạ và Dự toán"
+        aria-label="Danh mục danh bạ và dự toán"
         className="lost-glider-track"
         style={{
           display: 'grid',
@@ -1302,20 +1669,20 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
         {[
           {
             id: 'rangers' as const,
-            title: `Trạm Kiểm Lâm & VQG (${rangers.length})`,
-            sub: 'Cứu hộ 24/7, giấy phép & phí vào rừng',
+            title: `Trạm kiểm lâm & VQG (${rangers.length})`,
+            sub: 'Số cứu hộ 24/7, giấy phép và phí vào rừng',
             icon: <IconShieldAlert size={16} />,
           },
           {
             id: 'guides' as const,
-            title: `HDV / Porter Chính Thức (${guides.length})`,
-            sub: 'Trung tâm VQG/KBT & đặt lịch tư vấn',
+            title: `HDV & porter địa phương (${guides.length})`,
+            sub: 'Đầu mối thuộc VQG/KBT và gửi lịch hỏi thăm',
             icon: <IconUsers size={16} />,
           },
           {
             id: 'cost' as const,
-            title: 'Máy Tính Chi Phí (VNĐ)',
-            sub: 'Dự toán chi tiết từng hạng mục cho nhóm',
+            title: 'Tính chi phí chuyến đi',
+            sub: 'Ước tính từng khoản VNĐ cho cả nhóm',
             icon: <IconScale size={16} />,
           },
         ].map((tab) => {
@@ -1391,7 +1758,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
             }}
           >
             <div style={{ fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-error-text, var(--color-error))', marginBottom: 10 }}>
-              Đầu Số Khẩn Cấp Quốc Gia 24/7 (Miễn Phí Toàn Quốc)
+              Đầu số khẩn cấp 24/7 (gọi miễn phí toàn quốc)
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(180px, 100%), 1fr))', gap: 10 }}>
               {nationalHotlines.map((item) => {
@@ -1442,7 +1809,10 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                         flexShrink: 0,
                       }}
                     >
-                      <IconPhone size={14} color="var(--color-on-media)" />
+                      <IconPhone
+                        size={14}
+                        color={isDangerDial ? 'var(--color-on-danger)' : 'var(--color-on-primary)'}
+                      />
                     </span>
                   </a>
                 );
@@ -1501,7 +1871,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                         fontFamily: 'var(--font-family)',
                       }}
                     >
-                      {reg}
+                      {reg === 'Tất Cả' ? 'Tất cả' : reg}
                     </button>
                   );
                 })}
@@ -1513,7 +1883,8 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                 {[
                   { id: 'all' as const, label: 'Tất cả đơn vị' },
                   { id: 'national_park' as const, label: 'VQG / Khu BTTN' },
-                  { id: 'ranger_station' as const, label: 'Chi Cục Kiểm Lâm' },
+                  { id: 'ranger_station' as const, label: 'Chi cục kiểm lâm' },
+                  { id: 'border_guard' as const, label: 'Đồn biên phòng' },
                   { id: 'rescue_center' as const, label: 'Đội CNCH 24/7' },
                 ].map((opt) => {
                   const active = rangerAuthority === opt.id;
@@ -1565,12 +1936,47 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
               </div>
 
               <span style={{ fontSize: '0.75rem', color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
-                Hiển thị {filteredRangers.length} cơ sở xác thực
+                Đang hiện {filteredRangers.length} đầu mối
               </span>
             </div>
           </div>
 
           {/* Ranger Station Grid */}
+          {filteredRangers.length === 0 ? (
+            <div
+              style={{
+                background: 'var(--color-bg-card)',
+                border: '1px dashed var(--color-border-strong)',
+                borderRadius: 6,
+                padding: '28px 20px',
+                textAlign: 'center',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 10,
+              }}
+            >
+              <div style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
+                Không tìm thấy trạm kiểm lâm hoặc đơn vị quản lý rừng phù hợp
+              </div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', maxWidth: 440 }}>
+                Thử đổi khu vực, loại đơn vị hoặc xóa từ khóa tìm kiếm để xem toàn bộ danh bạ đầu mối thực địa.
+              </div>
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => {
+                  setRangerRegion('Tất Cả');
+                  setRangerAuthority('all');
+                  setPermitOnly(false);
+                  setRangerSearch('');
+                }}
+                style={{ padding: '7px 14px', fontSize: '0.78rem', borderRadius: 4 }}
+              >
+                Đặt lại bộ lọc
+              </button>
+            </div>
+          ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(320px, 100%), 1fr))', gap: 14 }}>
             {filteredRangers.map((station) => {
               const meta = getAuthorityMeta(station.authorityType);
@@ -1661,7 +2067,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                         lineHeight: 1.5,
                       }}
                     >
-                      <strong style={{ color: 'var(--color-text-main)' }}>Thủ tục &amp; Lệ phí: </strong>
+                      <strong style={{ color: 'var(--color-text-main)' }}>Thủ tục &amp; lệ phí: </strong>
                       {station.permitFeeNote}
                     </div>
 
@@ -1764,11 +2170,46 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                         <span>{station.emergencyPhone}</span>
                       </a>
                     )}
+
+                    {(() => {
+                      const permitSlugs = station.coveredTrailSlugs.filter((slug) => {
+                        const matched = trailById.get(slug);
+                        return matched && (matched.permitRequired || station.permitRequired);
+                      });
+                      const primaryPermitSlug = permitSlugs[0];
+                      if (!primaryPermitSlug || (!station.permitRequired && !trailById.get(primaryPermitSlug)?.permitRequired)) {
+                        return null;
+                      }
+                      return (
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          onClick={() => void openPermitTemplateModal(primaryPermitSlug, permitSlugs)}
+                          style={{
+                            width: '100%',
+                            justifyContent: 'center',
+                            padding: '6px 10px',
+                            fontSize: '0.75rem',
+                            fontWeight: 700,
+                            borderRadius: 4,
+                            borderColor: 'color-mix(in srgb, var(--color-earth) 42%, var(--color-border))',
+                            color: 'var(--color-earth)',
+                          }}
+                        >
+                          <IconFileText size={13} color="var(--color-earth)" />
+                          <span>
+                            Mẫu đơn Kiểm lâm
+                            {permitSlugs.length > 1 ? ` (${permitSlugs.length} tuyến)` : ''}
+                          </span>
+                        </button>
+                      );
+                    })()}
                   </div>
                 </article>
               );
             })}
           </div>
+          )}
         </div>
       )}
 
@@ -1795,8 +2236,8 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
           >
             <IconShieldCheck size={16} color="var(--color-sky)" style={{ flexShrink: 0, marginTop: 2 }} />
             <div>
-              <strong style={{ color: 'var(--color-text-main)' }}>Danh bạ tham khảo độc lập:</strong>{' '}
-              Thông tin liên hệ, đầu mối hướng dẫn viên và mức phí tham khảo được tổng hợp từ cổng thông tin công khai của các Ban Quản Lý Vườn Quốc Gia / Khu Bảo Tồn Thiên Nhiên tại Việt Nam. LOST không phải đơn vị đại diện hay đối tác chính thức của các cơ quan quản lý rừng — vui lòng xác nhận trực tiếp hotline, lệ phí và thủ tục giấy phép trước khi khởi hành.
+              <strong style={{ color: 'var(--color-text-main)' }}>Lưu ý về nguồn danh bạ độc lập:</strong>{' '}
+              Thông tin liên hệ, đầu mối hướng dẫn viên và mức phí tham khảo được tổng hợp từ nguồn công khai của các Ban quản lý Vườn quốc gia và Khu bảo tồn thiên nhiên tại Việt Nam. LOST không phải đại diện hay đối tác chính thức của các cơ quan quản lý rừng — bạn vui lòng gọi xác nhận trực tiếp hotline, lệ phí và thủ tục giấy phép trước ngày lên đường.
             </div>
           </div>
 
@@ -1838,7 +2279,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                 style={{ fontSize: '0.8rem', borderRadius: 4 }}
               >
                 {REGION_OPTIONS.map((r) => (
-                  <option key={r} value={r}>{r}</option>
+                  <option key={r} value={r}>{r === 'Tất Cả' ? 'Tất cả' : r}</option>
                 ))}
               </select>
             </div>
@@ -1879,16 +2320,16 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
 
             <div>
               <label htmlFor="guide-filter-max-price" className="form-label" style={{ fontSize: '0.72rem' }}>
-                Đơn giá tối đa: <strong style={{ fontVariantNumeric: 'tabular-nums' }}>{formatVnd(guideMaxPrice)}</strong>
+                Đơn giá tối đa: <strong style={{ fontVariantNumeric: 'tabular-nums' }}>{formatVnd(effectiveGuideMaxPrice)}</strong>
               </label>
               <input
                 id="guide-filter-max-price"
                 type="range"
                 aria-label="Đơn giá hướng dẫn viên tối đa mỗi ngày"
                 min={450000}
-                max={800000}
+                max={guidePriceCeiling}
                 step={50000}
-                value={guideMaxPrice}
+                value={effectiveGuideMaxPrice}
                 onChange={(e) => setGuideMaxPrice(Number(e.target.value))}
                 style={{ width: '100%', accentColor: 'var(--color-primary)' }}
               />
@@ -1913,6 +2354,42 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
           </div>
 
           {/* Guide Cards */}
+          {filteredGuides.length === 0 ? (
+            <div
+              style={{
+                background: 'var(--color-bg-card)',
+                border: '1px dashed var(--color-border-strong)',
+                borderRadius: 6,
+                padding: '28px 20px',
+                textAlign: 'center',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 10,
+              }}
+            >
+              <div style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--color-text-main)' }}>
+                Không có đầu mối hướng dẫn viên / porter khớp với bộ lọc hiện tại
+              </div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', maxWidth: 440 }}>
+                Nới rộng mức đơn giá tối đa hoặc đặt lại tỉnh thành và chuyên môn để xem toàn bộ danh sách.
+              </div>
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => {
+                  setGuideRegion('Tất Cả');
+                  setGuideProvince('');
+                  setGuideSpecialty('');
+                  setGuideMaxPrice(null);
+                  setGuideSearch('');
+                }}
+                style={{ padding: '7px 14px', fontSize: '0.78rem', borderRadius: 4 }}
+              >
+                Đặt lại bộ lọc
+              </button>
+            </div>
+          ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(320px, 100%), 1fr))', gap: 14 }}>
             {filteredGuides.map((guide) => {
               const dial = extractPrimaryDialPhone(guide.phone);
@@ -1962,7 +2439,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                             }}
                           >
                             <IconShieldCheck size={11} color="var(--color-primary)" />
-                            Đơn Vị Chính Thức
+                            Đơn vị VQG / địa phương
                           </span>
                           <span style={{ fontSize: '0.71rem', color: 'var(--color-text-dim)' }}>
                             {guide.region} • {guide.experienceYears || 10}+ năm
@@ -2057,7 +2534,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                       style={{ flex: 1, justifyContent: 'center', fontSize: '0.78rem', padding: '8px 10px', borderRadius: 4 }}
                     >
                       <IconSend size={13} color="var(--color-on-primary)" />
-                      <span>Đặt Lịch</span>
+                      <span>Hỏi lịch</span>
                     </button>
                     <button
                       type="button"
@@ -2066,7 +2543,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                       style={{ padding: '8px 10px', fontSize: '0.78rem', borderRadius: 4 }}
                     >
                       <IconStar size={13} color="var(--color-sun)" />
-                      <span>Chi tiết &amp; Đánh giá</span>
+                      <span>Xem &amp; đánh giá</span>
                     </button>
                     <a
                       href={`tel:${dial}`}
@@ -2081,6 +2558,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
               );
             })}
           </div>
+          )}
         </div>
       )}
 
@@ -2102,11 +2580,11 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
             }}
           >
             <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--color-text-main)', borderBottom: '1px solid var(--color-border)', paddingBottom: 10 }}>
-              Thông Số Chuyến Đi
+              Thông tin chuyến đi
             </div>
 
             <div>
-              <label htmlFor="cost-trail-select" className="form-label" style={{ fontSize: '0.76rem' }}>Chọn cung đường thực địa ({trails.length} cung)</label>
+              <label htmlFor="cost-trail-select" className="form-label" style={{ fontSize: '0.76rem' }}>Chọn cung đường ({trails.length} cung)</label>
               <select
                 id="cost-trail-select"
                 className="form-input"
@@ -2144,6 +2622,28 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                       }}
                     >
                       Xem chi tiết cung
+                    </button>
+                  )}
+                  {selectedCostTrail.permitRequired && (
+                    <button
+                      type="button"
+                      onClick={() => void openPermitTemplateModal(selectedCostTrail.id, [selectedCostTrail.id])}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        padding: 0,
+                        color: 'var(--color-earth)',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        fontSize: '0.74rem',
+                        fontFamily: 'var(--font-family)',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                      }}
+                    >
+                      <IconFileText size={12} color="var(--color-earth)" />
+                      <span>Mẫu đơn Kiểm lâm</span>
                     </button>
                   )}
                 </div>
@@ -2188,9 +2688,9 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
               <div className="form-label" style={{ fontSize: '0.76rem' }}>Phương tiện di chuyển</div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
                 {[
-                  { id: 'xe_khach' as const, label: 'Xe Khách' },
+                  { id: 'xe_khach' as const, label: 'Xe khách' },
                   { id: 'limousine' as const, label: 'Limousine' },
-                  { id: 'tu_lai' as const, label: 'Tự Lái' },
+                  { id: 'tu_lai' as const, label: 'Tự lái' },
                 ].map((m) => {
                   const active = transportMode === m.id;
                   return (
@@ -2235,7 +2735,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                 }}
               >
                 <input type="checkbox" checked={needGuide} onChange={(e) => setNeedGuide(e.target.checked)} />
-                <span>Thuê HDV chính thức</span>
+                <span>Thuê HDV địa phương</span>
               </label>
 
               <div
@@ -2358,7 +2858,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                 }}
               >
                 <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--color-text-muted)', fontWeight: 700 }}>
-                  Chi phí bình quân / người
+                  Ước tính mỗi người
                 </div>
                 <div style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
                   {formatVnd(activeEstimate.perPersonVnd)}
@@ -2374,7 +2874,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                 }}
               >
                 <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--color-text-muted)', fontWeight: 700 }}>
-                  Tổng dự toán cả đoàn ({groupSize} người)
+                  Tổng cả nhóm ({groupSize} người)
                 </div>
                 <div style={{ fontSize: '1.22rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
                   {formatVnd(activeEstimate.totalGroupVnd)}
@@ -2480,7 +2980,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                 style={{ flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '9px 12px', borderRadius: 4 }}
               >
                 <IconCopy size={14} />
-                <span>Sao Chép Chia Sẻ Nhóm</span>
+                <span>Chép gửi nhóm</span>
               </button>
               <button
                 type="button"
@@ -2489,7 +2989,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                 style={{ flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '9px 12px', borderRadius: 4 }}
               >
                 <IconUsers size={14} color="var(--color-on-primary)" />
-                <span>Lập Đoàn Với Chi Phí Này</span>
+                <span>Lập đoàn với mức phí này</span>
               </button>
             </div>
           </div>
@@ -2539,7 +3039,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                 <div>
                   <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-primary)' }}>
-                    Yêu Cầu Tư Vấn &amp; Đặt Lịch HDV
+                    Hỏi lịch &amp; đặt hướng dẫn viên
                   </div>
                   <h3 id="directory-inquiry-modal-title" style={{ margin: '2px 0 0', fontSize: '1.05rem', color: 'var(--color-text-main)' }}>
                     {inquiryGuide.name}
@@ -2706,7 +3206,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                     style={{ borderRadius: 4, fontSize: '0.82rem' }}
                   >
                     <IconCheckCircle size={14} color="var(--color-on-primary)" />
-                    <span>{isSubmittingInquiry ? 'Đang gửi...' : 'Gửi Yêu Cầu Tư Vấn'}</span>
+                    <span>{isSubmittingInquiry ? 'Đang gửi...' : 'Gửi yêu cầu'}</span>
                   </button>
                 </div>
               </form>
@@ -2754,10 +3254,10 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 12, borderBottom: '1px solid var(--color-border)' }}>
                 <div>
                   <div style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-sky)' }}>
-                    Lịch Sử Liên Hệ HDV &amp; Porter
+                    Các lần bạn đã hỏi lịch
                   </div>
                   <h3 id="directory-inquiries-drawer-title" style={{ margin: '2px 0 0', fontSize: '1.08rem', color: 'var(--color-text-main)' }}>
-                    Yêu Cầu Đã Gửi ({myInquiries.length})
+                    Yêu cầu đã gửi ({myInquiries.length})
                   </h3>
                 </div>
                 <button
@@ -2787,7 +3287,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                       color: 'var(--color-text-muted)',
                     }}
                   >
-                    Bạn chưa gửi yêu cầu đặt lịch HDV/Porter nào. Chọn một đơn vị ở tab HDV Chính Thức để gửi yêu cầu.
+                    Bạn chưa gửi yêu cầu nào. Qua mục HDV &amp; porter địa phương để chọn đơn vị rồi nhắn lịch nhé.
                   </div>
                 ) : (
                   myInquiries.map((inq) => {
@@ -2795,7 +3295,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                     const gName =
                       typeof inq.guideId === 'object' && inq.guideId?.name
                         ? inq.guideId.name
-                        : inq.guideName || 'Trung tâm HDV chính thức';
+                        : inq.guideName || 'Đơn vị VQG / địa phương';
                     return (
                       <div
                         key={inq._id}
@@ -2857,7 +3357,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
         typeof document !== 'undefined' &&
         createPortal(
           <div
-            onClick={() => !submittingReview && setDetailGuide(null)}
+            onClick={() => !submittingReview && closeGuideDetailModal()}
             style={{
               position: 'fixed',
               inset: 0,
@@ -2912,7 +3412,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                   <div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                       <span className="badge badge-success" style={{ fontSize: '0.68rem' }}>
-                        <IconShieldCheck size={11} /> Chính thức
+                        <IconShieldCheck size={11} /> Đơn vị VQG / địa phương
                       </span>
                       <span style={{ fontSize: '0.74rem', color: 'var(--color-text-dim)' }}>
                         {detailGuide.region} • {detailGuide.experienceYears || 10}+ năm kinh nghiệm
@@ -2934,7 +3434,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                 </div>
                 <button
                   type="button"
-                  onClick={() => !submittingReview && setDetailGuide(null)}
+                  onClick={() => !submittingReview && closeGuideDetailModal()}
                   aria-label="Đóng chi tiết hướng dẫn viên"
                   style={{ background: 'none', border: 'none', color: 'var(--color-text-muted)', cursor: 'pointer', padding: 4 }}
                 >
@@ -2953,12 +3453,12 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                     className="btn btn-primary"
                     onClick={() => {
                       const target = detailGuide;
-                      setDetailGuide(null);
+                      closeGuideDetailModal();
                       openInquiryModal(target);
                     }}
                     style={{ fontSize: '0.78rem', padding: '6px 12px', borderRadius: 4 }}
                   >
-                    <IconSend size={13} color="var(--color-on-primary)" /> Gửi Yêu Cầu Đặt Lịch
+                    <IconSend size={13} color="var(--color-on-primary)" /> Hỏi lịch đi cùng
                   </button>
                   <a
                     href={`tel:${extractPrimaryDialPhone(detailGuide.phone)}`}
@@ -2974,7 +3474,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
               {Array.isArray(detailGuide.coveredTrails) && detailGuide.coveredTrails.length > 0 && (
                 <div>
                   <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', marginBottom: 6 }}>
-                    Cung Đường Phụ Trách ({detailGuide.coveredTrails.length})
+                    Các cung phụ trách ({detailGuide.coveredTrails.length})
                   </div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     {detailGuide.coveredTrails.map((ct) => {
@@ -3028,7 +3528,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                   <strong style={{ fontSize: '0.82rem', color: 'var(--color-text-main)' }}>
-                    Viết Đánh Giá Thực Tế
+                    Chia sẻ trải nghiệm đi cùng
                   </strong>
                   <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     {[1, 2, 3, 4, 5].map((star) => (
@@ -3076,7 +3576,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                     disabled={submittingReview}
                     style={{ padding: '6px 14px', fontSize: '0.78rem', borderRadius: 4 }}
                   >
-                    {submittingReview ? 'Đang gửi...' : 'Gửi Đánh Giá'}
+                    {submittingReview ? 'Đang gửi...' : 'Gửi đánh giá'}
                   </button>
                 </div>
               </form>
@@ -3084,11 +3584,11 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
               {/* Existing Reviews List */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div style={{ fontSize: '0.74rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-                  Đánh Giá Cộng Đồng ({detailGuide.reviews?.length ?? 0})
+                  Nhận xét từ người đã đi ({detailGuide.reviews?.length ?? 0})
                 </div>
                 {loadingGuideDetail ? (
                   <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', padding: '12px 0' }}>
-                    Đang tải đánh giá thực tế...
+                    Đang tải nhận xét...
                   </div>
                 ) : !detailGuide.reviews || detailGuide.reviews.length === 0 ? (
                   <div
@@ -3102,7 +3602,7 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                       textAlign: 'center',
                     }}
                   >
-                    Chưa có đánh giá nào từ thành viên LOST. Hãy là người đầu tiên chia sẻ trải nghiệm sau chuyến đi!
+                    Chưa có ai viết nhận xét — đi về rồi bạn để lại vài dòng cho anh em đi sau nhé!
                   </div>
                 ) : (
                   detailGuide.reviews.map((rev, idx) => (
@@ -3144,6 +3644,310 @@ export const DirectoryCostView: React.FC<DirectoryCostViewProps> = ({
                   ))
                 )}
               </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* ==================================================================== */}
+      {/* PERMIT TEMPLATE PRINTABLE / COPYABLE PREVIEW MODAL                   */}
+      {/* ==================================================================== */}
+      {permitModal &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            onClick={closePermitModal}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'var(--overlay-bg)',
+              zIndex: 'var(--z-modal, 3000)' as unknown as number,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 16,
+              fontFamily: 'var(--font-family)',
+            }}
+          >
+            <div
+              ref={permitModalRef}
+              tabIndex={-1}
+              role="dialog"
+              aria-modal="true"
+              aria-label={`Mẫu đơn kiểm lâm ${permitModal.trailName}`}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: 'min(680px, 96vw)',
+                maxHeight: '90dvh',
+                overflowY: 'auto',
+                background: 'var(--color-bg-card)',
+                border: '1px solid var(--color-border-strong)',
+                borderTop: '3px solid var(--color-earth)',
+                borderRadius: 6,
+                padding: 20,
+                boxShadow: 'var(--shadow-3d)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 14,
+                outline: 'none',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, paddingBottom: 12, borderBottom: '1px solid var(--color-border)' }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 4 }}>
+                    <span style={{ fontSize: '0.68rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-earth)' }}>
+                      Mẫu đơn Kiểm lâm &amp; thủ tục vào rừng
+                    </span>
+                    {permitData?.isBorderZone && (
+                      <span
+                        style={{
+                          fontSize: '0.64rem',
+                          fontWeight: 700,
+                          padding: '2px 6px',
+                          borderRadius: 3,
+                          background: 'color-mix(in srgb, var(--color-sky) 14%, transparent)',
+                          color: 'var(--color-sky)',
+                          border: '1px solid color-mix(in srgb, var(--color-sky) 36%, transparent)',
+                        }}
+                      >
+                        Khu vực biên giới
+                      </span>
+                    )}
+                    {permitData?.isNationalPark && (
+                      <span
+                        style={{
+                          fontSize: '0.64rem',
+                          fontWeight: 700,
+                          padding: '2px 6px',
+                          borderRadius: 3,
+                          background: 'color-mix(in srgb, var(--color-primary) 14%, transparent)',
+                          color: 'var(--color-primary)',
+                          border: '1px solid color-mix(in srgb, var(--color-primary) 36%, transparent)',
+                        }}
+                      >
+                        Vườn quốc gia
+                      </span>
+                    )}
+                  </div>
+                  <h3 style={{ margin: 0, fontSize: '1.08rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
+                    {permitData?.trailName || permitModal.trailName}
+                  </h3>
+                  {permitData?.authority && (
+                    <div style={{ fontSize: '0.78rem', color: 'var(--color-text-muted)', marginTop: 3 }}>
+                      Đơn vị tiếp nhận: <strong style={{ color: 'var(--color-text-main)' }}>{permitData.authority}</strong>
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={closePermitModal}
+                  aria-label="Đóng mẫu đơn kiểm lâm (Esc)"
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 4,
+                    background: 'var(--color-surface-elevated)',
+                    border: '1px solid var(--color-border)',
+                    color: 'var(--color-text-muted)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    flexShrink: 0,
+                  }}
+                >
+                  <IconX size={16} />
+                </button>
+              </div>
+
+              {permitModal.candidateTrailIds.length > 1 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', fontWeight: 700 }}>
+                    Chọn tuyến thuộc trạm:
+                  </span>
+                  {permitModal.candidateTrailIds.map((tid) => {
+                    const matched = trailById.get(tid);
+                    const active = permitModal.trailId === tid;
+                    return (
+                      <button
+                        key={tid}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => {
+                          if (!active) void openPermitTemplateModal(tid, permitModal.candidateTrailIds);
+                        }}
+                        style={{
+                          padding: '4px 9px',
+                          borderRadius: 4,
+                          fontSize: '0.73rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          border: active ? '1px solid var(--color-earth)' : '1px solid var(--color-border)',
+                          background: active
+                            ? 'color-mix(in srgb, var(--color-earth) 14%, var(--color-bg-main))'
+                            : 'var(--color-bg-main)',
+                          color: active ? 'var(--color-earth)' : 'var(--color-text-muted)',
+                        }}
+                      >
+                        {matched?.name || tid}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {permitLoading ? (
+                <div style={{ padding: '24px 12px', textAlign: 'center', fontSize: '0.84rem', color: 'var(--color-text-muted)' }}>
+                  Đang tải mẫu đơn đăng ký và danh mục giấy tờ từ máy chủ...
+                </div>
+              ) : permitData ? (
+                <>
+                  {permitSource === 'offline' && (
+                    <div
+                      style={{
+                        padding: '8px 11px',
+                        borderRadius: 4,
+                        background: 'color-mix(in srgb, var(--color-sun) 12%, var(--color-bg-main))',
+                        border: '1px solid color-mix(in srgb, var(--color-sun) 35%, var(--color-border))',
+                        fontSize: '0.75rem',
+                        color: 'var(--color-text-main)',
+                      }}
+                    >
+                      Đang hiển thị mẫu đơn ngoại tuyến từ dữ liệu danh mục — nhớ gọi xác nhận lại với kiểm lâm địa phương trước ngày xuất phát.
+                    </div>
+                  )}
+
+                  {permitData.rescueContact?.phone && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        flexWrap: 'wrap',
+                        gap: 8,
+                        padding: '9px 12px',
+                        borderRadius: 4,
+                        background: 'var(--color-bg-main)',
+                        border: '1px solid var(--color-border)',
+                        fontSize: '0.78rem',
+                      }}
+                    >
+                      <span style={{ color: 'var(--color-text-muted)' }}>
+                        Đầu mối trực: <strong style={{ color: 'var(--color-text-main)' }}>{permitData.rescueContact.name || permitData.authority}</strong>
+                      </span>
+                      <a
+                        href={`tel:${extractPrimaryDialPhone(permitData.rescueContact.phone)}`}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 5,
+                          color: 'var(--color-primary)',
+                          fontWeight: 800,
+                          textDecoration: 'none',
+                          fontVariantNumeric: 'tabular-nums',
+                        }}
+                      >
+                        <IconPhone size={13} color="var(--color-primary)" />
+                        <span>{permitData.rescueContact.phone}</span>
+                      </a>
+                    </div>
+                  )}
+
+                  <div>
+                    <div style={{ fontSize: '0.74rem', fontWeight: 800, textTransform: 'uppercase', color: 'var(--color-text-dim)', marginBottom: 6 }}>
+                      Giấy tờ cần chuẩn bị trước chốt kiểm lâm
+                    </div>
+                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: '0.8rem', color: 'var(--color-text-muted)', lineHeight: 1.6 }}>
+                      {(permitData.checklist || []).map((item, idx) => (
+                        <li key={idx}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: '0.74rem', fontWeight: 800, textTransform: 'uppercase', color: 'var(--color-text-dim)', marginBottom: 6 }}>
+                      Nội dung mẫu đơn đăng ký đoàn
+                    </div>
+                    <pre
+                      style={{
+                        margin: 0,
+                        padding: 13,
+                        borderRadius: 4,
+                        background: 'var(--color-bg-main)',
+                        border: '1px solid var(--color-border)',
+                        fontSize: '0.78rem',
+                        color: 'var(--color-text-main)',
+                        whiteSpace: 'pre-wrap',
+                        overflowWrap: 'anywhere',
+                        fontFamily: 'var(--font-family)',
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      {permitData.registrationTemplateText}
+                    </pre>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingTop: 6, borderTop: '1px solid var(--color-border)' }}>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={async () => {
+                        const ok = await copyTextSafe(permitData.registrationTemplateText);
+                        onShowToast?.(
+                          ok ? 'Đã sao chép mẫu đơn Kiểm lâm vào bộ nhớ tạm.' : 'Không thể tự sao chép mẫu đơn.',
+                          ok ? 'success' : 'info'
+                        );
+                      }}
+                      style={{ flex: 1, minWidth: 150, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', borderRadius: 4 }}
+                    >
+                      <IconCopy size={14} color="var(--color-on-primary)" />
+                      <span>Sao chép mẫu đơn</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      onClick={() => {
+                        const blob = new Blob([permitData.registrationTemplateText], {
+                          type: 'text/plain;charset=utf-8',
+                        });
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = `Don_Kiem_Lam_${permitData.trailId}_LOST.txt`;
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+                        onShowToast?.('Đã tải tệp mẫu đơn đăng ký (.txt).', 'success');
+                      }}
+                      style={{ fontSize: '0.8rem', padding: '8px 12px', borderRadius: 4 }}
+                    >
+                      <IconDownload size={14} color="var(--color-primary)" />
+                      <span>Tải tệp (.txt)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      onClick={handlePrintPermitTemplate}
+                      style={{ fontSize: '0.8rem', padding: '8px 12px', borderRadius: 4 }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="6 9 6 2 18 2 18 9" />
+                        <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+                        <rect x="6" y="14" width="12" height="8" />
+                      </svg>
+                      <span>In mẫu đơn (A4)</span>
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div style={{ padding: '20px 12px', textAlign: 'center', fontSize: '0.82rem', color: 'var(--color-text-dim)' }}>
+                  Chưa thể tải mẫu đơn cho tuyến này. Bạn vui lòng thử bấm lại sau.
+                </div>
+              )}
             </div>
           </div>,
           document.body

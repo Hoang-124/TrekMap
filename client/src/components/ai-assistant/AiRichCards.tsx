@@ -26,6 +26,7 @@ import {
 } from '../../services/aiAssistant.service.js';
 import {
   extractPrimaryDialNumber,
+  isSafeImageUrl,
   type AiFitnessLevel,
   type BioCalcResult,
   type FirstAidTriageCardData,
@@ -47,7 +48,9 @@ interface AiRichCardsProps {
   actionIndex: number;
   currentTrailId?: string;
   currentTrailName?: string;
+  /** Strictly genuine hardware GPS fix from navigator.geolocation — NEVER a hardcoded city fallback. */
   userCoords?: { lat: number; lng: number } | null;
+  gpsStatus?: 'idle' | 'acquiring' | 'acquired' | 'unavailable';
   checkedGearItems: Record<string, boolean>;
   copiedId: string | null;
   onToggleGearCheck: (key: string) => void;
@@ -81,7 +84,7 @@ const InteractiveBioCalcCard: React.FC<{ initialData: BioCalcResult }> = ({ init
 
   const packColor =
     live.packStatus === 'overweight'
-      ? 'var(--color-error)'
+      ? 'var(--color-error-text, var(--color-error))'
       : live.packStatus === 'caution'
       ? 'var(--color-earth)'
       : 'var(--color-primary)';
@@ -103,7 +106,7 @@ const InteractiveBioCalcCard: React.FC<{ initialData: BioCalcResult }> = ({ init
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--color-primary)', fontWeight: 800, fontSize: '0.8rem' }}>
           <IconClock size={14} color="var(--color-primary)" />
-          <span>MÁY TÍNH SINH HỌC LEO NÚI (NAISMITH &amp; TOBLER)</span>
+          <span>Ước tính giờ đi, nước &amp; tải balo (Naismith &amp; Tobler)</span>
         </div>
         <span style={{ fontSize: '0.72rem', color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
           {live.inputs.distanceKm} km · +{live.inputs.elevationGainM}m · Đỉnh {live.inputs.maxAltitudeM}m
@@ -271,7 +274,7 @@ const GpxAnalysisCard: React.FC<{
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', fontWeight: 800, color: 'var(--color-sky)' }}>
           <IconMountain size={14} color="var(--color-sky)" />
-          <span>PHÂN TÍCH GPX: {gpx.fileName}</span>
+          <span>Đọc file GPX: {gpx.fileName}</span>
         </div>
         <span
           style={{
@@ -341,6 +344,25 @@ const GpxAnalysisCard: React.FC<{
         ))}
       </div>
 
+      {/* Weather at Trailhead Start */}
+      {gpx.weatherAtStart && (
+        <div
+          style={{
+            background: 'var(--color-bg-main)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 4,
+            padding: '6px 9px',
+            fontSize: '0.73rem',
+            color: 'var(--color-text-muted)',
+            fontVariantNumeric: 'tabular-nums',
+          }}
+        >
+          <strong style={{ color: 'var(--color-text-main)' }}>Thời tiết điểm xuất phát:</strong>{' '}
+          {gpx.weatherAtStart.tempMinC}°C – {gpx.weatherAtStart.tempMaxC}°C · Mưa {gpx.weatherAtStart.precipMm} mm · Gió{' '}
+          {gpx.weatherAtStart.windSpeedKmH} km/h ({gpx.weatherAtStart.conditionLabel})
+        </div>
+      )}
+
       {/* Warnings */}
       {gpx.safetyWarnings.length > 0 && (
         <ul style={{ margin: 0, paddingLeft: 16, fontSize: '0.75rem', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
@@ -389,6 +411,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
   currentTrailId,
   currentTrailName,
   userCoords,
+  gpsStatus,
   checkedGearItems,
   copiedId,
   onToggleGearCheck,
@@ -400,20 +423,29 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
 }) => {
   const [appliedGear, setAppliedGear] = useState(false);
   const [appliedItinerary, setAppliedItinerary] = useState(false);
+  const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
 
   // 1. Ranked Trail Recommendations Card
   if (action.type === 'ranked_trails' && Array.isArray(action.rankedTrails) && action.rankedTrails.length > 0) {
     return (
       <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
         {action.rankedTrails.map((t: RankedTrailCardItem, idx: number) => {
-          const seasonColor =
+          const seasonBgColor =
             t.seasonStatus === 'ideal'
               ? 'var(--color-primary)'
               : t.seasonStatus === 'avoid'
               ? 'var(--color-error)'
               : 'var(--color-sky)';
+          const seasonTextColor =
+            t.seasonStatus === 'ideal'
+              ? 'var(--color-primary)'
+              : t.seasonStatus === 'avoid'
+              ? 'var(--color-error-text, var(--color-error))'
+              : 'var(--color-sky)';
           const seasonLabel =
             t.seasonStatus === 'ideal' ? 'Đang mùa đẹp' : t.seasonStatus === 'avoid' ? 'Mùa mưa/tránh' : 'Đi được';
+          const imgKey = `ranked-${t.id || idx}`;
+          const canShowCover = isSafeImageUrl(t.coverImage) && !failedImages[imgKey];
 
           return (
             <div
@@ -427,12 +459,13 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
               }}
             >
               <div style={{ padding: 10, display: 'flex', gap: 10, alignItems: 'center' }}>
-                {t.coverImage ? (
+                {canShowCover ? (
                   <img
                     loading="lazy"
                     decoding="async"
                     src={t.coverImage}
                     alt={t.name}
+                    onError={() => setFailedImages((prev) => ({ ...prev, [imgKey]: true }))}
                     style={{
                       width: 68,
                       height: 68,
@@ -495,12 +528,12 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
                       <IconMapPin size={10} /> {t.province}
                     </span>
                     <span style={{ fontSize: '0.69rem', padding: '2px 6px', borderRadius: 4, background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)', color: 'var(--color-primary)', fontWeight: 700 }}>
-                      {t.maxAltitudeM.toLocaleString()}m
+                      {t.maxAltitudeM.toLocaleString('vi-VN')}m
                     </span>
                     <span style={{ fontSize: '0.69rem', padding: '2px 6px', borderRadius: 4, background: 'color-mix(in srgb, var(--color-sky) 12%, transparent)', color: 'var(--color-sky)', fontWeight: 600 }}>
                       {t.distanceKm} km · Cấp {t.difficultyLevel}/5
                     </span>
-                    <span style={{ fontSize: '0.69rem', padding: '2px 6px', borderRadius: 4, background: `color-mix(in srgb, ${seasonColor} 12%, transparent)`, color: seasonColor, fontWeight: 700 }}>
+                    <span style={{ fontSize: '0.69rem', padding: '2px 6px', borderRadius: 4, background: `color-mix(in srgb, ${seasonBgColor} 12%, transparent)`, color: seasonTextColor, fontWeight: 700 }}>
                       {seasonLabel}
                     </span>
                   </div>
@@ -514,7 +547,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
               <div style={{ padding: '7px 10px', background: 'var(--color-bg-main)', borderTop: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, flexWrap: 'wrap' }}>
                 <button
                   type="button"
-                  onClick={() => onSendQuickPrompt(`Đánh giá Go/No-Go hôm nay cho ${t.name}`)}
+                  onClick={() => onSendQuickPrompt(`Hôm nay có nên leo ${t.name} không (Go/No-Go)?`)}
                   style={{
                     padding: '4px 9px',
                     borderRadius: 4,
@@ -554,7 +587,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
                     }}
                   >
                     <IconCompass size={12} color="var(--color-on-primary)" />
-                    <span>Mở Bản Đồ 3D</span>
+                    <span>Mở bản đồ 3D</span>
                   </button>
                 )}
               </div>
@@ -568,6 +601,8 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
   // 2. Single Trail Showcase Card (Backwards-compatible)
   if (action.type === 'trail_card' && action.trailData) {
     const t = action.trailData;
+    const singleImgKey = `single-${action.trailId || t.name || 'trail'}`;
+    const canShowSingleCover = isSafeImageUrl(t.coverImage) && !failedImages[singleImgKey];
     return (
       <div
         style={{
@@ -580,12 +615,13 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
         }}
       >
         <div style={{ padding: 10, display: 'flex', gap: 10, alignItems: 'center' }}>
-          {t.coverImage ? (
+          {canShowSingleCover ? (
             <img
               loading="lazy"
               decoding="async"
               src={t.coverImage}
-              alt={t.name || 'Trail'}
+              alt={t.name || 'Cung đường'}
+              onError={() => setFailedImages((prev) => ({ ...prev, [singleImgKey]: true }))}
               style={{ width: 68, height: 68, borderRadius: 4, objectFit: 'cover', flexShrink: 0, border: '1px solid var(--color-border)' }}
             />
           ) : (
@@ -635,7 +671,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
               }}
             >
               <IconCompass size={12} color="var(--color-on-primary)" />
-              <span>Mở trên Bản Đồ 3D</span>
+              <span>Mở trên bản đồ 3D</span>
             </button>
           </div>
         )}
@@ -707,7 +743,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
         {/* Immediate Do Steps */}
         <div style={{ background: 'var(--color-bg-main)', padding: '9px 10px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
           <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-primary)', marginBottom: 4 }}>
-            HÀNH ĐỘNG NGAY LẬP TỨC:
+            Cần làm ngay:
           </div>
           <ol style={{ margin: 0, paddingLeft: 16, fontSize: '0.76rem', color: 'var(--color-text-main)', lineHeight: 1.55 }}>
             {tri.immediateSteps.map((s, i) => (
@@ -721,13 +757,68 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
           <div style={{ background: 'color-mix(in srgb, var(--color-error) 10%, var(--color-bg-main))', padding: '8px 10px', borderRadius: 4, border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)' }}>
             <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-error-text, var(--color-error))', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
               <IconAlertTriangle size={12} color="var(--color-error-text, var(--color-error))" />
-              <span>CẤM KỴ TUYỆT ĐỐI:</span>
+              <span>Tuyệt đối không làm:</span>
             </div>
             <ul style={{ margin: 0, paddingLeft: 16, fontSize: '0.75rem', color: 'var(--color-text-main)', lineHeight: 1.5 }}>
               {tri.forbiddenActions.map((f, i) => (
                 <li key={i}>{f}</li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {/* When to Evacuate / Call Emergency Immediately */}
+        {Array.isArray(tri.whenToEvacuate) && tri.whenToEvacuate.length > 0 && (
+          <div
+            style={{
+              background: 'color-mix(in srgb, var(--color-earth) 11%, var(--color-bg-main))',
+              padding: '8px 10px',
+              borderRadius: 4,
+              border: '1px solid color-mix(in srgb, var(--color-earth) 38%, transparent)',
+            }}
+          >
+            <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--color-earth)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <IconShieldAlert size={12} color="var(--color-earth)" />
+              <span>Khi nào cần gọi cứu hộ / rời tuyến ngay:</span>
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 16, fontSize: '0.75rem', color: 'var(--color-text-main)', lineHeight: 1.5 }}>
+              {tri.whenToEvacuate.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Hardware GPS Fix Verification Banner (NEVER sends fake city coordinates!) */}
+        {userCoords ? (
+          <div
+            style={{
+              fontSize: '0.7rem',
+              color: 'var(--color-primary)',
+              background: 'color-mix(in srgb, var(--color-primary) 10%, var(--color-bg-main))',
+              border: '1px solid color-mix(in srgb, var(--color-primary) 32%, transparent)',
+              borderRadius: 4,
+              padding: '5px 8px',
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            Đã khóa tọa độ GPS thiết bị: <strong>{userCoords.lat.toFixed(5)}, {userCoords.lng.toFixed(5)}</strong> (tự động chèn vào tin nhắn SOS 2G)
+          </div>
+        ) : (
+          <div
+            role="status"
+            style={{
+              fontSize: '0.71rem',
+              color: 'var(--color-earth)',
+              background: 'color-mix(in srgb, var(--color-earth) 12%, var(--color-bg-main))',
+              border: '1px solid color-mix(in srgb, var(--color-earth) 40%, transparent)',
+              borderRadius: 4,
+              padding: '6px 9px',
+              lineHeight: 1.45,
+            }}
+          >
+            <strong>{gpsStatus === 'acquiring' ? 'Đang dò tín hiệu GPS từ thiết bị...' : 'Chưa lấy được tọa độ GPS từ thiết bị.'}</strong>{' '}
+            Tin nhắn SOS 2G sẽ không chèn tọa độ giả — bạn nhớ bật Định vị (GPS) trên máy hoặc tự ghi rõ mốc đường / độ cao hiện tại trước khi bấm gửi nhé!
           </div>
         )}
 
@@ -749,7 +840,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
           }}
         >
           <IconShieldAlert size={14} color="var(--color-on-danger)" />
-          <span>Soạn Tin Nhắn SOS 2G Kèm Tọa Độ GPS ({primaryDial})</span>
+          <span>{userCoords ? `Soạn tin nhắn SOS 2G kèm GPS thật (${primaryDial})` : `Soạn tin nhắn SOS 2G khẩn cấp (${primaryDial})`}</span>
         </a>
 
         {/* Verified Vietnam Emergency Hotlines */}
@@ -816,7 +907,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, color: 'var(--color-error-text, var(--color-error))' }}>
           <IconShieldAlert size={15} color="var(--color-error-text, var(--color-error))" />
-          <strong style={{ fontSize: '0.78rem', textTransform: 'uppercase' }}>Hotline Cứu Hộ Xác Thực (100% Số Thật)</strong>
+          <strong style={{ fontSize: '0.78rem', textTransform: 'uppercase' }}>Đường dây nóng cứu hộ xác thực</strong>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {action.emergencyContacts.map((contact, cIdx) => {
@@ -869,9 +960,17 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
   // 7. Go/No-Go Breakdown Card inside AI Chat
   if (action.type === 'go_no_go_card' && action.goNoGoData) {
     const g: GoNoGoAssessmentData = action.goNoGoData;
-    const verdictColor =
+    const verdictBorderColor =
       g.verdict === 'GO' ? 'var(--color-primary)' : g.verdict === 'CAUTION' ? 'var(--color-earth)' : 'var(--color-error)';
+    const verdictTextColor =
+      g.verdict === 'GO'
+        ? 'var(--color-primary)'
+        : g.verdict === 'CAUTION'
+        ? 'var(--color-earth)'
+        : 'var(--color-error-text, var(--color-error))';
     const targetTid = g.trailId || currentTrailId;
+    const windChillC = g.weatherSummary?.windChillC ?? g.factors?.windChillC ?? null;
+    const seaOfCloudsIndex = g.weatherSummary?.seaOfCloudsIndex ?? g.factors?.seaOfCloudsIndex ?? null;
 
     return (
       <div
@@ -879,7 +978,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
           marginTop: 8,
           background: 'var(--color-bg-card)',
           border: '1px solid var(--color-border-strong)',
-          borderLeft: `3px solid ${verdictColor}`,
+          borderLeft: `3px solid ${verdictBorderColor}`,
           borderRadius: 6,
           padding: 12,
           display: 'flex',
@@ -896,9 +995,9 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
                 fontWeight: 800,
                 padding: '2px 7px',
                 borderRadius: 4,
-                background: `color-mix(in srgb, ${verdictColor} 15%, transparent)`,
-                color: verdictColor,
-                border: `1px solid color-mix(in srgb, ${verdictColor} 38%, transparent)`,
+                background: `color-mix(in srgb, ${verdictBorderColor} 15%, transparent)`,
+                color: verdictTextColor,
+                border: `1px solid color-mix(in srgb, ${verdictBorderColor} 38%, transparent)`,
               }}
             >
               {g.verdictLabel}
@@ -909,7 +1008,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
           </div>
           <div style={{ textAlign: 'center', padding: '5px 10px', borderRadius: 4, background: 'var(--color-bg-main)', border: '1px solid var(--color-border)' }}>
             <div style={{ fontSize: '0.62rem', color: 'var(--color-text-dim)', fontWeight: 700 }}>ĐIỂM</div>
-            <div style={{ fontSize: '1.2rem', fontWeight: 900, color: verdictColor, fontVariantNumeric: 'tabular-nums' }}>
+            <div style={{ fontSize: '1.2rem', fontWeight: 900, color: verdictTextColor, fontVariantNumeric: 'tabular-nums' }}>
               {g.score}/100
             </div>
           </div>
@@ -920,7 +1019,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 }}>
             {[
               { label: 'Thời tiết', score: g.factors.weatherScore },
-              { label: 'Thực địa', score: g.factors.hazardScore },
+              { label: 'Đường rừng', score: g.factors.hazardScore },
               { label: 'Mùa vụ', score: g.factors.seasonScore },
             ].map((f) => (
               <div key={f.label} style={{ background: 'var(--color-bg-main)', padding: '6px 8px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
@@ -945,14 +1044,27 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
                 <strong style={{ color: 'var(--color-text-main)' }}>
                   {g.weatherSummary.summitTempMinC ?? g.weatherSummary.tempMinC}°C – {g.weatherSummary.summitTempMaxC ?? g.weatherSummary.tempMaxC}°C
                 </strong>
+                {typeof windChillC === 'number' && Number.isFinite(windChillC) && (
+                  <div style={{ fontSize: '0.64rem', color: 'var(--color-text-dim)', marginTop: 1 }}>
+                    Cảm nhận gió rét: {windChillC}°C
+                  </div>
+                )}
               </div>
               <div style={{ background: 'var(--color-bg-main)', padding: '6px 8px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
-                <div style={{ color: 'var(--color-text-dim)', fontSize: '0.66rem' }}>Mưa / Gió</div>
+                <div style={{ color: 'var(--color-text-dim)', fontSize: '0.66rem' }}>Mưa / gió</div>
                 <strong style={{ color: 'var(--color-sky)' }}>
                   {g.weatherSummary.precipMm}mm · {g.weatherSummary.windSpeedKmH} km/h
                 </strong>
               </div>
             </>
+          )}
+          {typeof seaOfCloudsIndex === 'number' && Number.isFinite(seaOfCloudsIndex) && (
+            <div style={{ background: 'var(--color-bg-main)', padding: '6px 8px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
+              <div style={{ color: 'var(--color-text-dim)', fontSize: '0.66rem' }}>Khả năng săn mây</div>
+              <strong style={{ color: seaOfCloudsIndex >= 65 ? 'var(--color-primary)' : 'var(--color-text-main)', fontVariantNumeric: 'tabular-nums' }}>
+                {Math.round(seaOfCloudsIndex)}%
+              </strong>
+            </div>
           )}
           <div style={{ background: 'var(--color-bg-main)', padding: '6px 8px', borderRadius: 4, border: '1px solid var(--color-border)' }}>
             <div style={{ color: 'var(--color-text-dim)', fontSize: '0.66rem' }}>Sự cố mở</div>
@@ -961,6 +1073,47 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
             </strong>
           </div>
         </div>
+
+        {/* Risks */}
+        {Array.isArray(g.risks) && g.risks.length > 0 && (
+          <div
+            style={{
+              background: 'color-mix(in srgb, var(--color-earth) 9%, var(--color-bg-main))',
+              border: '1px solid color-mix(in srgb, var(--color-earth) 32%, transparent)',
+              borderRadius: 4,
+              padding: '7px 9px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 3,
+            }}
+          >
+            <div style={{ fontSize: '0.69rem', fontWeight: 800, color: 'var(--color-earth)' }}>
+              Rủi ro cần lưu ý:
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 16, fontSize: '0.73rem', color: 'var(--color-text-main)', lineHeight: 1.45 }}>
+              {g.risks.map((risk, rIdx) => (
+                <li key={rIdx}>{risk}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Advice */}
+        {g.advice && (
+          <div
+            style={{
+              fontSize: '0.74rem',
+              color: 'var(--color-text-muted)',
+              background: 'var(--color-bg-main)',
+              border: '1px solid var(--color-border)',
+              borderRadius: 4,
+              padding: '7px 9px',
+              lineHeight: 1.5,
+            }}
+          >
+            <strong style={{ color: 'var(--color-text-main)' }}>Lời khuyên:</strong> {g.advice}
+          </div>
+        )}
 
         {g.dynamicGearAdditions.length > 0 && targetTid && (
           <button
@@ -1021,7 +1174,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--color-sky)', fontSize: '0.78rem', fontWeight: 700 }}>
             <IconHiking size={14} color="var(--color-sky)" />
-            <span>Danh Mục Balo (Tích chọn đồ đã chuẩn bị)</span>
+            <span>Danh sách đồ mang theo (đánh dấu món đã xếp)</span>
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
             <button
@@ -1179,7 +1332,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--color-earth)', fontSize: '0.79rem', fontWeight: 800 }}>
             <IconCalendar size={14} color="var(--color-earth)" />
-            <span>LỊCH TRÌNH: {itin.trailName}</span>
+            <span>Lịch trình: {itin.trailName}</span>
           </div>
           <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', fontWeight: 700 }}>{itin.durationLabel}</span>
         </div>
@@ -1380,7 +1533,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <IconMountain size={15} color="var(--color-primary)" />
             <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--color-text-main)', letterSpacing: '0.02em' }}>
-              MA TRẬN SO SÁNH ĐỐI ĐẦU ({trails.length} CUNG)
+              So sánh chi tiết ({trails.length} cung)
             </span>
           </div>
           <span
@@ -1393,7 +1546,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
               color: 'var(--color-sky)',
             }}
           >
-            Tháng {cmp.targetMonth} · Thực địa 100%
+            Tháng {cmp.targetMonth} · Dữ liệu thực tế
           </span>
         </div>
 
@@ -1524,6 +1677,23 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
           </div>
         </div>
 
+        {/* Season Note */}
+        {cmp.bestSeasonNote && (
+          <div
+            style={{
+              fontSize: '0.72rem',
+              color: 'var(--color-text-muted)',
+              background: 'var(--color-bg-main)',
+              border: '1px solid var(--color-border)',
+              borderRadius: 4,
+              padding: '6px 9px',
+              lineHeight: 1.45,
+            }}
+          >
+            <strong style={{ color: 'var(--color-text-main)' }}>Ghi chú mùa vụ:</strong> {cmp.bestSeasonNote}
+          </div>
+        )}
+
         {/* 1-Click Open & Go/No-Go Actions per Trail */}
         <div style={{ display: 'grid', gridTemplateColumns: `repeat(${trails.length}, minmax(0, 1fr))`, gap: 6 }}>
           {trails.map((t) => (
@@ -1603,10 +1773,10 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
         : 'var(--color-error)';
     const riskLabel =
       p.pacing.afterDarkRisk === 'safe'
-        ? 'An Toàn Ánh Sáng'
+        ? 'An toàn ánh sáng'
         : p.pacing.afterDarkRisk === 'tight'
-        ? 'Sát Giờ Hoàng Hôn'
-        : 'Cảnh Báo Đổ Dốc Đêm';
+        ? 'Sát giờ hoàng hôn'
+        : 'Cảnh báo xuống núi trời tối';
 
     // Horizontal SVG Timeline scale: 04:00 (240m) -> 20:00 (1200m)
     const minWindow = 240;
@@ -1706,7 +1876,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
           <div style={{ minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--color-primary)', fontWeight: 800, fontSize: '0.78rem' }}>
               <IconClock size={14} color="var(--color-primary)" />
-              <span>KẾ HOẠCH TỐC ĐỘ &amp; GIỜ QUAY ĐẦU (NOAA)</span>
+              <span>Kế hoạch nhịp đi &amp; giờ quay đầu (NOAA)</span>
             </div>
             <div style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 3 }}>
               {p.trailName}
@@ -1833,19 +2003,19 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
         {/* 4 Key Cutoff Metrics */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: 6, fontVariantNumeric: 'tabular-nums' }}>
           <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: '6px 8px' }}>
-            <div style={{ fontSize: '0.63rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>Giờ Quay Đầu</div>
+            <div style={{ fontSize: '0.63rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>Giờ quay đầu</div>
             <div style={{ fontSize: '0.92rem', fontWeight: 900, color: 'var(--color-earth)', marginTop: 1 }}>{p.pacing.safeTurnaroundTime}</div>
-            <div style={{ fontSize: '0.64rem', color: 'var(--color-text-muted)' }}>Cutoff an toàn</div>
+            <div style={{ fontSize: '0.64rem', color: 'var(--color-text-muted)' }}>Mốc quay đầu an toàn</div>
           </div>
           <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: '6px 8px' }}>
-            <div style={{ fontSize: '0.63rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>Đỉnh / Về Đích</div>
+            <div style={{ fontSize: '0.63rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>Đỉnh / về đích</div>
             <div style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 2 }}>
               {p.pacing.summitEta} / {p.pacing.finishEta}
             </div>
             <div style={{ fontSize: '0.64rem', color: 'var(--color-text-muted)' }}>Di chuyển {p.pacing.totalMovingHours}h</div>
           </div>
           <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: '6px 8px' }}>
-            <div style={{ fontSize: '0.63rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>Đệm Hoàng Hôn</div>
+            <div style={{ fontSize: '0.63rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>Dư giờ trước tối</div>
             <div style={{ fontSize: '0.88rem', fontWeight: 800, color: riskColor, marginTop: 2 }}>
               {p.pacing.daylightMarginMinutes >= 0 ? `+${p.pacing.daylightMarginMinutes}p` : `${p.pacing.daylightMarginMinutes}p`}
             </div>
@@ -1854,7 +2024,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
             </div>
           </div>
           <div style={{ background: 'var(--color-bg-main)', border: '1px solid var(--color-border)', borderRadius: 4, padding: '6px 8px' }}>
-            <div style={{ fontSize: '0.63rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>Gợi Ý Xuất Phát</div>
+            <div style={{ fontSize: '0.63rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>Gợi ý xuất phát</div>
             <div style={{ fontSize: '0.88rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: 2 }}>{p.pacing.recommendedStartTime}</div>
             <div style={{ fontSize: '0.64rem', color: 'var(--color-text-muted)' }}>
               {p.pacing.headlampRequired ? 'Cần đèn pin' : 'Đủ ánh sáng'}
@@ -1953,7 +2123,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
             }}
           >
             {copiedId === copyKey ? <IconCheck size={12} color="var(--color-primary)" /> : <IconCopy size={12} />}
-            <span>{copiedId === copyKey ? 'Đã sao chép lịch' : 'Sao Chép Kế Hoạch'}</span>
+            <span>{copiedId === copyKey ? 'Đã sao chép lịch' : 'Sao chép kế hoạch'}</span>
           </button>
         </div>
       </div>
@@ -2015,7 +2185,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
           <div style={{ minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--color-sky)', fontWeight: 800, fontSize: '0.78rem' }}>
               <IconDroplet size={14} color="var(--color-sky)" />
-              <span>DINH DƯỠNG, NƯỚC &amp; ĐIỆN GIẢI (PANDOLF)</span>
+              <span>Dinh dưỡng, nước &amp; điện giải (Pandolf)</span>
             </div>
             <div style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--color-text-main)', marginTop: 3 }}>
               {fp.trailName}
@@ -2063,7 +2233,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
               fontVariantNumeric: 'tabular-nums',
             }}
           >
-            <span>Cân Bằng Năng Lượng ({fp.energy.totalTripKcal.toLocaleString('vi-VN')} kcal)</span>
+            <span>Cân bằng năng lượng ({fp.energy.totalTripKcal.toLocaleString('vi-VN')} kcal)</span>
             <span>
               Carb {fp.energy.carbsGrams}g · Đạm {fp.energy.proteinGrams}g · Béo {fp.energy.fatGrams}g
             </span>
@@ -2182,7 +2352,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
             }}
           >
             <div style={{ fontSize: '0.68rem', fontWeight: 800, color: 'var(--color-sky)', textTransform: 'uppercase' }}>
-              Điểm Tiếp Nước Thực Địa ({fp.hydration.waterResupplySpots.length} mốc)
+              Điểm tiếp nước dọc đường ({fp.hydration.waterResupplySpots.length} mốc)
             </div>
             {fp.hydration.waterResupplySpots.map((sp, idx) => (
               <div key={`${sp.name}-${idx}`} style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', lineHeight: 1.4 }}>
@@ -2242,11 +2412,35 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
           </table>
         </div>
 
+        {/* Fuel Tactical Notes */}
+        {Array.isArray(fp.tacticalNotes) && fp.tacticalNotes.length > 0 && (
+          <div
+            style={{
+              background: 'var(--color-bg-main)',
+              border: '1px solid var(--color-border)',
+              borderRadius: 4,
+              padding: '7px 9px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 3,
+            }}
+          >
+            <div style={{ fontSize: '0.68rem', fontWeight: 800, color: 'var(--color-primary)' }}>
+              Lưu ý ăn uống &amp; tiếp nước dọc đường:
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 16, fontSize: '0.71rem', color: 'var(--color-text-muted)', lineHeight: 1.45 }}>
+              {fp.tacticalNotes.map((note, idx) => (
+                <li key={idx}>{note}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {/* Footer Cost Summary & 1-Click Copy Shopping List */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontVariantNumeric: 'tabular-nums' }}>
           <span style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)' }}>
             Tổng đồ ăn + Oresol: <strong style={{ color: 'var(--color-text-main)' }}>~{formatVnd(fp.totals.estimatedFoodCostVndPerPerson)}/người</strong>
-            {isGroup ? ` (Đoàn ${fp.inputs.groupSize}: ~${formatVnd(fp.totals.estimatedFoodCostVndGroup)})` : ''}
+            {isGroup ? ` (Nhóm ${fp.inputs.groupSize}: ~${formatVnd(fp.totals.estimatedFoodCostVndGroup)})` : ''}
           </span>
           <button
             type="button"
@@ -2273,7 +2467,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
             }}
           >
             {copiedId === copyKey ? <IconCheck size={12} color="var(--color-primary)" /> : <IconCopy size={12} />}
-            <span>{copiedId === copyKey ? 'Đã sao chép danh sách' : 'Sao Chép Danh Sách Mua Đồ'}</span>
+            <span>{copiedId === copyKey ? 'Đã sao chép danh sách' : 'Sao chép danh sách mua đồ'}</span>
           </button>
         </div>
       </div>
@@ -2386,7 +2580,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
           <div style={{ flex: 1, minWidth: 165, display: 'flex', flexDirection: 'column', gap: 4 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, flexWrap: 'wrap' }}>
               <span style={{ fontSize: '0.7rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
-                KIỂM TOÁN SẴN SÀNG PRE-FLIGHT
+                Rà soát sẵn sàng trước khi đi
               </span>
               <span
                 style={{
@@ -2502,7 +2696,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
         {ra.topFixes.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
             <div style={{ fontSize: '0.68rem', fontWeight: 800, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-              Ưu Tiên Xử Lý Trước Khi Xuất Phát ({ra.topFixes.length})
+              Việc cần xử lý trước khi xuất phát ({ra.topFixes.length})
             </div>
             {ra.topFixes.map((fx, idx) => {
               const fxBorder =
@@ -2562,8 +2756,21 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
 
         {/* Footer Hotline & 1-Click Copy Readiness Audit */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '0.67rem', color: 'var(--color-text-dim)' }}>
-            Hotline địa bàn: <strong style={{ color: 'var(--color-text-main)' }}>{ra.snapshot.emergencyPhone}</strong> · 112
+          <span style={{ fontSize: '0.67rem', color: 'var(--color-text-dim)', display: 'inline-flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+            <span>Hotline địa bàn:</span>
+            <a
+              href={`tel:${extractPrimaryDialNumber(ra.snapshot.emergencyPhone)}`}
+              style={{ color: 'var(--color-primary)', fontWeight: 800, textDecoration: 'underline', fontVariantNumeric: 'tabular-nums' }}
+            >
+              {ra.snapshot.emergencyPhone}
+            </a>
+            <span>·</span>
+            <a
+              href="tel:112"
+              style={{ color: 'var(--color-error-text, var(--color-error))', fontWeight: 800, textDecoration: 'underline', fontVariantNumeric: 'tabular-nums' }}
+            >
+              112
+            </a>
           </span>
           <button
             type="button"
@@ -2590,7 +2797,7 @@ export const AiRichCards: React.FC<AiRichCardsProps> = ({
             }}
           >
             {copiedId === copyKey ? <IconCheck size={12} color="var(--color-primary)" /> : <IconCopy size={12} />}
-            <span>{copiedId === copyKey ? 'Đã sao chép báo cáo' : 'Sao Chép Báo Cáo'}</span>
+            <span>{copiedId === copyKey ? 'Đã sao chép báo cáo' : 'Sao chép báo cáo'}</span>
           </button>
         </div>
       </div>

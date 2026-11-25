@@ -18,6 +18,7 @@ import { computeTrailFuelPlan } from '../services/aiFuelPlanner.service.js';
 import { computeExpeditionReadinessAudit } from '../services/aiReadinessAudit.service.js';
 import { AiChatThreadModel } from '../models/AiChatThread.js';
 import { resolveTrailByIdOrSlug } from '../utils/resolveTrail.js';
+import { sanitizeInput } from '../utils/validation.js';
 import { mockTrails } from '../data/seedData.js';
 import type { AuthRequest } from '../middleware/auth.middleware.js';
 import type {
@@ -38,6 +39,26 @@ const STRICT_OBJECT_ID_REGEX = /^[a-fA-F0-9]{24}$/;
 
 function isStrictObjectId(id: unknown): id is string {
   return typeof id === 'string' && STRICT_OBJECT_ID_REGEX.test(id);
+}
+
+function parseStrictFiniteNumber(val: unknown): number | null {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseSafeBoolean(val: unknown, fallback: boolean): boolean {
+  if (typeof val === 'boolean') return val;
+  if (typeof val === 'string') {
+    const lower = val.trim().toLowerCase();
+    if (lower === 'true' || lower === '1') return true;
+    if (lower === 'false' || lower === '0' || lower === '') return false;
+  }
+  if (typeof val === 'number') {
+    if (val === 1) return true;
+    if (val === 0) return false;
+  }
+  return fallback;
 }
 
 function sanitizeThreadTitle(raw: string): string {
@@ -247,7 +268,10 @@ async function persistAiThreadTurn(params: {
     };
 
     if (params.existingThread) {
-      const setFields: Record<string, unknown> = { lastMessageAt: now };
+      const setFields: Record<string, unknown> = {
+        lastMessageAt: now,
+        isGuest: !params.ownerFilter.userId,
+      };
       if (
         params.existingThread.title === 'Hội thoại LOST AI mới' ||
         params.existingThread.title === 'Hội thoại LOST AI'
@@ -291,6 +315,7 @@ async function persistAiThreadTurn(params: {
 
       const created = await AiChatThreadModel.create({
         ...params.ownerFilter,
+        isGuest: !params.ownerFilter.userId,
         title: buildThreadTitleFromMessage(params.fallbackTitle || params.userContent),
         trailContextId: params.trailContextId,
         trailContextName: params.trailContextName,
@@ -730,6 +755,7 @@ export const createAiThread = async (req: AuthRequest, res: Response) => {
 
     const created = await AiChatThreadModel.create({
       ...ownerFilter,
+      isGuest: !ownerFilter.userId,
       title: safeTitle,
       trailContextId: safeContextId,
       trailContextName: safeContextName,
@@ -893,10 +919,14 @@ export const getQuickPrompts = async (req: Request, res: Response) => {
   try {
     const { trailName, province, pageView } = req.query;
 
+    const cleanName = typeof trailName === 'string' ? sanitizeInput(trailName).slice(0, 120) : '';
+    const cleanProvince = typeof province === 'string' ? sanitizeInput(province).slice(0, 80) : '';
+    const cleanPageView = typeof pageView === 'string' ? sanitizeInput(pageView).slice(0, 32) : '';
+
     const prompts = getContextualQuickPrompts({
-      name: typeof trailName === 'string' && trailName.trim() ? trailName.trim().slice(0, 120) : undefined,
-      province: typeof province === 'string' && province.trim() ? province.trim().slice(0, 80) : undefined,
-      pageView: typeof pageView === 'string' && pageView.trim() ? pageView.trim().slice(0, 32) : undefined,
+      name: cleanName || undefined,
+      province: cleanProvince || undefined,
+      pageView: cleanPageView || undefined,
     });
 
     return res.status(200).json({
@@ -944,7 +974,7 @@ export const assessTrailGoNoGo = async (req: Request, res: Response) => {
 
 /**
  * POST /api/ai/analyze-gpx
- * Server-side GPX coordinate analysis (Open-Meteo DEM enrichment, Naismith/Tobler ETA, water & safety advisory).
+ * Server-side GPX coordinate analysis (AWS Open Data Terrarium DEM enrichment, Naismith/Tobler ETA, water & safety advisory).
  */
 export const analyzeGpxHandler = async (req: AuthRequest, res: Response) => {
   try {
@@ -966,11 +996,13 @@ export const analyzeGpxHandler = async (req: AuthRequest, res: Response) => {
     const safeFitness: AiFitnessLevel =
       fitnessLevel === 'beginner' || fitnessLevel === 'advanced' ? fitnessLevel : 'intermediate';
 
+    const safeBodyWeight = parseStrictFiniteNumber(bodyWeightKg);
+    const safePackWeight = parseStrictFiniteNumber(packWeightKg);
     const analysis = await analyzeGpxTrack({
-      fileName: typeof fileName === 'string' ? fileName.slice(0, 120) : 'tracklog.gpx',
+      fileName: typeof fileName === 'string' ? sanitizeInput(fileName).slice(0, 120) || 'tracklog.gpx' : 'tracklog.gpx',
       points: points as RawGpxPoint[],
-      bodyWeightKg: Number.isFinite(Number(bodyWeightKg)) ? Number(bodyWeightKg) : undefined,
-      packWeightKg: Number.isFinite(Number(packWeightKg)) ? Number(packWeightKg) : undefined,
+      bodyWeightKg: safeBodyWeight !== null ? safeBodyWeight : undefined,
+      packWeightKg: safePackWeight !== null ? safePackWeight : undefined,
       fitnessLevel: safeFitness,
       availableTrails,
     });
@@ -1060,8 +1092,10 @@ export const bioCalcHandler = async (req: Request, res: Response) => {
     }
 
     const result = calculateAlpineBioMetrics({
-      trailId: trail?.id || body.trailId,
-      trailName: trail?.name || (typeof body.trailName === 'string' ? body.trailName.slice(0, 120) : undefined),
+      trailId: trail?.id || (typeof body.trailId === 'string' ? sanitizeInput(body.trailId).slice(0, 80) : undefined),
+      trailName:
+        trail?.name ||
+        (typeof body.trailName === 'string' ? sanitizeInput(body.trailName).slice(0, 120) || undefined : undefined),
       distanceKm: body.distanceKm ?? trail?.distanceKm ?? 14,
       elevationGainM: body.elevationGainM ?? trail?.elevationGainM ?? 850,
       elevationLossM: body.elevationLossM ?? trail?.elevationGainM ?? 850,
@@ -1113,14 +1147,10 @@ export const recommendTrailsHandler = async (req: Request, res: Response) => {
       : [];
 
     let safeCoords: { lat: number; lng: number } | undefined;
-    if (
-      body.userCoordinates &&
-      Number.isFinite(Number(body.userCoordinates.lat)) &&
-      Number.isFinite(Number(body.userCoordinates.lng))
-    ) {
-      const lat = Number(body.userCoordinates.lat);
-      const lng = Number(body.userCoordinates.lng);
-      if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+    if (body.userCoordinates && typeof body.userCoordinates === 'object') {
+      const lat = parseStrictFiniteNumber(body.userCoordinates.lat);
+      const lng = parseStrictFiniteNumber(body.userCoordinates.lng);
+      if (lat !== null && lng !== null && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
         safeCoords = { lat, lng };
       }
     }
@@ -1162,18 +1192,20 @@ export const auditPackHandler = async (req: Request, res: Response) => {
           .filter((it: any) => it && typeof it.name === 'string' && it.name.trim())
           .slice(0, 120)
           .map((it: any) => ({
-            name: String(it.name).slice(0, 140),
-            weightGrams: Number.isFinite(Number(it.weightGrams)) ? Number(it.weightGrams) : 0,
-            checked: it.checked !== false,
+            name: sanitizeInput(String(it.name)).slice(0, 140),
+            weightGrams: parseStrictFiniteNumber(it.weightGrams) ?? 0,
+            checked: parseSafeBoolean(it.checked, true),
           }))
       : [];
 
     const availableTrails = await getAllAvailableTrails();
+    const parsedPackWeight = parseStrictFiniteNumber(body.packWeightKg);
+    const parsedBodyWeight = parseStrictFiniteNumber(body.bodyWeightKg);
     const result = await auditTrailPackReadiness(
       {
         trailId,
-        bodyWeightKg: Number(body.bodyWeightKg) || 62,
-        packWeightKg: Number.isFinite(Number(body.packWeightKg)) ? Number(body.packWeightKg) : undefined,
+        bodyWeightKg: parsedBodyWeight ?? 62,
+        packWeightKg: parsedPackWeight !== null ? parsedPackWeight : undefined,
         packedItems,
       },
       availableTrails
@@ -1374,7 +1406,10 @@ export const analyzeImageHandler = async (req: AuthRequest, res: Response) => {
             .select('title')
             .lean();
           if (existingImgThread) {
-            const setFields: Record<string, unknown> = { lastMessageAt: now };
+            const setFields: Record<string, unknown> = {
+              lastMessageAt: now,
+              isGuest: !ownerFilter.userId,
+            };
             if (
               existingImgThread.title === 'Hội thoại LOST AI mới' ||
               existingImgThread.title === 'Hội thoại LOST AI'
@@ -1423,6 +1458,7 @@ export const analyzeImageHandler = async (req: AuthRequest, res: Response) => {
           if (canCreate) {
             const created = await AiChatThreadModel.create({
               ...ownerFilter,
+              isGuest: !ownerFilter.userId,
               title: buildThreadTitleFromMessage(userCaption),
               trailContextId: result.contextUsed.trailId,
               trailContextName: result.contextUsed.trailName,

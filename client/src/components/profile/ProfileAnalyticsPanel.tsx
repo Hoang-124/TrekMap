@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import type { Trail, UserProfile } from '../../types.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
-import { buildRecordedGpxXml } from '../../utils/geoMath.js';
 import {
   IconMountain,
   IconCompass,
@@ -12,6 +11,7 @@ import {
   IconShieldCheck,
   IconTrash,
 } from '../common/SvgIcons.js';
+import { safeLocalStorageGet } from '../../utils/storageScope.js';
 
 type TrailWithMongoId = Trail & { _id?: string };
 
@@ -171,7 +171,7 @@ type GoalSyncState = 'syncing' | 'synced' | 'local_only';
 const getAnnualGoalsStorageKey = (uid?: string | null): string =>
   uid ? `lost_annual_goals_v2_${uid}` : 'lost_annual_goals_v2_guest';
 
-const normalizeAnnualGoals = (raw: unknown): AnnualTrekGoals => {
+const normalizeAnnualGoals = (raw: unknown, maxPeaks = 200): AnnualTrekGoals => {
   const defaults = getDefaultAnnualGoals();
   const currentVnYear = defaults.year;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -186,16 +186,17 @@ const normalizeAnnualGoals = (raw: unknown): AnnualTrekGoals => {
     return rounded >= min && rounded <= max ? rounded : fallback;
   };
   const parsedYear = parseIntRange(rec.year, 2024, 2035, currentVnYear);
+  const safeMaxPeaks = Math.max(36, Math.round(maxPeaks));
   return {
     // Automatically roll forward stale prior-year records to current Vietnam year
     year: Math.max(currentVnYear, parsedYear),
     targetKm: parseIntRange(rec.targetKm, 10, 5000, defaults.targetKm),
     targetElevationM: parseIntRange(rec.targetElevationM, 500, 200000, defaults.targetElevationM),
-    targetPeaks: parseIntRange(rec.targetPeaks, 1, 36, defaults.targetPeaks),
+    targetPeaks: parseIntRange(rec.targetPeaks, 1, safeMaxPeaks, defaults.targetPeaks),
   };
 };
 
-const readAnnualTrekGoals = (uid?: string | null): StoredAnnualGoalsRecord => {
+const readAnnualTrekGoals = (uid?: string | null, maxPeaks = 200): StoredAnnualGoalsRecord => {
   if (typeof window === 'undefined') {
     return { goals: getDefaultAnnualGoals(), pendingSync: false };
   }
@@ -204,7 +205,7 @@ const readAnnualTrekGoals = (uid?: string | null): StoredAnnualGoalsRecord => {
     if (!raw) return { goals: getDefaultAnnualGoals(), pendingSync: false };
     const parsed = JSON.parse(raw) as Record<string, unknown> | null;
     return {
-      goals: normalizeAnnualGoals(parsed),
+      goals: normalizeAnnualGoals(parsed, maxPeaks),
       pendingSync: Boolean(parsed && typeof parsed === 'object' && parsed.pendingSync === true),
     };
   } catch {
@@ -248,7 +249,8 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
   onLogbookChanged,
 }) => {
   const userId = String(currentUser?.id || currentUser?._id || '');
-  const hasStoredToken = typeof window !== 'undefined' && Boolean(localStorage.getItem('lost_token'));
+  const maxAnnualPeaks = Math.max(36, Array.isArray(trails) ? trails.length : 36);
+  const hasStoredToken = typeof window !== 'undefined' && Boolean(safeLocalStorageGet('lost_token'));
   const [serverAnalytics, setServerAnalytics] = useState<ServerAnalyticsPayload | null>(null);
   const [serverLogs, setServerLogs] = useState<RawCheckinInput[] | null>(null);
   const [loading, setLoading] = useState<boolean>(() => Boolean(hasStoredToken && userId));
@@ -270,7 +272,7 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
   const [deletingLogId, setDeletingLogId] = useState<string | null>(null);
 
   const [annualGoals, setAnnualGoals] = useState<AnnualTrekGoals>(
-    () => readAnnualTrekGoals(userId).goals
+    () => readAnnualTrekGoals(userId, maxAnnualPeaks).goals
   );
   const [goalSyncState, setGoalSyncState] = useState<GoalSyncState>(() =>
     hasStoredToken && userId ? 'syncing' : 'local_only'
@@ -278,13 +280,13 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
   const [isEditingGoals, setIsEditingGoals] = useState(false);
   const [isSavingGoals, setIsSavingGoals] = useState(false);
   const [draftTargetKm, setDraftTargetKm] = useState<string>(() =>
-    String(readAnnualTrekGoals(userId).goals.targetKm)
+    String(readAnnualTrekGoals(userId, maxAnnualPeaks).goals.targetKm)
   );
   const [draftTargetElevationM, setDraftTargetElevationM] = useState<string>(() =>
-    String(readAnnualTrekGoals(userId).goals.targetElevationM)
+    String(readAnnualTrekGoals(userId, maxAnnualPeaks).goals.targetElevationM)
   );
   const [draftTargetPeaks, setDraftTargetPeaks] = useState<string>(() =>
-    String(readAnnualTrekGoals(userId).goals.targetPeaks)
+    String(readAnnualTrekGoals(userId, maxAnnualPeaks).goals.targetPeaks)
   );
   const [authSyncTick, setAuthSyncTick] = useState(0);
   const saveGoalsAbortRef = useRef<AbortController | null>(null);
@@ -310,7 +312,7 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
   const [prevAuthSessionKey, setPrevAuthSessionKey] = useState(authSessionKey);
   if (prevAuthSessionKey !== authSessionKey) {
     setPrevAuthSessionKey(authSessionKey);
-    const localNext = readAnnualTrekGoals(userId);
+    const localNext = readAnnualTrekGoals(userId, maxAnnualPeaks);
     setAnnualGoals(localNext.goals);
     setDraftTargetKm(String(localNext.goals.targetKm));
     setDraftTargetElevationM(String(localNext.goals.targetElevationM));
@@ -340,7 +342,7 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
     saveGoalsAbortRef.current = null;
     goalsRevisionRef.current += 1;
 
-    const token = typeof window !== 'undefined' ? localStorage.getItem('lost_token') : null;
+    const token = typeof window !== 'undefined' ? safeLocalStorageGet('lost_token') : null;
     if (!token || !userId) {
       return;
     }
@@ -387,7 +389,7 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
             const replayJson = await replayRes.json().catch(() => null);
             if (signal.aborted || goalsRevisionRef.current !== fetchRev) return;
             if (replayRes.ok && replayJson?.success) {
-              const synced = normalizeAnnualGoals(replayJson.data || replayJson.goals || localSnapshot.goals);
+              const synced = normalizeAnnualGoals(replayJson.data || replayJson.goals || localSnapshot.goals, maxAnnualPeaks);
               setAnnualGoals(synced);
               persistAnnualTrekGoals(userId, synced, false);
               setGoalSyncState('synced');
@@ -402,7 +404,7 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
 
         const rawGoals = goalsRes?.success ? (goalsRes.data || goalsRes.goals) : null;
         if (rawGoals && typeof rawGoals === 'object') {
-          const synced = normalizeAnnualGoals(rawGoals);
+          const synced = normalizeAnnualGoals(rawGoals, maxAnnualPeaks);
           setAnnualGoals(synced);
           persistAnnualTrekGoals(userId, synced, false);
           setGoalSyncState('synced');
@@ -428,7 +430,7 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
       controller.abort();
       saveGoalsAbortRef.current?.abort();
     };
-  }, [userId, authSyncTick]);
+  }, [userId, authSyncTick, maxAnnualPeaks]);
 
   const trailLookup = useMemo(() => {
     const m = new Map<string, Trail>();
@@ -663,8 +665,8 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
       onShowToast?.('Mục tiêu độ cao nâng năm phải là số nguyên từ 500 m đến 200.000 m.', 'error');
       return;
     }
-    if (!Number.isInteger(parsedPeaks) || parsedPeaks < 1 || parsedPeaks > 36) {
-      onShowToast?.('Mục tiêu số đỉnh năm phải là số nguyên từ 1 đến 36 đỉnh.', 'error');
+    if (!Number.isInteger(parsedPeaks) || parsedPeaks < 1 || parsedPeaks > maxAnnualPeaks) {
+      onShowToast?.(`Mục tiêu số đỉnh năm phải là số nguyên từ 1 đến ${maxAnnualPeaks} đỉnh.`, 'error');
       return;
     }
 
@@ -685,7 +687,7 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
     // Optimistic update + per-user localStorage persistence
     setAnnualGoals(next);
 
-    const token = typeof window !== 'undefined' ? localStorage.getItem('lost_token') : null;
+    const token = typeof window !== 'undefined' ? safeLocalStorageGet('lost_token') : null;
     if (!token || !saveUserId) {
       persistAnnualTrekGoals(saveUserId, next, false);
       setGoalSyncState('local_only');
@@ -720,7 +722,7 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
       if (controller.signal.aborted || activeUserIdRef.current !== saveUserId) return;
 
       if (res.ok && json?.success) {
-        const authoritative = normalizeAnnualGoals(json.data || json.goals || next);
+        const authoritative = normalizeAnnualGoals(json.data || json.goals || next, maxAnnualPeaks);
         setAnnualGoals(authoritative);
         persistAnnualTrekGoals(saveUserId, authoritative, false);
         setGoalSyncState('synced');
@@ -766,7 +768,7 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
   };
 
   const refreshServerAnalytics = async () => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('lost_token') : null;
+    const token = typeof window !== 'undefined' ? safeLocalStorageGet('lost_token') : null;
     if (!token || !userId) return;
     try {
       const r = await fetch(`${API_BASE_URL}/logbook/analytics/me`, { headers: getApiHeaders() });
@@ -859,8 +861,8 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
         headers: getApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      if (res.ok && data.success) {
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.success) {
         setServerLogs((prev) =>
           (prev || []).map((item) =>
             String(item._id) === entry.id
@@ -899,7 +901,7 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
         void refreshServerAnalytics();
         onLogbookChanged?.();
       } else {
-        onShowToast?.(data.message || 'Không thể cập nhật nhật ký hành trình.', 'error');
+        onShowToast?.(data?.message || 'Không thể cập nhật nhật ký hành trình.', 'error');
       }
     } catch {
       onShowToast?.('Lỗi kết nối khi lưu nhật ký.', 'error');
@@ -956,19 +958,40 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
         }
       }
 
-      // Offline fallback from trail track
+      // Offline fallback from real trail GPX track coordinates (no fabricated elevation ramp or future timestamps)
       const trailObj = trailLookup.get(entry.trailId);
-      const pts = (trailObj?.gpxTrack || []).map(([lat, lng], idx) => ({
-        lat,
-        lng,
-        altitudeM: trailObj?.maxAltitudeM ? Math.round((trailObj.maxAltitudeM * (idx + 1)) / Math.max(1, (trailObj.gpxTrack || []).length)) : null,
-        timestamp: Date.now() + idx * 60000,
-      }));
-      if (pts.length === 0) {
+      const rawCoords = (trailObj?.gpxTrack || []).filter(
+        (pair): pair is [number, number] =>
+          Array.isArray(pair) &&
+          pair.length >= 2 &&
+          Number.isFinite(Number(pair[0])) &&
+          Number.isFinite(Number(pair[1]))
+      );
+      if (rawCoords.length === 0) {
         onShowToast?.('Chưa có tọa độ GPX cho nhật ký này.', 'info');
         return;
       }
-      const xml = buildRecordedGpxXml(entry.trailName, pts);
+      const escapeXml = (str: string) =>
+        str
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&apos;');
+      const trkpts = rawCoords
+        .map(([lat, lng]) => `      <trkpt lat="${Number(lat).toFixed(6)}" lon="${Number(lng).toFixed(6)}"></trkpt>`)
+        .join('\n');
+      const xml = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<gpx version="1.1" creator="LOST Vietnam Trekking" xmlns="http://www.topografix.com/GPX/1/1">',
+        '  <trk>',
+        `    <name>${escapeXml(entry.trailName)}</name>`,
+        '    <trkseg>',
+        trkpts,
+        '    </trkseg>',
+        '  </trk>',
+        '</gpx>',
+      ].join('\n');
       const blob = new Blob([xml], { type: 'application/gpx+xml;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1188,11 +1211,11 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                     />
                   </label>
                   <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)' }}>
-                    <span>Mục tiêu số đỉnh (1–36 đỉnh)</span>
+                    <span>Mục tiêu số đỉnh (1–{maxAnnualPeaks} đỉnh)</span>
                     <input
                       type="number"
                       min={1}
-                      max={36}
+                      max={maxAnnualPeaks}
                       step={1}
                       disabled={isSavingGoals}
                       aria-label={`Mục tiêu số đỉnh năm ${annualProgress.year}`}
@@ -1479,7 +1502,7 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
               <div style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
                 {activeHoverPoint
                   ? `${activeHoverPoint.key}: ${activeHoverPoint.km} km · +${activeHoverPoint.gainM}m (${activeHoverPoint.trips} chuyến)`
-                  : 'Di chuột lên từng cột tháng để xem chi tiết'}
+                  : 'Chạm hoặc di chuột lên từng cột tháng để xem chi tiết'}
               </div>
             </div>
             <div style={{ display: 'flex', gap: 10, fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>
@@ -1521,9 +1544,19 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                 return (
                   <g
                     key={pt.key || idx}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`${pt.key}: ${pt.km} km, +${pt.gainM}m, ${pt.trips} chuyến`}
                     onMouseEnter={() => setHoveredMonthIdx(idx)}
                     onMouseLeave={() => setHoveredMonthIdx(null)}
-                    style={{ cursor: 'pointer' }}
+                    onClick={() => setHoveredMonthIdx((prev) => (prev === idx ? null : idx))}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setHoveredMonthIdx((prev) => (prev === idx ? null : idx));
+                      }
+                    }}
+                    style={{ cursor: 'pointer', outline: 'none' }}
                   >
                     <rect
                       x={xBase}
@@ -1851,7 +1884,10 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                         )}
                       </div>
                       <div style={{ fontSize: '0.74rem', color: 'var(--color-text-muted)', marginTop: 3, fontVariantNumeric: 'tabular-nums' }}>
-                        {new Date(entry.checkinDate).toLocaleDateString('vi-VN')} · {entry.distanceKm} km · +{entry.elevationGainM}m · Đỉnh {entry.maxAltitudeM}m · {entry.completionTimeHours}h
+                        {entry.checkinDate && Number.isFinite(new Date(entry.checkinDate).getTime())
+                          ? new Date(entry.checkinDate).toLocaleDateString('vi-VN')
+                          : 'Gần đây'}{' '}
+                        · {entry.distanceKm} km · +{entry.elevationGainM}m · Đỉnh {entry.maxAltitudeM}m · {entry.completionTimeHours}h
                         {entry.companionsCount > 1 ? ` · ${entry.companionsCount} người` : ''}
                         {entry.packWeightKg !== undefined ? ` · Balo ${entry.packWeightKg}kg` : ''}
                       </div>
@@ -1955,10 +1991,11 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                     <div style={{ background: 'var(--color-bg-card)', padding: 12, borderRadius: 4, border: '1px solid var(--color-primary)', display: 'flex', flexDirection: 'column', gap: 10 }}>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
                         <div>
-                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
+                          <label htmlFor={`log-edit-hours-${entry.id}`} style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
                             Thời gian hoàn thành (giờ)
                           </label>
                           <input
+                            id={`log-edit-hours-${entry.id}`}
                             type="number"
                             min={0.2}
                             max={240}
@@ -1971,10 +2008,11 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                           />
                         </div>
                         <div>
-                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
+                          <label htmlFor={`log-edit-dist-${entry.id}`} style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
                             Quãng đường ghi nhận (km)
                           </label>
                           <input
+                            id={`log-edit-dist-${entry.id}`}
                             type="number"
                             min={0}
                             max={500}
@@ -1987,10 +2025,11 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                           />
                         </div>
                         <div>
-                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
+                          <label htmlFor={`log-edit-gain-${entry.id}`} style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
                             Độ cao nâng tích lũy (+m)
                           </label>
                           <input
+                            id={`log-edit-gain-${entry.id}`}
                             type="number"
                             min={0}
                             max={30000}
@@ -2003,10 +2042,11 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                           />
                         </div>
                         <div>
-                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
+                          <label htmlFor={`log-edit-comp-${entry.id}`} style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
                             Số người đồng hành
                           </label>
                           <input
+                            id={`log-edit-comp-${entry.id}`}
                             type="number"
                             min={1}
                             max={100}
@@ -2019,10 +2059,11 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                           />
                         </div>
                         <div>
-                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
+                          <label htmlFor={`log-edit-pack-${entry.id}`} style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
                             Trọng lượng balo (0–60 kg)
                           </label>
                           <input
+                            id={`log-edit-pack-${entry.id}`}
                             type="number"
                             min={0}
                             max={60}
@@ -2035,10 +2076,11 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                           />
                         </div>
                         <div>
-                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
+                          <label htmlFor={`log-edit-weather-${entry.id}`} style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
                             Thời tiết ghi nhận
                           </label>
                           <input
+                            id={`log-edit-weather-${entry.id}`}
                             type="text"
                             maxLength={160}
                             className="form-input"
@@ -2050,10 +2092,11 @@ export const ProfileAnalyticsPanel: React.FC<ProfileAnalyticsPanelProps> = ({
                         </div>
                       </div>
                       <div>
-                        <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
+                        <label htmlFor={`log-edit-notes-${entry.id}`} style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: 3 }}>
                           Ghi chú thực địa
                         </label>
                         <textarea
+                          id={`log-edit-notes-${entry.id}`}
                           className="form-textarea"
                           rows={2}
                           maxLength={1500}

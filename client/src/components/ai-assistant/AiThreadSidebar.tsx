@@ -26,16 +26,24 @@ interface AiThreadSidebarProps {
   onClose?: () => void;
 }
 
+function parseTimestampMs(iso?: string): number {
+  if (!iso) return 0;
+  const ts = new Date(iso).getTime();
+  return Number.isFinite(ts) ? ts : 0;
+}
+
 function formatRelativeDate(iso?: string): string {
   if (!iso) return 'Vừa xong';
-  const diffMin = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
+  const ts = new Date(iso).getTime();
+  if (!Number.isFinite(ts)) return 'Gần đây';
+  const diffMin = Math.floor((Date.now() - ts) / 60_000);
   if (diffMin < 1) return 'Vừa xong';
   if (diffMin < 60) return `${diffMin}p trước`;
   const diffHr = Math.floor(diffMin / 60);
   if (diffHr < 24) return `${diffHr}h trước`;
   const diffDay = Math.floor(diffHr / 24);
   if (diffDay < 7) return `${diffDay} ngày trước`;
-  return new Date(iso).toLocaleDateString('vi-VN');
+  return new Date(ts).toLocaleDateString('vi-VN');
 }
 
 export const AiThreadSidebar: React.FC<AiThreadSidebarProps> = ({
@@ -62,7 +70,7 @@ export const AiThreadSidebar: React.FC<AiThreadSidebarProps> = ({
 
   const sorted = [...filtered].sort((a, b) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-    return new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime();
+    return parseTimestampMs(b.lastMessageAt) - parseTimestampMs(a.lastMessageAt);
   });
 
   const handleSaveRename = (id: string) => {
@@ -127,7 +135,7 @@ export const AiThreadSidebar: React.FC<AiThreadSidebarProps> = ({
             }}
           >
             <IconPlus size={14} color="var(--color-on-primary)" />
-            <span>Hội Thoại Mới</span>
+            <span>Cuộc trò chuyện mới</span>
           </button>
 
           {isCompactOverlay && onClose && (

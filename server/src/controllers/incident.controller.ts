@@ -19,10 +19,19 @@ import { deductReputationPoints, PENALTY_POINTS } from '../utils/reputation.js';
 
 let inMemoryIncidents: Incident[] = [...mockIncidents];
 
-// 5-minute TTL cache for external weather telemetry to avoid hammering Open-Meteo on every request
+// 5-minute TTL cache for external weather telemetry to avoid hammering MET Norway on every request
 let cachedWeatherTelemetry: Incident[] = [];
 let lastWeatherTelemetryAt = 0;
+let weatherTelemetryBackoffUntil = 0;
+let weatherTelemetryInFlight: Promise<Incident[]> | null = null;
 const WEATHER_TELEMETRY_TTL_MS = 5 * 60 * 1000;
+const WEATHER_TELEMETRY_BACKOFF_MS = 60 * 1000;
+
+function parseStrictCoord(val: unknown): number | null {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
 
 const VALID_SEVERITIES = new Set(['low', 'medium', 'high', 'critical']);
 const VALID_TYPES = new Set([
@@ -131,58 +140,76 @@ async function getCachedWeatherTelemetry(): Promise<Incident[]> {
   if (cachedWeatherTelemetry.length > 0 && now - lastWeatherTelemetryAt < WEATHER_TELEMETRY_TTL_MS) {
     return cachedWeatherTelemetry;
   }
-
-  const results: Incident[] = [];
-  try {
-    const weatherResults = await Promise.all(MONITORED_REGIONS.map((r) => getLiveWeatherForecast(r.lat, r.lng)));
-
-    weatherResults.forEach((wData, idx) => {
-      const reg = MONITORED_REGIONS[idx];
-      if (wData && wData.current_weather) {
-        const temp = wData.current_weather.temperature;
-        const wind = wData.current_weather.windspeed;
-        const wcode = wData.current_weather.weathercode;
-
-        let conditionText = `Cập nhật thời tiết thực tế ${reg.name}: ${temp}°C, Gió ${wind}km/h. Điều kiện tương đối ổn định.`;
-        let severity: 'low' | 'medium' | 'high' | 'critical' = 'low';
-
-        if (temp < 5 || wind > 25 || wcode > 50) {
-          conditionText = `Cảnh báo gió mạnh ${wind}km/h & nhiệt độ ${temp}°C tại ${reg.name}. Khuyến cáo trang bị ấm chống nước.`;
-          severity = 'high';
-        }
-
-        results.push({
-          id: `weather-live-${reg.id}`,
-          trailId: reg.id,
-          trailName: reg.name,
-          userName: 'Trạm Vệ Tinh Khí Tượng Real-time (Open-Meteo)',
-          userAvatar: '',
-          type: 'weather',
-          description: conditionText,
-          severity,
-          reportedAt: new Date().toISOString(),
-          resolved: false,
-          locationNote: `${reg.name} (${reg.lat.toFixed(4)}° N, ${reg.lng.toFixed(4)}° E)`,
-          coordinates: { lat: reg.lat, lng: reg.lng },
-          elevationM: reg.elev,
-          verifiedBy: 'Open-Meteo Live Telemetry',
-          verifiedAt: new Date().toISOString(),
-          rescueContact: reg.rescue,
-          images: [],
-          isSynthetic: true,
-        } as Incident & { isSynthetic: boolean });
-      }
-    });
-
-    if (results.length > 0) {
-      cachedWeatherTelemetry = results;
-      lastWeatherTelemetryAt = now;
-    }
-  } catch (err) {
-    console.warn('[Live Weather Telemetry Warning]:', (err as Error).message);
+  if (now < weatherTelemetryBackoffUntil) {
+    return cachedWeatherTelemetry;
+  }
+  if (weatherTelemetryInFlight) {
+    return weatherTelemetryInFlight;
   }
 
-  return cachedWeatherTelemetry;
+  weatherTelemetryInFlight = (async (): Promise<Incident[]> => {
+    const results: Incident[] = [];
+    try {
+      const settled = await Promise.allSettled(
+        MONITORED_REGIONS.map((r) => getLiveWeatherForecast(r.lat, r.lng))
+      );
+
+      settled.forEach((outcome, idx) => {
+        const reg = MONITORED_REGIONS[idx];
+        const wData = outcome.status === 'fulfilled' ? outcome.value : null;
+        if (wData && wData.current_weather) {
+          const temp = wData.current_weather.temperature;
+          const wind = wData.current_weather.windspeed;
+          const wcode = wData.current_weather.weathercode;
+
+          let conditionText = `Cập nhật thời tiết thực tế ${reg.name}: ${temp}°C, Gió ${wind}km/h. Điều kiện tương đối ổn định.`;
+          let severity: 'low' | 'medium' | 'high' | 'critical' = 'low';
+
+          if (temp < 5 || wind > 25 || wcode > 50) {
+            conditionText = `Cảnh báo gió mạnh ${wind}km/h & nhiệt độ ${temp}°C tại ${reg.name}. Khuyến cáo trang bị ấm chống nước.`;
+            severity = 'high';
+          }
+
+          results.push({
+            id: `weather-live-${reg.id}`,
+            trailId: reg.id,
+            trailName: reg.name,
+            userName: 'Trạm Vệ Tinh Khí Tượng Real-time (MET Norway)',
+            userAvatar: '',
+            type: 'weather',
+            description: conditionText,
+            severity,
+            reportedAt: new Date().toISOString(),
+            resolved: false,
+            locationNote: `${reg.name} (${reg.lat.toFixed(4)}° N, ${reg.lng.toFixed(4)}° E)`,
+            coordinates: { lat: reg.lat, lng: reg.lng },
+            elevationM: reg.elev,
+            verifiedBy: 'MET Norway Locationforecast 2.0 (CC BY 4.0)',
+            verifiedAt: new Date().toISOString(),
+            rescueContact: reg.rescue,
+            images: [],
+            isSynthetic: true,
+          } as Incident & { isSynthetic: boolean });
+        }
+      });
+
+      if (results.length > 0) {
+        cachedWeatherTelemetry = results;
+        lastWeatherTelemetryAt = Date.now();
+      } else {
+        weatherTelemetryBackoffUntil = Date.now() + WEATHER_TELEMETRY_BACKOFF_MS;
+      }
+    } catch (err) {
+      weatherTelemetryBackoffUntil = Date.now() + WEATHER_TELEMETRY_BACKOFF_MS;
+      console.warn('[Live Weather Telemetry Warning]:', (err as Error).message);
+    } finally {
+      weatherTelemetryInFlight = null;
+    }
+
+    return cachedWeatherTelemetry;
+  })();
+
+  return weatherTelemetryInFlight;
 }
 
 export const getIncidents = async (req: Request, res: Response) => {
@@ -194,6 +221,10 @@ export const getIncidents = async (req: Request, res: Response) => {
 
   let dbIncidents: any[] = [];
   const dbConnected = mongoose.connection.readyState === 1;
+  const filterCandidateStrings = new Set<string>();
+  if (trailFilterParam) {
+    filterCandidateStrings.add(trailFilterParam);
+  }
 
   if (dbConnected) {
     try {
@@ -203,7 +234,11 @@ export const getIncidents = async (req: Request, res: Response) => {
         const resolved = await resolveTrailByIdOrSlug(trailFilterParam);
         if (resolved) {
           candidates.push(resolved._id, String(resolved._id));
-          if (resolved.id) candidates.push(resolved.id);
+          filterCandidateStrings.add(String(resolved._id));
+          if (resolved.id) {
+            candidates.push(resolved.id);
+            filterCandidateStrings.add(String(resolved.id));
+          }
         }
         dbFilter.trailId = { $in: candidates };
       }
@@ -250,30 +285,35 @@ export const getIncidents = async (req: Request, res: Response) => {
     getNaturalHazardsAlerts().catch(() => []),
   ]);
 
-  // Only include Vietnam-verified NASA EONET hazards mapped to the nearest real Vietnam trail
-  const nasaIncidents: Incident[] = (nasaEvents || []).slice(0, 3).map((evt: any) => {
-    const lat = Number(evt.coordinates?.[1]);
-    const lng = Number(evt.coordinates?.[0]);
-    const nearest = findNearestVietnamTrail(lat, lng);
-    return {
-      id: `nasa-${evt.id}`,
-      trailId: nearest.id,
-      trailName: `[Vệ Tinh NASA Việt Nam] ${evt.title}`,
-      userName: 'NASA Earth Observatory EONET API',
-      type: 'bad_weather',
-      description: `Cảnh báo thiên tai khu vực Việt Nam từ vệ tinh NASA: ${evt.title} (${evt.category}). Tọa độ: ${lat.toFixed(2)}°N, ${lng.toFixed(2)}°E (gần tuyến ${nearest.name}).`,
-      severity: 'critical',
-      resolved: false,
-      reportedAt: evt.date ? String(evt.date).substring(0, 10) : new Date().toISOString(),
-      locationNote: `Tọa độ Vệ tinh NASA: ${lat.toFixed(2)}°N, ${lng.toFixed(2)}°E`,
-      coordinates: { lat, lng },
-      verifiedBy: 'NASA Goddard Space Flight Center',
-      verifiedAt: new Date().toISOString(),
-      rescueContact: '112 / 114 - Tìm kiếm Cứu nạn Khẩn cấp',
-      images: [],
-      isSynthetic: true,
-    } as Incident & { isSynthetic: boolean };
-  });
+  // Only include Vietnam-verified NASA EONET hazards with finite coordinates mapped to nearest real Vietnam trail
+  const nasaIncidents: Incident[] = (nasaEvents || [])
+    .slice(0, 5)
+    .map((evt: any) => {
+      const lat = parseStrictCoord(evt.coordinates?.[1]);
+      const lng = parseStrictCoord(evt.coordinates?.[0]);
+      if (lat === null || lng === null) return null;
+      const nearest = findNearestVietnamTrail(lat, lng);
+      return {
+        id: `nasa-${evt.id}`,
+        trailId: nearest.id,
+        trailName: `[Vệ Tinh NASA Việt Nam] ${evt.title}`,
+        userName: 'NASA Earth Observatory EONET API',
+        type: 'bad_weather',
+        description: `Cảnh báo thiên tai khu vực Việt Nam từ vệ tinh NASA: ${evt.title} (${evt.category}). Tọa độ: ${lat.toFixed(2)}°N, ${lng.toFixed(2)}°E (gần tuyến ${nearest.name}).`,
+        severity: 'critical',
+        resolved: false,
+        reportedAt: evt.date ? String(evt.date).substring(0, 10) : new Date().toISOString(),
+        locationNote: `Tọa độ Vệ tinh NASA: ${lat.toFixed(2)}°N, ${lng.toFixed(2)}°E`,
+        coordinates: { lat, lng },
+        verifiedBy: 'NASA Goddard Space Flight Center',
+        verifiedAt: new Date().toISOString(),
+        rescueContact: '112 / 114 - Tìm kiếm Cứu nạn Khẩn cấp',
+        images: [],
+        isSynthetic: true,
+      } as Incident & { isSynthetic: boolean };
+    })
+    .filter((inc): inc is Incident & { isSynthetic: boolean } => inc !== null)
+    .slice(0, 3);
 
   const activeCustomIncidents = dbConnected
     ? dbIncidents
@@ -283,14 +323,14 @@ export const getIncidents = async (req: Request, res: Response) => {
 
   let merged = [...activeCustomIncidents, ...liveWeatherIncidents, ...nasaIncidents];
   if (trailFilterParam) {
-    merged = merged.filter((i) => String(i.trailId) === trailFilterParam);
+    merged = merged.filter((i) => filterCandidateStrings.has(String(i.trailId)));
   }
 
   return res.json({
     success: true,
     count: merged.length,
     data: merged,
-    source: dbConnected ? 'MongoDB Persistent & Live Open-Meteo / NASA EONET (VN)' : 'In-Memory & Live Telemetry',
+    source: dbConnected ? 'MongoDB Persistent & Live MET Norway / NASA EONET (VN)' : 'In-Memory & Live Telemetry',
   });
 };
 
@@ -340,15 +380,10 @@ export const createIncident = async (req: AuthRequest, res: Response) => {
     let actualCoords = matchedTrail
       ? { lat: matchedTrail.startLat, lng: matchedTrail.startLng }
       : { lat: 16.047, lng: 108.206 };
-    if (
-      coordinates &&
-      typeof coordinates === 'object' &&
-      Number.isFinite(Number(coordinates.lat)) &&
-      Number.isFinite(Number(coordinates.lng))
-    ) {
-      const lat = Number(coordinates.lat);
-      const lng = Number(coordinates.lng);
-      if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+    if (coordinates && typeof coordinates === 'object') {
+      const lat = parseStrictCoord(coordinates.lat);
+      const lng = parseStrictCoord(coordinates.lng);
+      if (lat !== null && lng !== null && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
         actualCoords = { lat, lng };
       }
     }
@@ -480,6 +515,9 @@ export const confirmIncident = async (req: AuthRequest, res: Response) => {
 
     const id = String(req.params.id || '');
     const { action = 'confirm_true', note, additionalDescription, severity, reason } = req.body || {};
+    if (action !== 'confirm_true' && action !== 'dispute_false') {
+      return res.status(400).json({ success: false, message: 'Hành động xác nhận sự cố không hợp lệ.' });
+    }
     const isPrivileged = req.user?.role === 'admin' || req.user?.role === 'moderator';
 
     let reporterName = 'Trekker Thực Địa';
@@ -498,23 +536,33 @@ export const confirmIncident = async (req: AuthRequest, res: Response) => {
       const disputeReason = sanitizeInput(
         String(note || additionalDescription || reason || 'Phản ánh thông tin cảnh báo không đúng thực tế.')
       ).slice(0, 600);
+      if (containsProfanity(disputeReason)) {
+        const matched = getProfanityMatch(disputeReason);
+        return res.status(400).json({
+          success: false,
+          message: `Nội dung khiếu nại chứa từ ngữ không phù hợp ("${matched}").`,
+        });
+      }
 
       let updatedIncident: any = null;
       if (mongoose.connection.readyState === 1) {
         if (!isValidObjectId(id)) {
           return res.status(400).json({ success: false, message: 'Mã sự cố không hợp lệ hoặc đây là cảnh báo vệ tinh tự động.' });
         }
-        const existing = await IncidentModel.findById(id).select('reportedBy disputes').lean();
+        const existing = await IncidentModel.findById(id).select('reportedBy disputes active resolved').lean();
         if (!existing) {
           return res.status(404).json({ success: false, message: 'Không tìm thấy sự cố để khiếu nại.' });
+        }
+        if (existing.resolved === true || existing.active === false) {
+          return res.status(400).json({ success: false, message: 'Sự cố này đã được đóng / xử lý, không thể khiếu nại thêm.' });
         }
         if (String(existing.reportedBy) === String(userId)) {
           return res.status(400).json({ success: false, message: 'Bạn không thể tự khiếu nại cảnh báo do chính mình đăng.' });
         }
 
-        // Atomic duplicate dispute guard
+        // Atomic duplicate dispute guard on active unresolved incident
         updatedIncident = await IncidentModel.findOneAndUpdate(
-          { _id: id, 'disputes.userId': { $ne: userId } },
+          { _id: id, active: { $ne: false }, resolved: { $ne: true }, 'disputes.userId': { $ne: userId } },
           {
             $push: {
               disputes: {
@@ -545,6 +593,9 @@ export const confirmIncident = async (req: AuthRequest, res: Response) => {
         if (!foundMem) {
           return res.status(404).json({ success: false, message: 'Không tìm thấy sự cố để khiếu nại.' });
         }
+        if (foundMem.resolved || (foundMem as any).active === false) {
+          return res.status(400).json({ success: false, message: 'Sự cố này đã được đóng / xử lý, không thể khiếu nại thêm.' });
+        }
         if (!foundMem.disputes) foundMem.disputes = [];
         if (foundMem.disputes.some((d) => String(d.userId) === String(userId))) {
           return res.status(400).json({ success: false, message: 'Bạn đã gửi khiếu nại cho sự cố này trước đó.' });
@@ -574,6 +625,13 @@ export const confirmIncident = async (req: AuthRequest, res: Response) => {
 
     // CONFIRM TRUE INCIDENT
     const confirmNote = sanitizeInput(String(additionalDescription || note || 'Đã xác nhận sự cố chính xác.')).slice(0, 600);
+    if (containsProfanity(confirmNote)) {
+      const matched = getProfanityMatch(confirmNote);
+      return res.status(400).json({
+        success: false,
+        message: `Nội dung xác nhận chứa từ ngữ không phù hợp ("${matched}").`,
+      });
+    }
     const severityUpdate =
       isPrivileged && typeof severity === 'string' && VALID_SEVERITIES.has(severity) ? { severity } : {};
 
@@ -582,14 +640,17 @@ export const confirmIncident = async (req: AuthRequest, res: Response) => {
       if (!isValidObjectId(id)) {
         return res.status(400).json({ success: false, message: 'Mã sự cố không hợp lệ.' });
       }
-      const exists = await IncidentModel.exists({ _id: id });
-      if (!exists) {
+      const existing = await IncidentModel.findById(id).select('active resolved').lean();
+      if (!existing) {
         return res.status(404).json({ success: false, message: 'Không tìm thấy sự cố để xác nhận.' });
       }
+      if (existing.resolved === true || existing.active === false) {
+        return res.status(400).json({ success: false, message: 'Sự cố này đã được xử lý, không thể xác nhận thêm.' });
+      }
 
-      // Atomic deduplicated confirmation
+      // Atomic deduplicated confirmation on active unresolved incident
       updatedIncident = await IncidentModel.findOneAndUpdate(
-        { _id: id, 'coReporters.userId': { $ne: userId } },
+        { _id: id, active: { $ne: false }, resolved: { $ne: true }, 'coReporters.userId': { $ne: userId } },
         {
           $inc: { confirmations: 1 },
           $push: {
@@ -622,6 +683,9 @@ export const confirmIncident = async (req: AuthRequest, res: Response) => {
       const foundMem = inMemoryIncidents.find((i) => i.id === id || (i as any)._id === id);
       if (!foundMem) {
         return res.status(404).json({ success: false, message: 'Không tìm thấy sự cố để xác nhận.' });
+      }
+      if (foundMem.resolved || (foundMem as any).active === false) {
+        return res.status(400).json({ success: false, message: 'Sự cố này đã được xử lý, không thể xác nhận thêm.' });
       }
       if (!foundMem.coReporters) foundMem.coReporters = [];
       if (foundMem.coReporters.some((r) => String(r.userId) === String(userId))) {
@@ -733,6 +797,13 @@ export const resolveDisputeIncidentAdmin = async (req: AuthRequest, res: Respons
   }
   const id = String(req.params.id || '');
   const { action } = req.body || {};
+
+  if (action !== 'dismiss_incident' && action !== 'reject_dispute') {
+    return res.status(400).json({
+      success: false,
+      message: 'Hành động xử lý khiếu nại không hợp lệ (chỉ chấp nhận dismiss_incident hoặc reject_dispute).',
+    });
+  }
 
   try {
     if (action === 'dismiss_incident') {

@@ -1,6 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { NotificationItem, NotificationCategory, UserProfile } from '../../types.js';
 import {
+  NOTIFICATIONS_SYNC_EVENT,
+  dispatchNotificationsSynced,
+  dispatchNotificationToast,
+  navigateNotificationLink,
   fetchNotifications,
   markNotificationAsRead,
   markAllNotificationsAsRead,
@@ -15,70 +19,94 @@ interface NotificationsPageProps {
   onNavigate?: (link: string) => void;
 }
 
-const navigateNotificationLink = (link: string, onNavigate?: (link: string) => void) => {
-  const trimmed = link.trim();
-  if (!trimmed) return;
-
-  if (trimmed.startsWith('/#trail/') || trimmed.startsWith('#trail/')) {
-    const trailId = trimmed.replace(/^\/?#trail\//, '');
-    if (trailId) {
-      window.history.pushState({}, '', `/trails/${encodeURIComponent(trailId)}`);
-      window.dispatchEvent(new PopStateEvent('popstate'));
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-      return;
-    }
-  }
-
-  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
-    window.history.pushState({}, '', trimmed);
-    window.dispatchEvent(new PopStateEvent('popstate'));
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    return;
-  }
-
-  if (onNavigate) {
-    onNavigate(trimmed.replace(/^#/, ''));
-  } else {
-    window.location.hash = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
-  }
-};
+const MAX_SEEN_NOTIF_IDS = 500;
 
 export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUser, onNavigate }) => {
+  const currentUserId =
+    currentUser?.id || (currentUser as (UserProfile & { _id?: string }) | null)?._id || '';
+
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState<number>(0);
   const [categoryCounts, setCategoryCounts] = useState<{ [key: string]: number }>({});
   const [activeCategory, setActiveCategory] = useState<NotificationCategory | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loadedKey, setLoadedKey] = useState<string>('');
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [refreshTick, setRefreshTick] = useState<number>(0);
   const [page, setPage] = useState<number>(1);
   const [totalCount, setTotalCount] = useState<number>(0);
   const [loadingMore, setLoadingMore] = useState<boolean>(false);
-  const seenNotifIdsRef = React.useRef<Set<string>>(new Set());
+
+  const seenNotifIdsRef = useRef<Set<string>>(new Set());
+  const activeCategoryRef = useRef<NotificationCategory | 'all'>(activeCategory);
   const { socket } = useSocket();
 
-  const loadData = useCallback(
-    async (cat: NotificationCategory | 'all' = activeCategory) => {
-      if (!currentUser) return;
-      setLoading(true);
-      const res = await fetchNotifications(1, 50, cat);
-      const list = res.notifications || [];
-      seenNotifIdsRef.current = new Set(list.map((n) => n._id));
-      setNotifications(list);
-      setPage(1);
-      setTotalCount(res.totalCount || list.length);
-      setUnreadCount(res.unreadCount || 0);
-      setCategoryCounts(res.categoryCounts || {});
-      setLoading(false);
-    },
-    [currentUser, activeCategory]
-  );
+  useEffect(() => {
+    activeCategoryRef.current = activeCategory;
+  }, [activeCategory]);
+
+  const currentRequestKey = currentUserId ? `${currentUserId}:${activeCategory}:${refreshTick}` : '';
+  const loading = Boolean(currentUserId) && loadedKey !== currentRequestKey;
+  const activeCategoryUnreadCount =
+    activeCategory === 'all' ? unreadCount : categoryCounts[activeCategory] || 0;
+
+  const triggerReload = useCallback(() => {
+    setRefreshTick((prev) => prev + 1);
+  }, []);
+
+  // Load page 1 whenever user identity, category, or refreshTick changes (AbortController race guard)
+  useEffect(() => {
+    if (!currentUserId) return;
+    let active = true;
+    const controller = new AbortController();
+    const reqKey = `${currentUserId}:${activeCategory}:${refreshTick}`;
+
+    fetchNotifications(1, 50, activeCategory, controller.signal)
+      .then((res) => {
+        if (!active || controller.signal.aborted) return;
+        if (!res.ok) {
+          setFetchError(res.error || 'Không thể tải danh sách thông báo. Vui lòng thử lại.');
+          return;
+        }
+        const list = res.notifications || [];
+        seenNotifIdsRef.current = new Set(list.map((n) => n._id));
+        setFetchError(null);
+        setNotifications(list);
+        setPage(1);
+        setTotalCount(res.totalCount ?? list.length);
+        setUnreadCount(res.unreadCount || 0);
+        setCategoryCounts(res.categoryCounts || {});
+      })
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        if (active) {
+          setFetchError('Không thể tải danh sách thông báo. Vui lòng thử lại.');
+        }
+      })
+      .finally(() => {
+        if (active && !controller.signal.aborted) {
+          setLoadedKey(reqKey);
+        }
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [currentUserId, activeCategory, refreshTick]);
 
   const handleLoadMore = async () => {
-    if (!currentUser || loadingMore || notifications.length >= totalCount) return;
+    if (!currentUserId || loadingMore || notifications.length >= totalCount) return;
+    const targetCat = activeCategory;
     setLoadingMore(true);
     try {
       const nextPage = page + 1;
-      const res = await fetchNotifications(nextPage, 50, activeCategory);
+      const res = await fetchNotifications(nextPage, 50, targetCat);
+      if (activeCategoryRef.current !== targetCat) return;
+      if (!res.ok) {
+        dispatchNotificationToast(res.error || 'Không thể tải thêm thông báo.', 'error');
+        return;
+      }
       const incoming = res.notifications || [];
       incoming.forEach((n) => seenNotifIdsRef.current.add(n._id));
       setNotifications((prev) => {
@@ -86,56 +114,49 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
         return [...prev, ...incoming.filter((n) => !existingIds.has(n._id))];
       });
       setPage(nextPage);
-      setTotalCount(res.totalCount || totalCount);
+      setTotalCount(res.totalCount ?? totalCount);
     } finally {
       setLoadingMore(false);
     }
   };
 
+  // Keep synced with NotificationBell (skip self-emitted events to prevent double-fetch loops)
   useEffect(() => {
-    if (!currentUser) return;
-    let active = true;
-    fetchNotifications(1, 50, activeCategory)
-      .then((res) => {
-        if (!active) return;
-        const list = res.notifications || [];
-        seenNotifIdsRef.current = new Set(list.map((n) => n._id));
-        setNotifications(list);
-        setPage(1);
-        setTotalCount(res.totalCount || list.length);
-        setUnreadCount(res.unreadCount || 0);
-        setCategoryCounts(res.categoryCounts || {});
-        setLoading(false);
-      })
-      .catch(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
+    const handleSynced = (e: Event) => {
+      const detail = (e as CustomEvent<{ source?: string }>).detail;
+      if (detail?.source === 'page') return;
+      triggerReload();
     };
-  }, [currentUser, activeCategory]);
+    window.addEventListener(NOTIFICATIONS_SYNC_EVENT, handleSynced);
+    return () => window.removeEventListener(NOTIFICATIONS_SYNC_EVENT, handleSynced);
+  }, [triggerReload]);
 
-  // Keep synced with NotificationBell
+  // Real-time socket event + reconnect backfill (bounded dedupe + accurate category-scoped totalCount)
   useEffect(() => {
-    const handleSynced = () => {
-      void loadData(activeCategory);
+    if (!socket || !currentUserId) return;
+
+    const handleReconnect = () => {
+      triggerReload();
     };
-    window.addEventListener('lost:notifications-synced', handleSynced);
-    return () => window.removeEventListener('lost:notifications-synced', handleSynced);
-  }, [activeCategory, loadData]);
-
-  // Real-time socket event (deduplicated so duplicate delivery never inflates unread counts)
-  useEffect(() => {
-    if (!socket) return;
 
     const handleNewNotification = (newNotif: NotificationItem) => {
-      const isDuplicate = Boolean(newNotif._id && seenNotifIdsRef.current.has(newNotif._id));
-      if (newNotif._id) seenNotifIdsRef.current.add(newNotif._id);
-      if (activeCategory === 'all' || newNotif.category === activeCategory) {
+      const notifId = newNotif._id ? String(newNotif._id) : '';
+      const isDuplicate = Boolean(notifId && seenNotifIdsRef.current.has(notifId));
+      if (notifId) {
+        seenNotifIdsRef.current.add(notifId);
+        if (seenNotifIdsRef.current.size > MAX_SEEN_NOTIF_IDS) {
+          const oldest = seenNotifIdsRef.current.values().next().value;
+          if (oldest !== undefined) seenNotifIdsRef.current.delete(oldest);
+        }
+      }
+      const matchesActiveCategory = activeCategory === 'all' || newNotif.category === activeCategory;
+      if (matchesActiveCategory) {
         setNotifications((prev) => [newNotif, ...prev.filter((n) => n._id !== newNotif._id)]);
       }
       if (!isDuplicate) {
-        setTotalCount((prev) => prev + 1);
+        if (matchesActiveCategory) {
+          setTotalCount((prev) => prev + 1);
+        }
         setUnreadCount((prev) => prev + 1);
         const catKey = newNotif.category || 'system';
         setCategoryCounts((prev) => ({
@@ -146,12 +167,14 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
       }
     };
 
+    socket.on('connect', handleReconnect);
     socket.on('newNotification', handleNewNotification);
 
     return () => {
+      socket.off('connect', handleReconnect);
       socket.off('newNotification', handleNewNotification);
     };
-  }, [socket, activeCategory]);
+  }, [socket, currentUserId, activeCategory, triggerReload]);
 
   const decrementCountsForItem = (item?: NotificationItem) => {
     if (!item || item.isRead) return;
@@ -166,12 +189,16 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
 
   const handleItemClick = async (notif: NotificationItem) => {
     if (!notif.isRead) {
-      await markNotificationAsRead(notif._id);
-      setNotifications((prev) =>
-        prev.map((n) => (n._id === notif._id ? { ...n, isRead: true } : n))
-      );
-      decrementCountsForItem(notif);
-      window.dispatchEvent(new CustomEvent('lost:notifications-synced'));
+      const ok = await markNotificationAsRead(notif._id);
+      if (ok) {
+        setNotifications((prev) =>
+          prev.map((n) => (n._id === notif._id ? { ...n, isRead: true } : n))
+        );
+        decrementCountsForItem(notif);
+        dispatchNotificationsSynced('page');
+      } else {
+        dispatchNotificationToast('Không thể đánh dấu thông báo đã đọc.', 'error');
+      }
     }
     if (notif.link) {
       navigateNotificationLink(notif.link, onNavigate);
@@ -181,32 +208,49 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
   const handleMarkItemRead = async (e: React.MouseEvent, item: NotificationItem) => {
     e.stopPropagation();
     if (item.isRead) return;
-    await markNotificationAsRead(item._id);
+    const ok = await markNotificationAsRead(item._id);
+    if (!ok) {
+      dispatchNotificationToast('Không thể cập nhật trạng thái thông báo. Vui lòng thử lại.', 'error');
+      return;
+    }
     setNotifications((prev) =>
       prev.map((n) => (n._id === item._id ? { ...n, isRead: true } : n))
     );
     decrementCountsForItem(item);
-    window.dispatchEvent(new CustomEvent('lost:notifications-synced'));
+    dispatchNotificationsSynced('page');
   };
 
   const handleDeleteItem = async (e: React.MouseEvent, item: NotificationItem) => {
     e.stopPropagation();
-    await deleteNotification(item._id);
+    const ok = await deleteNotification(item._id);
+    if (!ok) {
+      dispatchNotificationToast('Không thể xóa thông báo lúc này. Vui lòng thử lại.', 'error');
+      return;
+    }
     setNotifications((prev) => prev.filter((n) => n._id !== item._id));
+    setTotalCount((prev) => Math.max(0, prev - 1));
     decrementCountsForItem(item);
-    window.dispatchEvent(new CustomEvent('lost:notifications-synced'));
+    dispatchNotificationsSynced('page');
   };
 
   const handleMarkAllRead = async () => {
-    await markAllNotificationsAsRead(activeCategory);
-    await loadData(activeCategory);
-    window.dispatchEvent(new CustomEvent('lost:notifications-synced'));
+    const ok = await markAllNotificationsAsRead(activeCategory);
+    if (!ok) {
+      dispatchNotificationToast('Không thể đánh dấu tất cả thông báo đã đọc. Vui lòng thử lại.', 'error');
+      return;
+    }
+    triggerReload();
+    dispatchNotificationsSynced('page');
   };
 
   const handleClearRead = async () => {
-    await clearReadNotifications();
-    setNotifications((prev) => prev.filter((n) => !n.isRead));
-    window.dispatchEvent(new CustomEvent('lost:notifications-synced'));
+    const ok = await clearReadNotifications();
+    if (!ok) {
+      dispatchNotificationToast('Không thể dọn các thông báo đã đọc lúc này. Vui lòng thử lại.', 'error');
+      return;
+    }
+    triggerReload();
+    dispatchNotificationsSynced('page');
   };
 
   const getCategoryColor = (category: string) => {
@@ -216,28 +260,28 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
           color: 'var(--color-error-text, var(--color-error))',
           bg: 'color-mix(in srgb, var(--color-error) 12%, transparent)',
           border: 'color-mix(in srgb, var(--color-error) 32%, transparent)',
-          name: 'An Toàn',
+          name: 'An toàn',
         };
       case 'moderation':
         return {
           color: 'var(--color-primary)',
           bg: 'color-mix(in srgb, var(--color-primary) 12%, transparent)',
           border: 'color-mix(in srgb, var(--color-primary) 32%, transparent)',
-          name: 'Kiểm Duyệt',
+          name: 'Duyệt bài',
         };
       case 'social':
         return {
           color: 'var(--color-sky)',
           bg: 'color-mix(in srgb, var(--color-sky) 12%, transparent)',
           border: 'color-mix(in srgb, var(--color-sky) 32%, transparent)',
-          name: 'Cộng Đồng',
+          name: 'Cộng đồng',
         };
       default:
         return {
           color: 'var(--color-primary)',
           bg: 'var(--color-surface-elevated)',
           border: 'var(--color-border)',
-          name: 'Hệ Thống',
+          name: 'Hệ thống',
         };
     }
   };
@@ -307,7 +351,7 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
       <div className="card" style={{ maxWidth: 600, margin: '40px auto', textAlign: 'center', padding: 40 }}>
         <h3>Yêu cầu đăng nhập</h3>
         <p style={{ color: 'var(--color-text-muted)' }}>
-          Vui lòng đăng nhập để xem toàn bộ lịch sử thông báo thực địa.
+          Đăng nhập để xem toàn bộ lịch sử thông báo của bạn.
         </p>
       </div>
     );
@@ -330,7 +374,7 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
       >
         <div>
           <div className="section-eyebrow" style={{ marginBottom: 6 }}>
-            Nhật ký hệ thống
+            Nhật ký hoạt động
           </div>
           <h2
             className="font-editorial"
@@ -342,15 +386,15 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
               lineHeight: 1.08,
             }}
           >
-            Trung Tâm Thông Báo Thực Địa
+            Trung tâm thông báo
           </h2>
           <p style={{ fontSize: '0.86rem', color: 'var(--color-text-muted)', margin: '6px 0 0 0' }}>
-            Cảnh báo an toàn khẩn cấp, tiến độ duyệt cung đường và tương tác cộng đồng.
+            Cảnh báo an toàn, tiến độ duyệt cung đường và tương tác cộng đồng.
           </p>
         </div>
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {unreadCount > 0 && (
+          {activeCategoryUnreadCount > 0 && (
             <button
               type="button"
               className="btn btn-primary"
@@ -375,7 +419,7 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
                 <line x1="18" y1="6" x2="6" y2="18" />
                 <line x1="6" y1="6" x2="18" y2="18" />
               </svg>
-              <span>Dọn sạch tin đã đọc</span>
+              <span>Dọn tin đã đọc</span>
             </button>
           )}
         </div>
@@ -388,19 +432,16 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
             {(
               [
                 { id: 'all', label: 'Tất cả' },
-                { id: 'safety', label: 'An Toàn & Cứu Hộ' },
-                { id: 'moderation', label: 'Kiểm Duyệt Cung Đường' },
-                { id: 'social', label: 'Cộng Đồng & Chat' },
-                { id: 'system', label: 'Hệ Thống' },
+                { id: 'safety', label: 'An toàn & Cứu hộ' },
+                { id: 'moderation', label: 'Duyệt cung đường' },
+                { id: 'social', label: 'Cộng đồng & Tin nhắn' },
+                { id: 'system', label: 'Hệ thống' },
               ] as ReadonlyArray<{ id: NotificationCategory | 'all'; label: string }>
             ).map((tab) => (
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => {
-                  setLoading(true);
-                  setActiveCategory(tab.id);
-                }}
+                onClick={() => setActiveCategory(tab.id)}
                 className={`btn ${activeCategory === tab.id ? 'btn-primary' : 'btn-outline'}`}
                 style={{ fontSize: '0.8rem', padding: '6px 13px' }}
               >
@@ -439,11 +480,58 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
         </div>
       </div>
 
+      {/* Non-blocking Error Banner when refreshing failed while items are displayed */}
+      {fetchError && notifications.length > 0 && (
+        <div
+          className="card"
+          style={{
+            padding: '10px 14px',
+            marginBottom: 12,
+            borderColor: 'color-mix(in srgb, var(--color-error) 40%, var(--color-border))',
+            background: 'color-mix(in srgb, var(--color-error) 8%, var(--color-bg-card))',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            flexWrap: 'wrap',
+          }}
+        >
+          <span style={{ fontSize: '0.82rem', color: 'var(--color-error-text, var(--color-error))', fontWeight: 600 }}>
+            {fetchError}
+          </span>
+          <button
+            type="button"
+            className="btn btn-outline"
+            onClick={triggerReload}
+            style={{ padding: '4px 12px', fontSize: '0.76rem', fontWeight: 700 }}
+          >
+            Thử lại
+          </button>
+        </div>
+      )}
+
       {/* Main Notification Cards List */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {loading ? (
+        {loading && notifications.length === 0 ? (
           <div className="card" style={{ padding: 40, textAlign: 'center', color: 'var(--color-text-muted)' }}>
-            Đang tải danh sách thông báo thực địa...
+            Đang tải danh sách thông báo...
+          </div>
+        ) : fetchError && notifications.length === 0 ? (
+          <div className="card" style={{ padding: 48, textAlign: 'center' }}>
+            <div style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--color-error-text, var(--color-error))' }}>
+              {fetchError}
+            </div>
+            <p style={{ fontSize: '0.82rem', color: 'var(--color-text-muted)', marginTop: 6, marginBottom: 16 }}>
+              Vui lòng kiểm tra kết nối mạng và thử tải lại.
+            </p>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={triggerReload}
+              style={{ padding: '8px 18px', fontSize: '0.82rem', fontWeight: 700 }}
+            >
+              Thử lại
+            </button>
           </div>
         ) : filteredNotifications.length === 0 ? (
           <div className="card" style={{ padding: 60, textAlign: 'center', color: 'var(--color-text-muted)' }}>
@@ -455,7 +543,7 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
               Không có thông báo nào
             </div>
             <p style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', marginTop: 4 }}>
-              Bạn đã cập nhật toàn bộ tin tức mới nhất từ hệ sinh thái LOST.
+              Bạn đã xem hết các thông báo mới nhất.
             </p>
           </div>
         ) : (
@@ -531,7 +619,7 @@ export const NotificationsPage: React.FC<NotificationsPageProps> = ({ currentUse
                           gap: 4,
                         }}
                       >
-                        <span>Xem chi tiết nội dung</span>
+                        <span>Xem chi tiết</span>
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                           <polyline points="9 18 15 12 9 6" />
                         </svg>

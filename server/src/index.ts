@@ -1,8 +1,13 @@
+import 'dotenv/config';
 import mongoose from 'mongoose';
 import { httpServer } from './app.js';
-import { connectDB, disconnectDB } from './config/db.js';
+import { connectDB, disconnectDB, scheduleDbReconnect, cancelDbReconnect } from './config/db.js';
 import { seedAll13Collections } from './utils/seedDatabase.js';
-import { getIO } from './config/socket.js';
+import { getIO, stopSocketTimers } from './config/socket.js';
+import { getJwtSecret } from './utils/auth.js';
+import { closeMailer } from './utils/mailer.js';
+import { stopRateLimiterTimers } from './middleware/rateLimiter.middleware.js';
+import { stopCacheCleanupTimer } from './middleware/cache.middleware.js';
 import { processOverdueSafetyTimers } from './controllers/safetyTimer.controller.js';
 import { processScheduledWeatherAlerts } from './controllers/weatherAlert.controller.js';
 
@@ -54,6 +59,30 @@ async function onDatabaseReady() {
 }
 
 async function bootstrap() {
+  if (process.env.NODE_ENV === 'production') {
+    // Fail fast before binding HTTP port if JWT_SECRET is missing or weak
+    const jwtSecret = getJwtSecret();
+    if (jwtSecret.length < 32) {
+      throw new Error('FATAL SECURITY ERROR: JWT_SECRET must be at least 32 characters in production!');
+    }
+
+    if (!(process.env.MONGODB_URI || '').trim()) {
+      console.warn(
+        '[LOST Startup Warning]: MONGODB_URI is unset in production; falling back to 127.0.0.1:27017.'
+      );
+    }
+    if (!(process.env.CLIENT_URL || '').trim()) {
+      console.warn(
+        '[LOST Startup Warning]: CLIENT_URL is unset in production; outbound links will default to https://lost.vn.'
+      );
+    }
+    if (!(process.env.CORS_ORIGINS || process.env.ALLOWED_ORIGINS || '').trim()) {
+      console.warn(
+        '[LOST Startup Warning]: CORS_ORIGINS is unset in production; CORS allowlist will default to https://lost.vn and https://www.lost.vn.'
+      );
+    }
+  }
+
   // Ensure late MongoDB reconnection also triggers seeding & safety timer sweeper
   mongoose.connection.on('reconnected', () => {
     onDatabaseReady().catch((err) =>
@@ -64,6 +93,8 @@ async function bootstrap() {
   const connected = await connectDB();
   if (connected) {
     await onDatabaseReady();
+  } else {
+    scheduleDbReconnect(() => onDatabaseReady());
   }
 
   httpServer.listen(PORT, () => {
@@ -84,6 +115,8 @@ async function gracefulShutdown(signal: string) {
   forceExitTimer.unref();
 
   try {
+    cancelDbReconnect();
+
     if (safetyTimerSweepInterval) {
       clearInterval(safetyTimerSweepInterval);
       safetyTimerSweepInterval = null;
@@ -97,12 +130,21 @@ async function gracefulShutdown(signal: string) {
       weatherAlertSweepInterval = null;
     }
 
+    stopRateLimiterTimers();
+    stopCacheCleanupTimer();
+    stopSocketTimers();
+    closeMailer();
+
     const io = getIO();
     if (io) {
       await new Promise<void>((resolve) => io.close(() => resolve()));
     }
 
     await new Promise<void>((resolve) => {
+      if (!httpServer.listening) {
+        resolve();
+        return;
+      }
       httpServer.close(() => resolve());
       // Terminate idle keep-alive sockets so graceful shutdown never hangs
       if (typeof (httpServer as any).closeIdleConnections === 'function') {

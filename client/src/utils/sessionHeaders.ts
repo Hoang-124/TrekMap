@@ -7,20 +7,22 @@ const LEGACY_KEYS: Array<[string, string]> = [
   ['trekmap_client_session_id', 'lost_client_session_id'],
 ];
 
-if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+if (typeof window !== 'undefined') {
   try {
-    for (const [oldKey, newKey] of LEGACY_KEYS) {
-      const legacyVal = localStorage.getItem(oldKey);
-      if (legacyVal && !localStorage.getItem(newKey)) {
-        localStorage.setItem(newKey, legacyVal);
+    if (typeof localStorage !== 'undefined') {
+      for (const [oldKey, newKey] of LEGACY_KEYS) {
+        const legacyVal = localStorage.getItem(oldKey);
+        if (legacyVal && !localStorage.getItem(newKey)) {
+          localStorage.setItem(newKey, legacyVal);
+        }
+        if (legacyVal !== null) {
+          localStorage.removeItem(oldKey);
+        }
       }
-      if (legacyVal !== null) {
-        localStorage.removeItem(oldKey);
-      }
+      // Remove orphaned legacy cover key that is no longer read (now scoped per-user as lost_cover_url_${uid})
+      localStorage.removeItem('trekmap_cover_url');
+      localStorage.removeItem('lost_cover_url');
     }
-    // Remove orphaned legacy cover key that is no longer read (now scoped per-user as lost_cover_url_${uid})
-    localStorage.removeItem('trekmap_cover_url');
-    localStorage.removeItem('lost_cover_url');
   } catch {
     // Ignore storage access restrictions
   }
@@ -69,6 +71,66 @@ export const getApiHeaders = (extraHeaders: Record<string, string> = {}): Record
   }
   return headers;
 };
+
+export const DEFAULT_API_TIMEOUT_MS = 15_000;
+export const UPLOAD_API_TIMEOUT_MS = 45_000;
+export const AI_API_TIMEOUT_MS = 35_000;
+
+function createNamedDomError(message: string, name: 'AbortError' | 'TimeoutError'): Error {
+  if (typeof DOMException !== 'undefined') {
+    return new DOMException(message, name);
+  }
+  const err = new Error(message);
+  err.name = name;
+  return err;
+}
+
+/**
+ * Weak-2G/3G resilient fetch wrapper that composes any caller `AbortSignal` with a bounded timeout.
+ * - Throws `AbortError` when the caller aborts (so unmount abort guards stay silent).
+ * - Throws `TimeoutError` when the timeout expires (so UIs show retry / offline fallback instead of silent stalls).
+ * - Always clears the timer and detaches the caller abort listener in `finally` (0 leaked timers/listeners).
+ */
+export async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  timeoutMs: number = DEFAULT_API_TIMEOUT_MS,
+  fetchImpl: typeof fetch = globalThis.fetch
+): Promise<Response> {
+  const externalSignal = init?.signal;
+  if (externalSignal?.aborted) {
+    throw createNamedDomError('The operation was aborted.', 'AbortError');
+  }
+
+  if (typeof AbortController === 'undefined' || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return fetchImpl(input, init);
+  }
+
+  const controller = new AbortController();
+  let timedOut = false;
+  const onExternalAbort = () => controller.abort();
+  externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetchImpl(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (timedOut && !externalSignal?.aborted) {
+      throw createNamedDomError('Kết nối quá hạn do tín hiệu mạng yếu.', 'TimeoutError');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
+  }
+}
 
 export const notifyForumUpdated = (payload?: unknown) => {
   window.dispatchEvent(new CustomEvent('lost:forum-updated', { detail: payload }));
@@ -174,13 +236,18 @@ export function installAuthFetchInterceptor(): void {
 
     inflightRefreshPromise = (async () => {
       try {
-        const refreshRes = await rawFetch('/api/auth/refresh', {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'X-Client-Session-Id': getClientSessionId(),
+        const refreshRes = await fetchWithTimeout(
+          '/api/auth/refresh',
+          {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+              'X-Client-Session-Id': getClientSessionId(),
+            },
           },
-        });
+          10_000,
+          rawFetch
+        );
         if (!refreshRes.ok) return null;
 
         const data = (await refreshRes.json().catch(() => null)) as {
@@ -219,19 +286,25 @@ export function installAuthFetchInterceptor(): void {
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const resolvedUrl = resolveRequestUrl(input);
-    const isSameOriginApi =
+    const isSameOriginApiPath =
       Boolean(resolvedUrl) &&
       resolvedUrl!.origin === window.location.origin &&
-      resolvedUrl!.pathname.startsWith('/api/') &&
-      !REFRESH_EXCLUDED_PATHS.has(resolvedUrl!.pathname);
+      resolvedUrl!.pathname.startsWith('/api/');
 
-    if (!isSameOriginApi) {
+    if (!isSameOriginApiPath) {
       return rawFetch(input, init);
     }
 
-    const authHeader = extractAuthorizationHeader(input, init);
+    const apiTimeoutMs = resolvedUrl!.pathname.startsWith('/api/upload')
+      ? UPLOAD_API_TIMEOUT_MS
+      : resolvedUrl!.pathname.startsWith('/api/ai/')
+        ? AI_API_TIMEOUT_MS
+        : 20_000;
+
+    const isRefreshEligible = !REFRESH_EXCLUDED_PATHS.has(resolvedUrl!.pathname);
+    const authHeader = isRefreshEligible ? extractAuthorizationHeader(input, init) : null;
     if (!authHeader || !/^Bearer\s+\S+/i.test(authHeader.trim())) {
-      return rawFetch(input, init);
+      return fetchWithTimeout(input, init, apiTimeoutMs, rawFetch);
     }
 
     const originalToken = authHeader.trim().replace(/^Bearer\s+/i, '');
@@ -245,7 +318,7 @@ export function installAuthFetchInterceptor(): void {
       }
     }
 
-    const initialResponse = await rawFetch(input, init);
+    const initialResponse = await fetchWithTimeout(input, init, apiTimeoutMs, rawFetch);
     if (initialResponse.status !== 401 || init?.signal?.aborted) {
       return initialResponse;
     }
@@ -268,6 +341,6 @@ export function installAuthFetchInterceptor(): void {
     }
 
     const { retryInput, retryInit } = buildRetryRequest(input, init, clonedRequest, freshToken);
-    return rawFetch(retryInput, retryInit);
+    return fetchWithTimeout(retryInput, retryInit, apiTimeoutMs, rawFetch);
   };
 }

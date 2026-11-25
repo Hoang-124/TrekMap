@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import type { Trail, User } from '../../types.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
-import { scopedStorageKey } from '../../utils/storageScope.js';
+import { safeLocalStorageGet, scopedStorageKey } from '../../utils/storageScope.js';
 import { queueAiAssistantPrompt } from '../../services/aiAssistant.service.js';
 import {
   IconArrowLeft,
@@ -148,10 +148,10 @@ function fromServerGearPack(pack: ServerGearPack): PackList {
     shareSlug: pack.shareSlug,
     isPublic: pack.isPublic !== false,
     updatedAt: pack.updatedAt,
-    name: pack.name || 'Cấu hình balo đám mây',
+    name: pack.name || 'Danh sách balo đã lưu',
     subtitle: pack.shareSlug
-      ? `Đã đồng bộ đám mây LOST • Mã chia sẻ: ${pack.shareSlug}`
-      : 'Đã đồng bộ đám mây LOST',
+      ? `Đã lưu trên tài khoản • Mã chia sẻ: ${pack.shareSlug}`
+      : 'Đã lưu trên tài khoản LOST',
     targetTrailId: pack.trailSlug || undefined,
     items,
   };
@@ -171,26 +171,26 @@ const CATEGORIES: Array<{
   label: string;
   color: string;
 }> = [
-  { id: 'shelter', label: 'Trú Ẩn & Ngủ', color: 'var(--color-primary)' },
-  { id: 'clothing', label: 'Trang Phục & Giữ Ấm', color: 'var(--color-sky)' },
-  { id: 'kitchen', label: 'Bếp & Nước', color: 'var(--color-stream)' },
-  { id: 'safety', label: 'An Toàn & Định Vị', color: 'var(--color-error-text, var(--color-error))' },
-  { id: 'food', label: 'Thực Phẩm & Điện Giải', color: 'var(--color-sun)' },
-  { id: 'personal', label: 'Cá Nhân', color: 'var(--color-earth)' },
+  { id: 'shelter', label: 'Lều & đồ ngủ', color: 'var(--color-primary)' },
+  { id: 'clothing', label: 'Quần áo & giữ ấm', color: 'var(--color-sky)' },
+  { id: 'kitchen', label: 'Bếp & nước uống', color: 'var(--color-stream)' },
+  { id: 'safety', label: 'An toàn & định vị', color: 'var(--color-error-text, var(--color-error))' },
+  { id: 'food', label: 'Đồ ăn & điện giải', color: 'var(--color-sun)' },
+  { id: 'personal', label: 'Đồ cá nhân', color: 'var(--color-earth)' },
 ];
 
 const CATEGORY_MAP: Record<GearCategoryId, { label: string; color: string }> = {
-  shelter: { label: 'Trú Ẩn & Ngủ', color: 'var(--color-primary)' },
-  clothing: { label: 'Trang Phục & Giữ Ấm', color: 'var(--color-sky)' },
-  kitchen: { label: 'Bếp & Nước', color: 'var(--color-stream)' },
-  safety: { label: 'An Toàn & Định Vị', color: 'var(--color-error-text, var(--color-error))' },
-  food: { label: 'Thực Phẩm & Điện Giải', color: 'var(--color-sun)' },
-  personal: { label: 'Cá Nhân', color: 'var(--color-earth)' },
+  shelter: { label: 'Lều & đồ ngủ', color: 'var(--color-primary)' },
+  clothing: { label: 'Quần áo & giữ ấm', color: 'var(--color-sky)' },
+  kitchen: { label: 'Bếp & nước uống', color: 'var(--color-stream)' },
+  safety: { label: 'An toàn & định vị', color: 'var(--color-error-text, var(--color-error))' },
+  food: { label: 'Đồ ăn & điện giải', color: 'var(--color-sun)' },
+  personal: { label: 'Đồ cá nhân', color: 'var(--color-earth)' },
 };
 
 const CARRY_TYPE_META: Record<CarryType, { label: string; shortLabel: string; color: string }> = {
-  base: { label: 'Trọng lượng cơ bản', shortLabel: 'Cơ bản', color: 'var(--color-primary)' },
-  consumable: { label: 'Tiêu hao (ăn/uống)', shortLabel: 'Tiêu hao', color: 'var(--color-sun)' },
+  base: { label: 'Đồ cố định trong balo', shortLabel: 'Cố định', color: 'var(--color-primary)' },
+  consumable: { label: 'Đồ ăn nước uống (giảm dần)', shortLabel: 'Ăn & uống', color: 'var(--color-sun)' },
   worn: { label: 'Mặc trên người', shortLabel: 'Mặc người', color: 'var(--color-sky)' },
 };
 
@@ -198,8 +198,8 @@ function createDefaultPresets(): PackList[] {
   return [
     {
       id: 'preset-dayhike',
-      name: 'Balo 1 Ngày Siêu Nhẹ (<5kg)',
-      subtitle: 'Phù hợp Núi Dinh, Chứa Chan, Bạch Mã, VQG Cát Tiên đi về trong ngày',
+      name: 'Balo đi trong ngày (<5kg)',
+      subtitle: 'Gọn nhẹ cho Núi Dinh, Chứa Chan, Bạch Mã, VQG Cát Tiên sáng đi chiều về',
       items: [
         { id: 'd-1', name: 'Balo Daypack 22L chống thấm nhẹ', category: 'shelter', weightG: 520, qty: 1, carryType: 'base', packed: true },
         { id: 'd-2', name: 'Áo mưa bộ siêu nhẹ gấp gọn', category: 'clothing', weightG: 210, qty: 1, carryType: 'base', packed: true },
@@ -217,8 +217,8 @@ function createDefaultPresets(): PackList[] {
     },
     {
       id: 'preset-cloud-2d1n',
-      name: 'Balo 2N1Đ Săn Mây Tây Bắc (9–11kg)',
-      subtitle: 'Chuẩn cung Lảo Thẩn, Tà Xùa, Tà Chì Nhù, Lùng Cúng ngủ lán 2.400m',
+      name: 'Balo 2N1Đ săn mây Tây Bắc (9–11kg)',
+      subtitle: 'Vừa vặn cho Lảo Thẩn, Tà Xùa, Tà Chì Nhù, Lùng Cúng ngủ lán tầm 2.400m',
       items: [
         { id: 'c-1', name: 'Balo trekking 45L khung trợ lực + bọc mưa', category: 'shelter', weightG: 1380, qty: 1, carryType: 'base', packed: true },
         { id: 'c-2', name: 'Túi ngủ chịu lạnh 0°C – 5°C', category: 'shelter', weightG: 1150, qty: 1, carryType: 'base', packed: true },
@@ -240,8 +240,8 @@ function createDefaultPresets(): PackList[] {
     },
     {
       id: 'preset-alpine-3d2n',
-      name: 'Balo 3N2Đ Chinh Phục >3.000m Mùa Lạnh',
-      subtitle: 'Tự túc kỹ thuật cao cho Fansipan, Pu Si Lung, Pu Ta Leng, Kỳ Quan San',
+      name: 'Balo 3N2Đ đỉnh trên 3.000m mùa lạnh',
+      subtitle: 'Đủ ấm và tự chủ cho Fansipan, Pu Si Lung, Pu Ta Leng, Kỳ Quan San',
       items: [
         { id: 'a-1', name: 'Balo thám hiểm 60L + bọc chống mưa', category: 'shelter', weightG: 1680, qty: 1, carryType: 'base', packed: true },
         { id: 'a-2', name: 'Lều 2 người 3–4 mùa (chia đoàn 1/2 trọng lượng)', category: 'shelter', weightG: 1250, qty: 1, carryType: 'base', packed: true },
@@ -267,7 +267,7 @@ function createDefaultPresets(): PackList[] {
 function loadStoredState(storageKey: string): StoredGearState {
   const defaults = createDefaultPresets();
   try {
-    const raw = localStorage.getItem(storageKey) ?? localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.lists) && parsed.lists.length > 0) {
@@ -312,12 +312,23 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
   const currentUserId = String(currentUser?.id || (currentUser as (User & { _id?: string }) | null)?._id || '');
   const storageKey = useMemo(() => scopedStorageKey(STORAGE_KEY, currentUserId || null), [currentUserId]);
   const [state, setState] = useState<StoredGearState>(() => loadStoredState(scopedStorageKey(STORAGE_KEY, currentUserId || null)));
-  const [selectedTrailId, setSelectedTrailId] = useState<string>(() => trails[0]?.id || 'trail-fansipan');
+  const [selectedTrailId, setSelectedTrailId] = useState<string>(() => {
+    const initial = loadStoredState(scopedStorageKey(STORAGE_KEY, currentUserId || null));
+    const initActive = initial.lists.find((l) => l.id === initial.activeListId) || initial.lists[0];
+    if (initActive?.targetTrailId && trails.some((t) => t.id === initActive.targetTrailId)) {
+      return initActive.targetTrailId;
+    }
+    return trails[0]?.id || 'trail-fansipan';
+  });
+  const [bodyWeightInput, setBodyWeightInput] = useState<string>(() => String(state.bodyWeightKg || 62));
   const [hoveredCat, setHoveredCat] = useState<GearCategoryId | null>(null);
   const [isSyncingProfile, setIsSyncingProfile] = useState(false);
   const [isSavingCloud, setIsSavingCloud] = useState(false);
   const [isDeletingCloud, setIsDeletingCloud] = useState(false);
-  const [cloudSyncedCount, setCloudSyncedCount] = useState(0);
+  const cloudSyncedCount = useMemo(
+    () => state.lists.filter((l) => Boolean(l.cloudId)).length,
+    [state.lists]
+  );
 
   // Rename, delete & inline item edit state (no native browser dialogs)
   const [isRenamingList, setIsRenamingList] = useState(false);
@@ -335,6 +346,16 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
   const [newItemQty, setNewItemQty] = useState('1');
   const [newItemCarry, setNewItemCarry] = useState<CarryType>('base');
 
+  const activeListIdRef = useRef<string>(state.activeListId);
+  useEffect(() => {
+    activeListIdRef.current = state.activeListId;
+  }, [state.activeListId]);
+
+  const trailsRef = useRef<Trail[]>(trails);
+  useEffect(() => {
+    trailsRef.current = trails;
+  }, [trails]);
+
   // Persist automatically to per-user scoped localStorage
   useEffect(() => {
     try {
@@ -347,7 +368,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
   // Hydrate cloud-synced GearPacks for logged-in user (GET /api/gear-packs/me) + optional ?pack=<shareSlug>
   useEffect(() => {
     const controller = new AbortController();
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     const sharedSlug = new URLSearchParams(window.location.search).get('pack')?.trim();
 
     if (currentUserId || token) {
@@ -360,7 +381,15 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
           if (controller.signal.aborted) return;
           if (json?.success && Array.isArray(json.data) && json.data.length > 0) {
             const cloudLists = (json.data as ServerGearPack[]).map(fromServerGearPack);
-            setCloudSyncedCount(cloudLists.length);
+            const currentActiveId = activeListIdRef.current;
+            const matchedCloudForActive =
+              cloudLists.find((c) => c.id === currentActiveId) || cloudLists[0];
+            if (
+              matchedCloudForActive?.targetTrailId &&
+              trailsRef.current.some((t) => t.id === matchedCloudForActive.targetTrailId)
+            ) {
+              setSelectedTrailId(matchedCloudForActive.targetTrailId);
+            }
             setState((prev) => {
               const cloudById = new Map(cloudLists.map((c) => [c.cloudId, c]));
               const updatedLocal = prev.lists.map((localList) => {
@@ -373,10 +402,11 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
               });
               const remainingCloud = Array.from(cloudById.values());
               const merged = [...remainingCloud, ...updatedLocal];
+              const nextActiveId = prev.activeListId || merged[0].id;
               return {
                 ...prev,
                 lists: merged,
-                activeListId: prev.activeListId || merged[0].id,
+                activeListId: nextActiveId,
               };
             });
           }
@@ -479,7 +509,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
     const ratioPercent = Number(((totalCarryG / 1000 / bodyWeightKg) * 100).toFixed(1));
 
     let ratioStatus: 'optimal' | 'caution' | 'overload' = 'optimal';
-    let ratioLabel = 'Tối ưu (<=18%)';
+    let ratioLabel = 'Nhẹ nhàng (<=18%)';
     let ratioColor = 'var(--color-primary)';
     if (ratioPercent > 22) {
       ratioStatus = 'overload';
@@ -487,7 +517,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
       ratioColor = 'var(--color-error-text, var(--color-error))';
     } else if (ratioPercent > 18) {
       ratioStatus = 'caution';
-      ratioLabel = 'Cân nhắc (18–22%)';
+      ratioLabel = 'Hơi nặng vai (18–22%)';
       ratioColor = 'var(--color-sun)';
     }
 
@@ -562,7 +592,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
     const cleanName = editItemName.trim().slice(0, 140);
     const weightNum = Math.round(Number(editItemWeightG));
     if (!cleanName || !Number.isFinite(weightNum) || weightNum < 0) {
-      notify('Vui lòng nhập tên vật dụng hợp lệ và trọng lượng (>= 0g).', 'error');
+      notify('Nhập tên món đồ và cân nặng (>= 0g) trước khi lưu nhé.', 'error');
       return;
     }
     updateActiveList((list) => ({
@@ -585,7 +615,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
   const handleTogglePackVisibility = async () => {
     const nextPublic = activeList.isPublic === false;
     updateActiveList((list) => ({ ...list, isPublic: nextPublic }));
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (activeList.cloudId && (currentUser || token)) {
       try {
         const res = await fetch(`/api/gear-packs/${encodeURIComponent(activeList.cloudId)}`, {
@@ -596,8 +626,8 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
         if (res.ok) {
           notify(
             nextPublic
-              ? 'Đã chuyển cấu hình balo sang Công khai (có thể chia sẻ qua liên kết).'
-              : 'Đã chuyển cấu hình balo sang Riêng tư (chỉ mình bạn xem được).',
+              ? 'Đã mở công khai — bạn có thể gửi link balo này cho bạn đồng hành.'
+              : 'Đã chuyển về riêng tư — chỉ mình bạn thấy danh sách này.',
             'success'
           );
           return;
@@ -607,7 +637,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
       }
     }
     notify(
-      nextPublic ? 'Chế độ chia sẻ: Công khai (sẽ đồng bộ khi lưu Cloud).' : 'Chế độ chia sẻ: Riêng tư.',
+      nextPublic ? 'Đang để công khai (sẽ cập nhật khi lưu lên tài khoản).' : 'Đang để riêng tư.',
       'info'
     );
   };
@@ -618,7 +648,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
     const weightNum = Math.round(Number(newItemGrams));
     const qtyNum = Math.max(1, Math.min(20, Math.round(Number(newItemQty)) || 1));
     if (!cleanName || !Number.isFinite(weightNum) || weightNum <= 0) {
-      notify('Vui lòng nhập tên vật dụng và trọng lượng (gram > 0).', 'error');
+      notify('Nhập tên món đồ và cân nặng lớn hơn 0g nhé.', 'error');
       return;
     }
 
@@ -639,15 +669,15 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
     setNewItemName('');
     setNewItemGrams('250');
     setNewItemQty('1');
-    notify(`Đã thêm "${cleanName}" (${weightNum}g) vào balo.`, 'success');
+    notify(`Đã cho "${cleanName}" (${weightNum}g) vào balo.`, 'success');
   };
 
   const handleCreateCustomList = () => {
     const newId = `custom-${Date.now()}`;
     const newList: PackList = {
       id: newId,
-      name: `Balo Tùy Chỉnh #${state.lists.length + 1}`,
-      subtitle: 'Danh sách trang bị cá nhân hóa cho chuyến đi sắp tới',
+      name: `Balo riêng #${state.lists.length + 1}`,
+      subtitle: 'Danh sách đồ bạn tự sắp cho chuyến đi sắp tới',
       items: [
         { id: `init-${Date.now()}-1`, name: 'Balo trekking chính', category: 'shelter', weightG: 1200, qty: 1, carryType: 'base', packed: true },
         { id: `init-${Date.now()}-2`, name: 'Nước uống 2L', category: 'kitchen', weightG: 2000, qty: 1, carryType: 'consumable', packed: true },
@@ -661,7 +691,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
     }));
     setConfirmDeleteList(false);
     setIsRenamingList(false);
-    notify('Đã tạo danh sách balo mới!', 'success');
+    notify('Đã tạo danh sách balo mới.', 'success');
   };
 
   const handleDuplicateList = () => {
@@ -672,7 +702,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
       cloudId: undefined,
       shareSlug: undefined,
       updatedAt: undefined,
-      name: `${activeList.name} (Bản sao)`,
+      name: `${activeList.name} (bản sao)`,
       items: activeList.items.map((it, idx) => ({ ...it, id: `${newId}-${idx}` })),
     };
     setState((prev) => ({
@@ -680,20 +710,20 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
       activeListId: newId,
       lists: [...prev.lists, cloned],
     }));
-    notify('Đã nhân bản danh sách balo hiện tại.', 'success');
+    notify('Đã nhân bản thêm một danh sách balo.', 'success');
   };
 
   const handleSaveRename = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = renameDraft.trim().slice(0, 80);
     if (cleanName.length < 2) {
-      notify('Tên danh sách balo cần ít nhất 2 ký tự.', 'error');
+      notify('Đặt tên balo dài ít nhất 2 ký tự nhé.', 'error');
       return;
     }
     updateActiveList((list) => ({ ...list, name: cleanName }));
     setIsRenamingList(false);
 
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (activeList.cloudId && (currentUser || token)) {
       try {
         const res = await fetch(`/api/gear-packs/${encodeURIComponent(activeList.cloudId)}`, {
@@ -702,7 +732,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
           body: JSON.stringify({ name: cleanName }),
         });
         if (res.ok) {
-          notify('Đã đổi tên danh sách balo và cập nhật đám mây.', 'success');
+          notify('Đã đổi tên balo và lưu lại.', 'success');
           return;
         }
       } catch {
@@ -715,60 +745,76 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
   const handleDeleteCurrentList = async () => {
     if (isDeletingCloud) return;
     if (state.lists.length <= 1) {
-      notify('Cần giữ lại ít nhất 1 danh sách balo.', 'info');
+      notify('Giữ lại ít nhất 1 danh sách balo nhé.', 'info');
       setConfirmDeleteList(false);
       return;
     }
 
+    const deletingId = activeList.id;
     const targetCloudId = activeList.cloudId;
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (targetCloudId && (currentUser || token)) {
       setIsDeletingCloud(true);
       try {
-        await fetch(`/api/gear-packs/${encodeURIComponent(targetCloudId)}`, {
+        const res = await fetch(`/api/gear-packs/${encodeURIComponent(targetCloudId)}`, {
           method: 'DELETE',
           headers: getApiHeaders(),
         });
-        setCloudSyncedCount((c) => Math.max(0, c - 1));
+        if (!res.ok && res.status !== 404) {
+          const errJson = await res.json().catch(() => null);
+          notify(errJson?.message || 'Không thể xóa danh sách balo trên máy chủ lúc này.', 'error');
+          setConfirmDeleteList(false);
+          return;
+        }
       } catch {
-        // Still allow local removal in offline mode
+        notify('Mất kết nối máy chủ — chưa xóa được danh sách balo trên tài khoản.', 'error');
+        setConfirmDeleteList(false);
+        return;
       } finally {
         setIsDeletingCloud(false);
       }
     }
 
-    const remaining = state.lists.filter((l) => l.id !== activeList.id);
-    setState((prev) => ({
-      ...prev,
-      activeListId: remaining[0].id,
-      lists: remaining,
-    }));
+    const fallbackNextList = state.lists.find((l) => l.id !== deletingId);
+    setState((prev) => {
+      const remaining = prev.lists.filter((l) => l.id !== deletingId);
+      if (remaining.length === 0) return prev;
+      return {
+        ...prev,
+        activeListId: remaining[0].id,
+        lists: remaining,
+      };
+    });
+    if (fallbackNextList?.targetTrailId && trails.some((t) => t.id === fallbackNextList.targetTrailId)) {
+      setSelectedTrailId(fallbackNextList.targetTrailId);
+    }
     setConfirmDeleteList(false);
     notify(
-      targetCloudId ? 'Đã xóa cấu hình balo khỏi đám mây và thiết bị.' : 'Đã xóa danh sách balo.',
+      targetCloudId ? 'Đã xóa danh sách balo khỏi tài khoản và máy này.' : 'Đã xóa danh sách balo.',
       'info'
     );
   };
 
   const handleSavePackToCloud = async () => {
     if (isSavingCloud) return;
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!currentUser && !token) {
-      notify('Vui lòng đăng nhập để lưu cấu hình balo lên đám mây LOST.', 'info');
+      notify('Đăng nhập để lưu danh sách balo lên tài khoản, đi đâu cũng mở lại được.', 'info');
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
       return;
     }
 
     const cleanName = activeList.name.trim();
     if (cleanName.length < 2) {
-      notify('Tên cấu hình balo phải có ít nhất 2 ký tự.', 'error');
+      notify('Đặt tên balo dài ít nhất 2 ký tự nhé.', 'error');
       return;
     }
 
+    const safeBodyWeightKg = Math.max(35, Math.min(140, Math.round(state.bodyWeightKg || 62)));
     const payload = {
       name: cleanName.slice(0, 120),
       trailSlug: selectedTrail?.id || '',
-      bodyWeightKg: state.bodyWeightKg,
+      bodyWeightKg: safeBodyWeightKg,
       items: toServerGearItems(activeList.items),
       isPublic: activeList.isPublic !== false,
     };
@@ -795,21 +841,18 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
           updatedAt: saved.updatedAt || new Date().toISOString(),
           targetTrailId: saved.trailSlug || selectedTrail?.id,
           subtitle: saved.shareSlug
-            ? `Đã đồng bộ đám mây LOST • Mã chia sẻ: ${saved.shareSlug}`
-            : 'Đã đồng bộ đám mây LOST',
+            ? `Đã lưu trên tài khoản • Mã chia sẻ: ${saved.shareSlug}`
+            : 'Đã lưu trên tài khoản LOST',
         }));
-        if (!isUpdate) {
-          setCloudSyncedCount((c) => c + 1);
-        }
         notify(
-          json.message || (isUpdate ? 'Đã cập nhật cấu hình balo lên đám mây!' : 'Đã lưu cấu hình balo lên đám mây thành công!'),
+          json.message || (isUpdate ? 'Đã cập nhật danh sách balo trên tài khoản.' : 'Đã lưu danh sách balo vào tài khoản.'),
           'success'
         );
       } else {
-        notify(json.message || 'Không thể lưu cấu hình balo lên đám mây lúc này.', 'error');
+        notify(json.message || 'Chưa lưu được danh sách balo lúc này.', 'error');
       }
     } catch {
-      notify('Mất kết nối máy chủ — bản thay đổi vẫn được lưu an toàn trên thiết bị.', 'error');
+      notify('Mất kết nối máy chủ — đồ đạc bạn sửa vẫn được giữ an toàn trên máy này.', 'error');
     } finally {
       setIsSavingCloud(false);
     }
@@ -817,6 +860,10 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
 
   const handleCopySharePackLink = async () => {
     if (!activeList.shareSlug) return;
+    if (activeList.isPublic === false) {
+      notify('Danh sách balo đang để Riêng tư — hãy chuyển sang Công khai trước khi gửi link cho đoàn nhé.', 'info');
+      return;
+    }
     const shareUrl = `${window.location.origin}/gear?pack=${encodeURIComponent(activeList.shareSlug)}`;
     let copied: boolean;
     if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
@@ -830,9 +877,9 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
       copied = copyTextViaExecCommand(shareUrl);
     }
     if (copied) {
-      notify('Đã sao chép liên kết chia sẻ cấu hình Balo!', 'success');
+      notify('Đã chép link balo — gửi cho cả đoàn tham khảo nhé.', 'success');
     } else {
-      notify(`Liên kết chia sẻ Balo: ${shareUrl}`, 'info');
+      notify(`Link chia sẻ balo: ${shareUrl}`, 'info');
     }
   };
 
@@ -844,14 +891,14 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
       lists: defaults,
     }));
     setConfirmDeleteList(false);
-    notify('Đã khôi phục 3 cấu hình balo mẫu chuẩn Việt Nam.', 'info');
+    notify('Đã khôi phục 3 bộ balo mẫu.', 'info');
   };
 
   const handleSyncGearLockerToProfile = async () => {
     if (isSyncingProfile) return;
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!currentUser && !token) {
-      notify('Vui lòng đăng nhập để đồng bộ Tủ Đồ lên Hồ Sơ Trekker.', 'info');
+      notify('Đăng nhập để đưa danh sách đồ này vào tủ đồ cá nhân của bạn.', 'info');
       window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
       return;
     }
@@ -870,12 +917,12 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
       });
       const json = await res.json().catch(() => ({}));
       if (res.ok && json.success) {
-        notify(`Đã đồng bộ ${packedNames.length} trang bị lên Tủ Đồ Hồ Sơ của bạn!`, 'success');
+        notify(`Đã lưu ${packedNames.length} món đồ vào tủ đồ hồ sơ của bạn.`, 'success');
       } else {
-        notify(json.message || 'Không thể đồng bộ tủ đồ lúc này.', 'error');
+        notify(json.message || 'Chưa cập nhật được tủ đồ lúc này.', 'error');
       }
     } catch {
-      notify('Lỗi kết nối máy chủ khi đồng bộ tủ đồ.', 'error');
+      notify('Mất kết nối máy chủ khi lưu tủ đồ.', 'error');
     } finally {
       setIsSyncingProfile(false);
     }
@@ -886,8 +933,8 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
       .filter((i) => i.packed)
       .map((i) => `${i.name} (${i.weightG * i.qty}g, ${CARRY_TYPE_META[i.carryType].shortLabel})`)
       .join('; ');
-    const trailLabel = selectedTrail ? `${selectedTrail.name} (${selectedTrail.province}, đỉnh ${selectedTrail.maxAltitudeM}m)` : 'chuyến trekking sắp tới';
-    const prompt = `Kiểm toán balo cho cung ${trailLabel}: Cân nặng cơ thể ${state.bodyWeightKg}kg, Trọng lượng cơ bản (Base Weight) ${formatKg(metrics.baseG)}kg, Tiêu hao ${formatKg(metrics.consumableG)}kg, Tổng đeo vai ${formatKg(metrics.totalCarryG)}kg (${metrics.ratioPercent}% trọng lượng cơ thể). Danh sách đồ đang mang: ${packedNames || 'chưa tích chọn món nào'}. Hãy chỉ ra món còn thiếu mang tính sinh tồn và gợi ý cắt giảm trọng lượng thừa.`;
+    const trailLabel = selectedTrail ? `${selectedTrail.name} (${selectedTrail.province}, đỉnh ${selectedTrail.maxAltitudeM}m)` : 'chuyến đi núi sắp tới';
+    const prompt = `Rà giúp mình balo cho cung ${trailLabel}: mình nặng ${state.bodyWeightKg}kg, đồ cố định ${formatKg(metrics.baseG)}kg, đồ ăn nước uống ${formatKg(metrics.consumableG)}kg, tổng đeo vai ${formatKg(metrics.totalCarryG)}kg (${metrics.ratioPercent}% cân nặng). Danh sách đồ đang mang: ${packedNames || 'chưa tích chọn món nào'}. Xem giúp còn thiếu món an toàn nào và món nào nên bớt cho nhẹ vai.`;
 
     queueAiAssistantPrompt(prompt, selectedTrail?.id);
   };
@@ -895,7 +942,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
   const handleCalculateTurnaroundAndPaceWithAi = () => {
     if (metrics.totalCarryG <= 0) {
       notify(
-        'Balo hiện đang trống (0 kg). Hãy tích chọn ít nhất 1 món đồ đeo vai trước khi tính giờ quay đầu & pace!',
+        'Balo đang trống (0 kg). Bạn tích chọn ít nhất 1 món đeo vai rồi mình tính giờ quay đầu nhé.',
         'info'
       );
       return;
@@ -905,10 +952,10 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
     const baseKg = formatKg(metrics.baseG);
     const consumableKg = formatKg(metrics.consumableG);
     const trailLabel = selectedTrail
-      ? `${selectedTrail.name} (${selectedTrail.province}, cự ly ${selectedTrail.distanceKm} km, độ dốc tích lũy +${selectedTrail.elevationGainM}m, đỉnh ${selectedTrail.maxAltitudeM}m)`
-      : 'chuyến trekking sắp tới';
+      ? `${selectedTrail.name} (${selectedTrail.province}, dài ${selectedTrail.distanceKm} km, leo dốc +${selectedTrail.elevationGainM}m, đỉnh ${selectedTrail.maxAltitudeM}m)`
+      : 'chuyến đi núi sắp tới';
 
-    const prompt = `Tính giờ quay đầu (Turnaround Time), tốc độ di chuyển (Pace leo & xuống dốc) cho cung ${trailLabel} với cấu hình balo "${activeList.name}": tổng trọng lượng đeo vai ${totalCarryKg} kg (Base Weight ${baseKg} kg + tiêu hao ${consumableKg} kg = ${metrics.ratioPercent}% so với cân nặng cơ thể ${state.bodyWeightKg} kg). Vui lòng áp dụng công thức Naismith có hệ số tải balo để đề xuất giờ xuất phát, giờ quay đầu bắt buộc trước khi tối và định mức nước/năng lượng cần mang.`;
+    const prompt = `Tính giúp mình giờ quay đầu an toàn và tốc độ đi cho cung ${trailLabel} với bộ "${activeList.name}": tổng đeo vai ${totalCarryKg} kg (đồ cố định ${baseKg} kg + ăn uống ${consumableKg} kg = ${metrics.ratioPercent}% cân nặng ${state.bodyWeightKg} kg). Gợi ý giờ xuất phát, giờ quay đầu kịp xuống trước tối và lượng nước, đồ ăn nên mang.`;
 
     // Uses canonical queueAiAssistantPrompt (saves sessionStorage + dispatches single lost:open-ai-assistant)
     queueAiAssistantPrompt(prompt, selectedTrail?.id);
@@ -916,9 +963,9 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
 
   const handleCopyGroupList = async () => {
     const lines: string[] = [
-      `[LOST BALO OPTIMIZER] ${activeList.name}`,
-      selectedTrail ? `Cung mục tiêu: ${selectedTrail.name} (${selectedTrail.province})` : '',
-      `Base Weight: ${formatKg(metrics.baseG)} kg | Tiêu hao: ${formatKg(metrics.consumableG)} kg | Mặc người: ${formatKg(metrics.wornG)} kg`,
+      `[DANH SÁCH BALO - LOST] ${activeList.name}`,
+      selectedTrail ? `Cung dự kiến: ${selectedTrail.name} (${selectedTrail.province})` : '',
+      `Đồ cố định: ${formatKg(metrics.baseG)} kg | Ăn uống: ${formatKg(metrics.consumableG)} kg | Mặc người: ${formatKg(metrics.wornG)} kg`,
       `Tổng đeo vai: ${formatKg(metrics.totalCarryG)} kg (${metrics.ratioPercent}% so với ${state.bodyWeightKg}kg cơ thể — ${metrics.ratioLabel})`,
       '',
     ].filter((l, idx) => idx === 4 || Boolean(l));
@@ -926,8 +973,17 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
     CATEGORIES.forEach((cat) => {
       const catItems = activeList.items.filter((i) => i.category === cat.id && i.packed);
       if (catItems.length === 0) return;
-      const catSum = catItems.reduce((acc, i) => acc + i.weightG * i.qty, 0);
-      lines.push(`• ${cat.label} (${formatKg(catSum)} kg):`);
+      const catCarrySum = catItems
+        .filter((i) => i.carryType !== 'worn')
+        .reduce((acc, i) => acc + i.weightG * i.qty, 0);
+      const catWornSum = catItems
+        .filter((i) => i.carryType === 'worn')
+        .reduce((acc, i) => acc + i.weightG * i.qty, 0);
+      const sumNote =
+        catWornSum > 0
+          ? `${formatKg(catCarrySum)} kg đeo vai + ${formatKg(catWornSum)} kg mặc người`
+          : `${formatKg(catCarrySum)} kg đeo vai`;
+      lines.push(`• ${cat.label} (${sumNote}):`);
       catItems.forEach((i) => {
         lines.push(`  - ${i.name} x${i.qty} (${i.weightG * i.qty}g • ${CARRY_TYPE_META[i.carryType].shortLabel})`);
       });
@@ -947,9 +1003,9 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
     }
 
     if (copied) {
-      notify('Đã sao chép danh sách balo & trọng lượng để gửi vào nhóm đoàn!', 'success');
+      notify('Đã chép danh sách balo — dán gửi vào nhóm đoàn là xong.', 'success');
     } else {
-      notify('Không thể tự động sao chép vào bộ nhớ tạm.', 'error');
+      notify('Không thể tự sao chép lúc này.', 'error');
     }
   };
 
@@ -1012,13 +1068,13 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
           )}
           <div className="section-eyebrow" style={{ marginBottom: 6 }}>
             <IconBackpack size={13} color="var(--color-primary)" />
-            <span>TỦ ĐỒ &amp; PHÂN TÍCH TRỌNG LƯỢNG BALO</span>
+            <span>Soạn đồ &amp; cân balo</span>
           </div>
           <h1 className="font-editorial" style={{ margin: 0, fontSize: 'clamp(1.6rem, 3vw, 2.2rem)', fontWeight: 600, color: 'var(--color-text-main)', lineHeight: 1.12 }}>
-            Tối Ưu Trọng Lượng Balo Thực Địa
+            Cân lại balo trước giờ lên đường
           </h1>
           <p style={{ margin: '8px 0 0 0', fontSize: '0.88rem', color: 'var(--color-text-muted)', maxWidth: 680 }}>
-            Kiểm soát chính xác từng gram Base Weight, đồ tiêu hao và đồ mặc trên người theo địa hình núi Việt Nam.
+            Tính rõ từng gram đồ cố định, đồ ăn nước uống và đồ mặc trên người — để vai nhẹ, gối bền suốt những con dốc dài.
           </p>
         </div>
 
@@ -1031,7 +1087,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
             style={{ padding: '8px 14px', fontSize: '0.8rem', fontWeight: 800, borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 6 }}
           >
             <IconBot size={15} color="var(--color-on-primary)" />
-            <span>Kiểm Toán Balo Bằng LOST AI</span>
+            <span>Nhờ LOST rà lại balo</span>
           </button>
 
           <button
@@ -1052,7 +1108,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
             }}
           >
             <IconClock size={14} color="var(--color-primary)" />
-            <span>Tính Giờ Quay Đầu &amp; Pace Với Balo Này (LOST AI)</span>
+            <span>Tính giờ quay đầu theo tải balo</span>
           </button>
 
           <button
@@ -1062,7 +1118,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
             style={{ padding: '8px 12px', fontSize: '0.8rem', fontWeight: 700, borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 6 }}
           >
             <IconCopy size={14} />
-            <span>Sao Chép Gửi Nhóm</span>
+            <span>Chép gửi nhóm</span>
           </button>
 
           <button
@@ -1077,8 +1133,8 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
               {isSavingCloud
                 ? 'Đang lưu...'
                 : activeList.cloudId
-                  ? 'Cập Nhật Đám Mây'
-                  : 'Lưu Lên Đám Mây'}
+                  ? 'Cập nhật bản lưu'
+                  : 'Lưu vào tài khoản'}
             </span>
           </button>
 
@@ -1087,6 +1143,11 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
               type="button"
               className="btn btn-outline"
               onClick={handleCopySharePackLink}
+              title={
+                activeList.isPublic === false
+                  ? 'Đang ở chế độ Riêng tư — bật Công khai trước khi chia sẻ link'
+                  : 'Chép link chia sẻ balo công khai'
+              }
               style={{
                 padding: '8px 12px',
                 fontSize: '0.8rem',
@@ -1095,12 +1156,13 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: 6,
-                borderColor: 'var(--color-primary)',
-                color: 'var(--color-primary)',
+                borderColor: activeList.isPublic === false ? 'var(--color-border-strong)' : 'var(--color-primary)',
+                color: activeList.isPublic === false ? 'var(--color-text-muted)' : 'var(--color-primary)',
+                opacity: activeList.isPublic === false ? 0.78 : 1,
               }}
             >
-              <IconShare size={14} color="var(--color-primary)" />
-              <span>Sao Chép Link Chia Sẻ Balo</span>
+              <IconShare size={14} color={activeList.isPublic === false ? 'var(--color-text-muted)' : 'var(--color-primary)'} />
+              <span>{activeList.isPublic === false ? 'Đang riêng tư (chưa chia sẻ)' : 'Chép link chia sẻ'}</span>
             </button>
           )}
 
@@ -1113,7 +1175,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
               style={{ padding: '8px 12px', fontSize: '0.8rem', fontWeight: 700, borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 6 }}
             >
               <IconShieldCheck size={14} color="var(--color-primary)" />
-              <span>{isSyncingProfile ? 'Đang đồng bộ...' : 'Đồng Bộ Hồ Sơ'}</span>
+              <span>{isSyncingProfile ? 'Đang lưu...' : 'Đưa vào tủ đồ hồ sơ'}</span>
             </button>
           )}
         </div>
@@ -1143,6 +1205,9 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
                   type="button"
                   onClick={() => {
                     setState((prev) => ({ ...prev, activeListId: list.id }));
+                    if (list.targetTrailId && trails.some((t) => t.id === list.targetTrailId)) {
+                      setSelectedTrailId(list.targetTrailId);
+                    }
                     setIsRenamingList(false);
                     setConfirmDeleteList(false);
                   }}
@@ -1186,7 +1251,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
                 }}
               >
                 <IconCloud size={12} color="var(--color-sky)" />
-                <span>{cloudSyncedCount} đám mây</span>
+                <span>{cloudSyncedCount} đã lưu</span>
               </span>
             )}
           </div>
@@ -1283,10 +1348,10 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
               type="button"
               className="btn btn-outline"
               onClick={handleResetPresets}
-              title="Khôi phục 3 bộ preset chuẩn"
+              title="Khôi phục 3 bộ balo mẫu ban đầu"
               style={{ padding: '5px 10px', fontSize: '0.74rem', borderRadius: 4, display: 'inline-flex', alignItems: 'center', gap: 4 }}
             >
-              <IconRotateCw size={12} /> Mẫu chuẩn
+              <IconRotateCw size={12} /> Về mẫu gốc
             </button>
           </div>
         </div>
@@ -1326,14 +1391,18 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
         >
           <div>
             <label htmlFor="gear-target-trail" style={{ display: 'block', fontSize: '0.7rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase', marginBottom: 4 }}>
-              Cung đường mục tiêu (để kiểm toán AI)
+              Cung đường dự định đi
             </label>
             <select
               id="gear-target-trail"
               className="form-select"
               value={selectedTrailId}
-              onChange={(e) => setSelectedTrailId(e.target.value)}
-              aria-label="Chọn cung đường mục tiêu để kiểm toán balo bằng AI"
+              onChange={(e) => {
+                const nextId = e.target.value;
+                setSelectedTrailId(nextId);
+                updateActiveList((list) => ({ ...list, targetTrailId: nextId }));
+              }}
+              aria-label="Chọn cung đường dự định đi"
               style={{ width: '100%', padding: '7px 10px', fontSize: '0.82rem', borderRadius: 4 }}
             >
               {trails.map((t) => (
@@ -1346,7 +1415,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
 
           <div>
             <label htmlFor="gear-body-weight" style={{ display: 'block', fontSize: '0.7rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase', marginBottom: 4 }}>
-              Cân nặng cơ thể của bạn (kg) — tính tỷ lệ tải
+              Cân nặng của bạn (kg) — để tính tỷ lệ gánh vai
             </label>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <input
@@ -1356,17 +1425,32 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
                 max={140}
                 className="form-input"
                 aria-label="Cân nặng cơ thể tính theo kg"
-                value={state.bodyWeightKg}
+                value={bodyWeightInput}
                 onChange={(e) => {
-                  const val = Number(e.target.value);
-                  if (Number.isFinite(val)) {
-                    setState((prev) => ({ ...prev, bodyWeightKg: val }));
+                  const raw = e.target.value;
+                  setBodyWeightInput(raw);
+                  const val = Number(raw);
+                  if (raw.trim() !== '' && Number.isFinite(val) && val >= 35 && val <= 140) {
+                    setState((prev) => ({ ...prev, bodyWeightKg: Math.round(val) }));
                   }
+                }}
+                onBlur={() => {
+                  const parsed = Number(bodyWeightInput);
+                  const clamped =
+                    bodyWeightInput.trim() !== '' && Number.isFinite(parsed)
+                      ? Math.max(35, Math.min(140, Math.round(parsed)))
+                      : Math.max(35, Math.min(140, Math.round(state.bodyWeightKg || 62)));
+                  setState((prev) => ({ ...prev, bodyWeightKg: clamped }));
+                  setBodyWeightInput(String(clamped));
                 }}
                 style={{ width: 96, padding: '7px 10px', fontSize: '0.84rem', fontWeight: 800, borderRadius: 4, fontVariantNumeric: 'tabular-nums' }}
               />
               <span style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)' }}>
-                Ngưỡng khuyến nghị: <strong style={{ color: 'var(--color-primary)' }}>&lt;= {(state.bodyWeightKg * 0.18).toFixed(1)} kg</strong> (18%)
+                Nên giữ dưới{' '}
+                <strong style={{ color: 'var(--color-primary)' }}>
+                  {(Math.max(35, Math.min(140, state.bodyWeightKg || 62)) * 0.18).toFixed(1)} kg
+                </strong>{' '}
+                (18% cân nặng)
               </span>
             </div>
           </div>
@@ -1384,49 +1468,49 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
       >
         <div className="card" style={{ padding: '14px 16px', borderRadius: 4, background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
           <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-            Base Weight (Cơ bản)
+            Đồ cố định (Base weight)
           </div>
           <div style={{ fontSize: '1.45rem', fontWeight: 900, color: 'var(--color-primary)', marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
             {formatKg(metrics.baseG)} <span style={{ fontSize: '0.82rem', fontWeight: 700 }}>kg</span>
           </div>
           <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-            {metrics.baseG.toLocaleString('vi-VN')} g (chưa tính ăn/uống)
+            {metrics.baseG.toLocaleString('vi-VN')} g (chưa tính ăn, uống)
           </div>
         </div>
 
         <div className="card" style={{ padding: '14px 16px', borderRadius: 4, background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
           <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-            Tiêu Hao (Nước &amp; Ăn)
+            Đồ ăn &amp; nước uống
           </div>
           <div style={{ fontSize: '1.45rem', fontWeight: 900, color: 'var(--color-sun)', marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
             {formatKg(metrics.consumableG)} <span style={{ fontSize: '0.82rem', fontWeight: 700 }}>kg</span>
           </div>
           <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-            Giảm dần trong hành trình
+            Nhẹ dần dọc đường đi
           </div>
         </div>
 
         <div className="card" style={{ padding: '14px 16px', borderRadius: 4, background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
           <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-            Mặc Trên Người (Worn)
+            Mặc trên người
           </div>
           <div style={{ fontSize: '1.45rem', fontWeight: 900, color: 'var(--color-sky)', marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
             {formatKg(metrics.wornG)} <span style={{ fontSize: '0.82rem', fontWeight: 700 }}>kg</span>
           </div>
           <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-            Giày, quần áo, mũ đang mặc
+            Giày, quần áo, mũ đang mang
           </div>
         </div>
 
         <div className="card" style={{ padding: '14px 16px', borderRadius: 4, background: 'var(--color-bg-card)', border: '1px solid var(--color-border)' }}>
           <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
-            Tổng Đeo Vai (Carry)
+            Tổng đeo trên vai
           </div>
           <div style={{ fontSize: '1.45rem', fontWeight: 900, color: 'var(--color-text-main)', marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
             {formatKg(metrics.totalCarryG)} <span style={{ fontSize: '0.82rem', fontWeight: 700 }}>kg</span>
           </div>
           <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-            {metrics.packedCount}/{metrics.totalItems} món đã chọn mang
+            {metrics.packedCount}/{metrics.totalItems} món đã bỏ vào balo
           </div>
         </div>
 
@@ -1440,7 +1524,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
           }}
         >
           <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--color-text-dim)', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 4 }}>
-            <IconScale size={12} color={metrics.ratioColor} /> Tỷ Lệ Balo / Cơ Thể
+            <IconScale size={12} color={metrics.ratioColor} /> Tỷ lệ tải vai
           </div>
           <div style={{ fontSize: '1.45rem', fontWeight: 900, color: metrics.ratioColor, marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
             {metrics.ratioPercent}%
@@ -1460,10 +1544,10 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
               <div>
                 <div style={{ fontSize: '0.68rem', fontWeight: 800, color: 'var(--color-primary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                  Biểu Đồ Phân Bổ Trọng Lượng Đeo Vai
+                  Phân bổ cân nặng trong balo
                 </div>
                 <div style={{ fontSize: '0.76rem', color: 'var(--color-text-muted)', marginTop: 2 }}>
-                  Di chuột vào từng nhóm để xem chi tiết tỷ trọng
+                  Rê chuột vào từng nhóm để xem món nào đang nặng nhất
                 </div>
               </div>
               <IconSparkles size={16} color="var(--color-primary)" />
@@ -1590,14 +1674,14 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
           >
             <div style={{ fontSize: '0.78rem', fontWeight: 800, color: 'var(--color-text-main)', display: 'flex', alignItems: 'center', gap: 6 }}>
               <IconPlus size={15} color="var(--color-primary)" />
-              <span>Thêm Vật Dụng Tùy Chỉnh</span>
+              <span>Thêm món đồ của bạn</span>
             </div>
 
             <input
               id="gear-new-item-name"
               type="text"
               className="form-input"
-              placeholder="VD: Máy ảnh Sony A6400, Bếp cồn khô, Áo giữ nhiệt..."
+              placeholder="Ví dụ: Máy ảnh Sony A6400, bếp cồn khô, áo giữ nhiệt..."
               aria-label="Tên vật dụng tùy chỉnh cần thêm vào balo"
               value={newItemName}
               onChange={(e) => setNewItemName(e.target.value)}
@@ -1679,7 +1763,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
             </div>
 
             <button type="submit" className="btn btn-primary" style={{ padding: '8px 14px', fontSize: '0.8rem', fontWeight: 800, borderRadius: 4 }}>
-              + Thêm Vào Balo
+              + Cho vào balo
             </button>
           </form>
         </div>
@@ -1688,8 +1772,11 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           {CATEGORIES.map((cat) => {
             const catItems = activeList.items.filter((i) => i.category === cat.id);
-            const catPackedG = catItems
-              .filter((i) => i.packed)
+            const catCarryG = catItems
+              .filter((i) => i.packed && i.carryType !== 'worn')
+              .reduce((acc, i) => acc + i.weightG * i.qty, 0);
+            const catWornG = catItems
+              .filter((i) => i.packed && i.carryType === 'worn')
               .reduce((acc, i) => acc + i.weightG * i.qty, 0);
 
             return (
@@ -1704,7 +1791,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
                   borderLeft: `3px solid ${cat.color}`,
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, gap: 8, flexWrap: 'wrap' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ fontSize: '0.86rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
                       {cat.label}
@@ -1713,14 +1800,21 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
                       ({catItems.filter((i) => i.packed).length}/{catItems.length} món)
                     </span>
                   </div>
-                  <span style={{ fontSize: '0.8rem', fontWeight: 800, color: cat.color, fontVariantNumeric: 'tabular-nums' }}>
-                    {formatKg(catPackedG)} kg
-                  </span>
+                  <div style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6, fontVariantNumeric: 'tabular-nums' }}>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 800, color: cat.color }}>
+                      {formatKg(catCarryG)} kg đeo vai
+                    </span>
+                    {catWornG > 0 && (
+                      <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--color-text-dim)' }}>
+                        (+{formatKg(catWornG)} kg mặc)
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 {catItems.length === 0 ? (
                   <div style={{ fontSize: '0.76rem', color: 'var(--color-text-dim)', padding: '6px 0' }}>
-                    Chưa có vật dụng nào trong danh mục này.
+                    Chưa có món nào trong nhóm này.
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -1742,7 +1836,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
                               border: '1px solid var(--color-primary)',
                             }}
                           >
-                            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, 1.8fr) minmax(90px, 0.7fr) minmax(130px, 1fr)', gap: 6 }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(115px, 100%), 1fr))', gap: 6 }}>
                               <input
                                 type="text"
                                 className="form-input"
@@ -1978,7 +2072,7 @@ const GearOptimizerViewInner: React.FC<GearOptimizerViewProps> = ({
           >
             <IconCheckCircle size={16} color="var(--color-primary)" style={{ flexShrink: 0 }} />
             <span>
-              <strong style={{ color: 'var(--color-text-main)' }}>Quy tắc an toàn xương khớp:</strong> Với địa hình dốc đứng Hoàng Liên Sơn (&gt;1.200m độ dốc/ngày), giữ tổng balo đeo vai <strong>dưới 18% cân nặng cơ thể</strong> giúp giảm tải khớp gối khi xuống dốc và duy trì sức bền ổn định.
+              <strong style={{ color: 'var(--color-text-main)' }}>Mẹo giữ gối khi đi dốc:</strong> Với những cung dốc gắt như Hoàng Liên Sơn (&gt;1.200m leo cao mỗi ngày), giữ tổng balo đeo vai <strong>dưới 18% cân nặng cơ thể</strong> giúp đỡ chùn gối lúc xuống dốc và giữ sức đều tới cuối ngày.
             </span>
           </div>
         </div>

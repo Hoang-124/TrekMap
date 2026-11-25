@@ -12,6 +12,7 @@ import {
 } from '../common/SvgIcons.js';
 import { getApiHeaders } from '../../utils/sessionHeaders.js';
 import type { UserProfile } from '../../types.js';
+import { AuthorProfileModal } from '../forum/AuthorProfileModal.js';
 import { SquadWorkspaceModal } from './SquadWorkspaceModal.js';
 
 export interface TripPlanItem {
@@ -39,39 +40,55 @@ export interface TripPlanItem {
   status: 'recruiting' | 'full' | 'in_progress' | 'completed' | 'cancelled';
   tags: string[];
   hasPendingRequest?: boolean;
+  updatedAt?: string;
 }
 
 interface TripPlanCardProps {
   trip: TripPlanItem;
   currentUser?: UserProfile | null;
   onJoinSuccess?: () => void;
+  onOpenAuthorProfile?: (author: { name: string; avatar: string; userId?: string }) => void;
 }
 
 const TRIP_STATUS_META: Record<
   TripPlanItem['status'],
   { label: string; badgeClass: string; joinDisabledText: string }
 > = {
-  recruiting: { label: 'Đang Tuyển', badgeClass: 'badge-success', joinDisabledText: 'Hết chỗ (Đủ thành viên)' },
-  full: { label: 'Đã Đủ', badgeClass: 'badge-error', joinDisabledText: 'Đã Đủ Thành Viên' },
-  in_progress: { label: 'Đang Diễn Ra', badgeClass: 'badge-info', joinDisabledText: 'Đoàn Đang Diễn Ra' },
-  completed: { label: 'Đã Hoàn Thành', badgeClass: 'badge-cloud', joinDisabledText: 'Chuyến Đi Đã Kết Thúc' },
-  cancelled: { label: 'Đã Hủy', badgeClass: 'badge-error', joinDisabledText: 'Chuyến Đi Đã Hủy' },
+  recruiting: { label: 'Đang mở ghép', badgeClass: 'badge-success', joinDisabledText: 'Đoàn đã đủ người' },
+  full: { label: 'Đã đủ người', badgeClass: 'badge-error', joinDisabledText: 'Đoàn đã đủ người' },
+  in_progress: { label: 'Đang trên cung', badgeClass: 'badge-info', joinDisabledText: 'Đoàn đang trên đường' },
+  completed: { label: 'Đã hoàn thành', badgeClass: 'badge-cloud', joinDisabledText: 'Chuyến đi đã kết thúc' },
+  cancelled: { label: 'Đã hủy', badgeClass: 'badge-error', joinDisabledText: 'Chuyến đi đã hủy' },
 };
 
-export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, onJoinSuccess }) => {
+export const TripPlanCard: React.FC<TripPlanCardProps> = ({
+  trip,
+  currentUser,
+  onJoinSuccess,
+  onOpenAuthorProfile,
+}) => {
   const [showJoinForm, setShowJoinForm] = useState(false);
   const [isSubmittingJoin, setIsSubmittingJoin] = useState(false);
   const [joinMsg, setJoinMsg] = useState('');
-  const [submitted, setSubmitted] = useState(false);
-  const [withdrewPending, setWithdrewPending] = useState(false);
+  const [localPendingOverride, setLocalPendingOverride] = useState<{
+    key: string;
+    pending: boolean;
+  } | null>(null);
   const [isWithdrawing, setIsWithdrawing] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [isSquadModalOpen, setIsSquadModalOpen] = useState(false);
   const [confirmLeave, setConfirmLeave] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
+  const [failedAvatarKey, setFailedAvatarKey] = useState<string | null>(null);
+  const [inspectedAuthor, setInspectedAuthor] = useState<{
+    name: string;
+    avatar: string;
+    userId?: string;
+  } | null>(null);
 
   const loggedInUser = currentUser || null;
   const currentUserId = String(loggedInUser?.id || (loggedInUser as (UserProfile & { _id?: string }) | null)?._id || '');
+  const pendingSyncKey = `${trip._id}:${currentUserId}:${Boolean(trip.hasPendingRequest)}`;
 
   const isCreatorSelf = Boolean(
     currentUserId && trip.creatorId?._id && String(trip.creatorId._id) === currentUserId
@@ -85,21 +102,36 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
         return String(memberId) === currentUserId;
       }))
   );
-  const isPendingRequest = !isSquadMember && (submitted || Boolean(trip.hasPendingRequest && !withdrewPending));
+  const effectivePending =
+    localPendingOverride && localPendingOverride.key === pendingSyncKey
+      ? localPendingOverride.pending
+      : Boolean(trip.hasPendingRequest);
+  const isPendingRequest = !isSquadMember && effectivePending;
   const creatorName = trip.creatorId?.fullName || 'Trưởng đoàn';
   const effectiveCreatorAvatar =
     isCreatorSelf && (loggedInUser?.avatarUrl || loggedInUser?.avatar)
       ? loggedInUser.avatarUrl || loggedInUser.avatar
       : trip.creatorId?.avatarUrl || '';
+  const avatarKey = `${trip._id}:${effectiveCreatorAvatar}`;
+  const showCreatorAvatar = Boolean(effectiveCreatorAvatar) && failedAvatarKey !== avatarKey;
 
   const formattedStartDate = (() => {
     const d = new Date(trip.startDate);
     if (Number.isNaN(d.getTime())) return trip.startDate || '';
-    return d.toLocaleDateString('vi-VN', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-    });
+    try {
+      return d.toLocaleDateString('vi-VN', {
+        timeZone: 'Asia/Ho_Chi_Minh',
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+      });
+    } catch {
+      return d.toLocaleDateString('vi-VN', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+      });
+    }
   })();
 
   const memberCount = Array.isArray(trip.currentMembers) ? trip.currentMembers.length : 1;
@@ -122,7 +154,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
       if (!token) {
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
-            detail: { message: 'Vui lòng đăng nhập để tham gia nhóm leo núi!', type: 'info' },
+            detail: { message: 'Đăng nhập để xin đi cùng đoàn nhé.', type: 'info' },
           })
         );
         window.dispatchEvent(new CustomEvent('lost:open-auth-modal'));
@@ -137,21 +169,20 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        setSubmitted(true);
-        setWithdrewPending(false);
+        setLocalPendingOverride({ key: pendingSyncKey, pending: true });
         setShowJoinForm(false);
         setJoinMsg('');
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
-            detail: { message: data.message || 'Đã gửi yêu cầu ghép đoàn thành công!', type: 'success' },
+            detail: { message: data.message || 'Đã gửi lời xin đi cùng — chờ trưởng đoàn phản hồi nhé!', type: 'success' },
           })
         );
         onJoinSuccess?.();
       } else {
-        setErrorMsg(data.message || 'Không thể gửi yêu cầu.');
+        setErrorMsg(data.message || 'Chưa gửi được lời xin ghép đoàn, bạn thử lại nhé.');
       }
     } catch {
-      setErrorMsg('Lỗi kết nối máy chủ.');
+      setErrorMsg('Mất kết nối rồi, bạn kiểm tra mạng rồi thử lại nhé.');
     } finally {
       setIsSubmittingJoin(false);
     }
@@ -167,25 +198,24 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
-        setSubmitted(false);
-        setWithdrewPending(true);
+        setLocalPendingOverride({ key: pendingSyncKey, pending: false });
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
-            detail: { message: data.message || 'Đã rút yêu cầu ghép đoàn.', type: 'info' },
+            detail: { message: data.message || 'Đã rút lời xin đi cùng đoàn.', type: 'info' },
           })
         );
         onJoinSuccess?.();
       } else {
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
-            detail: { message: data.message || 'Không thể rút yêu cầu lúc này.', type: 'error' },
+            detail: { message: data.message || 'Chưa rút được yêu cầu, bạn thử lại sau nhé.', type: 'error' },
           })
         );
       }
     } catch {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: 'Lỗi kết nối máy chủ khi rút yêu cầu.', type: 'error' },
+          detail: { message: 'Mất kết nối nên chưa rút được yêu cầu.', type: 'error' },
         })
       );
     } finally {
@@ -206,21 +236,21 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
         setConfirmLeave(false);
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
-            detail: { message: data.message || 'Bạn đã rời khỏi đoàn thành công.', type: 'info' },
+            detail: { message: data.message || 'Bạn đã rời đoàn — hẹn gặp ở cung khác nhé.', type: 'info' },
           })
         );
         onJoinSuccess?.();
       } else {
         window.dispatchEvent(
           new CustomEvent('lost:show-toast', {
-            detail: { message: data.message || 'Không thể rời đoàn lúc này.', type: 'error' },
+            detail: { message: data.message || 'Chưa rời đoàn được lúc này, bạn thử lại nhé.', type: 'error' },
           })
         );
       }
     } catch {
       window.dispatchEvent(
         new CustomEvent('lost:show-toast', {
-          detail: { message: 'Lỗi kết nối máy chủ khi rời đoàn.', type: 'error' },
+          detail: { message: 'Mất kết nối nên chưa rời đoàn được.', type: 'error' },
         })
       );
     } finally {
@@ -245,11 +275,12 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
         {/* Creator & Status Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-            {effectiveCreatorAvatar ? (
+            {showCreatorAvatar ? (
               <img
                 src={effectiveCreatorAvatar}
                 alt={creatorName}
                 referrerPolicy="no-referrer"
+                onError={() => setFailedAvatarKey(avatarKey)}
                 style={{
                   width: 36,
                   height: 36,
@@ -284,10 +315,16 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  const target = trip.creatorId?._id || creatorName;
-                  if (!target) return;
-                  window.history.pushState(null, '', `#profile-${encodeURIComponent(target)}`);
-                  window.dispatchEvent(new HashChangeEvent('hashchange'));
+                  const authorPayload = {
+                    name: creatorName,
+                    avatar: effectiveCreatorAvatar || '',
+                    userId: trip.creatorId?._id,
+                  };
+                  if (onOpenAuthorProfile) {
+                    onOpenAuthorProfile(authorPayload);
+                  } else {
+                    setInspectedAuthor(authorPayload);
+                  }
                 }}
                 title={`Xem hồ sơ trưởng đoàn ${creatorName}`}
                 style={{
@@ -311,7 +348,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
               </button>
               <div style={{ fontSize: '0.7rem', color: 'var(--color-primary)', fontWeight: 600, marginTop: 2, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                 <IconStar size={11} color="var(--color-primary)" fill="var(--color-primary)" />
-                <span>{trip.creatorId?.reputationScore ?? 0} Uy tín</span>
+                <span>{trip.creatorId?.reputationScore ?? 0} điểm uy tín</span>
               </div>
             </div>
           </div>
@@ -362,7 +399,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
             <span>
               Thành viên:{' '}
               <strong>
-                {memberCount}/{maxCount} ({remainingSeats === 0 ? 'Hết chỗ' : `còn ${remainingSeats} chỗ`})
+                {memberCount}/{maxCount} ({remainingSeats === 0 ? 'đủ người' : `còn ${remainingSeats} chỗ`})
               </strong>
             </span>
           </div>
@@ -377,7 +414,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
           {trip.estimatedCost && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.76rem', color: 'var(--color-text-main)', gridColumn: '1 / -1' }}>
               <IconFlame size={14} color="var(--color-sun)" />
-              <span>Dự toán: <strong style={{ color: 'var(--color-sun)' }}>{trip.estimatedCost}</strong></span>
+              <span>Chi phí dự kiến: <strong style={{ color: 'var(--color-sun)' }}>{trip.estimatedCost}</strong></span>
             </div>
           )}
         </div>
@@ -385,7 +422,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
         {/* Member Fill Ratio Progress Bar */}
         <div style={{ marginBottom: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', color: 'var(--color-text-dim)', marginBottom: 4 }}>
-            <span>Tiến độ ghép đoàn</span>
+            <span>Số người đã chốt</span>
             <span>{fillRatioPercent}%</span>
           </div>
           <div style={{ width: '100%', height: 6, background: 'var(--color-bg-main)', borderRadius: 3, overflow: 'hidden', border: '1px solid var(--color-border)' }}>
@@ -425,8 +462,8 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
               <IconUsers size={15} color="var(--color-on-primary)" />
               <span>
                 {isCreatorSelf
-                  ? 'Quản Lý Đoàn (Duyệt • Đồ Chung • Chi Phí)'
-                  : 'Không Gian Đoàn (Chat • Đồ Chung • Chia Tiền)'}
+                  ? 'Mở sổ đoàn (duyệt người • đồ chung • chia tiền)'
+                  : 'Vào nhóm đoàn (chat • đồ chung • chia tiền)'}
               </span>
             </button>
 
@@ -446,7 +483,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
                     color: 'var(--banner-danger-text)',
                   }}
                 >
-                  <span style={{ fontWeight: 700 }}>Xác nhận rời đoàn?</span>
+                  <span style={{ fontWeight: 700 }}>Bạn chắc chắn muốn rời đoàn?</span>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button
                       type="button"
@@ -455,7 +492,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
                       className="btn btn-danger"
                       style={{ padding: '4px 10px', fontSize: '0.74rem', borderRadius: 4 }}
                     >
-                      {isLeaving ? 'Đang xử lý...' : 'Rời đoàn'}
+                      {isLeaving ? 'Đang rời...' : 'Rời đoàn'}
                     </button>
                     <button
                       type="button"
@@ -488,7 +525,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
                   }}
                 >
                   <IconX size={13} color="var(--color-error-text, var(--color-error))" />
-                  <span>Rời Khỏi Đoàn</span>
+                  <span>Rời đoàn</span>
                 </button>
               )
             )}
@@ -514,7 +551,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
           >
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <IconCheckCircle size={15} color="var(--color-primary)" />
-              <span>Đang chờ Trưởng đoàn duyệt</span>
+              <span>Đang chờ trưởng đoàn duyệt</span>
             </span>
             <button
               type="button"
@@ -538,7 +575,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
             <input
               type="text"
               className="form-input"
-              placeholder="Lời nhắn (kinh nghiệm, thể lực của bạn)..."
+              placeholder="Nhắn vài dòng về kinh nghiệm đi rừng, thể lực của bạn..."
               value={joinMsg}
               onChange={(e) => setJoinMsg(e.target.value)}
               style={{ fontSize: '0.8rem', padding: '8px 12px', borderRadius: 4 }}
@@ -554,7 +591,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
                 className="btn btn-primary interactive-click"
                 style={{ flex: 1, padding: '8px 12px', fontSize: '0.8rem', fontWeight: 800, borderRadius: 4 }}
               >
-                {isSubmittingJoin ? 'Đang gửi...' : 'Gửi Yêu Cầu'}
+                {isSubmittingJoin ? 'Đang gửi...' : 'Gửi lời xin ghép'}
               </button>
               <button
                 type="button"
@@ -590,7 +627,7 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
             }}
           >
             <IconUserPlus size={15} color={isClosedForJoin ? 'var(--color-text-dim)' : 'var(--color-on-primary)'} />
-            {isClosedForJoin ? effectiveStatusMeta.joinDisabledText : 'Xin Ghép Đoàn Ngay'}
+            {isClosedForJoin ? effectiveStatusMeta.joinDisabledText : 'Xin đi cùng đoàn'}
           </button>
         )}
       </div>
@@ -601,13 +638,28 @@ export const TripPlanCard: React.FC<TripPlanCardProps> = ({ trip, currentUser, o
           tripTitle={trip.title}
           memberCount={memberCount}
           currentUserId={currentUserId}
+          currentUser={currentUser}
           isCreator={isCreatorSelf}
           isMember={isSquadMember}
           isOpen={isSquadModalOpen}
           onClose={() => setIsSquadModalOpen(false)}
           onTripUpdated={onJoinSuccess}
+          onOpenAuthorProfile={onOpenAuthorProfile}
           onShowToast={(message, type) => {
             window.dispatchEvent(new CustomEvent('lost:show-toast', { detail: { message, type } }));
+          }}
+        />
+      )}
+
+      {inspectedAuthor && (
+        <AuthorProfileModal
+          author={inspectedAuthor}
+          currentUser={currentUser}
+          onClose={() => setInspectedAuthor(null)}
+          onStartChat={() => {
+            setInspectedAuthor(null);
+            window.history.pushState({ view: 'messages' }, '', '/messages');
+            window.dispatchEvent(new PopStateEvent('popstate'));
           }}
         />
       )}

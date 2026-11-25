@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   IconCompass,
   IconMountain,
@@ -11,11 +11,12 @@ import {
 import { recommendTrailsApi } from '../../services/aiAssistant.service.js';
 import { mockTrails } from '../../data/seedData.js';
 import type { Trail } from '../../types.js';
-import type {
-  AiFitnessLevel,
-  TrailMatchResultItem,
-  TrailPreferenceTag,
-  TrailRecommendResponse,
+import {
+  isSafeImageUrl,
+  type AiFitnessLevel,
+  type TrailMatchResultItem,
+  type TrailPreferenceTag,
+  type TrailRecommendResponse,
 } from './ai.types.js';
 
 interface AiTrailMatchWizardProps {
@@ -23,7 +24,7 @@ interface AiTrailMatchWizardProps {
   userCoords?: { lat: number; lng: number } | null;
   onSelectTrail?: (trailId: string) => void;
   onCloseModal?: () => void;
-  onAskAiPrompt: (prompt: string) => void;
+  onAskAiPrompt: (prompt: string, trailId?: string) => void;
 }
 
 function getCurrentVietnamMonth(): number {
@@ -40,7 +41,7 @@ function getCurrentVietnamMonth(): number {
 const PREF_OPTIONS: Array<{ id: TrailPreferenceTag; label: string }> = [
   { id: 'san_may', label: 'Săn biển mây' },
   { id: 'high_peak_2800', label: 'Đỉnh > 2.800m' },
-  { id: 'waterfall_forest', label: 'Suối thác & Rừng' },
+  { id: 'waterfall_forest', label: 'Suối thác & rừng' },
   { id: 'kid_friendly', label: 'Thân thiện gia đình' },
   { id: 'no_permit_needed', label: 'Không cần giấy phép' },
 ];
@@ -59,9 +60,22 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
   const [targetMonth, setTargetMonth] = useState<number>(() => getCurrentVietnamMonth());
   const [preferences, setPreferences] = useState<TrailPreferenceTag[]>(['san_may']);
   const [useGps, setUseGps] = useState<boolean>(Boolean(userCoords));
+  const [failedCovers, setFailedCovers] = useState<Record<string, boolean>>({});
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<TrailRecommendResponse | null>(null);
+
+  const abortRef = useRef<AbortController | null>(null);
+  const reqIdRef = useRef<number>(0);
+  const isMountedRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const togglePref = (tag: TrailPreferenceTag) => {
     setPreferences((prev) => (prev.includes(tag) ? prev.filter((p) => p !== tag) : [...prev, tag]));
@@ -69,6 +83,11 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
 
   const handleRunMatchmaker = async (e?: React.FormEvent) => {
     e?.preventDefault();
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    const reqId = ++reqIdRef.current;
+
     setLoading(true);
     try {
       const data = await recommendTrailsApi(
@@ -80,11 +99,19 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
           preferences,
           userCoordinates: useGps && userCoords ? userCoords : undefined,
         },
-        trails
+        trails,
+        ctrl.signal
       );
-      setResult(data);
+      if (isMountedRef.current && reqId === reqIdRef.current) {
+        setResult(data);
+        setFailedCovers({});
+      }
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') return;
     } finally {
-      setLoading(false);
+      if (isMountedRef.current && reqId === reqIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -118,10 +145,10 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--color-primary)', fontWeight: 800, fontSize: '0.82rem' }}>
             <IconCompass size={15} color="var(--color-primary)" />
-            <span>TÌM CUNG THÔNG MINH (CHẤM ĐIỂM {catalogCount} TUYẾN THẬT)</span>
+            <span>Chọn cung hợp thể lực ({catalogCount} tuyến Việt Nam)</span>
           </div>
           <span style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)' }}>
-            Tính mùa vụ + độ khó + sự cố thực địa
+            So mùa đẹp + độ khó + cảnh báo mới nhất
           </span>
         </div>
 
@@ -235,7 +262,7 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
         {/* Preference Chips */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
           <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--color-text-muted)' }}>
-            Tiêu chí ưu tiên (chọn nhiều):
+            Bạn thích kiểu cung nào (chọn nhiều):
           </span>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {PREF_OPTIONS.map((opt) => {
@@ -280,7 +307,7 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
                   border: useGps ? '1px solid var(--color-sky)' : '1px solid var(--color-border)',
                 }}
               >
-                Ưu tiên gần GPS
+                Ưu tiên gần vị trí bạn
               </button>
             )}
           </div>
@@ -304,7 +331,7 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
           }}
         >
           <IconSparkles size={14} color="var(--color-on-primary)" />
-          <span>{loading ? `Đang chấm điểm ${catalogCount} cung đường...` : 'Xếp Hạng Top 5 Cung Phù Hợp Nhất'}</span>
+          <span>{loading ? `Đang lọc từ ${catalogCount} cung đường...` : 'Gợi ý top 5 cung hợp nhất'}</span>
         </button>
       </form>
 
@@ -316,18 +343,25 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
           </div>
 
           {result.matches.map((m: TrailMatchResultItem, idx: number) => {
-            const seasonColor =
+            const seasonBgColor =
               m.seasonStatus === 'ideal'
                 ? 'var(--color-primary)'
                 : m.seasonStatus === 'avoid'
                 ? 'var(--color-error)'
                 : 'var(--color-sky)';
+            const seasonTextColor =
+              m.seasonStatus === 'ideal'
+                ? 'var(--color-primary)'
+                : m.seasonStatus === 'avoid'
+                ? 'var(--color-error-text, var(--color-error))'
+                : 'var(--color-sky)';
             const seasonText =
               m.seasonStatus === 'ideal'
-                ? `Lý tưởng T${result.targetMonth}`
+                ? `Mùa đẹp T${result.targetMonth}`
                 : m.seasonStatus === 'avoid'
                 ? `Mùa bất lợi T${result.targetMonth}`
                 : `Đi được T${result.targetMonth}`;
+            const showCover = isSafeImageUrl(m.coverImage) && !failedCovers[m.id];
 
             return (
               <div
@@ -344,12 +378,13 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
                 }}
               >
                 <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                  {m.coverImage ? (
+                  {showCover ? (
                     <img
                       loading="lazy"
                       decoding="async"
                       src={m.coverImage}
                       alt={m.name}
+                      onError={() => setFailedCovers((prev) => ({ ...prev, [m.id]: true }))}
                       style={{
                         width: 68,
                         height: 68,
@@ -402,9 +437,9 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
                         <IconMapPin size={10} /> {m.province}
                       </span>
                       <span style={{ fontSize: '0.69rem', padding: '2px 6px', borderRadius: 4, background: 'color-mix(in srgb, var(--color-primary) 12%, transparent)', color: 'var(--color-primary)', fontWeight: 700 }}>
-                        {m.maxAltitudeM.toLocaleString()}m · {m.distanceKm} km
+                        {m.maxAltitudeM.toLocaleString('vi-VN')}m · {m.distanceKm} km
                       </span>
-                      <span style={{ fontSize: '0.69rem', padding: '2px 6px', borderRadius: 4, background: `color-mix(in srgb, ${seasonColor} 12%, transparent)`, color: seasonColor, fontWeight: 700 }}>
+                      <span style={{ fontSize: '0.69rem', padding: '2px 6px', borderRadius: 4, background: `color-mix(in srgb, ${seasonBgColor} 12%, transparent)`, color: seasonTextColor, fontWeight: 700 }}>
                         {seasonText}
                       </span>
                       <span style={{ fontSize: '0.69rem', padding: '2px 6px', borderRadius: 4, background: 'var(--color-surface-elevated)', color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
@@ -469,7 +504,7 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
                       }}
                     >
                       <IconCompass size={12} color="var(--color-on-primary)" />
-                      <span>Mở Cung Đường</span>
+                      <span>Mở cung đường</span>
                     </button>
                   )}
 
@@ -477,9 +512,10 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
                     type="button"
                     onClick={() =>
                       onAskAiPrompt(
-                        `Phân tích chiến thuật chi tiết, lịch trình và lưu ý an toàn cho cung ${m.name} đi vào tháng ${result.targetMonth} (thể lực ${
+                        `Tư vấn chi tiết lịch trình, thời tiết và lưu ý an toàn cho cung ${m.name} đi vào tháng ${result.targetMonth} (thể lực ${
                           fitness === 'beginner' ? 'người mới' : fitness === 'advanced' ? 'tốt' : 'trung bình'
-                        })`
+                        })`,
+                        m.id
                       )
                     }
                     style={{
@@ -497,12 +533,12 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
                     }}
                   >
                     <IconBot size={12} color="var(--color-primary)" />
-                    <span>Hỏi AI Chi Tiết</span>
+                    <span>Hỏi AI chi tiết</span>
                   </button>
 
                   <button
                     type="button"
-                    onClick={() => onAskAiPrompt(`Đánh giá Go/No-Go hôm nay cho ${m.name}`)}
+                    onClick={() => onAskAiPrompt(`Hôm nay có nên leo ${m.name} không (Go/No-Go)?`, m.id)}
                     style={{
                       padding: '5px 10px',
                       borderRadius: 4,
@@ -518,7 +554,7 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
                     }}
                   >
                     <IconSparkles size={12} color="var(--color-sky)" />
-                    <span>Kiểm Tra Go/No-Go</span>
+                    <span>Xem Go/No-Go</span>
                   </button>
                 </div>
               </div>
@@ -538,8 +574,8 @@ export const AiTrailMatchWizard: React.FC<AiTrailMatchWizardProps> = ({
             lineHeight: 1.6,
           }}
         >
-          Chọn thể lực, khu vực, tháng khởi hành và tiêu chí ưu tiên rồi bấm{' '}
-          <strong style={{ color: 'var(--color-text-main)' }}>Xếp Hạng Top 5 Cung Phù Hợp Nhất</strong> để hệ thống đối chiếu toàn bộ {catalogCount} tuyến thực địa Việt Nam kèm cảnh báo sự cố trực tuyến.
+          Chọn thể lực, khu vực, tháng khởi hành và tiêu chí mong muốn rồi bấm{' '}
+          <strong style={{ color: 'var(--color-text-main)' }}>Gợi ý top 5 cung hợp nhất</strong> để xem các cung phù hợp trong {catalogCount} tuyến Việt Nam kèm cảnh báo mới nhất.
         </div>
       )}
     </div>

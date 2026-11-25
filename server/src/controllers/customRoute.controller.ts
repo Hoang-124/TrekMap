@@ -9,6 +9,7 @@ import { isValidObjectId, resolveTrailObjectId } from '../utils/resolveTrail.js'
 import { sanitizeInput } from '../utils/validation.js';
 import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
 import { invalidateCache } from '../middleware/cache.middleware.js';
+import { getClientBaseUrl } from '../utils/clientUrl.js';
 
 const MAX_ROUTES_PER_USER = 50;
 
@@ -54,42 +55,49 @@ function escapeXml(unsafe: string): string {
   });
 }
 
+function parseStrictFiniteNumber(val: unknown): number | null {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
+
 function sanitizeTrackPoints(raw: unknown): number[][] {
   if (!Array.isArray(raw)) return [];
-  return raw
-    .filter(
-      (pt: any) =>
-        Array.isArray(pt) &&
-        pt.length >= 2 &&
-        Number.isFinite(Number(pt[0])) &&
-        Number.isFinite(Number(pt[1])) &&
-        Number(pt[0]) >= -90 &&
-        Number(pt[0]) <= 90 &&
-        Number(pt[1]) >= -180 &&
-        Number(pt[1]) <= 180
-    )
-    .slice(0, 3000)
-    .map((pt: any) =>
-      pt.length >= 3 && Number.isFinite(Number(pt[2]))
-        ? [Number(pt[0]), Number(pt[1]), Math.round(Number(pt[2]))]
-        : [Number(pt[0]), Number(pt[1])]
-    );
+  const out: number[][] = [];
+  for (let i = 0; i < raw.length && out.length < 3000; i++) {
+    const pt: any = raw[i];
+    if (!Array.isArray(pt) || pt.length < 2) continue;
+    const lat = parseStrictFiniteNumber(pt[0]);
+    const lng = parseStrictFiniteNumber(pt[1]);
+    if (lat === null || lng === null || lat < -90 || lat > 90 || lng < -180 || lng > 180) continue;
+    const ele = pt.length >= 3 ? parseStrictFiniteNumber(pt[2]) : null;
+    out.push(ele !== null ? [lat, lng, Math.round(ele)] : [lat, lng]);
+  }
+  return out;
 }
 
 function sanitizeRouteWaypoints(raw: unknown): ICustomRouteWaypoint[] {
   if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((w: any) => w && typeof w === 'object' && Number.isFinite(Number(w.lat)) && Number.isFinite(Number(w.lng)))
-    .slice(0, 100)
-    .map((w: any, idx: number) => ({
+  const out: ICustomRouteWaypoint[] = [];
+  for (let i = 0; i < raw.length && out.length < 100; i++) {
+    const w: any = raw[i];
+    if (!w || typeof w !== 'object') continue;
+    const lat = parseStrictFiniteNumber(w.lat);
+    const lng = parseStrictFiniteNumber(w.lng);
+    if (lat === null || lng === null) continue;
+    const ele = parseStrictFiniteNumber(w.elevationM);
+    const idx = out.length;
+    out.push({
       id: typeof w.id === 'string' && w.id.trim() ? sanitizeInput(w.id).slice(0, 40) : `wp-${idx + 1}`,
       name: sanitizeInput(String(w.name || `Mốc ${idx + 1}`)).slice(0, 120),
       type: (VALID_WAYPOINT_TYPES.has(w.type) ? w.type : 'viewpoint') as ICustomRouteWaypoint['type'],
-      lat: Math.max(-90, Math.min(90, Number(w.lat))),
-      lng: Math.max(-180, Math.min(180, Number(w.lng))),
-      ...(Number.isFinite(Number(w.elevationM)) ? { elevationM: Math.round(Number(w.elevationM)) } : {}),
+      lat: Math.max(-90, Math.min(90, lat)),
+      lng: Math.max(-180, Math.min(180, lng)),
+      ...(ele !== null ? { elevationM: Math.round(ele) } : {}),
       note: sanitizeInput(String(w.note || '')).slice(0, 300),
-    }));
+    });
+  }
+  return out;
 }
 
 async function computeRouteMetrics(trackPoints: number[][]): Promise<{
@@ -301,7 +309,7 @@ export const createCustomRoute = async (req: AuthRequest, res: Response) => {
       visibility: VALID_VISIBILITIES.has(visibility) ? visibility : 'unlisted',
     });
 
-    const clientUrl = (process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
+    const clientUrl = getClientBaseUrl();
     if (route.visibility === 'public') {
       invalidateCache('/api/custom-routes/public');
     }
@@ -349,7 +357,7 @@ export const getPublicCustomRoutes = async (req: AuthRequest, res: Response) => 
     }
 
     const { region, search, sortBy = 'likes' } = req.query;
-    const page = Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1);
+    const page = Math.min(Math.max(parseInt(String(req.query.page || '1'), 10) || 1, 1), 1000);
     const limit = Math.min(Math.max(parseInt(String(req.query.limit || '18'), 10) || 18, 1), 50);
     const skip = (page - 1) * limit;
     const viewerId = req.user?.userId ? String(req.user.userId) : '';
@@ -408,8 +416,8 @@ export const getPublicCustomRoutes = async (req: AuthRequest, res: Response) => 
 export const getCustomRouteByShareSlug = async (req: AuthRequest, res: Response) => {
   try {
     const shareSlug = String(req.params.shareSlug || '').trim();
-    if (!shareSlug) {
-      return res.status(400).json({ success: false, message: 'Thiếu mã chia sẻ lộ trình.' });
+    if (!shareSlug || shareSlug.length > 64) {
+      return res.status(400).json({ success: false, message: 'Mã chia sẻ lộ trình không hợp lệ.' });
     }
     if (mongoose.connection.readyState !== 1) {
       return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
@@ -623,8 +631,8 @@ export const toggleLikeCustomRoute = async (req: AuthRequest, res: Response) => 
 export const exportCustomRouteGpx = async (req: AuthRequest, res: Response) => {
   try {
     const shareSlug = String(req.params.shareSlug || '').trim();
-    if (!shareSlug) {
-      return res.status(400).json({ success: false, message: 'Thiếu mã chia sẻ lộ trình.' });
+    if (!shareSlug || shareSlug.length > 64) {
+      return res.status(400).json({ success: false, message: 'Mã chia sẻ lộ trình không hợp lệ.' });
     }
     if (mongoose.connection.readyState !== 1) {
       return res.status(503).json({ success: false, message: 'Cơ sở dữ liệu chưa sẵn sàng.' });
@@ -646,14 +654,16 @@ export const exportCustomRouteGpx = async (req: AuthRequest, res: Response) => {
 
     const wptXml = (route.waypoints || [])
       .map((w) => {
-        const ele = Number.isFinite(Number(w.elevationM)) ? `<ele>${Math.round(Number(w.elevationM))}</ele>` : '';
+        const parsedEle = parseStrictFiniteNumber(w.elevationM);
+        const ele = parsedEle !== null ? `<ele>${Math.round(parsedEle)}</ele>` : '';
         return `  <wpt lat="${w.lat}" lon="${w.lng}">${ele}<name>${escapeXml(w.name)}</name><desc>${escapeXml(w.note || '')}</desc><type>${escapeXml(w.type)}</type></wpt>`;
       })
       .join('\n');
 
     const trkptXml = (route.trackPoints || [])
       .map((pt) => {
-        const ele = pt.length >= 3 && Number.isFinite(Number(pt[2])) ? `<ele>${Math.round(Number(pt[2]))}</ele>` : '';
+        const parsedEle = pt.length >= 3 ? parseStrictFiniteNumber(pt[2]) : null;
+        const ele = parsedEle !== null ? `<ele>${Math.round(parsedEle)}</ele>` : '';
         return `      <trkpt lat="${pt[0]}" lon="${pt[1]}">${ele}</trkpt>`;
       })
       .join('\n');

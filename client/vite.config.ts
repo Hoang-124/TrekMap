@@ -4,6 +4,9 @@ import react from '@vitejs/plugin-react';
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  optimizeDeps: {
+    include: ['maplibre-gl', 'socket.io-client'],
+  },
   server: {
     proxy: {
       '/api': {
@@ -23,7 +26,7 @@ export default defineConfig({
     sourcemap: false,
     // Vite 8 / Rolldown native codeSplitting groups:
     // `vendor-react` MUST carry the highest priority so Rolldown never pulls react/jsx-runtime
-    // into lazy map chunks (`vendor-leaflet` / `vendor-maplibre`) and forces eager preloads on landing.
+    // into lazy map chunks (`vendor-maplibre`) and forces eager preloads on landing.
     rolldownOptions: {
       output: {
         codeSplitting: {
@@ -37,11 +40,6 @@ export default defineConfig({
               name: 'vendor-maplibre',
               test: /[\\/]node_modules[\\/]maplibre-gl[\\/]/,
               priority: 40,
-            },
-            {
-              name: 'vendor-leaflet',
-              test: /[\\/]node_modules[\\/](leaflet|react-leaflet|@react-leaflet|leaflet\.markercluster|react-leaflet-cluster)[\\/]/,
-              priority: 35,
             },
             {
               name: 'vendor-socket',

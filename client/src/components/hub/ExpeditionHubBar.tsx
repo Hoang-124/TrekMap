@@ -32,57 +32,48 @@ export interface ExpeditionHubBarProps {
 interface HubNavItem {
   id: ExpeditionHubId;
   label: string;
-  shortLabel: string;
   renderIcon: (color: string) => React.ReactNode;
 }
 
 const HUB_ITEMS: HubNavItem[] = [
   {
     id: 'passport',
-    label: 'Hộ Chiếu Đỉnh Cao',
-    shortLabel: 'Hộ Chiếu',
+    label: 'Hộ chiếu đỉnh cao',
     renderIcon: (color) => <IconMountain size={15} color={color} />,
   },
   {
     id: 'almanac',
-    label: 'Lịch Mùa 12 Tháng',
-    shortLabel: 'Lịch Mùa',
+    label: 'Lịch mùa 12 tháng',
     renderIcon: (color) => <IconCalendar size={15} color={color} />,
   },
   {
     id: 'planner',
-    label: 'Vẽ Cung GPX',
-    shortLabel: 'Vẽ GPX',
+    label: 'Vẽ cung GPX',
     renderIcon: (color) => <IconCompass size={15} color={color} />,
   },
   {
     id: 'toolkit',
-    label: 'Công Cụ Sinh Tồn',
-    shortLabel: 'Sinh Tồn',
+    label: 'Công cụ sinh tồn',
     renderIcon: (color) => <IconSatellite size={15} color={color} />,
   },
   {
     id: 'directory',
-    label: 'Kiểm Lâm & Chi Phí',
-    shortLabel: 'Kiểm Lâm',
+    label: 'Kiểm lâm & chi phí',
     renderIcon: (color) => <IconShieldAlert size={15} color={color} />,
   },
   {
     id: 'training',
-    label: 'Giáo Án Thể Lực',
-    shortLabel: 'Thể Lực',
+    label: 'Giáo án thể lực',
     renderIcon: (color) => <IconHiking size={15} color={color} />,
   },
   {
     id: 'gear',
-    label: 'Tủ Đồ & Tối Ưu Balo',
-    shortLabel: 'Tủ Đồ',
+    label: 'Tủ đồ & tối ưu balo',
     renderIcon: (color) => <IconBackpack size={15} color={color} />,
   },
   {
     id: 'radar',
-    label: 'Radar An Toàn',
-    shortLabel: 'Radar',
+    label: 'Radar an toàn',
     renderIcon: (color) => <IconRadar size={15} color={color} />,
   },
 ];
@@ -163,7 +154,7 @@ export const ExpeditionHubBar: React.FC<ExpeditionHubBarProps> = ({
 
   return (
     <nav
-      aria-label="Điều hướng Trung tâm Thám hiểm LOST"
+      aria-label="Điều hướng trung tâm thám hiểm LOST"
       style={{
         width: '100%',
         background: 'var(--color-bg-card)',
@@ -180,8 +171,8 @@ export const ExpeditionHubBar: React.FC<ExpeditionHubBarProps> = ({
               left: 0,
               top: 0,
               bottom: 0,
-              width: 36,
-              background: 'linear-gradient(to right, var(--color-bg-card) 55%, transparent)',
+              width: 44,
+              background: 'linear-gradient(to right, var(--color-bg-card) 60%, transparent)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'flex-start',
@@ -196,8 +187,8 @@ export const ExpeditionHubBar: React.FC<ExpeditionHubBarProps> = ({
               onClick={() => scrollByStep(-1)}
               style={{
                 pointerEvents: 'auto',
-                width: 24,
-                height: 24,
+                width: 34,
+                height: 34,
                 borderRadius: 4,
                 border: '1px solid var(--color-border)',
                 background: 'var(--color-bg-card)',
@@ -208,7 +199,7 @@ export const ExpeditionHubBar: React.FC<ExpeditionHubBarProps> = ({
                 cursor: 'pointer',
               }}
             >
-              <IconArrowLeft size={12} />
+              <IconArrowLeft size={14} />
             </button>
           </div>
         )}
@@ -249,7 +240,7 @@ export const ExpeditionHubBar: React.FC<ExpeditionHubBarProps> = ({
               }}
             >
               <IconArrowLeft size={14} color="var(--color-text-muted)" />
-              <span>Trang Chủ</span>
+              <span>Trang chủ</span>
             </button>
           )}
 
@@ -334,8 +325,8 @@ export const ExpeditionHubBar: React.FC<ExpeditionHubBarProps> = ({
               right: 0,
               top: 0,
               bottom: 0,
-              width: 36,
-              background: 'linear-gradient(to left, var(--color-bg-card) 55%, transparent)',
+              width: 44,
+              background: 'linear-gradient(to left, var(--color-bg-card) 60%, transparent)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'flex-end',
@@ -350,8 +341,8 @@ export const ExpeditionHubBar: React.FC<ExpeditionHubBarProps> = ({
               onClick={() => scrollByStep(1)}
               style={{
                 pointerEvents: 'auto',
-                width: 24,
-                height: 24,
+                width: 34,
+                height: 34,
                 borderRadius: 4,
                 border: '1px solid var(--color-border)',
                 background: 'var(--color-bg-card)',
@@ -362,7 +353,7 @@ export const ExpeditionHubBar: React.FC<ExpeditionHubBarProps> = ({
                 cursor: 'pointer',
               }}
             >
-              <IconArrowRight size={12} />
+              <IconArrowRight size={14} />
             </button>
           </div>
         )}

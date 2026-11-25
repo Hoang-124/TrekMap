@@ -1,5 +1,8 @@
 import zlib from 'zlib';
+import { promisify } from 'util';
 import { calculateHaversineDistanceKm } from '../utils/spatial.js';
+
+const inflateAsync = promisify(zlib.inflate);
 
 export interface ElevationSamplePoint {
   lat: number;
@@ -10,7 +13,7 @@ export interface ElevationSamplePoint {
 }
 
 export interface TrailElevationProfile {
-  source: 'open-meteo-dem' | 'gpx-elevation' | 'interpolated-fallback';
+  source: 'aws-terrarium-dem' | 'gpx-elevation' | 'interpolated-fallback';
   attribution?: string;
   points: ElevationSamplePoint[];
   minElevationM: number;
@@ -30,6 +33,10 @@ const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 // Pure-Node AWS Open Data Terrarium PNG tile cache (zoom 12 ≈ 35m resolution in Vietnam)
 const TERRARIUM_ZOOM = 12;
 const MAX_TERRARIUM_TILE_CACHE = 64;
+const MAX_TERRARIUM_PNG_BYTES = 2 * 1024 * 1024; // 2 MB compressed tile guard
+const MAX_INFLATED_PNG_BYTES = 2048 * 2048 * 4 + 2048; // Zip-bomb inflate cap
+const MAX_TILES_PER_REQUEST = 12;
+const TILE_FETCH_CONCURRENCY = 4;
 
 export interface DecodedPngImage {
   width: number;
@@ -68,13 +75,19 @@ function paethPredictor(a: number, b: number, c: number): number {
   return c;
 }
 
-/**
- * Pure-Node RFC-2083 PNG decoder using built-in `zlib.inflateSync` (zero external npm dependencies).
- * Supports non-interlaced 8-bit RGB (colorType 2), RGBA (colorType 6), Indexed Palette (colorType 3),
- * and Grayscale (colorType 0) PNGs with all 5 standard scanline filter types (0..4).
- */
-export function decodeTerrariumPng(pngBuffer: Buffer): DecodedPngImage | null {
-  if (!Buffer.isBuffer(pngBuffer) || pngBuffer.length < 33) return null;
+interface ParsedPngMeta {
+  width: number;
+  height: number;
+  colorType: number;
+  channels: number;
+  palette: Buffer | null;
+  idat: Buffer;
+}
+
+function parsePngMeta(pngBuffer: Buffer): ParsedPngMeta | null {
+  if (!Buffer.isBuffer(pngBuffer) || pngBuffer.length < 33 || pngBuffer.length > MAX_TERRARIUM_PNG_BYTES) {
+    return null;
+  }
 
   // Verify 8-byte PNG signature: 89 50 4E 47 0D 0A 1A 0A
   if (
@@ -139,17 +152,18 @@ export function decodeTerrariumPng(pngBuffer: Buffer): DecodedPngImage | null {
   let channels = 0;
   if (colorType === 2) channels = 3; // RGB
   else if (colorType === 6) channels = 4; // RGBA
-  else if (colorType === 3) channels = 1; // Indexed palette
-  else if (colorType === 0) channels = 1; // Grayscale
+  else if (colorType === 3) {
+    // Indexed-color PNG MUST carry a valid PLTE chunk (multiple of 3 bytes, >= 3 bytes)
+    if (!palette || palette.length < 3 || palette.length % 3 !== 0) return null;
+    channels = 1;
+  } else if (colorType === 0) channels = 1; // Grayscale
   else return null;
 
-  let inflated: Buffer;
-  try {
-    inflated = zlib.inflateSync(Buffer.concat(idatChunks));
-  } catch {
-    return null;
-  }
+  return { width, height, colorType, channels, palette, idat: Buffer.concat(idatChunks) };
+}
 
+function reconstructPngRgb(meta: ParsedPngMeta, inflated: Buffer): DecodedPngImage | null {
+  const { width, height, colorType, channels, palette } = meta;
   const rowBytes = width * channels;
   const expectedLength = height * (1 + rowBytes);
   if (inflated.length < expectedLength) return null;
@@ -194,12 +208,14 @@ export function decodeTerrariumPng(pngBuffer: Buffer): DecodedPngImage | null {
         rgb[rowOutOffset + px * 3 + 1] = currRow[px * 4 + 1];
         rgb[rowOutOffset + px * 3 + 2] = currRow[px * 4 + 2];
       }
-    } else if (colorType === 3 && palette) {
+    } else if (colorType === 3) {
+      if (!palette) return null;
       for (let px = 0; px < width; px++) {
         const idx = currRow[px] * 3;
-        rgb[rowOutOffset + px * 3] = palette[idx] ?? 0;
-        rgb[rowOutOffset + px * 3 + 1] = palette[idx + 1] ?? 0;
-        rgb[rowOutOffset + px * 3 + 2] = palette[idx + 2] ?? 0;
+        if (idx + 2 >= palette.length) return null;
+        rgb[rowOutOffset + px * 3] = palette[idx];
+        rgb[rowOutOffset + px * 3 + 1] = palette[idx + 1];
+        rgb[rowOutOffset + px * 3 + 2] = palette[idx + 2];
       }
     } else {
       for (let px = 0; px < width; px++) {
@@ -216,16 +232,53 @@ export function decodeTerrariumPng(pngBuffer: Buffer): DecodedPngImage | null {
   return { width, height, rgb };
 }
 
+/**
+ * Pure-Node RFC-2083 PNG decoder using built-in `zlib` with maxOutputLength guard (zero external npm dependencies).
+ * Supports non-interlaced 8-bit RGB (colorType 2), RGBA (colorType 6), Indexed Palette (colorType 3),
+ * and Grayscale (colorType 0) PNGs with all 5 standard scanline filter types (0..4).
+ */
+export function decodeTerrariumPng(pngBuffer: Buffer): DecodedPngImage | null {
+  const meta = parsePngMeta(pngBuffer);
+  if (!meta) return null;
+
+  let inflated: Buffer;
+  try {
+    inflated = zlib.inflateSync(meta.idat, { maxOutputLength: MAX_INFLATED_PNG_BYTES });
+  } catch {
+    return null;
+  }
+
+  return reconstructPngRgb(meta, inflated);
+}
+
+async function decodeTerrariumPngAsync(pngBuffer: Buffer): Promise<DecodedPngImage | null> {
+  const meta = parsePngMeta(pngBuffer);
+  if (!meta) return null;
+
+  let inflated: Buffer;
+  try {
+    inflated = (await inflateAsync(meta.idat, { maxOutputLength: MAX_INFLATED_PNG_BYTES })) as Buffer;
+  } catch {
+    return null;
+  }
+
+  return reconstructPngRgb(meta, inflated);
+}
+
 function latLngToTerrariumPixel(lat: number, lng: number, zoom = TERRARIUM_ZOOM) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    return null;
+  }
   const n = Math.pow(2, zoom);
   const clampedLat = Math.max(-85.0511, Math.min(85.0511, lat));
   const latRad = (clampedLat * Math.PI) / 180;
   const fx = ((lng + 180) / 360) * n;
   const fy = ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n;
+  if (!Number.isFinite(fx) || !Number.isFinite(fy)) return null;
   const tileX = Math.max(0, Math.min(n - 1, Math.floor(fx)));
   const tileY = Math.max(0, Math.min(n - 1, Math.floor(fy)));
-  const fracX = fx - tileX;
-  const fracY = fy - tileY;
+  const fracX = Math.max(0, Math.min(0.999999, fx - tileX));
+  const fracY = Math.max(0, Math.min(0.999999, fy - tileY));
   return { tileX, tileY, fracX, fracY };
 }
 
@@ -241,9 +294,23 @@ async function fetchTerrariumTile(tileX: number, tileY: number, zoom = TERRARIUM
     try {
       const url = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${zoom}/${tileX}/${tileY}.png`;
       const res = await fetch(url, { signal: AbortSignal.timeout(5500) });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        res.body?.cancel().catch(() => {});
+        return null;
+      }
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      if (contentType && (contentType.includes('text/') || contentType.includes('xml') || contentType.includes('html') || contentType.includes('json'))) {
+        res.body?.cancel().catch(() => {});
+        return null;
+      }
+      const contentLen = Number(res.headers.get('content-length') || 0);
+      if (Number.isFinite(contentLen) && contentLen > MAX_TERRARIUM_PNG_BYTES) {
+        res.body?.cancel().catch(() => {});
+        return null;
+      }
       const arrayBuf = await res.arrayBuffer();
-      const decoded = decodeTerrariumPng(Buffer.from(arrayBuf));
+      if (arrayBuf.byteLength > MAX_TERRARIUM_PNG_BYTES) return null;
+      const decoded = await decodeTerrariumPngAsync(Buffer.from(arrayBuf));
       if (!decoded) return null;
       setTerrariumTileCache(key, decoded);
       return decoded;
@@ -261,24 +328,41 @@ async function fetchTerrariumTile(tileX: number, tileY: number, zoom = TERRARIUM
 /**
  * Samples terrain elevation (meters ASL) from AWS Open Data Terrarium RGB PNG tiles
  * using the Mapzen Terrarium formula: `elevation = (R * 256 + G + B / 256) - 32768`.
+ * Bounds unique tile count & S3 fetch concurrency to prevent upstream fan-out abuse.
  */
 export async function sampleTerrariumElevations(coords: [number, number][]): Promise<number[] | null> {
   if (!Array.isArray(coords) || coords.length === 0) return [];
 
-  const lookups = coords.map(([lat, lng]) => latLngToTerrariumPixel(lat, lng, TERRARIUM_ZOOM));
+  const lookups: Array<{ tileX: number; tileY: number; fracX: number; fracY: number }> = [];
   const uniqueTiles = new Map<string, { tileX: number; tileY: number }>();
-  for (const l of lookups) {
+  for (const pair of coords) {
+    if (!Array.isArray(pair) || pair.length < 2) return null;
+    const l = latLngToTerrariumPixel(pair[0], pair[1], TERRARIUM_ZOOM);
+    if (!l) return null;
+    lookups.push(l);
     const k = `${TERRARIUM_ZOOM}/${l.tileX}/${l.tileY}`;
     if (!uniqueTiles.has(k)) {
       uniqueTiles.set(k, { tileX: l.tileX, tileY: l.tileY });
+      if (uniqueTiles.size > MAX_TILES_PER_REQUEST) {
+        return null;
+      }
     }
   }
 
   const tileEntries = Array.from(uniqueTiles.entries());
-  const fetchedTiles = await Promise.all(
-    tileEntries.map(async ([k, t]) => [k, await fetchTerrariumTile(t.tileX, t.tileY, TERRARIUM_ZOOM)] as const)
+  const tileMap = new Map<string, DecodedPngImage | null>();
+  let nextIdx = 0;
+  const workers = Math.max(1, Math.min(TILE_FETCH_CONCURRENCY, tileEntries.length));
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      while (nextIdx < tileEntries.length) {
+        const idx = nextIdx++;
+        const [k, t] = tileEntries[idx];
+        const decoded = await fetchTerrariumTile(t.tileX, t.tileY, TERRARIUM_ZOOM);
+        tileMap.set(k, decoded);
+      }
+    })
   );
-  const tileMap = new Map<string, DecodedPngImage | null>(fetchedTiles);
 
   const elevations: number[] = [];
   for (const l of lookups) {
@@ -454,7 +538,7 @@ export async function fetchTrailDemElevation(params: {
     if (elevations && elevations.length === sampled.length) {
       const metrics = buildElevationMetrics(sampled, elevations, params.distanceKm);
       const profile: TrailElevationProfile = {
-        source: 'open-meteo-dem',
+        source: 'aws-terrarium-dem',
         attribution: AWS_TERRARIUM_ATTRIBUTION,
         ...metrics,
       };

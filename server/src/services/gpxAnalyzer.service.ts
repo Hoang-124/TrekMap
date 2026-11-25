@@ -313,7 +313,7 @@ export async function analyzeGpxTrack(params: AnalyzeGpxParams): Promise<GpxAnal
     nearestTrail = null;
   }
 
-  // Fetch live Open-Meteo weather at trailhead (best-effort)
+  // Fetch live MET Norway (CC BY 4.0) weather at trailhead (best-effort)
   let weatherAtStart: GpxAnalysisResult['weatherAtStart'] = null;
   let ambientTempC: number | undefined;
   try {

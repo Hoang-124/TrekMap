@@ -4,8 +4,10 @@ import {
   pingLiveBeacon,
   stopLiveBeacon,
   getLiveBeaconByToken,
+  adminResolveLiveBeacon,
 } from '../controllers/liveBeacon.controller.js';
 import { authMiddleware } from '../middleware/auth.middleware.js';
+import { requireRole } from '../middleware/rbac.middleware.js';
 import { createRateLimiter } from '../middleware/rateLimiter.middleware.js';
 
 const router = Router();
@@ -39,6 +41,13 @@ const beaconReadLimiter = createRateLimiter(
 );
 
 // Mounted at /api/live-beacons
+router.patch(
+  '/admin/:id/resolve',
+  beaconStopLimiter,
+  authMiddleware as any,
+  requireRole('admin', 'moderator') as any,
+  adminResolveLiveBeacon as any
+);
 router.post('/', beaconCreateLimiter, authMiddleware as any, createLiveBeacon as any);
 router.patch('/:token/ping', beaconPingLimiter, authMiddleware as any, pingLiveBeacon as any);
 router.post('/:token/stop', beaconStopLimiter, authMiddleware as any, stopLiveBeacon as any);

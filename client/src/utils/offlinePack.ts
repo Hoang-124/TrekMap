@@ -1,5 +1,6 @@
 import type { Trail } from '../types.js';
 import { buildOfflineTileUrls } from './geoMath.js';
+import { fetchWithTimeout } from './sessionHeaders.js';
 
 const DB_NAME = 'lost_offline_db';
 const DB_VERSION = 1;
@@ -200,8 +201,8 @@ export async function downloadOfflineTrailPack(
           [trail.endLat ?? trail.startLat, trail.endLng ?? trail.startLng],
         ];
 
-  // Download legal AWS Open Data Terrarium DEM tiles (z=10..12) alongside GPX/metadata/emergency JSON
-  const tileUrls = buildOfflineTileUrls(track, [10, 11, 12], 90);
+  // Download legal AWS Open Data Terrarium DEM tiles (z=10..12 bbox + z=13 GPX corridor) alongside GPX/metadata/emergency JSON
+  const tileUrls = buildOfflineTileUrls(track, [10, 11, 12, 13], 100);
   const totalRequestedTiles = tileUrls.length;
   let processedCount = 0;
   let succeededCount = 0;
@@ -216,7 +217,7 @@ export async function downloadOfflineTrailPack(
 
   // Opportunistically snapshot DEM elevation & 7-day weather in background for offline field access
   const snapshotPromise = Promise.allSettled([
-    fetch(`/api/trails/${encodeURIComponent(trail.id)}/elevation`, { signal })
+    fetchWithTimeout(`/api/trails/${encodeURIComponent(trail.id)}/elevation`, { signal }, 10_000)
       .then((r) => (r.ok ? r.json() : null))
       .then((json): OfflineElevationSnapshot | undefined => {
         if (json?.success && Array.isArray(json.data?.points) && json.data.points.length >= 2) {
@@ -228,7 +229,7 @@ export async function downloadOfflineTrailPack(
         }
         return undefined;
       }),
-    fetch(`/api/weather/${encodeURIComponent(trail.id)}`, { signal })
+    fetchWithTimeout(`/api/weather/${encodeURIComponent(trail.id)}`, { signal }, 10_000)
       .then((r) => (r.ok ? r.json() : null))
       .then((json): OfflineWeatherSnapshot | undefined => {
         if (json?.success && Array.isArray(json.data) && json.data.length > 0) {
@@ -268,7 +269,15 @@ export async function downloadOfflineTrailPack(
               succeededCount++;
               cachedTileUrls.push(url);
             } else {
-              const res = await fetch(url, { mode: 'cors', signal });
+              const res = await fetchWithTimeout(
+                url,
+                {
+                  mode: 'cors',
+                  cache: forceRefresh ? 'no-store' : 'default',
+                  signal,
+                },
+                12_000
+              );
               const contentType = (res.headers.get('content-type') || '').toLowerCase();
               const isSwFallback = res.headers.get('x-lost-offline-fallback') === '1';
               if (res.ok && !isSwFallback && contentType.startsWith('image/')) {

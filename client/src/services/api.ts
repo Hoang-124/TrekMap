@@ -1,6 +1,13 @@
 import type { Trail, Incident, User, Review, NotificationCategory } from '../types.js';
 import { mockTrails, mockIncidents } from '../data/seedData.js';
-import { getApiHeaders, getClientSessionId } from '../utils/sessionHeaders.js';
+import {
+  DEFAULT_API_TIMEOUT_MS,
+  fetchWithTimeout,
+  getApiHeaders,
+  getClientSessionId,
+  UPLOAD_API_TIMEOUT_MS,
+} from '../utils/sessionHeaders.js';
+import { safeLocalStorageGet } from '../utils/storageScope.js';
 import { getOfflineTrailPack } from '../utils/offlinePack.js';
 import {
   fetchNotifications,
@@ -11,6 +18,14 @@ import {
 } from './notificationService.js';
 
 const API_BASE = '/api';
+
+function apiFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  timeoutMs: number = DEFAULT_API_TIMEOUT_MS
+): Promise<Response> {
+  return fetchWithTimeout(input, init, timeoutMs);
+}
 
 // ============================================================================
 // IN-FLIGHT REQUEST DEDUPLICATION & BOUNDED SHORT-TTL READ CACHE
@@ -194,11 +209,15 @@ export async function uploadImageToCloudinary(
     | 'guides'
     | 'custom-routes' = 'trails'
 ): Promise<string> {
-  const res = await fetch(`${API_BASE}/upload`, {
-    method: 'POST',
-    headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ imageBase64, filename, category }),
-  });
+  const res = await fetchWithTimeout(
+    `${API_BASE}/upload`,
+    {
+      method: 'POST',
+      headers: getApiHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ imageBase64, filename, category }),
+    },
+    UPLOAD_API_TIMEOUT_MS
+  );
   const json = await res.json().catch(() => ({}));
   if (!res.ok || !json.success || !json.url) {
     throw new Error(json.message || 'Không thể tải ảnh lên máy chủ. Vui lòng thử lại.');
@@ -237,7 +256,7 @@ export async function fetchTrails(params?: {
 
     try {
       const url = queryString ? `${API_BASE}/trails?${queryString}` : `${API_BASE}/trails`;
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       if (res.ok) {
         const json = await res.json();
         list = Array.isArray(json.data) ? json.data : [];
@@ -411,7 +430,7 @@ export async function fetchTrails(params?: {
 
 export async function fetchNearbyTrails(lat: number, lng: number, limit = 5): Promise<Trail[]> {
   try {
-    const res = await fetch(`${API_BASE}/trails/nearby?lat=${lat}&lng=${lng}&limit=${limit}`);
+    const res = await apiFetch(`${API_BASE}/trails/nearby?lat=${lat}&lng=${lng}&limit=${limit}`);
     if (!res.ok) throw new Error('Spatial Query API error');
     const json = await res.json();
     if (json.data && Array.isArray(json.data) && json.data.length > 0) {
@@ -455,7 +474,7 @@ export async function fetchTrailById(id: string): Promise<Trail | null> {
 
   return cachedRead<Trail | null>(`trail:${cleanId}`, 30_000, async () => {
     try {
-      const res = await fetch(`${API_BASE}/trails/${encodeURIComponent(cleanId)}`);
+      const res = await apiFetch(`${API_BASE}/trails/${encodeURIComponent(cleanId)}`);
       if (res.status === 404) return { value: null, cacheable: false };
       if (!res.ok) throw new Error('Trail fetch failed');
       const json = await res.json();
@@ -476,7 +495,7 @@ export async function fetchTrailById(id: string): Promise<Trail | null> {
 }
 
 export async function submitTrailContribution(trailData: Partial<Trail>): Promise<Trail> {
-  const res = await fetch(`${API_BASE}/contributions`, {
+  const res = await apiFetch(`${API_BASE}/contributions`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(trailData),
@@ -493,7 +512,7 @@ export async function submitTrailContribution(trailData: Partial<Trail>): Promis
 }
 
 export async function updateTrailContribution(id: string, trailData: Partial<Trail>): Promise<Trail> {
-  const res = await fetch(`${API_BASE}/contributions/${encodeURIComponent(id)}`, {
+  const res = await apiFetch(`${API_BASE}/contributions/${encodeURIComponent(id)}`, {
     method: 'PUT',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(trailData),
@@ -510,7 +529,7 @@ export async function updateTrailContribution(id: string, trailData: Partial<Tra
 }
 
 export async function submitReview(trailId: string, reviewData: Partial<Review>): Promise<Review> {
-  const res = await fetch(`${API_BASE}/reviews`, {
+  const res = await apiFetch(`${API_BASE}/reviews`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ ...reviewData, trailId }),
@@ -529,7 +548,7 @@ export async function submitReview(trailId: string, reviewData: Partial<Review>)
 export async function fetchIncidents(): Promise<Incident[]> {
   return cachedRead<Incident[]>('incidents:all', 20_000, async () => {
     try {
-      const res = await fetch(`${API_BASE}/incidents`);
+      const res = await apiFetch(`${API_BASE}/incidents`);
       if (!res.ok) throw new Error('Failed to fetch incidents');
       const json = await res.json();
       return { value: Array.isArray(json.data) ? json.data : [], cacheable: true };
@@ -540,7 +559,7 @@ export async function fetchIncidents(): Promise<Incident[]> {
 }
 
 export async function submitIncident(incidentData: Partial<Incident>): Promise<Incident> {
-  const res = await fetch(`${API_BASE}/incidents`, {
+  const res = await apiFetch(`${API_BASE}/incidents`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(incidentData),
@@ -574,7 +593,7 @@ export async function confirmIncidentApi(
     reporterAvatar: _ignoredReporterAvatar,
     ...cleanPayload
   } = payload;
-  const res = await fetch(`${API_BASE}/incidents/${encodeURIComponent(incidentId)}/confirm`, {
+  const res = await apiFetch(`${API_BASE}/incidents/${encodeURIComponent(incidentId)}/confirm`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(cleanPayload),
@@ -593,7 +612,7 @@ export async function confirmIncidentApi(
 
 export async function fetchUserProfile(userId: string): Promise<User | null> {
   try {
-    const res = await fetch(`${API_BASE}/users/profile/${encodeURIComponent(userId)}`, {
+    const res = await apiFetch(`${API_BASE}/users/profile/${encodeURIComponent(userId)}`, {
       headers: getApiHeaders(),
     });
     if (!res.ok) return null;
@@ -611,7 +630,7 @@ export async function fetchWeatherForecast(trailId: string, signal?: AbortSignal
     60_000,
     async () => {
       try {
-        const res = await fetch(`${API_BASE}/weather/${encodeURIComponent(cleanId)}`);
+        const res = await apiFetch(`${API_BASE}/weather/${encodeURIComponent(cleanId)}`);
         const json = await res.json().catch(() => ({}));
         if (!res.ok || !json.success) {
           return {
@@ -644,7 +663,7 @@ export async function fetchWeatherForecast(trailId: string, signal?: AbortSignal
 }
 
 export async function createExpeditionItinerary(itineraryData: Record<string, unknown>) {
-  const res = await fetch(`${API_BASE}/itineraries`, {
+  const res = await apiFetch(`${API_BASE}/itineraries`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(itineraryData),
@@ -668,7 +687,7 @@ export async function createExpeditionItinerary(itineraryData: Record<string, un
 
 export async function fetchItineraryByToken(shareToken: string) {
   try {
-    const res = await fetch(`${API_BASE}/itineraries/share/${encodeURIComponent(shareToken)}`);
+    const res = await apiFetch(`${API_BASE}/itineraries/share/${encodeURIComponent(shareToken)}`);
     if (res.ok) {
       const json = await res.json();
       if (json.data) return json.data;
@@ -691,7 +710,7 @@ export async function fetchItineraryByToken(shareToken: string) {
 
 export async function reverseGeocode(lat: number, lng: number) {
   try {
-    const res = await fetch(`${API_BASE}/geocode/reverse?lat=${lat}&lng=${lng}`);
+    const res = await apiFetch(`${API_BASE}/geocode/reverse?lat=${lat}&lng=${lng}`);
     if (!res.ok) throw new Error('Geocoding API error');
     const json = await res.json();
     return json.data;
@@ -706,7 +725,7 @@ export async function reverseGeocode(lat: number, lng: number) {
 
 // Notification API helpers delegated to single source of truth (notificationService.ts)
 export async function fetchNotificationsApi(params?: { category?: string; page?: number; limit?: number }) {
-  const token = localStorage.getItem('lost_token');
+  const token = safeLocalStorageGet('lost_token');
   if (!token) return { success: false, data: [], unreadCount: 0, totalCount: 0, categoryCounts: {} };
   const result = await fetchNotifications(
     params?.page || 1,
@@ -1076,7 +1095,7 @@ export async function fetchSummitChallenges(params?: { region?: string }): Promi
     30_000,
     async () => {
       try {
-        const res = await fetch(`${API_BASE}/challenges${qs}`, {
+        const res = await apiFetch(`${API_BASE}/challenges${qs}`, {
           headers: getApiHeaders(),
         });
         const json = await parseJsonSafe<SummitChallengeItem[]>(res);
@@ -1091,7 +1110,7 @@ export async function fetchSummitChallenges(params?: { region?: string }): Promi
 
 export async function fetchPeakPassport(): Promise<PeakPassportData | null> {
   try {
-    const res = await fetch(`${API_BASE}/challenges/passport/me`, {
+    const res = await apiFetch(`${API_BASE}/challenges/passport/me`, {
       headers: getApiHeaders(),
     });
     const json = await parseJsonSafe<PeakPassportData>(res);
@@ -1112,7 +1131,7 @@ export async function fetchChallengeLeaderboard(params?: {
     30_000,
     async () => {
       try {
-        const res = await fetch(`${API_BASE}/challenges/leaderboard${qs}`, {
+        const res = await apiFetch(`${API_BASE}/challenges/leaderboard${qs}`, {
           headers: getPublicReadHeaders(),
         });
         const json = await parseJsonSafe<ChallengeLeaderboardEntry[]>(res);
@@ -1130,7 +1149,7 @@ export async function claimSummitChallenge(slug: string): Promise<{
   data?: Record<string, unknown>;
   message?: string;
 }> {
-  const res = await fetch(`${API_BASE}/challenges/${encodeURIComponent(slug)}/claim`, {
+  const res = await apiFetch(`${API_BASE}/challenges/${encodeURIComponent(slug)}/claim`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({}),
@@ -1155,7 +1174,7 @@ export async function fetchMyTrainingPlans(): Promise<{
   activeReadiness?: number;
 }> {
   try {
-    const res = await fetch(`${API_BASE}/training-plans/me`, {
+    const res = await apiFetch(`${API_BASE}/training-plans/me`, {
       headers: getApiHeaders(),
     });
     const json = await parseJsonSafe<
@@ -1182,7 +1201,7 @@ export async function createTrainingPlan(payload: {
   durationWeeks: 4 | 6 | 8;
   fitnessLevel: 'beginner' | 'intermediate' | 'advanced';
 }): Promise<TrainingPlanItem> {
-  const res = await fetch(`${API_BASE}/training-plans`, {
+  const res = await apiFetch(`${API_BASE}/training-plans`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
@@ -1199,7 +1218,7 @@ export async function toggleTrainingSession(
   sessionId: string,
   completed?: boolean
 ): Promise<TrainingPlanItem> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/training-plans/${encodeURIComponent(planId)}/sessions/${encodeURIComponent(sessionId)}`,
     {
       method: 'PATCH',
@@ -1218,7 +1237,7 @@ export async function updateTrainingPlanStatus(
   planId: string,
   status: 'active' | 'completed' | 'abandoned'
 ): Promise<TrainingPlanItem> {
-  const res = await fetch(`${API_BASE}/training-plans/${encodeURIComponent(planId)}/status`, {
+  const res = await apiFetch(`${API_BASE}/training-plans/${encodeURIComponent(planId)}/status`, {
     method: 'PATCH',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ status }),
@@ -1231,7 +1250,7 @@ export async function updateTrainingPlanStatus(
 }
 
 export async function deleteTrainingPlan(planId: string): Promise<{ success: boolean; message?: string }> {
-  const res = await fetch(`${API_BASE}/training-plans/${encodeURIComponent(planId)}`, {
+  const res = await apiFetch(`${API_BASE}/training-plans/${encodeURIComponent(planId)}`, {
     method: 'DELETE',
     headers: getApiHeaders(),
   });
@@ -1265,7 +1284,7 @@ export async function fetchDirectoryGuides(params?: {
     45_000,
     async () => {
       try {
-        const res = await fetch(`${API_BASE}/directory/guides${qs}`, {
+        const res = await apiFetch(`${API_BASE}/directory/guides${qs}`, {
           headers: getPublicReadHeaders(),
         });
         const json = await parseJsonSafe<DirectoryGuideItem[]>(res);
@@ -1297,7 +1316,7 @@ export async function createGuideInquiry(
     notes?: string;
   }
 ): Promise<GuideInquiryItem> {
-  const res = await fetch(`${API_BASE}/directory/guides/${encodeURIComponent(guideId)}/inquiries`, {
+  const res = await apiFetch(`${API_BASE}/directory/guides/${encodeURIComponent(guideId)}/inquiries`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
@@ -1312,7 +1331,7 @@ export async function createGuideInquiry(
 
 export async function fetchMyGuideInquiries(): Promise<GuideInquiryItem[]> {
   try {
-    const res = await fetch(`${API_BASE}/directory/inquiries/me`, {
+    const res = await apiFetch(`${API_BASE}/directory/inquiries/me`, {
       headers: getApiHeaders(),
     });
     const json = await parseJsonSafe<GuideInquiryItem[]>(res);
@@ -1337,7 +1356,7 @@ export async function fetchRangerStations(params?: {
     60_000,
     async () => {
       try {
-        const res = await fetch(`${API_BASE}/directory/rangers${qs}`, {
+        const res = await apiFetch(`${API_BASE}/directory/rangers${qs}`, {
           headers: getPublicReadHeaders(),
         });
         const json = await parseJsonSafe<RangerStationItem[]>(res);
@@ -1359,7 +1378,7 @@ export async function fetchTripCostEstimate(params: {
   includeTransport?: boolean;
 }): Promise<TripCostEstimate | null> {
   try {
-    const res = await fetch(`${API_BASE}/directory/cost-estimate${buildQuery(params)}`, {
+    const res = await apiFetch(`${API_BASE}/directory/cost-estimate${buildQuery(params)}`, {
       headers: getApiHeaders(),
     });
     const json = await parseJsonSafe<TripCostEstimate>(res);
@@ -1381,7 +1400,7 @@ export async function fetchMyLogbook(params?: {
   limit?: number;
 }): Promise<{ data: LogbookEntryItem[]; pagination?: ApiPagination }> {
   try {
-    const res = await fetch(`${API_BASE}/logbook/me${buildQuery(params)}`, {
+    const res = await apiFetch(`${API_BASE}/logbook/me${buildQuery(params)}`, {
       headers: getApiHeaders(),
     });
     const json = await parseJsonSafe<LogbookEntryItem[]>(res);
@@ -1397,7 +1416,7 @@ export async function fetchMyLogbook(params?: {
 
 export async function fetchLogbookAnalytics(): Promise<LogbookAnalyticsData | null> {
   try {
-    const res = await fetch(`${API_BASE}/logbook/analytics/me`, {
+    const res = await apiFetch(`${API_BASE}/logbook/analytics/me`, {
       headers: getApiHeaders(),
     });
     const json = await parseJsonSafe<LogbookAnalyticsData>(res);
@@ -1420,7 +1439,7 @@ export async function updateLogbookEntry(
     isPublic?: boolean;
   }
 ): Promise<LogbookEntryItem> {
-  const res = await fetch(`${API_BASE}/logbook/${encodeURIComponent(checkinId)}`, {
+  const res = await apiFetch(`${API_BASE}/logbook/${encodeURIComponent(checkinId)}`, {
     method: 'PATCH',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
@@ -1436,7 +1455,7 @@ export async function updateLogbookEntry(
 }
 
 export async function deleteLogbookEntry(checkinId: string): Promise<{ success: boolean; message?: string }> {
-  const res = await fetch(`${API_BASE}/logbook/${encodeURIComponent(checkinId)}`, {
+  const res = await apiFetch(`${API_BASE}/logbook/${encodeURIComponent(checkinId)}`, {
     method: 'DELETE',
     headers: getApiHeaders(),
   });
@@ -1462,7 +1481,7 @@ export async function analyzeCustomRoute(payload: {
   source?: string;
 }> {
   const trackPoints = payload.trackPoints || payload.points || [];
-  const res = await fetch(`${API_BASE}/custom-routes/analyze`, {
+  const res = await apiFetch(`${API_BASE}/custom-routes/analyze`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ ...payload, trackPoints }),
@@ -1488,7 +1507,7 @@ export async function createCustomRoute(payload: {
   trackPoints: [number, number][];
   visibility?: 'private' | 'unlisted' | 'public';
 }): Promise<CustomRouteItem> {
-  const res = await fetch(`${API_BASE}/custom-routes`, {
+  const res = await apiFetch(`${API_BASE}/custom-routes`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
@@ -1502,7 +1521,7 @@ export async function createCustomRoute(payload: {
 
 export async function fetchMyCustomRoutes(): Promise<CustomRouteItem[]> {
   try {
-    const res = await fetch(`${API_BASE}/custom-routes/me`, {
+    const res = await apiFetch(`${API_BASE}/custom-routes/me`, {
       headers: getApiHeaders(),
     });
     const json = await parseJsonSafe<CustomRouteItem[]>(res);
@@ -1520,7 +1539,7 @@ export async function fetchPublicCustomRoutes(params?: {
   limit?: number;
 }): Promise<{ data: CustomRouteItem[]; pagination?: ApiPagination }> {
   try {
-    const res = await fetch(`${API_BASE}/custom-routes/public${buildQuery(params)}`, {
+    const res = await apiFetch(`${API_BASE}/custom-routes/public${buildQuery(params)}`, {
       headers: getApiHeaders(),
     });
     const json = await parseJsonSafe<CustomRouteItem[]>(res);
@@ -1536,7 +1555,7 @@ export async function fetchPublicCustomRoutes(params?: {
 
 export async function fetchCustomRouteBySlug(shareSlug: string): Promise<CustomRouteItem | null> {
   try {
-    const res = await fetch(`${API_BASE}/custom-routes/share/${encodeURIComponent(shareSlug)}`, {
+    const res = await apiFetch(`${API_BASE}/custom-routes/share/${encodeURIComponent(shareSlug)}`, {
       headers: getApiHeaders(),
     });
     const json = await parseJsonSafe<CustomRouteItem>(res);
@@ -1548,7 +1567,7 @@ export async function fetchCustomRouteBySlug(shareSlug: string): Promise<CustomR
 }
 
 export async function deleteCustomRoute(id: string): Promise<{ success: boolean; message?: string }> {
-  const res = await fetch(`${API_BASE}/custom-routes/${encodeURIComponent(id)}`, {
+  const res = await apiFetch(`${API_BASE}/custom-routes/${encodeURIComponent(id)}`, {
     method: 'DELETE',
     headers: getApiHeaders(),
   });
@@ -1564,7 +1583,7 @@ export async function toggleCustomRouteLike(id: string): Promise<{
   liked: boolean;
   likesCount: number;
 }> {
-  const res = await fetch(`${API_BASE}/custom-routes/${encodeURIComponent(id)}/like`, {
+  const res = await apiFetch(`${API_BASE}/custom-routes/${encodeURIComponent(id)}/like`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({}),
@@ -1593,7 +1612,7 @@ export async function fetchTripsCalendar(params?: {
   trips?: Record<string, unknown>[];
 }> {
   try {
-    const res = await fetch(`${API_BASE}/trips/calendar${buildQuery(params)}`, {
+    const res = await apiFetch(`${API_BASE}/trips/calendar${buildQuery(params)}`, {
       headers: getApiHeaders(),
     });
     const json = await parseJsonSafe<{
@@ -1619,7 +1638,7 @@ export async function approveTripMember(
   tripId: string,
   applicantUserId: string
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${API_BASE}/trips/${encodeURIComponent(tripId)}/approve`, {
+  const res = await apiFetch(`${API_BASE}/trips/${encodeURIComponent(tripId)}/approve`, {
     method: 'PUT',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ applicantUserId, userId: applicantUserId }),
@@ -1637,7 +1656,7 @@ export async function rejectTripMember(
   tripId: string,
   applicantUserId: string
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${API_BASE}/trips/${encodeURIComponent(tripId)}/reject`, {
+  const res = await apiFetch(`${API_BASE}/trips/${encodeURIComponent(tripId)}/reject`, {
     method: 'PUT',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ applicantUserId, userId: applicantUserId }),
@@ -1652,7 +1671,7 @@ export async function rejectTripMember(
 }
 
 export async function leaveTrip(tripId: string): Promise<Record<string, unknown>> {
-  const res = await fetch(`${API_BASE}/trips/${encodeURIComponent(tripId)}/leave`, {
+  const res = await apiFetch(`${API_BASE}/trips/${encodeURIComponent(tripId)}/leave`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({}),
@@ -1670,7 +1689,7 @@ export async function updateTripStatus(
   tripId: string,
   status: string
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${API_BASE}/trips/${encodeURIComponent(tripId)}/status`, {
+  const res = await apiFetch(`${API_BASE}/trips/${encodeURIComponent(tripId)}/status`, {
     method: 'PATCH',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ status }),
@@ -1685,7 +1704,7 @@ export async function updateTripStatus(
 }
 
 export async function deleteTrip(tripId: string): Promise<{ success: boolean; message?: string }> {
-  const res = await fetch(`${API_BASE}/trips/${encodeURIComponent(tripId)}`, {
+  const res = await apiFetch(`${API_BASE}/trips/${encodeURIComponent(tripId)}`, {
     method: 'DELETE',
     headers: getApiHeaders(),
   });
@@ -1704,7 +1723,7 @@ export async function toggleFollowUser(userId: string): Promise<{
   followersCount?: number;
   message?: string;
 }> {
-  const res = await fetch(`${API_BASE}/users/${encodeURIComponent(userId)}/follow`, {
+  const res = await apiFetch(`${API_BASE}/users/${encodeURIComponent(userId)}/follow`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({}),
@@ -1727,7 +1746,7 @@ export async function fetchFollowStatus(userId: string): Promise<{
   followingCount: number;
 }> {
   try {
-    const res = await fetch(`${API_BASE}/users/${encodeURIComponent(userId)}/follow-status`, {
+    const res = await apiFetch(`${API_BASE}/users/${encodeURIComponent(userId)}/follow-status`, {
       headers: getApiHeaders(),
     });
     const json = await parseJsonSafe<{
@@ -1811,7 +1830,7 @@ export interface GearPackRecord {
 export async function fetchPlatformStatsSummary(): Promise<PlatformStatsSummary | null> {
   return cachedRead<PlatformStatsSummary | null>('stats:summary', 30_000, async () => {
     try {
-      const res = await fetch(`${API_BASE}/trails/stats/summary`, {
+      const res = await apiFetch(`${API_BASE}/trails/stats/summary`, {
         headers: getPublicReadHeaders(),
       });
       const json = await parseJsonSafe<Record<string, unknown>>(res);
@@ -1843,7 +1862,7 @@ export async function fetchMyGearPacks(): Promise<{
   maxPacks: number;
 }> {
   try {
-    const res = await fetch(`${API_BASE}/gear-packs/me`, {
+    const res = await apiFetch(`${API_BASE}/gear-packs/me`, {
       headers: getApiHeaders(),
     });
     const json = await parseJsonSafe<GearPackRecord[]>(res);
@@ -1864,7 +1883,7 @@ export async function createGearPack(payload: {
   items: GearPackItemSpec[];
   isPublic?: boolean;
 }): Promise<GearPackRecord> {
-  const res = await fetch(`${API_BASE}/gear-packs`, {
+  const res = await apiFetch(`${API_BASE}/gear-packs`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
@@ -1886,7 +1905,7 @@ export async function updateGearPack(
     isPublic: boolean;
   }>
 ): Promise<GearPackRecord> {
-  const res = await fetch(`${API_BASE}/gear-packs/${encodeURIComponent(id)}`, {
+  const res = await apiFetch(`${API_BASE}/gear-packs/${encodeURIComponent(id)}`, {
     method: 'PUT',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
@@ -1899,7 +1918,7 @@ export async function updateGearPack(
 }
 
 export async function deleteGearPack(id: string): Promise<{ success: boolean; message?: string }> {
-  const res = await fetch(`${API_BASE}/gear-packs/${encodeURIComponent(id)}`, {
+  const res = await apiFetch(`${API_BASE}/gear-packs/${encodeURIComponent(id)}`, {
     method: 'DELETE',
     headers: getApiHeaders(),
   });
@@ -1912,7 +1931,7 @@ export async function deleteGearPack(id: string): Promise<{ success: boolean; me
 
 export async function fetchSharedGearPack(shareSlug: string): Promise<GearPackRecord | null> {
   try {
-    const res = await fetch(`${API_BASE}/gear-packs/share/${encodeURIComponent(shareSlug)}`, {
+    const res = await apiFetch(`${API_BASE}/gear-packs/share/${encodeURIComponent(shareSlug)}`, {
       headers: getApiHeaders(),
     });
     const json = await parseJsonSafe<GearPackRecord>(res);
@@ -1925,7 +1944,7 @@ export async function fetchSharedGearPack(shareSlug: string): Promise<GearPackRe
 
 export async function fetchThreadDetail(threadId: string): Promise<Record<string, unknown> | null> {
   try {
-    const res = await fetch(`${API_BASE}/forum/threads/${encodeURIComponent(threadId)}`, {
+    const res = await apiFetch(`${API_BASE}/forum/threads/${encodeURIComponent(threadId)}`, {
       headers: getApiHeaders(),
     });
     const json = await parseJsonSafe<Record<string, unknown>>(res);
@@ -1946,7 +1965,7 @@ export async function updateForumThread(
     images?: string[];
   }
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${API_BASE}/forum/threads/${encodeURIComponent(threadId)}`, {
+  const res = await apiFetch(`${API_BASE}/forum/threads/${encodeURIComponent(threadId)}`, {
     method: 'PATCH',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
@@ -1959,7 +1978,7 @@ export async function updateForumThread(
 }
 
 export async function deleteForumThread(threadId: string): Promise<{ success: boolean; message?: string }> {
-  const res = await fetch(`${API_BASE}/forum/threads/${encodeURIComponent(threadId)}`, {
+  const res = await apiFetch(`${API_BASE}/forum/threads/${encodeURIComponent(threadId)}`, {
     method: 'DELETE',
     headers: getApiHeaders(),
   });
@@ -1974,7 +1993,7 @@ export async function updateForumComment(
   commentId: string,
   payload: { content: string }
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${API_BASE}/comments/${encodeURIComponent(commentId)}`, {
+  const res = await apiFetch(`${API_BASE}/comments/${encodeURIComponent(commentId)}`, {
     method: 'PATCH',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
@@ -1987,7 +2006,7 @@ export async function updateForumComment(
 }
 
 export async function deleteForumComment(commentId: string): Promise<{ success: boolean; message?: string }> {
-  const res = await fetch(`${API_BASE}/comments/${encodeURIComponent(commentId)}`, {
+  const res = await apiFetch(`${API_BASE}/comments/${encodeURIComponent(commentId)}`, {
     method: 'DELETE',
     headers: getApiHeaders(),
   });
@@ -2002,7 +2021,7 @@ export async function deleteTrailReview(
   trailId: string,
   reviewId: string
 ): Promise<{ success: boolean; message?: string; data?: { rating: number; reviewCount: number } }> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/trails/${encodeURIComponent(trailId)}/reviews/${encodeURIComponent(reviewId)}`,
     {
       method: 'DELETE',
@@ -2039,7 +2058,7 @@ export async function updateTripReport(
     photos: string[];
   }>
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${API_BASE}/trip-reports/${encodeURIComponent(reportId)}`, {
+  const res = await apiFetch(`${API_BASE}/trip-reports/${encodeURIComponent(reportId)}`, {
     method: 'PATCH',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
@@ -2052,7 +2071,7 @@ export async function updateTripReport(
 }
 
 export async function deleteTripReport(reportId: string): Promise<{ success: boolean; message?: string }> {
-  const res = await fetch(`${API_BASE}/trip-reports/${encodeURIComponent(reportId)}`, {
+  const res = await apiFetch(`${API_BASE}/trip-reports/${encodeURIComponent(reportId)}`, {
     method: 'DELETE',
     headers: getApiHeaders(),
   });
@@ -2064,7 +2083,7 @@ export async function deleteTripReport(reportId: string): Promise<{ success: boo
 }
 
 export async function deleteTrailCondition(conditionId: string): Promise<{ success: boolean; message?: string }> {
-  const res = await fetch(`${API_BASE}/trail-conditions/${encodeURIComponent(conditionId)}`, {
+  const res = await apiFetch(`${API_BASE}/trail-conditions/${encodeURIComponent(conditionId)}`, {
     method: 'DELETE',
     headers: getApiHeaders(),
   });
@@ -2076,7 +2095,7 @@ export async function deleteTrailCondition(conditionId: string): Promise<{ succe
 }
 
 export async function deleteSharedItinerary(shareToken: string): Promise<{ success: boolean; message?: string }> {
-  const res = await fetch(`${API_BASE}/itineraries/${encodeURIComponent(shareToken)}`, {
+  const res = await apiFetch(`${API_BASE}/itineraries/${encodeURIComponent(shareToken)}`, {
     method: 'DELETE',
     headers: getApiHeaders(),
   });
@@ -2142,7 +2161,7 @@ export async function fetchLiveSummitsWeather(
     async () => {
       try {
         const query = normalizedRegion ? `?region=${encodeURIComponent(normalizedRegion)}` : '';
-        const res = await fetch(`${API_BASE}/weather/summits-live${query}`, {
+        const res = await apiFetch(`${API_BASE}/weather/summits-live${query}`, {
           headers: getPublicReadHeaders(),
         });
         const json = await parseJsonSafe<SummitLiveTelemetry[]>(res);
@@ -2183,7 +2202,7 @@ export async function fetchNearbyTrailsForTrail(
     60_000,
     async () => {
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `${API_BASE}/trails/${encodeURIComponent(cleanId)}/nearby-trails`,
           {
             headers: getPublicReadHeaders(),
@@ -2285,7 +2304,7 @@ export async function fetchCommunityActivities(options?: {
     limit: String(limit),
   });
   try {
-    const res = await fetch(`${API_BASE}/activities/community?${qs.toString()}`, {
+    const res = await apiFetch(`${API_BASE}/activities/community?${qs.toString()}`, {
       headers: getApiHeaders(),
       signal: options?.signal,
     });
@@ -2348,7 +2367,7 @@ async function fetchFollowGraphList(
   const limit = Math.min(50, Math.max(1, Math.floor(options?.limit ?? 30)));
   const qs = new URLSearchParams({ page: String(page), limit: String(limit) });
   try {
-    const res = await fetch(
+    const res = await apiFetch(
       `${API_BASE}/users/${encodeURIComponent(userId)}/${direction}?${qs.toString()}`,
       {
         headers: getApiHeaders(),
@@ -2415,7 +2434,7 @@ export async function updateSavedTrailMeta(
   trailId: string,
   payload: SavedTrailMetaPayload
 ): Promise<SavedTrailMetaRecord> {
-  const res = await fetch(
+  const res = await apiFetch(
     `${API_BASE}/saved-trails/${encodeURIComponent(trailId)}`,
     {
       method: 'PATCH',
@@ -2505,7 +2524,7 @@ export async function fetchMultiTrailWeatherCompare(
 
   try {
     const qs = new URLSearchParams({ ids: cleanIds.join(',') });
-    const res = await fetch(`${API_BASE}/weather/compare?${qs.toString()}`, {
+    const res = await apiFetch(`${API_BASE}/weather/compare?${qs.toString()}`, {
       headers: getApiHeaders(),
       signal,
     });
@@ -2689,7 +2708,7 @@ export async function createLiveBeacon(payload: {
   batteryPercent?: number | null;
   emergencyNote?: string;
 }): Promise<LiveBeaconSessionResponse> {
-  const res = await fetch(`${API_BASE}/live-beacons`, {
+  const res = await apiFetch(`${API_BASE}/live-beacons`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
@@ -2722,7 +2741,7 @@ export async function pingLiveBeacon(
     emergencyNote?: string;
   }
 ): Promise<{ success: boolean; status?: LiveBeaconStatus; updatedAt?: string }> {
-  const res = await fetch(`${API_BASE}/live-beacons/${encodeURIComponent(token)}/ping`, {
+  const res = await apiFetch(`${API_BASE}/live-beacons/${encodeURIComponent(token)}/ping`, {
     method: 'PATCH',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
@@ -2742,7 +2761,7 @@ export async function stopLiveBeacon(
   token: string,
   payload?: { distanceKm?: number; elevationGainM?: number; batteryPercent?: number | null; emergencyNote?: string }
 ): Promise<{ success: boolean; status: LiveBeaconStatus }> {
-  const res = await fetch(`${API_BASE}/live-beacons/${encodeURIComponent(token)}/stop`, {
+  const res = await apiFetch(`${API_BASE}/live-beacons/${encodeURIComponent(token)}/stop`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload || {}),
@@ -2764,7 +2783,7 @@ export async function fetchLiveBeaconByToken(
   const cleanToken = String(token || '').trim();
   if (!cleanToken) return null;
   try {
-    const res = await fetch(`${API_BASE}/live-beacons/${encodeURIComponent(cleanToken)}`, {
+    const res = await apiFetch(`${API_BASE}/live-beacons/${encodeURIComponent(cleanToken)}`, {
       headers: getApiHeaders(),
       signal,
     });
@@ -2984,11 +3003,11 @@ function normalizeWeatherAlertSubItem(raw: unknown): WeatherAlertSubItem | null 
 export async function fetchMyWeatherAlerts(
   signal?: AbortSignal
 ): Promise<WeatherAlertListResponse> {
-  if (typeof localStorage !== 'undefined' && !localStorage.getItem('lost_token')) {
+  if (typeof window !== 'undefined' && !safeLocalStorageGet('lost_token')) {
     return { success: false, count: 0, maxLimit: 10, data: [], unauthorized: true };
   }
   try {
-    const res = await fetch(`${API_BASE}/weather-alerts/me`, {
+    const res = await apiFetch(`${API_BASE}/weather-alerts/me`, {
       headers: getApiHeaders(),
       signal,
     });
@@ -3020,7 +3039,7 @@ export async function upsertWeatherAlert(
   payload: UpsertWeatherAlertPayload,
   signal?: AbortSignal
 ): Promise<WeatherAlertSubItem> {
-  const res = await fetch(`${API_BASE}/weather-alerts`, {
+  const res = await apiFetch(`${API_BASE}/weather-alerts`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
@@ -3044,7 +3063,7 @@ export async function deleteWeatherAlert(
   trailId: string,
   signal?: AbortSignal
 ): Promise<{ success: boolean }> {
-  const res = await fetch(`${API_BASE}/weather-alerts/${encodeURIComponent(trailId)}`, {
+  const res = await apiFetch(`${API_BASE}/weather-alerts/${encodeURIComponent(trailId)}`, {
     method: 'DELETE',
     headers: getApiHeaders(),
     signal,
@@ -3062,7 +3081,7 @@ export async function deleteWeatherAlert(
 export async function evaluateMyWeatherAlerts(
   signal?: AbortSignal
 ): Promise<WeatherAlertEvaluateResponse> {
-  const res = await fetch(`${API_BASE}/weather-alerts/evaluate`, {
+  const res = await apiFetch(`${API_BASE}/weather-alerts/evaluate`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({}),
@@ -3230,7 +3249,7 @@ export async function fetchTrailPois(
     20_000,
     async () => {
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `${API_BASE}/trail-pois/trail/${encodeURIComponent(cleanId)}${qs}`,
           {
             headers: getApiHeaders(),
@@ -3273,7 +3292,7 @@ export async function createTrailPoi(
   payload: CreateTrailPoiPayload,
   signal?: AbortSignal
 ): Promise<TrailPoiItem> {
-  const res = await fetch(`${API_BASE}/trail-pois`, {
+  const res = await apiFetch(`${API_BASE}/trail-pois`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),
@@ -3310,7 +3329,7 @@ export async function toggleConfirmTrailPoi(
   upvoteCount: number;
   lastConfirmedAt: string | null;
 }> {
-  const res = await fetch(`${API_BASE}/trail-pois/${encodeURIComponent(poiId)}/confirm`, {
+  const res = await apiFetch(`${API_BASE}/trail-pois/${encodeURIComponent(poiId)}/confirm`, {
     method: 'POST',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({}),
@@ -3358,7 +3377,7 @@ export async function updateTrailPoiStatus(
   status: TrailPoiStatus,
   signal?: AbortSignal
 ): Promise<TrailPoiItem> {
-  const res = await fetch(`${API_BASE}/trail-pois/${encodeURIComponent(poiId)}/status`, {
+  const res = await apiFetch(`${API_BASE}/trail-pois/${encodeURIComponent(poiId)}/status`, {
     method: 'PATCH',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ status }),
@@ -3390,7 +3409,7 @@ export async function deleteTrailPoi(
   poiId: string,
   signal?: AbortSignal
 ): Promise<{ success: boolean }> {
-  const res = await fetch(`${API_BASE}/trail-pois/${encodeURIComponent(poiId)}`, {
+  const res = await apiFetch(`${API_BASE}/trail-pois/${encodeURIComponent(poiId)}`, {
     method: 'DELETE',
     headers: getApiHeaders(),
     signal,
@@ -3421,7 +3440,7 @@ export async function fetchPlatformPulse(
     25_000,
     async () => {
       try {
-        const res = await fetch(`${API_BASE}/analytics/platform-pulse`, {
+        const res = await apiFetch(`${API_BASE}/analytics/platform-pulse`, {
           headers: getPublicReadHeaders(),
         });
         const json = await parseJsonSafe<Record<string, unknown>>(res);
@@ -3463,7 +3482,7 @@ export async function fetchPlatformPulse(
   );
 }
 
-// --- Wave 16B: ERA5 3-Year Summit Climate Normals & Cloud Annual Goals ---
+// --- Wave 16B: NASA POWER (MERRA-2) 3-Year Summit Climate Normals & Cloud Annual Goals ---
 
 export interface TrailClimateMonth {
   month: number;
@@ -3551,7 +3570,7 @@ export async function fetchTrailClimateNormals(
     months: [],
   };
   if (!cleanId) {
-    return { ...emptyBase, error: 'Thiếu mã cung đường để tải dữ liệu khí hậu ERA5.' };
+    return { ...emptyBase, error: 'Thiếu mã cung đường để tải dữ liệu khí hậu NASA POWER (MERRA-2).' };
   }
 
   return cachedRead<TrailClimateResponse>(
@@ -3559,7 +3578,7 @@ export async function fetchTrailClimateNormals(
     120_000,
     async () => {
       try {
-        const res = await fetch(
+        const res = await apiFetch(
           `${API_BASE}/weather/climate/${encodeURIComponent(cleanId)}`,
           {
             headers: getPublicReadHeaders(),
@@ -3586,7 +3605,7 @@ export async function fetchTrailClimateNormals(
         if (!res.ok || !json.success || months.length === 0) {
           const fallbackError =
             res.status === 503
-              ? 'Trạm lưu trữ khí hậu lịch sử Open-Meteo ERA5 tạm thời quá tải (503). Vui lòng thử lại sau ít phút.'
+              ? 'Trạm lưu trữ khí hậu lịch sử NASA POWER (MERRA-2) tạm thời quá tải (503). Vui lòng thử lại sau ít phút.'
               : res.status === 429
               ? 'Bạn đã tra cứu khí hậu quá nhanh. Vui lòng đợi ít phút rồi thử lại.'
               : 'Không thể tải dữ liệu khí hậu 12 tháng cho cung đường này lúc này.';
@@ -3616,7 +3635,7 @@ export async function fetchTrailClimateNormals(
           value: {
             success: true,
             cached: Boolean(json.cached),
-            source: rawSource || 'open-meteo-era5-3yr',
+            source: rawSource || 'nasa-power-merra2-3yr',
             trailId: typeof json.trailId === 'string' && json.trailId.trim() ? json.trailId.trim() : cleanId,
             trailName: typeof json.trailName === 'string' ? json.trailName.trim() : '',
             maxAltitudeM: parsedAlt !== null ? Math.max(0, Math.round(parsedAlt)) : 0,
@@ -3634,7 +3653,7 @@ export async function fetchTrailClimateNormals(
           value: {
             ...emptyBase,
             offline: true,
-            error: 'Không thể kết nối máy chủ khí hậu ERA5 lúc này (ngoại tuyến).',
+            error: 'Không thể kết nối máy chủ khí hậu NASA POWER (MERRA-2) lúc này (ngoại tuyến).',
           },
           cacheable: false,
         };
@@ -3683,7 +3702,7 @@ export async function fetchMyAnnualGoals(
   error?: string;
 }> {
   try {
-    const res = await fetch(`${API_BASE}/users/me/goals`, {
+    const res = await apiFetch(`${API_BASE}/users/me/goals`, {
       headers: getApiHeaders(),
       signal,
     });
@@ -3722,7 +3741,7 @@ export async function updateMyAnnualGoals(
   payload: UpdateAnnualGoalsPayload,
   signal?: AbortSignal
 ): Promise<AnnualGoalsData> {
-  const res = await fetch(`${API_BASE}/users/me/goals`, {
+  const res = await apiFetch(`${API_BASE}/users/me/goals`, {
     method: 'PATCH',
     headers: getApiHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload),

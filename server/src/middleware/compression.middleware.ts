@@ -85,6 +85,9 @@ export const gzipCompression = (req: Request, res: Response, next: NextFunction)
     return next();
   }
 
+  // Always advertise Vary: Accept-Encoding so caches never mix compressed & uncompressed responses
+  res.vary('Accept-Encoding');
+
   const encoding = negotiateEncoding(String(req.headers['accept-encoding'] || ''));
   if (!encoding) {
     return next();
@@ -92,6 +95,16 @@ export const gzipCompression = (req: Request, res: Response, next: NextFunction)
 
   const originalJson = res.json.bind(res);
   const originalSend = res.send.bind(res);
+  let bypassSendCompression = false;
+
+  const sendUncompressedJson = (body: unknown) => {
+    bypassSendCompression = true;
+    try {
+      return originalJson(body);
+    } finally {
+      bypassSendCompression = false;
+    }
+  };
 
   res.json = ((body: unknown) => {
     if (
@@ -100,7 +113,7 @@ export const gzipCompression = (req: Request, res: Response, next: NextFunction)
       res.statusCode === 304 ||
       res.getHeader('Content-Encoding')
     ) {
-      return originalJson(body);
+      return sendUncompressedJson(body);
     }
 
     const locals = res.locals as Record<string, unknown> | undefined;
@@ -116,22 +129,22 @@ export const gzipCompression = (req: Request, res: Response, next: NextFunction)
     try {
       const serialized = preSerialized ?? JSON.stringify(body);
       if (typeof serialized !== 'string') {
-        return originalJson(body);
+        return sendUncompressedJson(body);
       }
       payload = serialized;
     } catch {
-      return originalJson(body);
+      return sendUncompressedJson(body);
     }
 
     const rawBuf = Buffer.from(payload, 'utf8');
     if (rawBuf.length < MIN_COMPRESS_BYTES) {
-      return originalJson(body);
+      return sendUncompressedJson(body);
     }
 
     compressAsync(rawBuf, encoding, (err, compressed) => {
-      if (res.headersSent) return;
+      if (res.headersSent || res.writableEnded || res.destroyed) return;
       if (err || !compressed || compressed.length >= rawBuf.length) {
-        originalJson(body);
+        sendUncompressedJson(body);
         return;
       }
       res.setHeader('Content-Encoding', encoding);
@@ -146,6 +159,7 @@ export const gzipCompression = (req: Request, res: Response, next: NextFunction)
 
   res.send = ((body?: unknown) => {
     if (
+      bypassSendCompression ||
       res.headersSent ||
       res.statusCode === 204 ||
       res.statusCode === 304 ||
@@ -175,7 +189,7 @@ export const gzipCompression = (req: Request, res: Response, next: NextFunction)
 
     const inputBuf = rawBuf;
     compressAsync(inputBuf, encoding, (err, compressed) => {
-      if (res.headersSent) return;
+      if (res.headersSent || res.writableEnded || res.destroyed) return;
       if (err || !compressed || compressed.length >= inputBuf.length) {
         originalSend(body);
         return;

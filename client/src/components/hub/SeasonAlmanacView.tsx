@@ -63,6 +63,8 @@ const CLOUD_HUNTING_SLUGS = new Set([
 const FLOWERS_FOLIAGE_SLUGS = new Set([
   'trail-putaleng',
   'trail-fansipan',
+  'trail-pusilung',
+  'trail-kyquansan',
   'trail-tachinhu',
   'trail-lungcung',
   'trail-tayconlinh',
@@ -75,185 +77,195 @@ const FLOWERS_FOLIAGE_SLUGS = new Set([
   'trail-binhlieu',
 ]);
 
+// Central Highlands (Tây Nguyên) & dry South-Central coast trails paired with Miền Nam (excludes North/Central monsoon trails like Pù Luông, Bạch Mã, Giếng Trời)
+const HIGHLANDS_AND_SOUTH_CENTRAL_DRY_SLUGS = new Set([
+  'trail-chuyangsin',
+  'trail-thack50',
+  'trail-nuichua',
+  'trail-muidoi',
+  'trail-honba',
+]);
+const HIGHLANDS_PROVINCE_TOKENS = ['dak lak', 'dak nong', 'gia lai', 'kon tum', 'lam dong', 'ninh thuan', 'khanh hoa'];
+
 const MONTHLY_CLIMATE_BRIEFINGS: Record<number, MonthlyBriefing> = {
   1: {
-    headline: 'Chính đông Tây Bắc lạnh sâu (nguy cơ băng giá >2.600m) — Mùa khô lý tưởng tại Tây Nguyên & Nam Bộ',
+    headline: 'Chính đông Tây Bắc rét sâu (dễ có băng giá trên 2.600m) — Tây Nguyên & Nam Bộ bước vào mùa khô đẹp',
     north: {
       status: 'ideal',
-      note: 'Biển mây dày đẹp sau các đợt không khí lạnh; đêm trên 2.400m có thể xuống 0–4°C và xuất hiện băng giá trên Fansipan, Pu Ta Leng, Kỳ Quan San. Cần túi ngủ -5°C và áo lông vũ.',
+      note: 'Biển mây dày đẹp sau mỗi đợt gió mùa; đêm trên 2.400m có thể xuống 0–4°C và có băng giá trên Fansipan, Pu Ta Leng, Kỳ Quan San. Nhớ mang túi ngủ -5°C và áo lông vũ.',
     },
     central: {
       status: 'ideal',
-      note: 'Tây Nguyên (Chư Yang Sin, Thác K50) và duyên hải Khánh Hòa - Ninh Thuận bước vào mùa khô ráo. Riêng Bạch Mã vẫn còn sương mù và mưa phùn lạnh nhẹ.',
+      note: 'Tây Nguyên (Chư Yang Sin, Thác K50) và duyên hải Khánh Hòa – Ninh Thuận vào mùa khô ráo. Riêng Bạch Mã vẫn còn sương mù và mưa phùn lạnh nhẹ.',
     },
     south: {
       status: 'ideal',
-      note: 'Thời điểm vàng toàn miền Nam: Tà Năng - Phan Dũng mùa cỏ cháy vàng óng, Bidoup - Cát Tiên khô ráo ít vắt, Bà Đen & Chứa Chan trời trong.',
+      note: 'Thời điểm đẹp nhất miền Nam: Tà Năng – Phan Dũng vào mùa cỏ cháy vàng óng, Bidoup – Cát Tiên khô ráo ít vắt, Bà Đen và Chứa Chan trời trong.',
     },
   },
   2: {
-    headline: 'Giao mùa xuân — Khởi đầu mùa hoa rừng Tây Bắc & mùa khô ráo toàn quốc',
+    headline: 'Giao mùa sang xuân — Tây Bắc chớm mùa hoa rừng, cả nước khô ráo dễ bước',
     north: {
       status: 'ideal',
-      note: 'Nắng ấm dần, biển mây Tà Xùa, Lảo Thẩn, Lùng Cúng ổn định. Bắt đầu xuất hiện nụ hoa đào rừng và đỗ quyên sớm trên Hoàng Liên Sơn.',
+      note: 'Nắng ấm dần, biển mây Tà Xùa, Lảo Thẩn, Lùng Cúng khá đều. Đào rừng và đỗ quyên sớm bắt đầu hé nụ dọc Hoàng Liên Sơn.',
     },
     central: {
       status: 'ideal',
-      note: 'VQG Bạch Mã, Giếng Trời Đà Nẵng, Thác K50, Mũi Đôi và VQG Núi Chúa tạnh ráo, tầm nhìn rộng, dòng thác trong xanh.',
+      note: 'VQG Bạch Mã, Giếng Trời Đà Nẵng, Thác K50, Mũi Đôi và VQG Núi Chúa tạnh ráo, tầm nhìn thoáng, nước suối trong xanh.',
     },
     south: {
       status: 'ideal',
-      note: 'Trời khô mát buổi sáng; lưu ý nắng bắt đầu gắt buổi trưa trên Bà Đen, Chứa Chan và đồi cỏ trọc Tà Năng — cần xuất phát sớm từ 05:30.',
+      note: 'Sáng khô mát dễ đi, nhưng trưa nắng đã bắt đầu gắt trên Bà Đen, Chứa Chan và đồi cỏ Tà Năng — nên xuất phát sớm từ 05:30.',
     },
   },
   3: {
-    headline: 'Đỉnh cao mùa hoa đỗ quyên cổ thụ Hoàng Liên Sơn & mùa trekking lý tưởng trên cả 3 miền',
+    headline: 'Rộ mùa hoa đỗ quyên cổ thụ Hoàng Liên Sơn — cả ba miền đều vào mùa đi núi đẹp',
     north: {
       status: 'ideal',
-      note: 'Hoa đỗ quyên bung nở rực rỡ nhất năm trên Pu Ta Leng, Fansipan, Pu Si Lung, Tây Côn Lĩnh và Kỳ Quan San. Thời tiết mát mẻ, xác suất biển mây vẫn cao.',
+      note: 'Hoa đỗ quyên nở rực nhất năm trên Pu Ta Leng, Fansipan, Pu Si Lung, Tây Côn Lĩnh và Kỳ Quan San. Trời mát dễ chịu, vẫn dễ gặp biển mây.',
     },
     central: {
       status: 'ideal',
-      note: 'Hoa đỗ quyên đỏ tại VQG Bạch Mã nở rộ dọc Thác Đỗ Quyên 300m. Chư Yang Sin, Thác K50, Mũi Đôi và Núi Chúa cực kỳ thuận lợi.',
+      note: 'Đỗ quyên đỏ ở VQG Bạch Mã nở dọc Thác Đỗ Quyên 300m. Chư Yang Sin, Thác K50, Mũi Đôi và Núi Chúa đều khô ráo, đi rất sướng.',
     },
     south: {
       status: 'ideal',
-      note: 'Mùa khô cao điểm: VQG Cát Tiên (Bàu Sấu) cực dễ quan sát cá sấu Xiêm và chim nước; cần mang tối thiểu 3L nước + điện giải cho các cung nắng.',
+      note: 'Cao điểm mùa khô: VQG Cát Tiên (Bàu Sấu) dễ quan sát cá sấu Xiêm và chim nước; các cung nắng nhớ mang ít nhất 3L nước kèm điện giải.',
     },
   },
   4: {
-    headline: 'Giai đoạn cuối mùa đẹp Tây Bắc — Thời điểm rực rỡ cho suối thác Miền Trung & Cực Đông',
+    headline: 'Cuối mùa đẹp Tây Bắc — thời điểm rực rỡ cho suối thác Miền Trung & Cực Đông',
     north: {
       status: 'ideal',
-      note: 'Tiết trời ấm áp, hoa đỗ quyên nở muộn ở độ cao >2.800m (Pu Ta Leng, Fansipan). Lưu ý dông lốc cục bộ chiều tối cuối tháng.',
+      note: 'Trời ấm dần, hoa đỗ quyên nở muộn ở độ cao trên 2.800m (Pu Ta Leng, Fansipan). Cuối tháng hay có dông chiều bất chợt nên để ý giờ xuống núi.',
     },
     central: {
       status: 'ideal',
-      note: 'Đỉnh điểm thuận lợi cho Cực Đông Mũi Đôi, VQG Núi Chúa, Giếng Trời Đà Nẵng, Bạch Mã và Thác K50 với biển êm, nước suối trong.',
+      note: 'Đẹp nhất năm cho Cực Đông Mũi Đôi, VQG Núi Chúa, Giếng Trời Đà Nẵng, Bạch Mã và Thác K50: biển êm, suối trong.',
     },
     south: {
       status: 'ideal',
-      note: 'Nắng nóng cao điểm Đông Nam Bộ (Bà Đen, Chứa Chan, Núi Dinh); khuyến cáo leo sớm tránh sốc nhiệt. Bidoup mát lạnh quanh năm.',
+      note: 'Đông Nam Bộ nắng gắt (Bà Đen, Chứa Chan, Núi Dinh) nên đi sớm tránh sốc nhiệt. Riêng Bidoup vẫn mát lạnh quanh năm.',
     },
   },
   5: {
-    headline: 'Chuyển mùa mưa sớm — Mùa lúa chín Pù Luông & mùa cỏ xanh chớm mưa Tà Năng',
+    headline: 'Chớm mùa mưa sớm — lúa chín Pù Luông & cỏ xanh đầu mưa Tà Năng',
     north: {
       status: 'caution',
-      note: 'Bắt đầu có mưa dông chiều tại vùng núi Tây Bắc và Đông Bắc, đường đất sét trơn trượt và xuất hiện vắt rừng. Pu Ta Leng còn hoa đỗ quyên muộn.',
+      note: 'Vùng núi Tây Bắc và Đông Bắc bắt đầu có mưa dông chiều, đường đất sét trơn và có vắt rừng. Pu Ta Leng vẫn còn hoa đỗ quyên nở muộn.',
     },
     central: {
       status: 'ideal',
-      note: 'Pù Luông vào vụ lúa chín đầu tiên tuyệt đẹp. Giếng Trời, Bạch Mã, Thác K50, Mũi Đôi và Núi Chúa vẫn khô ráo lý tưởng.',
+      note: 'Pù Luông vào vụ lúa chín đầu tiên rất đẹp. Giếng Trời, Bạch Mã, Thác K50, Mũi Đôi và Núi Chúa vẫn khô ráo.',
     },
     south: {
       status: 'ideal',
-      note: 'Những cơn mưa đầu mùa biến đồi cỏ Tà Năng - Phan Dũng chuyển sắc xanh mướt (vẫn an toàn trước mùa lũ tháng 7).',
+      note: 'Mưa đầu mùa làm đồi cỏ Tà Năng – Phan Dũng chuyển xanh mướt, đường vẫn đi ổn trước mùa nước lớn tháng 7.',
     },
   },
   6: {
-    headline: 'Mùa mưa lũ Tây Bắc (cảnh báo sạt lở) — Ưu tiên trekking suối thác Miền Trung & Cực Đông',
+    headline: 'Tây Bắc vào mùa mưa lũ (dễ sạt lở) — chuyển hướng sang suối thác Miền Trung & Cực Đông',
     north: {
       status: 'avoid',
-      note: 'Mưa lớn kéo dài trên Hoàng Liên Sơn và Đông Bắc gây lũ quét khe suối, sạt lở taluy và sét đánh trên đỉnh trống. Khuyến cáo hạn chế các đỉnh >2.400m.',
+      note: 'Mưa lớn kéo dài trên Hoàng Liên Sơn và Đông Bắc dễ gây lũ quét khe suối, sạt lở đường và sét đánh trên đỉnh trống. Nên gác lại các đỉnh trên 2.400m.',
     },
     central: {
       status: 'ideal',
-      note: 'Mùa vàng trekking Miền Trung: Giếng Trời Đà Nẵng, Bạch Mã, Cực Đông Mũi Đôi, VQG Núi Chúa nắng đẹp, biển xanh trong.',
+      note: 'Mùa đẹp nhất của Miền Trung: Giếng Trời Đà Nẵng, Bạch Mã, Cực Đông Mũi Đôi, VQG Núi Chúa nắng ráo, biển xanh.',
     },
     south: {
       status: 'caution',
-      note: 'Mưa rào chiều thường xuyên; VQG Cát Tiên nhiều vắt, đồi cỏ Tà Năng xanh đẹp nhưng cần theo dõi sát dự báo mưa thượng nguồn.',
+      note: 'Chiều hay mưa rào; VQG Cát Tiên bắt đầu nhiều vắt, đồi cỏ Tà Năng xanh đẹp nhưng cần xem kỹ mưa thượng nguồn trước khi đi.',
     },
   },
   7: {
-    headline: 'Cao điểm mưa bão miền Bắc & mưa Tây Nguyên — Tập trung các cung duyên hải Miền Trung',
+    headline: 'Cao điểm mưa bão miền Bắc & mưa Tây Nguyên — ưu tiên các cung ven biển Miền Trung',
     north: {
       status: 'avoid',
-      note: 'Nguy cơ lũ ống, lũ quét và sạt lở đường tiếp cận rất cao tại Lào Cai, Lai Châu, Yên Bái, Hà Giang. Tuyệt đối không leo khi có áp thấp/bão.',
+      note: 'Nguy cơ lũ ống, lũ quét và sạt lở đường vào bản rất cao ở Lào Cai, Lai Châu, Yên Bái, Hà Giang. Tuyệt đối không lên núi khi có áp thấp hay bão.',
     },
     central: {
       status: 'caution',
-      note: 'Duyên hải Miền Trung (Bạch Mã, Giếng Trời, Mũi Đôi, Núi Chúa) còn thuận lợi, nhưng Chư Yang Sin và Pù Luông mưa nhiều trơn trượt.',
+      note: 'Duyên hải Miền Trung (Bạch Mã, Giếng Trời, Mũi Đôi, Núi Chúa) vẫn đi ổn, nhưng Chư Yang Sin và Pù Luông đã mưa nhiều, đường trơn.',
     },
     south: {
       status: 'avoid',
-      note: 'Cảnh báo lũ suối Phan Dũng (Tà Năng - Phan Dũng) và mưa lớn vùng lõi Cát Tiên. Nếu đi núi trong ngày (Bà Đen, Núi Dinh) cần xuất phát sáng và tránh dông chiều.',
+      note: 'Cẩn thận nước lũ suối Phan Dũng (Tà Năng – Phan Dũng) và mưa lớn vùng lõi Cát Tiên. Nếu đi núi trong ngày (Bà Đen, Núi Dinh) nên đi sớm và xuống trước dông chiều.',
     },
   },
   8: {
-    headline: 'Mưa lớn miền Bắc & Tây Nguyên — Theo dõi sát bão Biển Đông trước mọi lịch trình',
+    headline: 'Mưa lớn miền Bắc & Tây Nguyên — theo dõi sát bão Biển Đông trước khi chốt lịch',
     north: {
       status: 'avoid',
-      note: 'Tháng có lượng mưa lớn nhất Tây Bắc, vách đá Ngũ Chỉ Sơn, Tà Xùa, Kỳ Quan San cực kỳ trơn trượt và sương mù dày đặc.',
+      note: 'Tháng mưa nhiều nhất Tây Bắc, vách đá Ngũ Chỉ Sơn, Tà Xùa, Kỳ Quan San rất trơn và mù đặc.',
     },
     central: {
       status: 'caution',
-      note: 'Đầu tháng còn nắng ráo tại Bạch Mã, Mũi Đôi, Núi Chúa; cuối tháng bắt đầu chuyển mưa rào tại Tây Nguyên (Chư Yang Sin, K50).',
+      note: 'Đầu tháng vẫn nắng ráo ở Bạch Mã, Mũi Đôi, Núi Chúa; cuối tháng Tây Nguyên (Chư Yang Sin, K50) bắt đầu mưa rào nhiều hơn.',
     },
     south: {
       status: 'avoid',
-      note: 'Đất đá ẩm trơn, sấm sét chiều và nước suối dâng cao tại Phan Dũng, Chứa Chan, Cát Tiên. Hạn chế cắm trại sát bờ suối.',
+      note: 'Đường ẩm trơn, hay có sấm sét buổi chiều và nước suối dâng cao ở Phan Dũng, Chứa Chan, Cát Tiên. Không hạ trại sát mép suối.',
     },
   },
   9: {
-    headline: 'Thu sang Tây Bắc (mùa lúa chín Pù Luông & Lảo Thẩn mở mùa) — Khởi đầu mùa mưa Trung Bộ',
+    headline: 'Thu về Tây Bắc (lúa chín Pù Luông & Lảo Thẩn mở mùa) — Trung Bộ vào mùa mưa',
     north: {
       status: 'caution',
-      note: 'Giữa đến cuối tháng 9 trời khô dần: Lảo Thẩn, Tà Chì Nhù bắt đầu mở mùa săn mây sớm; vẫn cần kiểm tra dự báo bão cuối mùa.',
+      note: 'Từ giữa đến cuối tháng 9 trời bắt đầu khô dần: Lảo Thẩn, Tà Chì Nhù mở mùa săn mây sớm, nhưng vẫn nên ngó dự báo bão cuối mùa.',
     },
     central: {
       status: 'caution',
-      note: 'Pù Luông bước vào mùa lúa chín vàng rực rỡ nhất năm! Ngược lại, Đà Nẵng (Giếng Trời) và Gia Lai (Thác K50) bắt đầu có mưa lớn cần thận trọng.',
+      note: 'Pù Luông bước vào mùa lúa chín vàng đẹp nhất năm. Ngược lại, Đà Nẵng (Giếng Trời) và Gia Lai (Thác K50) bắt đầu mưa lớn cần thận trọng.',
     },
     south: {
       status: 'avoid',
-      note: 'Cao điểm mưa Nam Bộ & Tây Nguyên: cảnh báo lũ quét Phan Dũng, Bidoup nhiều vắt và sương mù, Núi Dinh / Bà Đen trơn trượt.',
+      note: 'Cao điểm mưa Nam Bộ & Tây Nguyên: cảnh giác lũ quét Phan Dũng, Bidoup nhiều vắt và sương mù, Núi Dinh và Bà Đen dễ trượt.',
     },
   },
   10: {
-    headline: 'Mở mùa vàng săn mây Tây Bắc & hoa Chi Pâu Tà Chì Nhù — Tránh mưa bão Trung Bộ',
+    headline: 'Mở mùa vàng săn mây Tây Bắc & hoa Chi Pâu Tà Chì Nhù — né mưa bão Trung Bộ',
     north: {
       status: 'ideal',
-      note: 'Khởi đầu mùa trekking đẹp nhất năm! Thảm hoa tím Chi Pâu phủ kín Tà Chì Nhù, biển mây tràn ngập Lảo Thẩn, Tà Xùa, Fansipan, Kỳ Quan San, Ngũ Chỉ Sơn.',
+      note: 'Mùa đi núi đẹp nhất năm bắt đầu: hoa tím Chi Pâu phủ sườn Tà Chì Nhù, biển mây ngập Lảo Thẩn, Tà Xùa, Fansipan, Kỳ Quan San, Ngũ Chỉ Sơn.',
     },
     central: {
       status: 'avoid',
-      note: 'Cao điểm mùa mưa bão miền Trung (Bạch Mã, Giếng Trời, Thác K50, Mũi Đôi sóng lớn, Núi Chúa mưa rừng). Tuyệt đối không nhảy ghềnh Mũi Đôi khi biển động.',
+      note: 'Cao điểm mưa bão miền Trung (Bạch Mã, Giếng Trời, Thác K50, Mũi Đôi sóng lớn, Núi Chúa mưa rừng). Không nhảy ghềnh Mũi Đôi khi biển động.',
     },
     south: {
       status: 'caution',
-      note: 'Mưa giảm dần về cuối tháng 10 nhưng suối Phan Dũng vẫn còn nước lớn và đường đất đỏ Tây Nguyên còn lầy lội.',
+      note: 'Cuối tháng 10 mưa đã ngớt dần nhưng suối Phan Dũng nước còn cao và đường đất đỏ Tây Nguyên vẫn lầy.',
     },
   },
   11: {
-    headline: 'Mùa vàng săn mây, lá phong đỏ Lùng Cúng & khởi đầu mùa khô Nam Bộ',
+    headline: 'Mùa vàng săn mây, lá phong đỏ Lùng Cúng & miền Nam bước vào mùa khô',
     north: {
       status: 'ideal',
-      note: 'Thiên đường săn mây toàn Tây Bắc & Đông Bắc: Lùng Cúng vào mùa lá phong đỏ & đồi cỏ cháy, Tà Chì Nhù cuối mùa Chi Pâu, Pu Si Lung & Pu Ta Leng khô ráo.',
+      note: 'Đi đâu ở Tây Bắc và Đông Bắc cũng đẹp: Lùng Cúng có lá phong đỏ cùng đồi cỏ cháy, Tà Chì Nhù cuối mùa Chi Pâu, Pu Si Lung và Pu Ta Leng khô ráo.',
     },
     central: {
       status: 'avoid',
-      note: 'Trung Trung Bộ & Nam Trung Bộ (Bạch Mã, Giếng Trời, Mũi Đôi, Núi Chúa) vẫn chịu ảnh hưởng mưa lũ muộn; riêng Pù Luông khô ráo cực đẹp.',
+      note: 'Trung Trung Bộ và Nam Trung Bộ (Bạch Mã, Giếng Trời, Mũi Đôi, Núi Chúa) vẫn hay có mưa lũ muộn; riêng Pù Luông khô ráo rất đẹp.',
     },
     south: {
       status: 'ideal',
-      note: 'Nam Bộ & Lâm Đồng chính thức vào mùa khô ráo mát mẻ: Bidoup, Tà Năng - Phan Dũng, Bà Đen, Chứa Chan, Núi Dinh đều rất đẹp.',
+      note: 'Nam Bộ và Lâm Đồng chính thức vào mùa khô mát: Bidoup, Tà Năng – Phan Dũng, Bà Đen, Chứa Chan, Núi Dinh đều đẹp.',
     },
   },
   12: {
-    headline: 'Mùa khô ráo rực rỡ cả hai đầu đất nước — Săn mây lạnh sâu Tây Bắc & rừng già Tây Nguyên',
+    headline: 'Hai đầu đất nước cùng khô ráo — Tây Bắc săn mây rét sâu & Tây Nguyên trong trẻo',
     north: {
       status: 'ideal',
-      note: 'Xác suất săn mây cao nhất năm trên toàn bộ 19 tuyến Miền Bắc (Fansipan, Pu Si Lung, Pu Ta Leng, Kỳ Quan San, Tà Liên Sơn, Tà Xùa, Lảo Thẩn, Ngũ Chỉ Sơn, Tây Côn Lĩnh). Trời rét đậm về đêm.',
+      note: 'Khả năng gặp biển mây cao nhất năm trên cả 19 cung Miền Bắc (Fansipan, Pu Si Lung, Pu Ta Leng, Kỳ Quan San, Tà Liên Sơn, Tà Xùa, Lảo Thẩn, Ngũ Chỉ Sơn, Tây Côn Lĩnh). Đêm rét đậm.',
     },
     central: {
       status: 'caution',
-      note: 'Chư Yang Sin (Đắk Lắk) và Pù Luông khô ráo lý tưởng; Bạch Mã, Giếng Trời và Mũi Đôi vẫn có mưa lạnh và sóng gió Đông Bắc.',
+      note: 'Chư Yang Sin (Đắk Lắk) và Pù Luông khô ráo dễ đi; Bạch Mã, Giếng Trời và Mũi Đôi vẫn còn mưa lạnh và gió Đông Bắc.',
     },
     south: {
       status: 'ideal',
-      note: 'Tuyệt vời trên mọi tuyến: VQG Cát Tiên (Bàu Sấu) mở mùa khô ráo ít vắt, Bidoup mát lạnh, Tà Năng cỏ chuyển vàng, Bà Đen & Chứa Chan trời trong.',
+      note: 'Đẹp trên mọi cung: VQG Cát Tiên (Bàu Sấu) khô ráo ít vắt, Bidoup mát lạnh, Tà Năng cỏ ngả vàng, Bà Đen và Chứa Chan trời quang.',
     },
   },
 };
@@ -290,9 +302,9 @@ function getMonthStatus(trail: Trail, month: number): 'ideal' | 'caution' | 'avo
 }
 
 function getStatusVisual(status: 'ideal' | 'caution' | 'avoid'): { label: string; color: string; accent: string } {
-  if (status === 'ideal') return { label: 'Lý tưởng', color: 'var(--color-primary)', accent: 'var(--color-primary)' };
-  if (status === 'avoid') return { label: 'Khuyến cáo tránh', color: 'var(--color-error-text, var(--color-error))', accent: 'var(--color-error)' };
-  return { label: 'Cân nhắc thời tiết', color: 'var(--color-earth)', accent: 'var(--color-earth)' };
+  if (status === 'ideal') return { label: 'Vào mùa đẹp', color: 'var(--color-primary)', accent: 'var(--color-primary)' };
+  if (status === 'avoid') return { label: 'Nên tránh', color: 'var(--color-error-text, var(--color-error))', accent: 'var(--color-error)' };
+  return { label: 'Xem kỹ thời tiết', color: 'var(--color-earth)', accent: 'var(--color-earth)' };
 }
 
 export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
@@ -307,10 +319,10 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
   const [phenomenon, setPhenomenon] = useState<PhenomenonFilter>('all');
   const [regionFilter, setRegionFilter] = useState<RegionFilter>('Tất Cả');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [isEra5Open, setIsEra5Open] = useState<boolean>(false);
-  const [era5TrailId, setEra5TrailId] = useState<string>('');
+  const [isClimateOpen, setIsClimateOpen] = useState<boolean>(false);
+  const [climateTrailId, setClimateTrailId] = useState<string>('');
   const [focusedSafetyMonth, setFocusedSafetyMonth] = useState<number | null>(null);
-  const era5PanelRef = useRef<HTMLDivElement | null>(null);
+  const climatePanelRef = useRef<HTMLDivElement | null>(null);
   const safetyMonthRefs = useRef<Array<SVGGElement | null>>([]);
 
   const briefing = MONTHLY_CLIMATE_BRIEFINGS[selectedMonth] || MONTHLY_CLIMATE_BRIEFINGS[1];
@@ -338,7 +350,14 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
 
       if (phenomenon === 'cloud_hunting' && !CLOUD_HUNTING_SLUGS.has(t.id)) return false;
       if (phenomenon === 'flowers_foliage' && !FLOWERS_FOLIAGE_SLUGS.has(t.id)) return false;
-      if (phenomenon === 'dry_south_highlands' && t.region === 'Miền Bắc') return false;
+      if (phenomenon === 'dry_south_highlands') {
+        const normProv = normalizeVn(t.province);
+        const isSouthOrHighlands =
+          t.region === 'Miền Nam' ||
+          HIGHLANDS_AND_SOUTH_CENTRAL_DRY_SLUGS.has(t.id) ||
+          HIGHLANDS_PROVINCE_TOKENS.some((tok) => normProv.includes(tok));
+        if (!isSouthOrHighlands || t.avoidMonths.includes(selectedMonth)) return false;
+      }
       if (phenomenon === 'avoid_storm' && !t.avoidMonths.includes(selectedMonth)) return false;
 
       if (!q) return true;
@@ -358,24 +377,24 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
 
   const selectedStats = monthlySummary[selectedMonth - 1] || { month: selectedMonth, ideal: 0, caution: 0, avoid: 0 };
 
-  const selectedEra5Trail = useMemo<Trail | null>(() => {
-    if (era5TrailId) {
-      const exact = trails.find((t) => t.id === era5TrailId);
+  const selectedClimateTrail = useMemo<Trail | null>(() => {
+    if (climateTrailId) {
+      const exact = trails.find((t) => t.id === climateTrailId);
       if (exact) return exact;
     }
     return filteredTrails[0] || trails[0] || null;
-  }, [era5TrailId, trails, filteredTrails]);
+  }, [climateTrailId, trails, filteredTrails]);
 
-  const handleInspectTrailEra5 = (trail: Trail) => {
-    setEra5TrailId(trail.id);
-    setIsEra5Open(true);
+  const handleInspectTrailClimate = (trail: Trail) => {
+    setClimateTrailId(trail.id);
+    setIsClimateOpen(true);
     window.requestAnimationFrame(() => {
-      era5PanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      climatePanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     });
   };
 
   const handleAskAiGoNoGo = (trail: Trail) => {
-    const prompt = `Đánh giá Go/No-Go và điều kiện thời tiết, săn mây cho cung ${trail.name} (${trail.province}) vào Tháng ${selectedMonth}.`;
+    const prompt = `Tháng ${selectedMonth} này đi cung ${trail.name} (${trail.province}) có ổn không? Giúp mình xem thời tiết, khả năng săn mây và những điểm cần lưu ý.`;
     window.dispatchEvent(
       new CustomEvent('lost:open-ai-assistant', {
         detail: {
@@ -432,16 +451,16 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
               marginBottom: 4,
             }}
           >
-            LOST Field Almanac • Khí Hậu &amp; Mùa Săn Mây 12 Tháng Việt Nam
+            Lịch mùa đi rừng • Thời tiết &amp; săn mây 12 tháng
           </div>
           <h1
             className="font-editorial"
             style={{ margin: 0, fontSize: 'clamp(1.45rem, 2.6vw, 2rem)', fontWeight: 600, lineHeight: 1.2 }}
           >
-            Lịch Mùa Trekking &amp; Ma Trận Thời Tiết {trails.length} Cung Thực Địa
+            Đi mùa nào đẹp trên {trails.length} cung núi Việt Nam
           </h1>
           <p style={{ margin: '6px 0 0', fontSize: '0.86rem', color: 'var(--color-text-muted)', maxWidth: 760, lineHeight: 1.55 }}>
-            Chọn tháng khởi hành để lọc tức thì những đỉnh núi đang vào mùa đẹp nhất, tra cứu mùa biển mây, hoa đỗ quyên, lá phong và né mùa lũ quét – bão trên cả 3 miền.
+            Chọn tháng bạn định đi để biết đỉnh nào đang vào mùa mây, hoa đỗ quyên, lá phong hay khô ráo dễ bước — và né sớm những tháng mưa lũ, sạt lở ở cả ba miền.
           </p>
         </div>
 
@@ -458,7 +477,7 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
         >
           <div style={{ textAlign: 'center', paddingRight: 10, borderRight: '1px solid var(--color-border)' }}>
             <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--color-primary)' }}>{selectedStats.ideal}</div>
-            <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>Lý tưởng T{selectedMonth}</div>
+            <div style={{ fontSize: '0.68rem', color: 'var(--color-text-muted)' }}>Vào mùa T{selectedMonth}</div>
           </div>
           <div style={{ textAlign: 'center', paddingRight: 10, borderRight: '1px solid var(--color-border)' }}>
             <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--color-earth)' }}>{selectedStats.caution}</div>
@@ -532,8 +551,6 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
 
       {/* Selected Month Regional Climate Briefing + Pure SVG Annual Suitability Chart */}
       <div
-        key={`month-briefing-${selectedMonth}`}
-        className="tab-content-slide"
         style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(auto-fit, minmax(min(300px, 100%), 1fr))',
@@ -557,7 +574,7 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-sky)' }}>
               <IconCalendar size={13} color="var(--color-sky)" />
-              <span>Bản Tin Khí Hậu Thực Địa Tháng {selectedMonth}</span>
+              <span>Thời tiết đường rừng tháng {selectedMonth}</span>
             </div>
             <h2 style={{ margin: '4px 0 0', fontSize: '0.96rem', fontWeight: 700, color: 'var(--color-text-main)', lineHeight: 1.4 }}>
               {briefing.headline}
@@ -567,8 +584,8 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {[
               { title: 'Miền Bắc (Hoàng Liên Sơn & Đông Bắc)', data: briefing.north },
-              { title: 'Miền Trung & Tây Nguyên (Trường Sơn & Duyên Hải)', data: briefing.central },
-              { title: 'Miền Nam (Đông Nam Bộ & Nam Tây Nguyên)', data: briefing.south },
+              { title: 'Miền Trung & Tây Nguyên (Trường Sơn & duyên hải)', data: briefing.central },
+              { title: 'Miền Nam (Đông Nam Bộ & nam Tây Nguyên)', data: briefing.south },
             ].map((reg) => {
               const vis = getStatusVisual(reg.data.status);
               return (
@@ -621,10 +638,10 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
         >
           <div>
             <div style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-primary)' }}>
-              Biểu Đồ Độ An Toàn 12 Tháng Toàn Quốc
+              Mức độ thuận lợi qua 12 tháng
             </div>
             <p style={{ margin: '4px 0 0', fontSize: '0.77rem', color: 'var(--color-text-muted)', lineHeight: 1.45 }}>
-              Tỷ lệ số cung Lý tưởng / Cân nhắc / Khuyến cáo tránh trong từng tháng (bấm trực tiếp vào cột tháng để chuyển nhanh).
+              Nhìn nhanh tháng nào nhiều cung đẹp, tháng nào hay mưa bão — bấm thẳng vào cột tháng để đổi lịch.
             </p>
           </div>
 
@@ -716,24 +733,24 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
           <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: '0.72rem', color: 'var(--color-text-muted)' }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 10, height: 10, borderRadius: 2, background: 'var(--color-primary)', display: 'inline-block' }} />
-              Mùa lý tưởng
+              Vào mùa đẹp
             </span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 10, height: 10, borderRadius: 2, background: 'var(--color-earth)', display: 'inline-block' }} />
-              Giao mùa / Cân nhắc
+              Giao mùa, cần theo dõi
             </span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 10, height: 10, borderRadius: 2, background: 'var(--color-error)', display: 'inline-block' }} />
-              Mùa bão / Mưa lũ nên tránh
+              Mưa lũ / bão, nên tránh
             </span>
           </div>
         </div>
       </div>
 
-      {/* Collapsible Selected-Peak 12-Month ERA5 Summit Climate Inspector */}
-      {selectedEra5Trail && (
+      {/* Collapsible Selected-Peak 12-Month NASA POWER (MERRA-2) Summit Climate Inspector */}
+      {selectedClimateTrail && (
         <div
-          ref={era5PanelRef}
+          ref={climatePanelRef}
           style={{
             background: 'var(--color-bg-card)',
             border: '1px solid var(--color-border-strong)',
@@ -769,21 +786,21 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
                 }}
               >
                 <IconCloud size={12} color="var(--color-sky)" />
-                <span>Trạm Dữ Liệu Lịch Sử 3 Năm · Hiệu Chỉnh Cao Độ Đỉnh</span>
+                <span>NASA POWER (MERRA-2) · Dữ liệu khí hậu 3 năm quy đổi theo độ cao đỉnh</span>
               </div>
               <h2 style={{ margin: 0, fontSize: '0.98rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                Khí Hậu Thực Tế 12 Tháng (ERA5) — {selectedEra5Trail.name}
+                Khí hậu 12 tháng trên đỉnh — {selectedClimateTrail.name}
               </h2>
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0, maxWidth: '100%', flex: '1 1 280px', justifyContent: 'flex-end' }}>
               <select
                 className="form-select"
-                aria-label="Chọn đỉnh núi xem biểu đồ khí hậu ERA5 12 tháng"
-                value={selectedEra5Trail.id}
+                aria-label="Chọn đỉnh núi xem biểu đồ khí hậu 12 tháng"
+                value={selectedClimateTrail.id}
                 onChange={(e) => {
-                  setEra5TrailId(e.target.value);
-                  setIsEra5Open(true);
+                  setClimateTrailId(e.target.value);
+                  setIsClimateOpen(true);
                 }}
                 style={{
                   padding: '6px 10px',
@@ -804,25 +821,25 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
 
               <button
                 type="button"
-                className={isEra5Open ? 'btn btn-outline' : 'btn btn-primary'}
-                aria-expanded={isEra5Open}
+                className={isClimateOpen ? 'btn btn-outline' : 'btn btn-primary'}
+                aria-expanded={isClimateOpen}
                 onClick={() => {
-                  if (!isEra5Open && selectedEra5Trail) {
-                    setEra5TrailId(selectedEra5Trail.id);
+                  if (!isClimateOpen && selectedClimateTrail) {
+                    setClimateTrailId(selectedClimateTrail.id);
                   }
-                  setIsEra5Open((v) => !v);
+                  setIsClimateOpen((v) => !v);
                 }}
                 style={{ padding: '6px 12px', fontSize: '0.76rem', fontWeight: 700, borderRadius: 4, flexShrink: 0 }}
               >
-                <IconCloud size={13} color={isEra5Open ? 'var(--color-sky)' : 'var(--color-on-primary)'} />
-                <span>{isEra5Open ? 'Thu Gọn Biểu Đồ' : 'Mở Biểu Đồ ERA5'}</span>
+                <IconCloud size={13} color={isClimateOpen ? 'var(--color-sky)' : 'var(--color-on-primary)'} />
+                <span>{isClimateOpen ? 'Thu gọn biểu đồ' : 'Xem biểu đồ khí hậu'}</span>
               </button>
             </div>
           </div>
 
-          {isEra5Open && (
+          {isClimateOpen && (
             <SummitClimateChart
-              trail={selectedEra5Trail}
+              trail={selectedClimateTrail}
               selectedMonth={selectedMonth}
               onSelectMonth={setSelectedMonth}
               compact
@@ -846,11 +863,11 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
       >
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {[
-            { id: 'all' as const, label: 'Tất Cả Hiện Tượng', icon: <IconMountain size={13} /> },
-            { id: 'cloud_hunting' as const, label: 'Săn Biển Mây', icon: <IconCloud size={13} /> },
-            { id: 'flowers_foliage' as const, label: 'Hoa Đỗ Quyên / Chi Pâu / Lá Phong', icon: <IconFlower size={13} /> },
-            { id: 'dry_south_highlands' as const, label: 'Mùa Khô Miền Nam & Tây Nguyên', icon: <IconSun size={13} /> },
-            { id: 'avoid_storm' as const, label: `Tránh Bão / Mưa Lũ T${selectedMonth}`, icon: <IconAlertTriangle size={13} /> },
+            { id: 'all' as const, label: 'Tất cả cung', icon: <IconMountain size={13} /> },
+            { id: 'cloud_hunting' as const, label: 'Săn biển mây', icon: <IconCloud size={13} /> },
+            { id: 'flowers_foliage' as const, label: 'Hoa đỗ quyên, Chi Pâu, lá phong', icon: <IconFlower size={13} /> },
+            { id: 'dry_south_highlands' as const, label: 'Mùa khô miền Nam & Tây Nguyên', icon: <IconSun size={13} /> },
+            { id: 'avoid_storm' as const, label: `Cung nên tránh T${selectedMonth}`, icon: <IconAlertTriangle size={13} /> },
           ].map((pill) => {
             const active = phenomenon === pill.id;
             const accent = pill.id === 'avoid_storm' ? 'var(--color-error)' : 'var(--color-primary)';
@@ -908,7 +925,7 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
                     fontFamily: 'var(--font-family)',
                   }}
                 >
-                  {reg}
+                  {reg === 'Tất Cả' ? 'Tất cả' : reg}
                 </button>
               );
             })}
@@ -924,7 +941,7 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
               aria-label="Lọc cung đường theo tên đỉnh hoặc tỉnh thành"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Lọc theo tên đỉnh, tỉnh thành..."
+              placeholder="Tìm theo tên đỉnh, tỉnh thành..."
               style={{ width: '100%', padding: '6px 10px 6px 32px', fontSize: '0.78rem', borderRadius: 4 }}
             />
           </div>
@@ -945,7 +962,7 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
               fontSize: '0.84rem',
             }}
           >
-            Không có cung đường nào khớp bộ lọc hiện tại cho Tháng {selectedMonth}. Hãy chuyển tháng hoặc đặt lại bộ lọc.
+            Tháng {selectedMonth} không có cung nào khớp bộ lọc này. Bạn thử đổi tháng khác hoặc bỏ bớt bộ lọc nhé.
           </div>
         ) : (
           filteredTrails.map((trail) => {
@@ -1011,19 +1028,19 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
                     <button
                       type="button"
                       className="btn btn-outline"
-                      onClick={() => handleInspectTrailEra5(trail)}
+                      onClick={() => handleInspectTrailClimate(trail)}
                       style={{
                         padding: '5px 9px',
                         fontSize: '0.73rem',
                         borderRadius: 4,
                         borderColor:
-                          isEra5Open && selectedEra5Trail?.id === trail.id
+                          isClimateOpen && selectedClimateTrail?.id === trail.id
                             ? 'var(--color-sky)'
                             : undefined,
                       }}
                     >
                       <IconCloud size={13} color="var(--color-sky)" />
-                      <span>Khí hậu ERA5</span>
+                      <span>Khí hậu</span>
                     </button>
 
                     <button
@@ -1033,7 +1050,7 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
                       style={{ padding: '5px 9px', fontSize: '0.73rem', borderRadius: 4 }}
                     >
                       <IconBot size={13} color="var(--color-primary)" />
-                      <span>Go/No-Go AI</span>
+                      <span>Hỏi đi hay hoãn</span>
                     </button>
 
                     {onNavigateHub && (
@@ -1041,7 +1058,19 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
                         <button
                           type="button"
                           className="btn btn-outline"
-                          onClick={() => onNavigateHub('toolkit', trail.id)}
+                          onClick={() => {
+                            if (typeof window !== 'undefined') {
+                              window.history.pushState(
+                                { view: 'toolkit', trailId: trail.id, queryParams: { tab: 'solar' } },
+                                '',
+                                `/toolkit?trailId=${encodeURIComponent(trail.id)}&tab=solar`
+                              );
+                              window.dispatchEvent(new PopStateEvent('popstate'));
+                              window.scrollTo({ top: 0, behavior: 'smooth' });
+                            } else {
+                              onNavigateHub('toolkit', trail.id);
+                            }
+                          }}
                           style={{ padding: '5px 9px', fontSize: '0.73rem', borderRadius: 4 }}
                         >
                           <IconSun size={13} color="var(--color-sun)" />
@@ -1072,7 +1101,7 @@ export const SeasonAlmanacView: React.FC<SeasonAlmanacViewProps> = ({
                           style={{ padding: '5px 9px', fontSize: '0.73rem', borderRadius: 4 }}
                         >
                           <IconHiking size={13} color="var(--color-earth)" />
-                          <span>Thể lực</span>
+                          <span>Rèn sức</span>
                         </button>
                       </>
                     )}

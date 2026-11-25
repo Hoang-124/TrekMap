@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { FollowModel } from '../models/Follow.js';
 import { UserModel } from '../models/User.js';
+import { ActivityModel } from '../models/Activity.js';
 import { isValidObjectId } from '../utils/resolveTrail.js';
 import { sendNotification } from '../utils/notification.js';
 import { recordActivity } from '../utils/audit.js';
@@ -81,28 +82,37 @@ export const toggleFollowUser = async (req: AuthRequest, res: Response) => {
     ]);
 
     if (currentUser) {
-      await recordActivity({
+      // Deduplicate Activity & follow notification on repeated unfollow/re-follow toggles
+      const alreadyLoggedFollow = await ActivityModel.exists({
         userId: followerObjId,
         type: 'followed_user',
-        title: `${currentUser.fullName} đã bắt đầu theo dõi ${targetUser.fullName}`,
         targetType: 'user',
         targetId: String(targetUserId),
       });
+      if (!alreadyLoggedFollow) {
+        await recordActivity({
+          userId: followerObjId,
+          type: 'followed_user',
+          title: `${currentUser.fullName} đã bắt đầu theo dõi ${targetUser.fullName}`,
+          targetType: 'user',
+          targetId: String(targetUserId),
+        });
 
-      sendNotification({
-        recipientId: targetUserId,
-        sender: {
-          id: currentUserId,
-          name: currentUser.fullName || currentUser.username || 'Trekker',
-          avatarUrl: currentUser.avatarUrl || '',
-        },
-        type: 'system',
-        category: 'social',
-        title: 'Người theo dõi mới',
-        message: `${currentUser.fullName || 'Một Trekker'} đã bắt đầu theo dõi hành trình của bạn trên LOST.`,
-        link: `/#profile-${currentUser.username || currentUserId}`,
-        relatedId: currentUserId,
-      }).catch(() => {});
+        sendNotification({
+          recipientId: targetUserId,
+          sender: {
+            id: currentUserId,
+            name: currentUser.fullName || currentUser.username || 'Trekker',
+            avatarUrl: currentUser.avatarUrl || '',
+          },
+          type: 'system',
+          category: 'social',
+          title: 'Người theo dõi mới',
+          message: `${currentUser.fullName || 'Một Trekker'} đã bắt đầu theo dõi hành trình của bạn trên LOST.`,
+          link: `/#profile-${currentUser.username || currentUserId}`,
+          relatedId: currentUserId,
+        }).catch(() => {});
+      }
     }
 
     return res.json({
@@ -163,7 +173,10 @@ async function loadFollowGraphList(
   const limit = Math.min(Math.max(parseInt(String(req.query.limit || '20'), 10) || 20, 1), 50);
   const skip = (page - 1) * limit;
 
-  if (!isValidObjectId(targetUserId) || mongoose.connection.readyState !== 1) {
+  if (!isValidObjectId(targetUserId)) {
+    return res.status(400).json({ success: false, message: 'Mã người dùng không hợp lệ.' });
+  }
+  if (mongoose.connection.readyState !== 1) {
     return res.json({ success: true, count: 0, data: [], pagination: { total: 0, page, limit } });
   }
 

@@ -2,6 +2,7 @@ import { Response } from 'express';
 import mongoose, { Types } from 'mongoose';
 import { TrainingPlanModel, FitnessLevel, TrainingPlanStatus } from '../models/TrainingPlan.js';
 import { CheckinModel } from '../models/Checkin.js';
+import { ActivityModel } from '../models/Activity.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
 import { resolveTrailByIdOrSlug, isValidObjectId } from '../utils/resolveTrail.js';
 import { generateTrainingSessions, calculateReadinessScore } from '../services/trainingPlan.service.js';
@@ -120,8 +121,8 @@ export const createTrainingPlan = async (req: AuthRequest, res: Response) => {
     }
 
     const trail = await resolveTrailByIdOrSlug(resolvedTrailParam);
-    if (!trail) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường mục tiêu.' });
+    if (!trail || (trail.status && trail.status !== 'approved')) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy cung đường mục tiêu đã duyệt.' });
     }
 
     const sessions = generateTrainingSessions({
@@ -274,13 +275,21 @@ export const toggleTrainingSession = async (req: AuthRequest, res: Response) => 
     );
 
     if (allDone && existing.status !== 'completed') {
-      await recordActivity({
+      const alreadyLogged = await ActivityModel.exists({
         userId: uid,
         type: 'completed_trip',
-        title: `Hoàn thành 100% giáo án thể lực ${updated.durationWeeks} tuần chuẩn bị chinh phục ${updated.targetTrailName}`,
         targetType: 'trail',
         targetId: updated.targetTrailSlug,
       });
+      if (!alreadyLogged) {
+        await recordActivity({
+          userId: uid,
+          type: 'completed_trip',
+          title: `Hoàn thành 100% giáo án thể lực ${updated.durationWeeks} tuần chuẩn bị chinh phục ${updated.targetTrailName}`,
+          targetType: 'trail',
+          targetId: updated.targetTrailSlug,
+        });
+      }
     }
 
     return res.json({

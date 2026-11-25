@@ -124,7 +124,7 @@ export const SummitClimateChart: React.FC<SummitClimateChartProps> = ({
   compact = false,
 }) => {
   const reactUid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
-  const tempBandGradientId = `era5-temp-band-${reactUid}`;
+  const tempBandGradientId = `climate-temp-band-${reactUid}`;
 
   const defaultMonth =
     typeof selectedMonth === 'number' && selectedMonth >= 1 && selectedMonth <= 12
@@ -244,7 +244,7 @@ export const SummitClimateChart: React.FC<SummitClimateChartProps> = ({
             refreshError: null,
           });
         } else {
-          const errMsg = res.error || 'Chưa tải được dữ liệu khí hậu ERA5 cho tuyến này.';
+          const errMsg = res.error || 'Chưa tải được dữ liệu khí hậu NASA POWER (MERRA-2) cho tuyến này.';
           setFetchState((prev) => {
             const hasValidCurrent =
               prev.key.startsWith(`${capturedTrailId}:`) &&
@@ -271,7 +271,7 @@ export const SummitClimateChart: React.FC<SummitClimateChartProps> = ({
       .catch((err) => {
         if (err instanceof Error && err.name === 'AbortError') return;
         if (!isMountedRef.current || activeTrailIdRef.current !== capturedTrailId) return;
-        const offlineMsg = 'Không thể kết nối máy chủ khí hậu ERA5 lúc này (ngoại tuyến).';
+        const offlineMsg = 'Không thể kết nối máy chủ khí hậu NASA POWER (MERRA-2) lúc này (ngoại tuyến).';
         setFetchState((prev) => {
           const hasValidCurrent =
             prev.key.startsWith(`${capturedTrailId}:`) &&
@@ -464,7 +464,7 @@ export const SummitClimateChart: React.FC<SummitClimateChartProps> = ({
 
   return (
     <section
-      aria-label={`Biểu đồ khí hậu thực đo 12 tháng (ERA5) trên đỉnh ${trail.name}`}
+      aria-label={`Biểu đồ khí hậu thực đo 12 tháng (NASA POWER MERRA-2) trên đỉnh ${trail.name}`}
       style={{
         background: 'var(--color-bg-card)',
         border: '1px solid var(--color-border-strong)',
@@ -507,7 +507,7 @@ export const SummitClimateChart: React.FC<SummitClimateChartProps> = ({
               }}
             >
               <IconCloud size={12} color="var(--color-sky)" />
-              <span>Khí Hậu Lịch Sử {climateData?.period || '3 Năm'} · Open-Meteo ERA5</span>
+              <span>Khí Hậu Lịch Sử {climateData?.period || '3 Năm'} · NASA POWER (MERRA-2)</span>
             </span>
             <span
               style={{
@@ -546,7 +546,7 @@ export const SummitClimateChart: React.FC<SummitClimateChartProps> = ({
           className="btn btn-outline"
           disabled={isLoading}
           onClick={() => setReloadTick((n) => n + 1)}
-          aria-label={`Tải lại dữ liệu khí hậu ERA5 cho ${trail.name}`}
+          aria-label={`Tải lại dữ liệu khí hậu NASA POWER cho ${trail.name}`}
           style={{
             padding: '5px 10px',
             fontSize: '0.73rem',
@@ -559,7 +559,7 @@ export const SummitClimateChart: React.FC<SummitClimateChartProps> = ({
         </button>
       </div>
 
-      {/* Non-destructive Refresh Error Banner (preserves last valid real ERA5 chart on transient 503/offline) */}
+      {/* Non-destructive Refresh Error Banner (preserves last valid real NASA POWER chart on transient 503/offline) */}
       {climateData && fetchState.refreshError && (
         <div
           role="alert"
@@ -607,7 +607,7 @@ export const SummitClimateChart: React.FC<SummitClimateChartProps> = ({
             color: 'var(--color-text-muted)',
           }}
         >
-          Đang tổng hợp dữ liệu khí hậu thực đo 3 năm (ERA5) và tính mức giảm nhiệt -6,5°C/1.000m cho đỉnh {trail.name}...
+          Đang tổng hợp dữ liệu khí hậu thực đo 3 năm (NASA POWER MERRA-2) và tính mức giảm nhiệt -6,5°C/1.000m cho đỉnh {trail.name}...
         </div>
       ) : !climateData || !chartGeometry || !focusedMonthData ? (
         <div
@@ -635,7 +635,7 @@ export const SummitClimateChart: React.FC<SummitClimateChartProps> = ({
               }}
             >
               {fetchState.error ||
-                'Chưa thể tải dữ liệu khí hậu thực đo ERA5 từ máy chủ lúc này. Dữ liệu thật không được mô phỏng khi ngoại tuyến.'}
+                'Chưa thể tải dữ liệu khí hậu thực đo NASA POWER (MERRA-2) từ máy chủ lúc này. Dữ liệu thật không được mô phỏng khi ngoại tuyến.'}
             </span>
           </div>
           <button
@@ -963,7 +963,7 @@ export const SummitClimateChart: React.FC<SummitClimateChartProps> = ({
           {/* Interactive Month Tap Strip (balanced 6+6 grid on mobile & desktop) */}
           <div
             role="group"
-            aria-label="Chọn nhanh tháng khí hậu ERA5"
+            aria-label="Chọn nhanh tháng khí hậu lịch sử"
             style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
@@ -975,7 +975,7 @@ export const SummitClimateChart: React.FC<SummitClimateChartProps> = ({
               const verdict = getScoreVerdict(m.bestScore);
               return (
                 <button
-                  key={`era5-btn-${m.month}`}
+                  key={`climate-btn-${m.month}`}
                   type="button"
                   aria-pressed={isSelected}
                   onClick={() => handleSelectMonth(m.month)}
@@ -1007,8 +1007,8 @@ export const SummitClimateChart: React.FC<SummitClimateChartProps> = ({
             const lapseSublabel =
               typeof climateData.lapseDropC === 'number'
                 ? climateData.lapseDropC === 0
-                  ? `Cùng cao độ lưới ERA5 (${climateData.gridElevationM ?? displayAltitudeM}m)`
-                  : `Đã hiệu chỉnh ${climateData.lapseDropC > 0 ? '+' : ''}${climateData.lapseDropC.toFixed(1)}°C từ lưới ${typeof climateData.gridElevationM === 'number' ? `${climateData.gridElevationM.toLocaleString('vi-VN')}m` : 'ERA5'} lên đỉnh`
+                  ? `Cùng cao độ lưới MERRA-2 (${climateData.gridElevationM ?? displayAltitudeM}m)`
+                  : `Đã hiệu chỉnh ${climateData.lapseDropC > 0 ? '+' : ''}${climateData.lapseDropC.toFixed(1)}°C từ lưới ${typeof climateData.gridElevationM === 'number' ? `${climateData.gridElevationM.toLocaleString('vi-VN')}m` : 'MERRA-2'} lên đỉnh`
                 : 'Đã hiệu chỉnh theo cao độ đỉnh thực địa';
 
             const tempAdvisory =
@@ -1121,7 +1121,7 @@ export const SummitClimateChart: React.FC<SummitClimateChartProps> = ({
                       }}
                     >
                       <div style={{ fontSize: '0.68rem', color: 'var(--color-text-dim)', fontWeight: 700, textTransform: 'uppercase' }}>
-                        Cửa sổ vàng ERA5
+                        Cửa sổ vàng NASA POWER
                       </div>
                       <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--color-primary)', marginTop: 3 }}>
                         {annualInsights.bestTop3.map((m) => `T${m}`).join(', ')}
@@ -1153,7 +1153,7 @@ export const SummitClimateChart: React.FC<SummitClimateChartProps> = ({
             }}
           >
             <span>
-              Nguồn thực đo: Open-Meteo ERA5 Historical Archive ({periodLabel}
+              Nguồn thực đo: NASA POWER (MERRA-2) Historical Archive ({periodLabel}
               {typeof climateData.gridElevationM === 'number'
                 ? `, lưới DEM ${climateData.gridElevationM.toLocaleString('vi-VN')}m → đỉnh ${displayAltitudeM.toLocaleString('vi-VN')}m`
                 : `, đỉnh ${displayAltitudeM.toLocaleString('vi-VN')}m`}

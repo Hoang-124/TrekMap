@@ -1,11 +1,10 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { ForumThread, Trail, UserProfile } from '../../types.js';
 import {
   IconMountain,
   IconMessageSquare,
   IconPlus,
   IconAlertTriangle,
-  IconShieldCheck,
   IconShieldAlert,
   IconCompass,
   IconUsers,
@@ -32,6 +31,7 @@ import type { AuthorProfileData } from './AuthorProfileModal.js';
 import { ThreadDetailModal } from './ThreadDetailModal.js';
 import { getApiHeaders, notifyForumUpdated } from '../../utils/sessionHeaders.js';
 import { useSlidingIndicator } from '../../hooks/useSlidingIndicator.js';
+import { useSocket } from '../../hooks/useSocket.js';
 import { TripPlanCard } from '../trips/TripPlanCard.js';
 import type { TripPlanItem } from '../trips/TripPlanCard.js';
 import { CreateTripModal } from '../trips/CreateTripModal.js';
@@ -40,6 +40,7 @@ import { ExpeditionCalendarGrid } from '../trips/ExpeditionCalendarGrid.js';
 import { CreateTripReportModal } from '../trip-reports/CreateTripReportModal.js';
 import { TripReportCard } from '../trip-reports/TripReportCard.js';
 import type { TripReportItem } from '../trip-reports/TripReportCard.js';
+import { safeLocalStorageGet } from '../../utils/storageScope.js';
 
 type ForumSortOption = 'newest' | 'popular' | 'most_commented';
 type ForumThreadWithTrail = ForumThread & { trailId?: string; trailName?: string };
@@ -58,6 +59,7 @@ interface AlpineExpeditionFeedProps {
   sortBy?: ForumSortOption;
   onSortChange?: (s: ForumSortOption) => void;
   onForumCategoryChange?: (category: string) => void;
+  externalCategorySync?: { category: string; seq: number } | null;
   hasMoreThreads?: boolean;
   loadingMoreThreads?: boolean;
   onLoadMoreThreads?: () => void;
@@ -146,7 +148,7 @@ const ACTIVITY_TYPE_META: Record<
   checkin_peak: { label: 'Đóng Dấu Đỉnh', accent: 'var(--color-primary)', Icon: IconMountain },
   completed_trip: { label: 'Chinh Phục Tuyến', accent: 'var(--color-primary)', Icon: IconMountain },
   earned_badge: { label: 'Mở Khóa Huy Hiệu', accent: 'var(--color-sun)', Icon: IconSparkles },
-  new_trip_report: { label: 'Nhật Ký Thực Địa', accent: 'var(--color-sky)', Icon: IconBookOpen },
+  new_trip_report: { label: 'Nhật Ký Chuyến Đi', accent: 'var(--color-sky)', Icon: IconBookOpen },
   joined_trip: { label: 'Tham Gia Ghép Đoàn', accent: 'var(--color-earth)', Icon: IconUsers },
   new_trip_plan: { label: 'Mở Chuyến Ghép Đoàn', accent: 'var(--color-earth)', Icon: IconUsers },
   new_contribution: { label: 'Đóng Góp Cung Mới', accent: 'var(--color-primary)', Icon: IconCompass },
@@ -172,7 +174,7 @@ function normalizeCommunityActivity(raw: RawCommunityActivity, idx: number): Com
   const trail: CommunityActivityTrail | null = resolvedTrailId
     ? {
       id: String(resolvedTrailId),
-      name: trailObj?.name || 'Xem cung đường thực địa',
+      name: trailObj?.name || 'Xem cung đường',
       province: trailObj?.province,
       maxAltitudeM: trailObj?.maxAltitudeM,
       coverImage: trailObj?.coverImage || raw.thumbnailUrl,
@@ -224,12 +226,14 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
   sortBy,
   onSortChange,
   onForumCategoryChange,
+  externalCategorySync,
   hasMoreThreads = false,
   loadingMoreThreads = false,
   onLoadMoreThreads,
   onThreadUpdated,
   onThreadDeleted,
 }) => {
+  const { socket } = useSocket();
   const resolveInitialTabFromUrl = (): string => {
     if (typeof window === 'undefined') return 'All';
     const tab = (new URLSearchParams(window.location.search).get('tab') || '').trim().toLowerCase();
@@ -239,14 +243,23 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
     return 'All';
   };
   const [selectedCategory, setSelectedCategory] = useState<string>(resolveInitialTabFromUrl);
+  const [lastCategorySyncSeq, setLastCategorySyncSeq] = useState<number>(externalCategorySync?.seq || 0);
+  if (externalCategorySync && externalCategorySync.seq !== lastCategorySyncSeq) {
+    setLastCategorySyncSeq(externalCategorySync.seq);
+    setSelectedCategory(externalCategorySync.category);
+  }
+
   useEffect(() => {
     const syncTabFromUrl = () => {
       const next = resolveInitialTabFromUrl();
-      if (next !== 'All') setSelectedCategory(next);
+      setSelectedCategory(next);
+      if (FORUM_THREAD_CATEGORIES.has(next)) {
+        onForumCategoryChange?.(next);
+      }
     };
     window.addEventListener('popstate', syncTabFromUrl);
     return () => window.removeEventListener('popstate', syncTabFromUrl);
-  }, []);
+  }, [onForumCategoryChange]);
   const { trackRef: categoryTrackRef, indicatorStyle: categoryIndicatorStyle } =
     useSlidingIndicator<string>(selectedCategory);
   const [localSearchQuery, setLocalSearchQuery] = useState('');
@@ -257,19 +270,21 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
   const isServerDrivenForum = Boolean(onSearchChange || onSortChange || onForumCategoryChange);
   const availableTrails = trails && trails.length > 0 ? trails : mockTrails;
 
-  // Trips state (status filter + pagination)
+  // Trips state (status filter + pagination + error)
   const [tripsViewMode, setTripsViewMode] = useState<'list' | 'calendar'>('list');
   const [tripsStatusFilter, setTripsStatusFilter] = useState<'all' | 'recruiting' | 'full' | 'mine'>('all');
   const [trips, setTrips] = useState<TripPlanItem[]>([]);
+  const [tripsError, setTripsError] = useState<string | null>(null);
   const [tripsPage, setTripsPage] = useState<number>(1);
   const [tripsHasMore, setTripsHasMore] = useState<boolean>(false);
   const [loadingMoreTrips, setLoadingMoreTrips] = useState<boolean>(false);
   const [tripsRefreshTick, setTripsRefreshTick] = useState<number>(0);
   const [tripsLoadedKey, setTripsLoadedKey] = useState<string | null>(null);
 
-  // Trip Reports state (trail filter + pagination)
+  // Trip Reports state (trail filter + pagination + error)
   const [reportsTrailFilter, setReportsTrailFilter] = useState<string>('');
   const [tripReports, setTripReports] = useState<TripReportItem[]>([]);
+  const [reportsError, setReportsError] = useState<string | null>(null);
   const [reportsPage, setReportsPage] = useState<number>(1);
   const [reportsHasMore, setReportsHasMore] = useState<boolean>(false);
   const [loadingMoreReports, setLoadingMoreReports] = useState<boolean>(false);
@@ -289,7 +304,16 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
   const [activitiesHasMore, setActivitiesHasMore] = useState<boolean>(false);
   const [loadingMoreActivities, setLoadingMoreActivities] = useState<boolean>(false);
   const [activityRefreshTick, setActivityRefreshTick] = useState<number>(0);
-  const [nowMs] = useState<number>(() => Date.now());
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const [failedAvatarKeys, setFailedAvatarKeys] = useState<Record<string, boolean>>({});
+
+  // Periodic clock tick so relative timestamps stay fresh
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 60_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   // Modals & deep-link state
   const [activeAuthor, setActiveAuthor] = useState<AuthorProfileData | null>(null);
@@ -299,13 +323,70 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
   );
   const [deepLinkedThread, setDeepLinkedThread] = useState<{ id: string; thread: ForumThreadWithTrail } | null>(null);
 
-  // Per thread reaction override state map
+  // Per thread reaction override state map (reset cleanly on account switch)
   const [threadReactions, setThreadReactions] = useState<{ [threadId: string]: ReactionType }>({});
   const [threadCommentCounts, setThreadCommentCounts] = useState<{ [threadId: string]: number }>({});
   const [threadUpvotesMap, setThreadUpvotesMap] = useState<{ [threadId: string]: number }>({});
   const [threadReactionsSummaryMap, setThreadReactionsSummaryMap] = useState<{ [threadId: string]: Record<string, number> }>({});
 
   const currentUserId = String(currentUser?.id || (currentUser as (UserProfile & { _id?: string }) | null)?._id || '');
+  const [overrideOwnerId, setOverrideOwnerId] = useState<string>(currentUserId);
+  if (overrideOwnerId !== currentUserId) {
+    setOverrideOwnerId(currentUserId);
+    setThreadReactions({});
+    setThreadCommentCounts({});
+    setThreadUpvotesMap({});
+    setThreadReactionsSummaryMap({});
+  }
+
+  const reactionSeqRef = useRef<Record<string, number>>({});
+  const tripsLoadMoreAbortRef = useRef<AbortController | null>(null);
+  const reportsLoadMoreAbortRef = useRef<AbortController | null>(null);
+  const activitiesLoadMoreAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    reactionSeqRef.current = {};
+  }, [currentUserId]);
+
+  useEffect(() => {
+    return () => {
+      tripsLoadMoreAbortRef.current?.abort();
+      reportsLoadMoreAbortRef.current?.abort();
+      activitiesLoadMoreAbortRef.current?.abort();
+    };
+  }, []);
+
+  // Sync live socket updates into local override maps so overrides never shadow fresh server state
+  useEffect(() => {
+    if (!socket) return;
+    const handleSocketThreadReaction = (data: {
+      threadId?: string;
+      upvotes?: number;
+      reactions?: Record<string, number>;
+    }) => {
+      const tid = data?.threadId;
+      if (!tid) return;
+      if (data.upvotes !== undefined) {
+        setThreadUpvotesMap((prev) => (prev[tid] !== undefined ? { ...prev, [tid]: data.upvotes! } : prev));
+      }
+      if (data.reactions) {
+        setThreadReactionsSummaryMap((prev) => (prev[tid] !== undefined ? { ...prev, [tid]: data.reactions! } : prev));
+      }
+    };
+    const handleSocketCommentCount = (data: { threadId?: string; repliesCount?: number }) => {
+      const tid = data?.threadId;
+      if (!tid || data.repliesCount === undefined) return;
+      setThreadCommentCounts((prev) => (prev[tid] !== undefined ? { ...prev, [tid]: data.repliesCount! } : prev));
+    };
+    socket.on('threadReactionUpdate', handleSocketThreadReaction);
+    socket.on('newComment', handleSocketCommentCount);
+    socket.on('commentDeleted', handleSocketCommentCount);
+    return () => {
+      socket.off('threadReactionUpdate', handleSocketThreadReaction);
+      socket.off('newComment', handleSocketCommentCount);
+      socket.off('commentDeleted', handleSocketCommentCount);
+    };
+  }, [socket]);
 
   const tripsFetchKey =
     selectedCategory === 'Ghép Đoàn'
@@ -315,6 +396,20 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
     selectedCategory === 'Nhật Ký'
       ? `${reportsTrailFilter}:${reportsRefreshTick}`
       : null;
+  const tripsFetchKeyRef = useRef<string | null>(tripsFetchKey);
+  const reportsFetchKeyRef = useRef<string | null>(reportsFetchKey);
+
+  useEffect(() => {
+    tripsFetchKeyRef.current = tripsFetchKey;
+    tripsLoadMoreAbortRef.current?.abort();
+    tripsLoadMoreAbortRef.current = null;
+  }, [tripsFetchKey]);
+
+  useEffect(() => {
+    reportsFetchKeyRef.current = reportsFetchKey;
+    reportsLoadMoreAbortRef.current?.abort();
+    reportsLoadMoreAbortRef.current = null;
+  }, [reportsFetchKey]);
 
   const loadingTrips = Boolean(tripsFetchKey) && tripsLoadedKey !== tripsFetchKey;
   const loadingReports = Boolean(reportsFetchKey) && reportsLoadedKey !== reportsFetchKey;
@@ -341,11 +436,13 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
     }
 
     fetch(`/api/trips?${params.toString()}`, { headers: getApiHeaders(), signal: controller.signal })
-      .then((res) => res.json())
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
       .then((data) => {
-        if (!controller.signal.aborted && data.success) {
+        if (controller.signal.aborted) return;
+        if (data?.success) {
           const list: TripPlanItem[] = Array.isArray(data.data) ? data.data : [];
           setTrips(list);
+          setTripsError(null);
           setTripsPage(1);
           const pag = data.pagination;
           setTripsHasMore(
@@ -356,22 +453,32 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                 (typeof pag.total === 'number' && list.length < pag.total))
             )
           );
+        } else {
+          setTripsError(data?.message || 'Chưa tải được danh sách chuyến ghép đoàn lúc này.');
         }
       })
       .catch(() => {
-        // keep existing state on error
+        if (!controller.signal.aborted) {
+          setTripsError('Chưa tải được danh sách chuyến ghép đoàn lúc này. Bạn thử lại nhé.');
+        }
       })
       .finally(() => {
         if (!controller.signal.aborted) {
           setTripsLoadedKey(tripsFetchKey);
+          setLoadingMoreTrips(false);
         }
       });
     return () => controller.abort();
   }, [tripsFetchKey, tripsStatusFilter]);
 
   const handleLoadMoreTrips = async () => {
-    if (loadingMoreTrips || !tripsHasMore) return;
+    if (loadingMoreTrips || !tripsHasMore || !tripsFetchKey) return;
+    const reqKey = tripsFetchKey;
     const nextPage = tripsPage + 1;
+    tripsLoadMoreAbortRef.current?.abort();
+    const controller = new AbortController();
+    tripsLoadMoreAbortRef.current = controller;
+
     setLoadingMoreTrips(true);
     try {
       const params = new URLSearchParams();
@@ -383,9 +490,13 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
       } else {
         params.set('status', tripsStatusFilter);
       }
-      const res = await fetch(`/api/trips?${params.toString()}`, { headers: getApiHeaders() });
+      const res = await fetch(`/api/trips?${params.toString()}`, {
+        headers: getApiHeaders(),
+        signal: controller.signal,
+      });
       const data = await res.json();
-      if (res.ok && data.success && Array.isArray(data.data)) {
+      if (controller.signal.aborted || tripsFetchKeyRef.current !== reqKey) return;
+      if (res.ok && data?.success && Array.isArray(data.data)) {
         const incoming: TripPlanItem[] = data.data;
         setTrips((prev) => {
           const seen = new Set(prev.map((t) => t._id));
@@ -401,11 +512,29 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
               (typeof pag.totalPages === 'number' && nextPage < pag.totalPages))
           )
         );
+      } else {
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: data?.message || 'Chưa tải thêm được chuyến ghép đoàn.', type: 'error' },
+          })
+        );
       }
-    } catch {
-      // keep existing items
+    } catch (err: unknown) {
+      const isAbort = err instanceof DOMException && err.name === 'AbortError';
+      if (!isAbort && !controller.signal.aborted) {
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: 'Lỗi mạng khi tải thêm chuyến ghép đoàn.', type: 'error' },
+          })
+        );
+      }
     } finally {
-      setLoadingMoreTrips(false);
+      if (tripsLoadMoreAbortRef.current === controller) {
+        tripsLoadMoreAbortRef.current = null;
+      }
+      if (!controller.signal.aborted && tripsFetchKeyRef.current === reqKey) {
+        setLoadingMoreTrips(false);
+      }
     }
   };
 
@@ -418,11 +547,13 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
     if (reportsTrailFilter) params.set('trailId', reportsTrailFilter);
 
     fetch(`/api/trip-reports?${params.toString()}`, { headers: getApiHeaders(), signal: controller.signal })
-      .then((res) => res.json())
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
       .then((data) => {
-        if (!controller.signal.aborted && data.success) {
+        if (controller.signal.aborted) return;
+        if (data?.success) {
           const list: TripReportItem[] = Array.isArray(data.data) ? data.data : [];
           setTripReports(list);
+          setReportsError(null);
           setReportsPage(1);
           const pag = data.pagination;
           setReportsHasMore(
@@ -433,31 +564,45 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                 (typeof pag.total === 'number' && list.length < pag.total))
             )
           );
+        } else {
+          setReportsError(data?.message || 'Chưa tải được nhật ký chuyến đi lúc này.');
         }
       })
       .catch(() => {
-        // keep existing state on error
+        if (!controller.signal.aborted) {
+          setReportsError('Chưa tải được nhật ký chuyến đi lúc này. Bạn thử lại nhé.');
+        }
       })
       .finally(() => {
         if (!controller.signal.aborted) {
           setReportsLoadedKey(reportsFetchKey);
+          setLoadingMoreReports(false);
         }
       });
     return () => controller.abort();
   }, [reportsFetchKey, reportsTrailFilter]);
 
   const handleLoadMoreReports = async () => {
-    if (loadingMoreReports || !reportsHasMore) return;
+    if (loadingMoreReports || !reportsHasMore || !reportsFetchKey) return;
+    const reqKey = reportsFetchKey;
     const nextPage = reportsPage + 1;
+    reportsLoadMoreAbortRef.current?.abort();
+    const controller = new AbortController();
+    reportsLoadMoreAbortRef.current = controller;
+
     setLoadingMoreReports(true);
     try {
       const params = new URLSearchParams();
       params.set('limit', '9');
       params.set('page', String(nextPage));
       if (reportsTrailFilter) params.set('trailId', reportsTrailFilter);
-      const res = await fetch(`/api/trip-reports?${params.toString()}`, { headers: getApiHeaders() });
+      const res = await fetch(`/api/trip-reports?${params.toString()}`, {
+        headers: getApiHeaders(),
+        signal: controller.signal,
+      });
       const data = await res.json();
-      if (res.ok && data.success && Array.isArray(data.data)) {
+      if (controller.signal.aborted || reportsFetchKeyRef.current !== reqKey) return;
+      if (res.ok && data?.success && Array.isArray(data.data)) {
         const incoming: TripReportItem[] = data.data;
         setTripReports((prev) => {
           const seen = new Set(prev.map((r) => r._id));
@@ -473,11 +618,29 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
               (typeof pag.totalPages === 'number' && nextPage < pag.totalPages))
           )
         );
+      } else {
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: data?.message || 'Chưa tải thêm được nhật ký chuyến đi.', type: 'error' },
+          })
+        );
       }
-    } catch {
-      // keep existing items
+    } catch (err: unknown) {
+      const isAbort = err instanceof DOMException && err.name === 'AbortError';
+      if (!isAbort && !controller.signal.aborted) {
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: 'Lỗi mạng khi tải thêm nhật ký chuyến đi.', type: 'error' },
+          })
+        );
+      }
     } finally {
-      setLoadingMoreReports(false);
+      if (reportsLoadMoreAbortRef.current === controller) {
+        reportsLoadMoreAbortRef.current = null;
+      }
+      if (!controller.signal.aborted && reportsFetchKeyRef.current === reqKey) {
+        setLoadingMoreReports(false);
+      }
     }
   };
 
@@ -485,11 +648,19 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
     selectedCategory === 'Hoạt Động'
       ? `${activityScope}:${currentUserId || 'guest'}:${activityRefreshTick}`
       : null;
+  const activityFetchKeyRef = useRef<string | null>(activityFetchKey);
+
+  useEffect(() => {
+    activityFetchKeyRef.current = activityFetchKey;
+    activitiesLoadMoreAbortRef.current?.abort();
+    activitiesLoadMoreAbortRef.current = null;
+  }, [activityFetchKey]);
+
   const isFollowingGuestGate =
     selectedCategory === 'Hoạt Động' &&
     activityScope === 'following' &&
     !currentUser &&
-    (typeof window === 'undefined' || !localStorage.getItem('lost_token'));
+    (typeof window === 'undefined' || !safeLocalStorageGet('lost_token'));
   const loadingActivities =
     Boolean(activityFetchKey) && !isFollowingGuestGate && activitiesLoadedKey !== activityFetchKey;
 
@@ -527,6 +698,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
       .finally(() => {
         if (!controller.signal.aborted) {
           setActivitiesLoadedKey(activityFetchKey);
+          setLoadingMoreActivities(false);
         }
       });
 
@@ -534,16 +706,22 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
   }, [activityFetchKey, activityScope, isFollowingGuestGate]);
 
   const handleLoadMoreActivities = async () => {
-    if (loadingMoreActivities || !activitiesHasMore) return;
+    if (loadingMoreActivities || !activitiesHasMore || !activityFetchKey) return;
+    const reqKey = activityFetchKey;
     const nextPage = activitiesPage + 1;
+    activitiesLoadMoreAbortRef.current?.abort();
+    const controller = new AbortController();
+    activitiesLoadMoreAbortRef.current = controller;
+
     setLoadingMoreActivities(true);
     try {
       const res = await fetch(
         `/api/activities/community?scope=${encodeURIComponent(activityScope)}&limit=25&page=${nextPage}`,
-        { headers: getApiHeaders() }
+        { headers: getApiHeaders(), signal: controller.signal }
       );
       if (res.ok) {
         const json = await res.json();
+        if (controller.signal.aborted || activityFetchKeyRef.current !== reqKey) return;
         const rawList: RawCommunityActivity[] = Array.isArray(json?.data) ? json.data : [];
         const mapped = rawList.map((item, idx) => normalizeCommunityActivity(item, nextPage * 100 + idx));
         setActivities((prev) => {
@@ -560,11 +738,29 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
               (typeof pag.totalPages === 'number' && nextPage < pag.totalPages))
           )
         );
+      } else if (!controller.signal.aborted && activityFetchKeyRef.current === reqKey) {
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: 'Chưa tải thêm được hoạt động cũ hơn.', type: 'error' },
+          })
+        );
       }
-    } catch {
-      // keep existing items on transient error
+    } catch (err: unknown) {
+      const isAbort = err instanceof DOMException && err.name === 'AbortError';
+      if (!isAbort && !controller.signal.aborted) {
+        window.dispatchEvent(
+          new CustomEvent('lost:show-toast', {
+            detail: { message: 'Lỗi mạng khi tải thêm hoạt động.', type: 'error' },
+          })
+        );
+      }
     } finally {
-      setLoadingMoreActivities(false);
+      if (activitiesLoadMoreAbortRef.current === controller) {
+        activitiesLoadMoreAbortRef.current = null;
+      }
+      if (!controller.signal.aborted && activityFetchKeyRef.current === reqKey) {
+        setLoadingMoreActivities(false);
+      }
     }
   };
 
@@ -592,6 +788,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
       setIsCreateTripOpen(true);
     };
 
+    let draftRafId: number | null = null;
     try {
       const raw = sessionStorage.getItem('lost_trip_budget_draft');
       if (raw) {
@@ -599,7 +796,10 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
         sessionStorage.removeItem('lost_trip_budget_draft');
         const isFresh = !parsed.ts || Date.now() - Number(parsed.ts) < 10 * 60 * 1000;
         if (isFresh && (parsed.trailId || parsed.budgetNote)) {
-          window.requestAnimationFrame(() => consumeDraftPayload(parsed));
+          draftRafId = window.requestAnimationFrame(() => {
+            draftRafId = null;
+            consumeDraftPayload(parsed);
+          });
         }
       }
     } catch {
@@ -642,6 +842,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
     window.addEventListener('lost:follow-changed', handleFollowChanged);
     window.addEventListener('popstate', handlePopState);
     return () => {
+      if (draftRafId !== null) window.cancelAnimationFrame(draftRafId);
       window.removeEventListener('lost:start-trip-with-budget', handleBudgetEvent);
       window.removeEventListener('lost:trip-report-updated', handleReportUpdated);
       window.removeEventListener('lost:trip-report-deleted', handleReportDeleted);
@@ -663,18 +864,44 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
     if (!pendingUrlThreadId || matchedPendingInFeed) return;
     if (deepLinkedThread && deepLinkedThread.id === pendingUrlThreadId) return;
     const controller = new AbortController();
+
+    const clearBrokenDeepLink = (toastMessage: string) => {
+      setPendingUrlThreadId(null);
+      setDeepLinkedThread(null);
+      try {
+        const url = new URL(window.location.href);
+        if (url.searchParams.has('threadId')) {
+          url.searchParams.delete('threadId');
+          window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+        }
+      } catch {
+        // ignore URL mutation errors
+      }
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: { message: toastMessage, type: 'error' },
+        })
+      );
+    };
+
     fetch(`/api/forum/threads/${encodeURIComponent(pendingUrlThreadId)}`, {
       headers: getApiHeaders(),
       signal: controller.signal,
     })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((json) => {
-        if (!controller.signal.aborted && json?.success && json.data) {
+      .then(async (res) => {
+        const json = await res.json().catch(() => null);
+        if (controller.signal.aborted) return;
+        if (res.ok && json?.success && json.data) {
           setDeepLinkedThread({ id: pendingUrlThreadId, thread: json.data });
+        } else {
+          clearBrokenDeepLink(json?.message || 'Bài viết không tồn tại hoặc đã bị xóa.');
         }
       })
-      .catch(() => {
-        // ignore missing or aborted deep-link
+      .catch((err: unknown) => {
+        const isAbort = err instanceof DOMException && err.name === 'AbortError';
+        if (!isAbort && !controller.signal.aborted) {
+          clearBrokenDeepLink('Không thể mở bài viết lúc này. Bạn thử lại sau nhé.');
+        }
       });
     return () => controller.abort();
   }, [pendingUrlThreadId, matchedPendingInFeed, deepLinkedThread]);
@@ -711,21 +938,43 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
   useEffect(() => {
     const handleGlobalUpdate = (e: Event) => {
       const detail = (e as CustomEvent).detail;
-      if (detail && detail.threadId) {
+      if (!detail || typeof detail !== 'object') return;
+      if (detail.deletedThreadId) {
+        const deletedId = String(detail.deletedThreadId);
+        setActiveThread((prev) => (prev && String(prev.id) === deletedId ? null : prev));
+        setDeepLinkedThread((prev) => (prev && String(prev.thread.id) === deletedId ? null : prev));
+        onThreadDeleted?.(deletedId);
+        return;
+      }
+      if (detail.updatedThread && detail.updatedThread.id) {
+        const updated = detail.updatedThread as ForumThreadWithTrail;
+        setActiveThread((prev) => (prev && String(prev.id) === String(updated.id) ? { ...prev, ...updated } : prev));
+        setDeepLinkedThread((prev) =>
+          prev && String(prev.thread.id) === String(updated.id)
+            ? { ...prev, thread: { ...prev.thread, ...updated } }
+            : prev
+        );
+        onThreadUpdated?.(updated);
+      }
+      if (detail.threadId) {
+        const tid = String(detail.threadId);
         if (detail.userReaction !== undefined) {
-          setThreadReactions((prev) => ({ ...prev, [detail.threadId]: detail.userReaction }));
+          setThreadReactions((prev) => ({ ...prev, [tid]: detail.userReaction }));
         }
         if (detail.reactionsSummary) {
-          setThreadReactionsSummaryMap((prev) => ({ ...prev, [detail.threadId]: detail.reactionsSummary }));
+          setThreadReactionsSummaryMap((prev) => ({ ...prev, [tid]: detail.reactionsSummary }));
         }
         if (detail.upvotes !== undefined) {
-          setThreadUpvotesMap((prev) => ({ ...prev, [detail.threadId]: detail.upvotes }));
+          setThreadUpvotesMap((prev) => ({ ...prev, [tid]: detail.upvotes }));
+        }
+        if (detail.repliesCount !== undefined) {
+          setThreadCommentCounts((prev) => ({ ...prev, [tid]: detail.repliesCount }));
         }
       }
     };
     window.addEventListener('lost:forum-updated', handleGlobalUpdate);
     return () => window.removeEventListener('lost:forum-updated', handleGlobalUpdate);
-  }, []);
+  }, [onThreadDeleted, onThreadUpdated]);
 
   const filtered = useMemo(() => {
     const baseList = (threads as ForumThreadWithTrail[]).filter((t) => {
@@ -763,11 +1012,14 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
   );
 
   const handleToggleReaction = async (threadId: string, reaction: ReactionType) => {
-    const token = localStorage.getItem('lost_token');
+    const token = safeLocalStorageGet('lost_token');
     if (!token) {
       promptAuth('Vui lòng đăng nhập để thả cảm xúc cho bài viết!', 'thả cảm xúc bài viết');
       return;
     }
+
+    const seq = (reactionSeqRef.current[threadId] || 0) + 1;
+    reactionSeqRef.current[threadId] = seq;
 
     const targetThread = threads.find((t) => t.id === threadId) as (ForumThread & { userReaction?: ReactionType }) | undefined;
     const prevReaction =
@@ -778,6 +1030,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
       ...(threadReactionsSummaryMap[threadId] ||
         (targetThread?.reactions as unknown as Record<string, number> | undefined) || {
         like: 0,
+        love: 0,
         dislike: 0,
         haha: 0,
         wow: 0,
@@ -791,7 +1044,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
 
     const next = prevReaction === reaction ? null : reaction;
 
-    // Optimistic update
+    // Optimistic update (including threadUpvotesMap)
     setThreadReactions((prevMap) => ({ ...prevMap, [threadId]: next }));
     const optimisticSummary: Record<string, number> = { ...prevSummarySnapshot };
     if (prevReaction && optimisticSummary[prevReaction] !== undefined) {
@@ -800,7 +1053,12 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
     if (next) {
       optimisticSummary[next] = (optimisticSummary[next] || 0) + 1;
     }
+    const optimisticUpvotes = Object.values(optimisticSummary).reduce(
+      (acc, count) => acc + (typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0),
+      0
+    );
     setThreadReactionsSummaryMap((prevMap) => ({ ...prevMap, [threadId]: optimisticSummary }));
+    setThreadUpvotesMap((prevMap) => ({ ...prevMap, [threadId]: optimisticUpvotes }));
 
     const rollback = () => {
       setThreadReactions((prevMap) => ({ ...prevMap, [threadId]: prevReaction }));
@@ -815,6 +1073,8 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
         body: JSON.stringify({ reactionType: reaction }),
       });
       const json = await res.json().catch(() => ({}));
+      if (reactionSeqRef.current[threadId] !== seq) return;
+
       if (res.ok && json.success && json.upvotes !== undefined) {
         setThreadUpvotesMap((prevMap) => ({ ...prevMap, [threadId]: json.upvotes }));
         if (json.userReaction !== undefined) {
@@ -837,7 +1097,13 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
         }
       }
     } catch (err) {
+      if (reactionSeqRef.current[threadId] !== seq) return;
       rollback();
+      window.dispatchEvent(
+        new CustomEvent('lost:show-toast', {
+          detail: { message: 'Lỗi kết nối máy chủ khi thả cảm xúc.', type: 'error' },
+        })
+      );
       console.error('[Feed Reaction Error]:', err);
     }
   };
@@ -847,7 +1113,8 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
     try {
       const d = new Date(dateStr);
       if (Number.isNaN(d.getTime())) return dateStr;
-      const diffHours = Math.floor((nowMs - d.getTime()) / (1000 * 60 * 60));
+      const diffMs = Math.max(0, nowMs - d.getTime());
+      const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
       if (diffHours < 1) return 'Vừa xong';
       if (diffHours < 24) return `${diffHours} giờ trước`;
       if (diffHours < 48) return 'Hôm qua';
@@ -865,7 +1132,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
     { name: 'Tìm Đồng Đội', label: 'Tìm đồng đội', Icon: IconUserPlus },
     { name: 'Kinh Nghiệm', label: 'Cẩm nang & Kinh nghiệm', Icon: IconLightbulb },
     { name: 'Hỏi Đáp', label: 'Hỏi đáp kỹ thuật', Icon: IconHelpCircle },
-    { name: 'Cảnh Báo', label: 'Radar an toàn', Icon: IconShieldAlert },
+    { name: 'Cảnh Báo', label: 'Cảnh báo an toàn', Icon: IconShieldAlert },
   ];
 
   const handleSelectCategory = (catName: string) => {
@@ -907,7 +1174,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
         onOpenAuthorProfile={(auth) => setActiveAuthor({
           name: auth.name,
           avatar: auth.avatar,
-          userId: auth.userId || activeThread?.userId,
+          userId: auth.userId,
         })}
         onUpdateThreadUpvotes={(tId, upvotes) => setThreadUpvotesMap((prev) => ({ ...prev, [tId]: upvotes }))}
         onUpdateCommentCount={(threadId, count) => setThreadCommentCounts((prev) => ({ ...prev, [threadId]: count }))}
@@ -943,7 +1210,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
       >
         <div>
           <div className="section-eyebrow" style={{ marginBottom: 6 }}>
-            Diễn đàn &amp; vô tuyến thực địa
+            Diễn đàn &amp; trao đổi cộng đồng
           </div>
 
           <h2
@@ -956,10 +1223,10 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
               lineHeight: 1.08,
             }}
           >
-            Nhật Ký Băng Rừng &amp; Radar Đường Trek
+            Nhật Ký Chuyến Đi &amp; Chia Sẻ Đường Trek
           </h2>
           <p style={{ fontSize: '0.88rem', color: 'var(--color-text-muted)', margin: '8px 0 0 0' }}>
-            Cẩm nang trải nghiệm thực tế, tình trạng tuyến đường và tìm đồng đội ghép đoàn từ cộng đồng Trekker.
+            Cẩm nang trải nghiệm, tình trạng tuyến đường và tìm đồng đội ghép đoàn từ cộng đồng Trekker.
           </p>
         </div>
 
@@ -969,9 +1236,9 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
               type="button"
               className="btn btn-primary"
               onClick={() => {
-                const token = localStorage.getItem('lost_token');
+                const token = safeLocalStorageGet('lost_token');
                 if (!token) {
-                  promptAuth('Vui lòng đăng nhập để mở chuyến ghép đoàn!');
+                  promptAuth('Vui lòng đăng nhập để mở chuyến ghép đoàn!', 'mở chuyến ghép đoàn');
                   return;
                 }
                 setIsCreateTripOpen(true);
@@ -985,9 +1252,9 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
               type="button"
               className="btn btn-primary"
               onClick={() => {
-                const token = localStorage.getItem('lost_token');
+                const token = safeLocalStorageGet('lost_token');
                 if (!token) {
-                  promptAuth('Vui lòng đăng nhập để viết bài nhật ký chuyến đi!');
+                  promptAuth('Vui lòng đăng nhập để viết bài nhật ký chuyến đi!', 'viết nhật ký chuyến đi');
                   return;
                 }
                 setIsCreateReportOpen(true);
@@ -1001,9 +1268,9 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
               type="button"
               className="btn btn-primary"
               onClick={() => {
-                const token = localStorage.getItem('lost_token');
+                const token = safeLocalStorageGet('lost_token');
                 if (!token) {
-                  promptAuth('Vui lòng đăng nhập để tạo bài thảo luận mới trên diễn đàn!');
+                  promptAuth('Vui lòng đăng nhập để tạo bài thảo luận mới trên diễn đàn!', 'tạo bài thảo luận mới');
                   return;
                 }
                 onOpenNewThreadModal();
@@ -1054,10 +1321,10 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                 borderBottomColor: 'transparent',
                 color: isActive
                   ? isWarning
-                    ? 'var(--color-error)'
+                    ? 'var(--color-error-text, var(--color-error))'
                     : 'var(--color-text-main)'
                   : isWarning
-                    ? 'var(--color-error)'
+                    ? 'var(--color-error-text, var(--color-error))'
                     : 'var(--color-text-muted)',
               }}
             >
@@ -1066,10 +1333,10 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                 color={
                   isActive
                     ? isWarning
-                      ? 'var(--color-error)'
+                      ? 'var(--color-error-text, var(--color-error))'
                       : 'var(--color-primary)'
                     : isWarning
-                      ? 'var(--color-error)'
+                      ? 'var(--color-error-text, var(--color-error))'
                       : 'var(--color-text-dim)'
                 }
               />
@@ -1236,7 +1503,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                       role="tab"
                       aria-selected={active}
                       onClick={() => {
-                        if (item.key === 'mine' && !localStorage.getItem('lost_token')) {
+                        if (item.key === 'mine' && !safeLocalStorageGet('lost_token')) {
                           promptAuth('Vui lòng đăng nhập để xem các chuyến ghép đoàn của bạn!', 'xem chuyến ghép đoàn của bạn');
                           return;
                         }
@@ -1325,6 +1592,34 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                   {loadingTrips ? (
                     <div style={{ gridColumn: '1 / -1', padding: '40px 20px', textAlign: 'center', color: 'var(--color-text-muted)' }}>
                       Đang tải danh sách chuyến ghép đoàn...
+                    </div>
+                  ) : tripsError ? (
+                    <div
+                      role="alert"
+                      style={{
+                        gridColumn: '1 / -1',
+                        padding: '32px 20px',
+                        textAlign: 'center',
+                        background: 'var(--banner-danger-bg)',
+                        borderRadius: 4,
+                        border: '1px solid var(--banner-danger-border)',
+                        color: 'var(--banner-danger-text)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: 10,
+                      }}
+                    >
+                      <div style={{ fontSize: '0.86rem', fontWeight: 700 }}>{tripsError}</div>
+                      <button
+                        type="button"
+                        className="btn btn-outline"
+                        onClick={loadTrips}
+                        style={{ borderRadius: 4, fontSize: '0.78rem', padding: '6px 14px', display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                      >
+                        <IconRotateCw size={13} />
+                        <span>Thử lại</span>
+                      </button>
                     </div>
                   ) : trips.length === 0 ? (
                     <div
@@ -1419,6 +1714,34 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
               {loadingReports ? (
                 <div style={{ gridColumn: '1 / -1', padding: '40px 20px', textAlign: 'center', color: 'var(--color-text-muted)' }}>
                   Đang tải nhật ký chuyến đi...
+                </div>
+              ) : reportsError ? (
+                <div
+                  role="alert"
+                  style={{
+                    gridColumn: '1 / -1',
+                    padding: '32px 20px',
+                    textAlign: 'center',
+                    background: 'var(--banner-danger-bg)',
+                    borderRadius: 4,
+                    border: '1px solid var(--banner-danger-border)',
+                    color: 'var(--banner-danger-text)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ fontSize: '0.86rem', fontWeight: 700 }}>{reportsError}</div>
+                  <button
+                    type="button"
+                    className="btn btn-outline"
+                    onClick={loadTripReports}
+                    style={{ borderRadius: 4, fontSize: '0.78rem', padding: '6px 14px', display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                  >
+                    <IconRotateCw size={13} />
+                    <span>Thử lại</span>
+                  </button>
                 </div>
               ) : tripReports.length === 0 ? (
                 <div
@@ -1560,13 +1883,13 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                   Đăng nhập để xem hoạt động từ đồng đội bạn theo dõi
                 </div>
                 <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--color-text-muted)', maxWidth: 440 }}>
-                  Theo dõi các trekker và dẫn đường uy tín để cập nhật ngay khi họ đóng dấu đỉnh mới, mở chuyến ghép đoàn hoặc chia sẻ nhật ký thực địa.
+                  Theo dõi các trekker và dẫn đường uy tín để cập nhật ngay khi họ đóng dấu đỉnh mới, mở chuyến ghép đoàn hoặc chia sẻ nhật ký chuyến đi.
                 </p>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
                   <button
                     type="button"
                     className="btn btn-primary"
-                    onClick={() => window.dispatchEvent(new CustomEvent('lost:open-auth-modal'))}
+                    onClick={() => promptAuth('Vui lòng đăng nhập để xem hoạt động từ người bạn theo dõi.', 'xem hoạt động của người bạn theo dõi')}
                     style={{ borderRadius: 4, fontSize: '0.8rem' }}
                   >
                     Đăng nhập ngay
@@ -1607,17 +1930,31 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
               </div>
             ) : activitiesError ? (
               <div
+                role="alert"
                 style={{
                   padding: '32px 20px',
                   textAlign: 'center',
-                  background: 'var(--color-bg-card)',
-                  border: '1px solid var(--color-border)',
+                  background: 'var(--banner-danger-bg)',
+                  border: '1px solid var(--banner-danger-border)',
                   borderRadius: 4,
-                  color: 'var(--color-text-muted)',
+                  color: 'var(--banner-danger-text)',
                   fontSize: '0.84rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: 10,
                 }}
               >
-                {activitiesError}
+                <div style={{ fontWeight: 700 }}>{activitiesError}</div>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={() => setActivityRefreshTick((t) => t + 1)}
+                  style={{ borderRadius: 4, fontSize: '0.78rem', padding: '6px 14px', display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                >
+                  <IconRotateCw size={13} />
+                  <span>Thử lại</span>
+                </button>
               </div>
             ) : activities.length === 0 ? (
               <div
@@ -1656,11 +1993,12 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {activities.map((item) => {
                   const meta = ACTIVITY_TYPE_META[item.type] || {
-                    label: 'Hoạt Động Thực Địa',
+                    label: 'Hoạt động cộng đồng',
                     accent: 'var(--color-primary)',
                     Icon: IconSparkles,
                   };
                   const BadgeIcon = meta.Icon;
+                  const actAvatarKey = `act:${item.id}:${item.author.avatar}`;
 
                   return (
                     <article
@@ -1703,11 +2041,14 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                           }}
                           title="Xem hồ sơ thành viên"
                         >
-                          {item.author.avatar ? (
+                          {item.author.avatar && !failedAvatarKeys[actAvatarKey] ? (
                             <img
+                              loading="lazy"
+                              decoding="async"
                               src={item.author.avatar}
                               alt={item.author.name}
                               referrerPolicy="no-referrer"
+                              onError={() => setFailedAvatarKeys((prev) => ({ ...prev, [actAvatarKey]: true }))}
                               style={{
                                 width: 36,
                                 height: 36,
@@ -1755,7 +2096,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                                     fontVariantNumeric: 'tabular-nums',
                                   }}
                                 >
-                                  {item.author.reputationScore.toLocaleString('vi-VN')} PTS
+                                  {item.author.reputationScore.toLocaleString('vi-VN')} điểm
                                 </span>
                               )}
                             </span>
@@ -1811,10 +2152,13 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                           }}
                         >
                           <span style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                            {item.trail.coverImage ? (
+                            {item.trail.coverImage && !failedAvatarKeys[`trail:${item.id}`] ? (
                               <img
+                                loading="lazy"
+                                decoding="async"
                                 src={item.trail.coverImage}
                                 alt={item.trail.name}
+                                onError={() => setFailedAvatarKeys((prev) => ({ ...prev, [`trail:${item.id}`]: true }))}
                                 style={{
                                   width: 48,
                                   height: 36,
@@ -1850,7 +2194,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                                   item.trail.maxAltitudeM ? `${item.trail.maxAltitudeM.toLocaleString('vi-VN')}m` : null,
                                 ]
                                   .filter(Boolean)
-                                  .join(' • ') || 'Mở chi tiết cung đường thực địa'}
+                                  .join(' • ') || 'Mở chi tiết cung đường'}
                               </span>
                             </span>
                           </span>
@@ -1929,7 +2273,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
               Chưa có bài viết nào trong chuyên mục này
             </h4>
             <p style={{ fontSize: '0.84rem', color: 'var(--color-text-muted)', margin: '0 0 18px 0', maxWidth: 460, marginLeft: 'auto', marginRight: 'auto' }}>
-              Hãy là người đầu tiên chia sẻ cẩm nang thám hiểm hoặc gửi thông tin thực địa cho cộng đồng!
+              Hãy là người đầu tiên chia sẻ kinh nghiệm đi rừng hoặc cập nhật tình trạng đường cho cộng đồng!
             </p>
             <button
               type="button"
@@ -1961,6 +2305,9 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                 return (
                   <div
                     key={thread.id}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Mở bài viết: ${thread.title}`}
                     className="card"
                     style={{
                       padding: '20px 22px',
@@ -1976,6 +2323,12 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                       overflow: 'visible',
                     }}
                     onClick={() => setActiveThread(threadWithTrail)}
+                    onKeyDown={(e) => {
+                      if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                        e.preventDefault();
+                        setActiveThread(threadWithTrail);
+                      }
+                    }}
                   >
                     <div>
                       {/* Header Badges */}
@@ -2002,13 +2355,13 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                           )}
                         </div>
 
-                        {/* Radar Live Chip */}
-                        <span
-                          className={`badge ${isWarning ? 'badge-error' : 'badge-cloud'}`}
-                        >
-                          {isWarning ? <IconAlertTriangle size={11} color="var(--color-error)" /> : <IconShieldCheck size={11} color="var(--color-primary)" />}
-                          {isWarning ? 'Cảnh báo tuyến' : 'Tuyến an toàn'}
-                        </span>
+                        {/* Warning indicator shown ONLY for genuine warning posts */}
+                        {isWarning && (
+                          <span className="badge badge-error">
+                            <IconAlertTriangle size={11} color="var(--color-error-text, var(--color-error))" />
+                            Cảnh báo tuyến
+                          </span>
+                        )}
                       </div>
 
                       {threadWithTrail.trailName && (
@@ -2039,23 +2392,77 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                       {thread.images && thread.images.length > 0 && (
                         <div style={{ marginBottom: 12 }}>
                           {thread.images.length === 1 && (
-                            <div style={{ height: 160, borderRadius: 4, overflow: 'hidden', border: '1px solid var(--color-border)', position: 'relative' }}>
-                              <img src={thread.images[0]} alt={thread.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                            <div style={{ height: 160, borderRadius: 4, overflow: 'hidden', border: '1px solid var(--color-border)', position: 'relative', background: 'var(--color-bg-main)' }}>
+                              <img
+                                loading="lazy"
+                                decoding="async"
+                                src={thread.images[0]}
+                                alt={thread.title}
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                }}
+                                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                              />
                             </div>
                           )}
                           {thread.images.length === 2 && (
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, height: 120 }}>
-                              <img src={thread.images[0]} alt={thread.title} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 4, border: '1px solid var(--color-border)' }} />
-                              <img src={thread.images[1]} alt={thread.title} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 4, border: '1px solid var(--color-border)' }} />
+                              <img
+                                loading="lazy"
+                                decoding="async"
+                                src={thread.images[0]}
+                                alt={thread.title}
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                }}
+                                style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 4, border: '1px solid var(--color-border)' }}
+                              />
+                              <img
+                                loading="lazy"
+                                decoding="async"
+                                src={thread.images[1]}
+                                alt={thread.title}
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                }}
+                                style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 4, border: '1px solid var(--color-border)' }}
+                              />
                             </div>
                           )}
                           {thread.images.length >= 3 && (
                             <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 6, height: 135 }}>
-                              <img src={thread.images[0]} alt={thread.title} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 4, border: '1px solid var(--color-border)' }} />
+                              <img
+                                loading="lazy"
+                                decoding="async"
+                                src={thread.images[0]}
+                                alt={thread.title}
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                }}
+                                style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 4, border: '1px solid var(--color-border)' }}
+                              />
                               <div style={{ display: 'grid', gridTemplateRows: '1fr 1fr', gap: 6, height: '100%' }}>
-                                <img src={thread.images[1]} alt={thread.title} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 4, border: '1px solid var(--color-border)' }} />
-                                <div style={{ position: 'relative', borderRadius: 4, overflow: 'hidden', border: '1px solid var(--color-border)' }}>
-                                  <img src={thread.images[2]} alt={thread.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                <img
+                                  loading="lazy"
+                                  decoding="async"
+                                  src={thread.images[1]}
+                                  alt={thread.title}
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = 'none';
+                                  }}
+                                  style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 4, border: '1px solid var(--color-border)' }}
+                                />
+                                <div style={{ position: 'relative', borderRadius: 4, overflow: 'hidden', border: '1px solid var(--color-border)', background: 'var(--color-bg-main)' }}>
+                                  <img
+                                    loading="lazy"
+                                    decoding="async"
+                                    src={thread.images[2]}
+                                    alt={thread.title}
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = 'none';
+                                    }}
+                                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                  />
                                   {thread.images.length > 3 && (
                                     <div
                                       style={{
@@ -2112,9 +2519,11 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                           const effectiveAvatar = (isCurrentUserAuthor && (currentUser?.avatarUrl || currentUser?.avatar))
                             ? (currentUser.avatarUrl || currentUser.avatar)
                             : (thread.authorAvatar || '');
+                          const threadAvatarKey = `th:${thread.id}:${effectiveAvatar}`;
 
                           return (
-                            <div
+                            <button
+                              type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setActiveAuthor({
@@ -2126,14 +2535,28 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                                   reputationScore: (isCurrentUserAuthor && currentUser) ? currentUser.reputationScore : undefined,
                                 });
                               }}
-                              style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', minWidth: 0 }}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 8,
+                                cursor: 'pointer',
+                                minWidth: 0,
+                                background: 'none',
+                                border: 'none',
+                                padding: 0,
+                                textAlign: 'left',
+                                fontFamily: 'var(--font-family)',
+                              }}
                               title="Bấm để xem hồ sơ tác giả"
                             >
-                              {effectiveAvatar ? (
+                              {effectiveAvatar && !failedAvatarKeys[threadAvatarKey] ? (
                                 <img
+                                  loading="lazy"
+                                  decoding="async"
                                   src={effectiveAvatar}
                                   alt={cleanAuthorName}
                                   referrerPolicy="no-referrer"
+                                  onError={() => setFailedAvatarKeys((prev) => ({ ...prev, [threadAvatarKey]: true }))}
                                   style={{
                                     width: 28,
                                     height: 28,
@@ -2180,7 +2603,7 @@ export const AlpineExpeditionFeed: React.FC<AlpineExpeditionFeedProps> = ({
                                   {formatDate(thread.createdAt)}
                                 </div>
                               </div>
-                            </div>
+                            </button>
                           );
                         })()}
 

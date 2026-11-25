@@ -309,7 +309,7 @@ export const ExpeditionShareCardModal: React.FC<ExpeditionShareCardModalProps> =
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
           <div>
             <div className="section-eyebrow" style={{ marginBottom: 4 }}>
-              LOST OFFLINE EXPEDITION POSTER · 100% CANVAS PNG
+              THẺ HÀNH TRÌNH NGOẠI TUYẾN LOST · 100% CANVAS PNG
             </div>
             <h2
               className="font-editorial"
@@ -463,7 +463,7 @@ export const ExpeditionShareCardModal: React.FC<ExpeditionShareCardModalProps> =
                   style={{ padding: '8px 10px', fontSize: '0.78rem' }}
                   onClick={() => setTheme('dark')}
                 >
-                  Obsidian Dark
+                  Nền tối
                 </button>
                 <button
                   type="button"
@@ -472,7 +472,7 @@ export const ExpeditionShareCardModal: React.FC<ExpeditionShareCardModalProps> =
                   style={{ padding: '8px 10px', fontSize: '0.78rem' }}
                   onClick={() => setTheme('light')}
                 >
-                  Field Paper Light
+                  Nền sáng
                 </button>
               </div>
             </div>

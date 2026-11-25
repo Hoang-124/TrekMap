@@ -54,5 +54,6 @@ const weatherAlertSubSchema = new Schema<IWeatherAlertSub>(
 
 weatherAlertSubSchema.index({ userId: 1, trailId: 1 }, { unique: true });
 weatherAlertSubSchema.index({ userId: 1, isActive: 1, updatedAt: -1 });
+weatherAlertSubSchema.index({ isActive: 1, lastEvaluatedAt: 1, updatedAt: 1 });
 
 export const WeatherAlertSubModel = model<IWeatherAlertSub>('WeatherAlertSub', weatherAlertSubSchema);

@@ -47,14 +47,16 @@ import { AiTrailMatchWizard } from './AiTrailMatchWizard.js';
 import { AiPackAuditor } from './AiPackAuditor.js';
 import { AiExpeditionBriefTab } from './AiExpeditionBriefTab.js';
 import type { Incident, Trail, UserProfile } from '../../types.js';
-import type {
-  AiChatThreadSummary,
-  AiEngineMode,
-  AiModelUsed,
-  AiPreferredRegion,
-  LocalAiThreadRecord,
-  RichAiChatMessage,
+import {
+  isSafeImageUrl,
+  type AiChatThreadSummary,
+  type AiEngineMode,
+  type AiModelUsed,
+  type AiPreferredRegion,
+  type LocalAiThreadRecord,
+  type RichAiChatMessage,
 } from './ai.types.js';
+import { safeLocalStorageGet, safeLocalStorageSet } from '../../utils/storageScope.js';
 
 interface TrekAssistantModalProps {
   isOpen: boolean;
@@ -136,16 +138,21 @@ function stripMarkdownForSpeech(raw: string): string {
 }
 
 function getVietnamDateFileStamp(): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Ho_Chi_Minh',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date());
-  const y = parts.find((p) => p.type === 'year')?.value || '2026';
-  const m = parts.find((p) => p.type === 'month')?.value || '01';
-  const d = parts.find((p) => p.type === 'day')?.value || '01';
-  return `${y}-${m}-${d}`;
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Ho_Chi_Minh',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const y = parts.find((p) => p.type === 'year')?.value;
+    const m = parts.find((p) => p.type === 'month')?.value;
+    const d = parts.find((p) => p.type === 'day')?.value;
+    if (y && m && d) return `${y}-${m}-${d}`;
+  } catch {
+    // Fallback to UTC+7 offset
+  }
+  return new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
 }
 
 function buildThreadBriefingMarkdown(
@@ -156,23 +163,23 @@ function buildThreadBriefingMarkdown(
   const dateStamp = getVietnamDateFileStamp();
   const timeNow = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
   const lines: string[] = [
-    `# LOST AI — BẢN TIN THÁM HIỂM NGOẠI TUYẾN (${dateStamp})`,
+    `# Ghi chú chuyến đi từ LOST AI (${dateStamp})`,
     '',
-    `- **Tiêu đề phiên**: ${threadTitle || 'Tư vấn Thám hiểm & An toàn Núi cao'}`,
-    `- **Thời điểm xuất**: ${timeNow} (Giờ Việt Nam)`,
+    `- **Chủ đề**: ${threadTitle || 'Chuẩn bị đường rừng & an toàn leo núi'}`,
+    `- **Lưu lúc**: ${timeNow} (giờ Việt Nam)`,
     ...(activeTrail
       ? [
-        `- **Cung đường đang xem**: ${activeTrail.name} (${activeTrail.province} — Đỉnh ${activeTrail.maxAltitudeM.toLocaleString()}m, ${activeTrail.distanceKm} km, +${activeTrail.elevationGainM}m)`,
+        `- **Cung đường đang xem**: ${activeTrail.name} (${activeTrail.province} — đỉnh ${activeTrail.maxAltitudeM.toLocaleString()}m, ${activeTrail.distanceKm} km, +${activeTrail.elevationGainM}m)`,
       ]
       : []),
-    `- **Tổng số lượt trao đổi**: ${msgs.length}`,
+    `- **Số lượt trao đổi**: ${msgs.length}`,
     '',
     '---',
     '',
   ];
 
   for (const msg of msgs) {
-    const speaker = msg.role === 'user' ? 'Người dùng (Trekker)' : 'LOST AI — Alpine Intelligence';
+    const speaker = msg.role === 'user' ? 'Bạn' : 'LOST AI';
     lines.push(`### ${speaker}${msg.timestamp ? ` (${msg.timestamp})` : ''}`);
     lines.push('');
     lines.push(removeEmojis(msg.content));
@@ -182,41 +189,41 @@ function buildThreadBriefingMarkdown(
       for (const act of msg.actions) {
         if (act.type === 'go_no_go_card' && act.goNoGoData) {
           const g = act.goNoGoData;
-          lines.push(`> **Thẻ Go/No-Go (${g.trailName})**: ${g.verdictLabel} — **${g.score}/100 điểm** (${g.departureDate})`);
+          lines.push(`> **Đánh giá Go/No-Go (${g.trailName})**: ${g.verdictLabel} — **${g.score}/100 điểm** (${g.departureDate})`);
           if (g.weatherSummary) {
             lines.push(
               `> Thời tiết đỉnh: ${g.weatherSummary.summitTempMinC ?? g.weatherSummary.tempMinC}°C – ${g.weatherSummary.summitTempMaxC ?? g.weatherSummary.tempMaxC}°C | Mưa ${g.weatherSummary.precipMm} mm | Gió ${g.weatherSummary.windSpeedKmH} km/h`
             );
           }
-          if (g.risks.length > 0) lines.push(`> Rủi ro: ${g.risks.join('; ')}`);
+          if (g.risks.length > 0) lines.push(`> Lưu ý rủi ro: ${g.risks.join('; ')}`);
           lines.push('');
         } else if (act.type === 'trail_compare_card' && act.compareData) {
           const cmp = act.compareData;
-          lines.push(`**Bảng so sánh đối đầu (Tháng ${cmp.targetMonth}):**`);
+          lines.push(`**So sánh các cung (tháng ${cmp.targetMonth}):**`);
           lines.push('');
           lines.push(`| Tiêu chí | ${cmp.trails.map((t) => t.name).join(' | ')} |`);
           lines.push(`| --- | ${cmp.trails.map(() => '---').join(' | ')} |`);
-          lines.push(`| Cao độ đỉnh | ${cmp.trails.map((t) => `${t.maxAltitudeM.toLocaleString()}m`).join(' | ')} |`);
-          lines.push(`| Cự ly / Độ dốc | ${cmp.trails.map((t) => `${t.distanceKm} km (+${t.elevationGainM}m)`).join(' | ')} |`);
+          lines.push(`| Độ cao đỉnh | ${cmp.trails.map((t) => `${t.maxAltitudeM.toLocaleString()}m`).join(' | ')} |`);
+          lines.push(`| Quãng đường / độ dốc | ${cmp.trails.map((t) => `${t.distanceKm} km (+${t.elevationGainM}m)`).join(' | ')} |`);
           lines.push(`| Độ khó | ${cmp.trails.map((t) => `Cấp ${t.difficultyLevel}/5`).join(' | ')} |`);
           lines.push(`| Thời lượng & Naismith | ${cmp.trails.map((t) => `${t.durationLabel} (~${t.naismithHours}h)`).join(' | ')} |`);
-          lines.push(`| Nguồn nước | ${cmp.trails.map((t) => (t.hasWaterSource ? 'Có suối' : 'Khô / Tự mang')).join(' | ')} |`);
-          lines.push(`| Giấy phép VQG | ${cmp.trails.map((t) => (t.permitRequired ? 'Cần đăng ký' : 'Tự do (CCCD)')).join(' | ')} |`);
+          lines.push(`| Nguồn nước | ${cmp.trails.map((t) => (t.hasWaterSource ? 'Có suối' : 'Khô / tự mang')).join(' | ')} |`);
+          lines.push(`| Giấy phép VQG | ${cmp.trails.map((t) => (t.permitRequired ? 'Cần đăng ký' : 'Tự do (mang CCCD)')).join(' | ')} |`);
           lines.push(`| Sự cố đang mở | ${cmp.trails.map((t) => `${t.activeIncidentsCount}`).join(' | ')} |`);
           lines.push('');
-          lines.push(`- **Người mới**: ${cmp.beginnerPick.name} — ${cmp.beginnerPick.reason}`);
-          lines.push(`- **Trekker kinh nghiệm**: ${cmp.veteranPick.name} — ${cmp.veteranPick.reason}`);
+          lines.push(`- **Hợp người mới**: ${cmp.beginnerPick.name} — ${cmp.beginnerPick.reason}`);
+          lines.push(`- **Hợp người đi quen**: ${cmp.veteranPick.name} — ${cmp.veteranPick.reason}`);
           lines.push('');
         } else if (act.type === 'bio_calculator' && act.bioCalcData) {
           const b = act.bioCalcData;
           lines.push(
-            `> **Tính toán Sinh học**: Di chuyển **${b.recommendedMovingHours}h** (Naismith ${b.naismithHours}h / Tobler ${b.toblerHours}h) | Nước **${b.waterLitersTotal}L** + **${b.oresolPackets} gói Oresol** | Calo **${b.caloriesActiveKcal} kcal** | Balo **${b.packRatioPercent}%**`
+            `> **Tính thể lực & nước**: Đi thực tế **${b.recommendedMovingHours}h** (Naismith ${b.naismithHours}h / Tobler ${b.toblerHours}h) | Nước **${b.waterLitersTotal}L** + **${b.oresolPackets} gói Oresol** | Calo **${b.caloriesActiveKcal} kcal** | Balo **${b.packRatioPercent}%**`
           );
           lines.push('');
         } else if (act.type === 'pace_schedule_card' && act.pacePlanData) {
           const pp = act.pacePlanData;
           lines.push(
-            `> **Kế hoạch tốc độ & Giờ quay đầu (${pp.trailName} — ${pp.departureDate})**: Giờ quay đầu an toàn **${pp.pacing.safeTurnaroundTime}** | Hoàng hôn NOAA **${pp.solar.sunset}** | Xuất phát **${pp.inputs.startTime}** → Đỉnh **${pp.pacing.summitEta}** → Về đích **${pp.pacing.finishEta}**`
+            `> **Nhịp đi & giờ quay đầu (${pp.trailName} — ${pp.departureDate})**: Quay đầu an toàn **${pp.pacing.safeTurnaroundTime}** | Hoàng hôn NOAA **${pp.solar.sunset}** | Xuất phát **${pp.inputs.startTime}** → Đỉnh **${pp.pacing.summitEta}** → Xuống chân núi **${pp.pacing.finishEta}**`
           );
           for (const cp of pp.checkpoints) {
             lines.push(`> - Ngày ${cp.day} · ${cp.etaTime} — ${cp.label} (${cp.cumulativeKm} km · ${cp.elevationM}m)`);
@@ -225,14 +232,14 @@ function buildThreadBriefingMarkdown(
         } else if (act.type === 'fuel_plan_card' && act.fuelPlanData) {
           const fp = act.fuelPlanData;
           lines.push(
-            `> **Dinh dưỡng, Nước & Điện giải (${fp.trailName} — ${fp.inputs.dietLabel})**: Nước **${fp.hydration.waterLitersTotal}L** (mang **${fp.hydration.carryWaterPerLegLiters}L/${fp.hasWaterSource ? 'chặng' : 'ngày'}**) + **${fp.hydration.oresolPacketsTotal} gói Oresol** | **${fp.energy.totalTripKcal.toLocaleString('vi-VN')} kcal** | Tải ăn+nước **${fp.totals.totalConsumableCarryKg} kg** (~**${fp.totals.estimatedFoodCostVndPerPerson.toLocaleString('vi-VN')}đ/người**)`
+            `> **Đồ ăn, nước & điện giải (${fp.trailName} — ${fp.inputs.dietLabel})**: Nước **${fp.hydration.waterLitersTotal}L** (mang **${fp.hydration.carryWaterPerLegLiters}L/${fp.hasWaterSource ? 'chặng' : 'ngày'}**) + **${fp.hydration.oresolPacketsTotal} gói Oresol** | **${fp.energy.totalTripKcal.toLocaleString('vi-VN')} kcal** | Nặng ăn+nước **${fp.totals.totalConsumableCarryKg} kg** (~**${fp.totals.estimatedFoodCostVndPerPerson.toLocaleString('vi-VN')}đ/người**)`
           );
           if (fp.hydration.hydrationAlert) {
-            lines.push(`> **Cảnh báo nước & điện giải**: ${fp.hydration.hydrationAlert}`);
+            lines.push(`> **Lưu ý nước & điện giải**: ${fp.hydration.hydrationAlert}`);
           }
           if (fp.hydration.waterResupplySpots.length > 0) {
             lines.push(
-              `> **Điểm tiếp nước thực địa**: ${fp.hydration.waterResupplySpots
+              `> **Điểm tiếp nước dọc đường**: ${fp.hydration.waterResupplySpots
                 .map(
                   (sp) =>
                     `${sp.name}${typeof sp.elevationM === 'number' && Number.isFinite(sp.elevationM) ? ` (${sp.elevationM.toLocaleString('vi-VN')}m)` : ''} — ${sp.treatmentNote}`
@@ -249,7 +256,7 @@ function buildThreadBriefingMarkdown(
         } else if (act.type === 'readiness_audit_card' && act.readinessAuditData) {
           const ra = act.readinessAuditData;
           lines.push(
-            `> **Kiểm tra Sẵn sàng Pre-Flight (${ra.trailName} — ${ra.departureDate})**: **${ra.readinessScore}/100** (${ra.verdictLabel}) | Balo ${ra.inputs.packWeightKg}kg (${ra.inputs.packRatioPercent}%) | Quay đầu ${ra.snapshot.safeTurnaroundTime} | Nước ${ra.snapshot.carryWaterPerLegLiters}L`
+            `> **Rà soát trước giờ đi (${ra.trailName} — ${ra.departureDate})**: **${ra.readinessScore}/100** (${ra.verdictLabel}) | Balo ${ra.inputs.packWeightKg}kg (${ra.inputs.packRatioPercent}%) | Quay đầu ${ra.snapshot.safeTurnaroundTime} | Nước ${ra.snapshot.carryWaterPerLegLiters}L`
           );
           for (const pl of ra.pillars) {
             lines.push(`> - **${pl.label} (${pl.score}/100)**: ${pl.summary}`);
@@ -261,23 +268,23 @@ function buildThreadBriefingMarkdown(
         } else if (act.type === 'gpx_analysis_card' && act.gpxData) {
           const gx = act.gpxData;
           lines.push(
-            `> **Phân tích GPX (${gx.fileName})**: ${gx.distanceKm} km | +${gx.elevationGainM}m / -${gx.elevationLossM}m | Đỉnh ${gx.maxAltitudeM}m | Độ khó cấp ${gx.estimatedDifficulty}/5 | Naismith ${gx.bioMetrics.recommendedMovingHours}h`
+            `> **Đọc file GPX (${gx.fileName})**: ${gx.distanceKm} km | +${gx.elevationGainM}m / -${gx.elevationLossM}m | Đỉnh ${gx.maxAltitudeM}m | Độ khó cấp ${gx.estimatedDifficulty}/5 | Naismith ${gx.bioMetrics.recommendedMovingHours}h`
           );
           lines.push('');
         } else if (act.type === 'ranked_trails' && Array.isArray(act.rankedTrails) && act.rankedTrails.length > 0) {
-          lines.push('**Cung đường đề xuất:**');
+          lines.push('**Cung đường gợi ý:**');
           for (const rt of act.rankedTrails) {
-            lines.push(`- **${rt.name}** (${rt.province}) — ${rt.maxAltitudeM.toLocaleString()}m | ${rt.distanceKm} km | Phù hợp ${rt.matchScore}%`);
+            lines.push(`- **${rt.name}** (${rt.province}) — ${rt.maxAltitudeM.toLocaleString()}m | ${rt.distanceKm} km | Hợp ${rt.matchScore}%`);
           }
           lines.push('');
         } else if (act.type === 'first_aid_triage' && act.triageData) {
           const tr = act.triageData;
-          lines.push(`> **Sơ cứu khẩn cấp WFA — ${tr.conditionTitle} (${tr.severity.toUpperCase()})**`);
+          lines.push(`> **Sơ cứu dã ngoại WFA — ${tr.conditionTitle} (${tr.severity.toUpperCase()})**`);
           tr.immediateSteps.forEach((step, idx) => lines.push(`> ${idx + 1}. ${step}`));
-          lines.push(`> Hotline: ${tr.emergencyContacts.map((c) => `${c.name}: ${c.phone}`).join(' | ')}`);
+          lines.push(`> Số liên hệ: ${tr.emergencyContacts.map((c) => `${c.name}: ${c.phone}`).join(' | ')}`);
           lines.push('');
         } else if (act.type === 'gear_checklist' && Array.isArray(act.checklistItems)) {
-          lines.push('**Checklist trang bị:**');
+          lines.push('**Đồ đạc cần chuẩn bị:**');
           for (const cat of act.checklistItems) {
             lines.push(`- *${cat.category}*:`);
             for (const item of cat.items) {
@@ -300,7 +307,7 @@ function buildThreadBriefingMarkdown(
     lines.push('');
   }
 
-  lines.push('*Xuất từ nền tảng LOST — Bản đồ Thám hiểm & An toàn Leo núi Việt Nam. Luôn lưu sẵn số cứu hộ 112 / 114 / 115 trước khi vào rừng.*');
+  lines.push('*Lưu từ LOST — bản đồ leo núi & đi rừng Việt Nam. Nhớ lưu sẵn số cứu hộ 112 / 114 / 115 trước khi vào rừng.*');
   return lines.join('\n');
 }
 
@@ -313,20 +320,20 @@ function buildWelcomeMessage(currentUser?: UserProfile | null, currentTrail?: Tr
   const cleanName = rawName.replace(/\s*\(.*?\)/, '').trim();
   const nameGreeting = cleanName ? ` **${cleanName}**` : '';
   const trailHint = currentTrail
-    ? `\n\nEm đang đọc trực tiếp ngữ cảnh cung **${currentTrail.name} (${currentTrail.maxAltitudeM}m — ${currentTrail.province})**. Bạn có thể kiểm tra Go/No-Go, lịch trình hoặc tải file **.gpx** để phân tích ngay!`
+    ? `\n\nMình đang mở sẵn thông tin cung **${currentTrail.name} (${currentTrail.maxAltitudeM}m · ${currentTrail.province})**. Bạn muốn xem hôm nay đi được không (Go/No-Go), canh giờ quay đầu hay gửi file **.gpx** để đọc địa hình cứ nhắn nhé.`
     : '';
 
   return {
     id: `welcome-${currentUser?.id || 'guest'}-${currentTrail?.id || 'home'}`,
     role: 'assistant',
-    content: removeEmojis(`**Xin chào${nameGreeting}!** Em là **LOST AI** — Trợ lý Thám hiểm & Sinh tồn Núi cao Việt Nam.
+    content: removeEmojis(`**Chào${nameGreeting}!** Mình là **LOST AI**, bạn đồng hành rành đường rừng núi Việt Nam.
 
-Em có thể hỗ trợ bạn ngay:
-- **Đánh giá Go / No-Go trực tuyến** theo thời tiết đỉnh, gió rét & cảnh báo sạt lở thực địa.
-- **Xếp hạng cung đường thực địa** theo thể lực, mùa săn mây, suối thác & vị trí GPS.
-- **Máy tính sinh học Naismith / Tobler**: ước tính giờ leo, lượng nước, Oresol, calo & tải trọng balo.
-- **Phân tích file GPX trực tiếp**: kéo thả hoặc đính kèm file **.gpx** để xem biểu đồ độ dốc & cảnh báo an toàn.
-- **Sơ cứu dã ngoại WFA & Hotline 100% xác thực**: 112 / 114 / 115 & các VQG Việt Nam.${trailHint}`),
+Trước khi xách balo, bạn cứ hỏi nhanh mấy việc này:
+- **Xem thời tiết đỉnh & Go/No-Go**: gió rét, mưa, cảnh báo sạt lở để chốt ngày đi cho yên tâm.
+- **Chọn cung hợp sức**: lọc theo thể lực, mùa săn mây, suối thác hoặc cung gần chỗ bạn nhất.
+- **Canh nước, giờ đi & độ nặng balo**: ước tính theo Naismith / Tobler, số gói Oresol và lượng calo.
+- **Đọc file GPX hoặc ảnh thực địa**: thả file **.gpx** xem dốc, hoặc gửi ảnh gặp dọc đường để hỏi nhanh.
+- **Sơ cứu dã ngoại WFA & số kiểm lâm**: tra nhanh cách xử lý và số trực 112 / 114 / 115 khi cần.${trailHint}`),
     timestamp: formatNowTime(),
     modelUsed: 'lost-knowledge-engine',
     actions: [
@@ -334,21 +341,32 @@ Em có thể hỗ trợ bạn ngay:
         type: 'quick_reply',
         suggestions: currentTrail
           ? [
-            `Đánh giá Go/No-Go hôm nay cho ${currentTrail.name}`,
-            `Tính giờ quay đầu & kế hoạch tốc độ leo ${currentTrail.name}`,
-            `Lịch trình chi tiết leo ${currentTrail.name}`,
-            `Checklist trang bị cho ${currentTrail.name}`,
+            `Hôm nay có nên leo ${currentTrail.name} không (Go/No-Go)?`,
+            `Canh giờ quay đầu và tốc độ leo ${currentTrail.name}`,
+            `Gợi ý lịch trình đi ${currentTrail.name}`,
+            `Đồ đạc và balo cần mang cho ${currentTrail.name}`,
           ]
           : [
-            'Gợi ý cung săn mây cho người mới',
-            'Tính giờ quay đầu & kịp xuống trước tối leo Fansipan',
-            'Tính thời gian Naismith & lượng nước leo núi 15km',
-            'Checklist Balo & Trang bị 2N1Đ',
-            'Cấp cứu khẩn cấp: Sốc độ cao & Lạc đường',
+            'Gợi ý vài cung săn mây dễ đi cho người mới',
+            'Canh giờ quay đầu leo Fansipan để kịp xuống trước tối',
+            'Đường 15km cần bao nhiêu nước và đi mấy tiếng (Naismith)?',
+            'Chuẩn bị balo và đồ đạc cho chuyến 2N1Đ',
+            'Xử lý khẩn cấp khi sốc độ cao hoặc lạc đường',
           ],
       },
     ],
   };
+}
+
+function pickMostRecentLocalThread(list: LocalAiThreadRecord[]): LocalAiThreadRecord | null {
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const sorted = [...list].sort((a, b) => {
+    if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+    const ta = new Date(a.lastMessageAt).getTime();
+    const tb = new Date(b.lastMessageAt).getTime();
+    return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0);
+  });
+  return sorted.find((t) => Array.isArray(t.messages) && t.messages.length > 0) || null;
 }
 
 export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
@@ -373,10 +391,11 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [isDragOverGpx, setIsDragOverGpx] = useState(false);
   const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [gpsStatus, setGpsStatus] = useState<'idle' | 'acquiring' | 'acquired' | 'unavailable'>('idle');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const [preferredRegion, setPreferredRegion] = useState<AiPreferredRegion>(() => {
-    const saved = localStorage.getItem('lost_preferred_region');
+    const saved = safeLocalStorageGet('lost_preferred_region');
     if (saved === 'north' || saved === 'central' || saved === 'taynguyen' || saved === 'south' || saved === 'auto') {
       return saved;
     }
@@ -390,7 +409,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
     } catch {
       // ignore
     }
-    const saved = localStorage.getItem('lost_engine_mode');
+    const saved = safeLocalStorageGet('lost_engine_mode');
     if (saved === 'knowledge' || saved === 'gemini' || saved === 'auto') return saved;
     return 'auto';
   });
@@ -408,11 +427,14 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
   const [threads, setThreads] = useState<AiChatThreadSummary[]>(() =>
     loadLocalAiThreads(storageUserId).map(({ messages: _m, ...summary }) => summary)
   );
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(() => {
+    const initialThread = pickMostRecentLocalThread(loadLocalAiThreads(storageUserId));
+    return initialThread ? initialThread.id : null;
+  });
   const [messages, setMessages] = useState<RichAiChatMessage[]>(() => {
-    const localThreads = loadLocalAiThreads(storageUserId);
-    if (localThreads.length > 0 && localThreads[0].messages.length > 0) {
-      return localThreads[0].messages;
+    const initialThread = pickMostRecentLocalThread(loadLocalAiThreads(storageUserId));
+    if (initialThread && initialThread.messages.length > 0) {
+      return initialThread.messages;
     }
     return [buildWelcomeMessage(currentUser, currentTrail)];
   });
@@ -434,18 +456,21 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
   if (storageUserId !== prevStorageUserId) {
     setPrevStorageUserId(storageUserId);
     const scopedLocal = loadLocalAiThreads(storageUserId);
+    const initialThread = pickMostRecentLocalThread(scopedLocal);
     setThreads(scopedLocal.map(({ messages: _m, ...summary }) => summary));
-    setActiveThreadId(null);
+    setActiveThreadId(initialThread ? initialThread.id : null);
     setIsCloudSynced(false);
     setMessages(
-      scopedLocal.length > 0 && scopedLocal[0].messages.length > 0
-        ? scopedLocal[0].messages
+      initialThread && initialThread.messages.length > 0
+        ? initialThread.messages
         : [buildWelcomeMessage(currentUser, currentTrail)]
     );
     setInputQuery('');
+    setPendingImage(null);
     setCheckedGearItems({});
     setShowClearConfirm(false);
     setIsLoading(false);
+    setIsAnalyzingGpx(false);
   }
 
   const isVoiceSupported = typeof window !== 'undefined' && getSpeechRecognitionCtor() !== null;
@@ -459,17 +484,43 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
   const objectUrlsRef = useRef<Set<string>>(new Set());
   const isMountedRef = useRef<boolean>(true);
   const abortRef = useRef<AbortController | null>(null);
+  const gpxAbortRef = useRef<AbortController | null>(null);
   const speechRecRef = useRef<BrowserSpeechRecognition | null>(null);
   const voiceBaseDraftRef = useRef<string>('');
   const threadLoadReqIdRef = useRef<number>(0);
+  const sendReqIdRef = useRef<number>(0);
 
   useFocusTrap(isOpen, dialogRef, { initialFocusRef: textareaRef });
 
-  // Cancel in-flight requests & invalidate stale thread fetches whenever user scope changes
+  const revokeMessageBlobUrls = useCallback((msgs: RichAiChatMessage[]) => {
+    for (const m of msgs) {
+      if (m.imagePreviewUrl && m.imagePreviewUrl.startsWith('blob:')) {
+        try {
+          URL.revokeObjectURL(m.imagePreviewUrl);
+        } catch {
+          // ignore
+        }
+        objectUrlsRef.current.delete(m.imagePreviewUrl);
+      }
+    }
+  }, []);
+
+  // Cancel in-flight requests, revoke blob URLs & invalidate stale fetches whenever user scope changes
   useEffect(() => {
+    const tracked = objectUrlsRef.current;
     return () => {
       abortRef.current?.abort();
+      gpxAbortRef.current?.abort();
       threadLoadReqIdRef.current += 1;
+      sendReqIdRef.current += 1;
+      for (const url of tracked) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+      }
+      tracked.clear();
     };
   }, [storageUserId]);
   const handleSendMessageRef = useRef<(textToSend?: string, overrideTrailId?: string) => Promise<void>>(async () => { });
@@ -545,7 +596,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
         window.speechSynthesis.speak(utterance);
       } catch {
         setSpeakingMsgId(null);
-        triggerToast('Không thể phát giọng nói đọc phản hồi trên trình duyệt này.');
+        triggerToast('Trình duyệt này chưa đọc thành tiếng được.');
       }
     },
     [isTtsSupported, speakingMsgId, stopTts, triggerToast]
@@ -567,7 +618,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
 
     const Ctor = getSpeechRecognitionCtor();
     if (!Ctor) {
-      triggerToast('Trình duyệt hiện tại không hỗ trợ nhập giọng nói tiếng Việt.');
+      triggerToast('Trình duyệt này chưa hỗ trợ nói để nhập chữ.');
       return;
     }
 
@@ -607,11 +658,11 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
       recognition.onerror = (event: SpeechRecognitionErrorEventLike) => {
         const errCode = event.error;
         if (errCode === 'not-allowed' || errCode === 'service-not-allowed') {
-          triggerToast('Vui lòng cấp quyền Micro trên trình duyệt để nói tiếng Việt.');
+          triggerToast('Bạn mở quyền micro trên trình duyệt để nói trực tiếp nhé.');
         } else if (errCode === 'no-speech') {
-          triggerToast('Chưa nghe rõ giọng nói. Hãy nhấn Micro và thử lại.');
+          triggerToast('Chưa nghe rõ — bấm micro nói lại giúp mình nhé.');
         } else if (errCode !== 'aborted') {
-          triggerToast('Không thể nhận diện giọng nói lúc này.');
+          triggerToast('Chưa nhận được giọng nói lúc này.');
         }
         speechRecRef.current = null;
         setIsListeningVoice(false);
@@ -628,7 +679,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
       recognition.start();
     } catch {
       stopVoiceRecognition();
-      triggerToast('Không thể khởi chạy Micro trên thiết bị này.');
+      triggerToast('Không mở được micro trên máy này.');
     }
   }, [inputQuery, isListeningVoice, stopVoiceRecognition, triggerToast]);
 
@@ -644,6 +695,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
       if (exportTimerRef.current) clearTimeout(exportTimerRef.current);
       if (liveOpenTimerRef.current) clearTimeout(liveOpenTimerRef.current);
       abortRef.current?.abort();
+      gpxAbortRef.current?.abort();
       detachAndAbortSpeechRec();
       for (const url of trackedUrls) {
         try {
@@ -667,6 +719,8 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
   useEffect(() => {
     if (isOpen) return;
     abortRef.current?.abort();
+    gpxAbortRef.current?.abort();
+    sendReqIdRef.current += 1;
     detachAndAbortSpeechRec();
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
@@ -677,6 +731,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
     }
     const resetTimer = setTimeout(() => {
       setIsLoading(false);
+      setIsAnalyzingGpx(false);
       setIsListeningVoice(false);
       setVoiceInterimText('');
       setSpeakingMsgId(null);
@@ -716,24 +771,34 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
 
   // Persist current thread to per-user localStorage offline cache whenever messages change
   const persistLocalThreadSnapshot = useCallback(
-    (tid: string, msgs: RichAiChatMessage[], titleHint?: string) => {
+    (
+      tid: string,
+      msgs: RichAiChatMessage[],
+      opts?: string | { titleHint?: string; forceTitle?: string; preserveTimestamp?: string }
+    ) => {
       const userMessages = msgs.filter((m) => m.role === 'user');
       if (userMessages.length === 0) return;
 
+      const resolvedOpts = typeof opts === 'string' ? { titleHint: opts } : opts || {};
       const allLocal = loadLocalAiThreads(storageUserId);
       const idx = allLocal.findIndex((t) => t.id === tid);
       const firstUser = userMessages[0].content;
       const computedTitle =
-        titleHint || (firstUser.length > 60 ? `${firstUser.slice(0, 57)}...` : firstUser);
+        resolvedOpts.titleHint || (firstUser.length > 60 ? `${firstUser.slice(0, 57)}...` : firstUser);
+
+      const resolvedTitle =
+        resolvedOpts.forceTitle || (idx >= 0 ? allLocal[idx].title : computedTitle);
+      const resolvedTimestamp =
+        resolvedOpts.preserveTimestamp || new Date().toISOString();
 
       const record: LocalAiThreadRecord = {
         id: tid,
-        title: idx >= 0 ? allLocal[idx].title : computedTitle,
+        title: resolvedTitle,
         pinned: idx >= 0 ? allLocal[idx].pinned : false,
         trailContextId: currentTrail?.id || (idx >= 0 ? allLocal[idx].trailContextId : undefined),
         trailContextName: currentTrail?.name || (idx >= 0 ? allLocal[idx].trailContextName : undefined),
         messageCount: msgs.filter((m) => !m.id.startsWith('welcome-')).length,
-        lastMessageAt: new Date().toISOString(),
+        lastMessageAt: resolvedTimestamp,
         isLocalOnly: tid.startsWith('local-'),
         messages: msgs.slice(-40).map((m) =>
           m.imagePreviewUrl && m.imagePreviewUrl.startsWith('blob:')
@@ -743,16 +808,30 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
       };
 
       const nextLocal = idx >= 0 ? allLocal.map((item, i) => (i === idx ? record : item)) : [record, ...allLocal];
-      saveLocalAiThreads(nextLocal, storageUserId);
+      const savedOk = saveLocalAiThreads(nextLocal, storageUserId);
+      if (!savedOk) {
+        triggerToast('Bộ nhớ trình duyệt đã đầy — không thể lưu thêm lịch sử cục bộ.');
+      }
 
       setThreads((prev) => {
         const exists = prev.some((t) => t.id === tid);
         const { messages: _m, ...summary } = record;
-        if (exists) return prev.map((t) => (t.id === tid ? { ...t, ...summary } : t));
+        if (exists) {
+          return prev.map((t) =>
+            t.id === tid
+              ? {
+                  ...t,
+                  ...summary,
+                  title: resolvedOpts.forceTitle || t.title || summary.title,
+                  lastMessageAt: resolvedOpts.preserveTimestamp || summary.lastMessageAt,
+                }
+              : t
+          );
+        }
         return [summary, ...prev];
       });
     },
-    [currentTrail?.id, currentTrail?.name, storageUserId]
+    [currentTrail?.id, currentTrail?.name, storageUserId, triggerToast]
   );
 
   // ESC keyboard shortcut (strict LIFO via topmost focus trap + IME guard)
@@ -775,21 +854,39 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, showClearConfirm, showSettings, showSidebar, isExpanded, onClose]);
 
-  // Capture GPS gracefully when preferredRegion === 'auto' (with unmount guard)
+  // P0 Life-Safety: ALWAYS acquire genuine hardware GPS independently of preferredRegion
+  // so 2G Emergency SOS SMS NEVER falls back to hardcoded city centers!
   useEffect(() => {
-    if (!isOpen || preferredRegion !== 'auto' || !('geolocation' in navigator)) return;
+    if (!isOpen) return;
+    if (!('geolocation' in navigator)) {
+      const t = setTimeout(() => setGpsStatus('unavailable'), 0);
+      return () => clearTimeout(t);
+    }
     let active = true;
+    const initTimer = setTimeout(() => {
+      if (active) setGpsStatus((prev) => (prev === 'acquired' ? prev : 'acquiring'));
+    }, 0);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        if (active) setUserCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        if (!active) return;
+        const { latitude, longitude } = pos.coords;
+        if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+          setUserCoords({ lat: latitude, lng: longitude });
+          setGpsStatus('acquired');
+        } else {
+          setGpsStatus('unavailable');
+        }
       },
-      () => { },
-      { timeout: 5000, maximumAge: 600_000 }
+      () => {
+        if (active) setGpsStatus((prev) => (prev === 'acquired' ? prev : 'unavailable'));
+      },
+      { enableHighAccuracy: true, timeout: 7000, maximumAge: 300_000 }
     );
     return () => {
       active = false;
+      clearTimeout(initTimer);
     };
-  }, [isOpen, preferredRegion]);
+  }, [isOpen]);
 
   // Load contextual quick prompts (guarded against stale trail switches & cleared focus timer)
   useEffect(() => {
@@ -887,11 +984,11 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
           return compressed;
         });
         const kb = Math.max(1, Math.round(compressed.byteSize / 1024));
-        triggerToast(`Đã nén ảnh ${compressed.width}×${compressed.height} (${kb} KB). Nhập câu hỏi hoặc bấm Gửi!`);
+        triggerToast(`Đã đính kèm ảnh (${kb} KB) — gõ câu hỏi hoặc bấm gửi luôn nhé.`);
         textareaRef.current?.focus();
       } catch (err: unknown) {
         if (!isMountedRef.current) return;
-        const msg = err instanceof Error ? err.message : 'Không thể xử lý tệp ảnh này.';
+        const msg = err instanceof Error ? err.message : 'Không mở được ảnh này, bạn thử chọn ảnh khác nhé.';
         triggerToast(msg);
       } finally {
         if (isMountedRef.current) setIsCompressingImage(false);
@@ -906,7 +1003,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
       const attachedPhoto = textToSend === undefined ? pendingImage : null;
       if ((!text && !attachedPhoto) || isLoading) return;
       if (text.length > MAX_INPUT_CHARS) {
-        triggerToast(`Tin nhắn vượt quá ${MAX_INPUT_CHARS} ký tự.`);
+        triggerToast(`Tin nhắn hơi dài (tối đa ${MAX_INPUT_CHARS} ký tự).`);
         return;
       }
 
@@ -918,7 +1015,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
 
       // Multimodal Photo Triage Branch (Wave 10A)
       if (attachedPhoto) {
-        const effectiveQuestion = text || 'Phân tích ảnh thực địa này và tư vấn an toàn trekking.';
+        const effectiveQuestion = text || 'Xem giúp mình ảnh thực địa này và lưu ý an toàn khi đi rừng nhé.';
         const userMsg: RichAiChatMessage = {
           id: `user-img-${Date.now()}`,
           role: 'user',
@@ -937,6 +1034,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
         abortRef.current?.abort();
         const ctrl = new AbortController();
         abortRef.current = ctrl;
+        const reqId = ++sendReqIdRef.current;
 
         try {
           const res = await analyzeAiImageApi(
@@ -944,11 +1042,12 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
               imageBase64: attachedPhoto.base64,
               mimeType: attachedPhoto.mimeType,
               question: effectiveQuestion,
-              trailId: currentTrail?.id,
+              trailId: effectiveTrailId,
               threadId: activeThreadId && !activeThreadId.startsWith('local-') ? activeThreadId : undefined,
             },
             ctrl.signal
           );
+          if (!isMountedRef.current || reqId !== sendReqIdRef.current) return;
           setLastModelUsed(res.modelUsed);
           const assistantMsg: RichAiChatMessage = {
             id: `assistant-img-${Date.now()}`,
@@ -964,11 +1063,12 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
           setActiveThreadId(resolvedTid);
           persistLocalThreadSnapshot(resolvedTid, finalMsgs, `Ảnh: ${effectiveQuestion.slice(0, 48)}`);
         } catch (err: unknown) {
+          if (!isMountedRef.current || reqId !== sendReqIdRef.current) return;
           if (err instanceof Error && err.name === 'AbortError') {
-            triggerToast('Đã dừng phân tích ảnh.');
+            triggerToast('Đã dừng xem ảnh.');
             return;
           }
-          const errText = err instanceof Error ? err.message : 'Không thể phân tích ảnh lúc này.';
+          const errText = err instanceof Error ? err.message : 'Chưa xem được ảnh lúc này, bạn thử gửi lại nhé.';
           const errorMsg: RichAiChatMessage = {
             id: `err-img-${Date.now()}`,
             role: 'assistant',
@@ -978,7 +1078,9 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
           };
           setMessages((prev) => [...prev, errorMsg]);
         } finally {
-          setIsLoading(false);
+          if (isMountedRef.current && reqId === sendReqIdRef.current) {
+            setIsLoading(false);
+          }
         }
         return;
       }
@@ -999,6 +1101,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
       abortRef.current?.abort();
       const ctrl = new AbortController();
       abortRef.current = ctrl;
+      const reqId = ++sendReqIdRef.current;
 
       try {
         // Strictly omit welcome message & error bubbles from Gemini/server history
@@ -1041,6 +1144,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
           {
             signal: ctrl.signal,
             onDelta: (_chunk, accumulatedText) => {
+              if (!isMountedRef.current || reqId !== sendReqIdRef.current) return;
               const liveMsg: RichAiChatMessage = {
                 id: streamMsgId,
                 role: 'assistant',
@@ -1053,6 +1157,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
           }
         );
 
+        if (!isMountedRef.current || reqId !== sendReqIdRef.current) return;
         setLastModelUsed(res.modelUsed);
 
         const isErrorTurn = Boolean(res.rateLimited || res.errorStatus);
@@ -1074,21 +1179,24 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
         setActiveThreadId(resolvedTid);
         persistLocalThreadSnapshot(resolvedTid, finalMsgs);
       } catch (err: unknown) {
+        if (!isMountedRef.current || reqId !== sendReqIdRef.current) return;
         if (err instanceof Error && err.name === 'AbortError') {
-          triggerToast('Đã dừng tạo phản hồi.');
+          triggerToast('Đã dừng trả lời.');
           return;
         }
         const errorMsg: RichAiChatMessage = {
           id: `err-${Date.now()}`,
           role: 'assistant',
-          content: 'Không thể kết nối máy chủ LOST AI lúc này. Bạn có thể bấm Thử lại hoặc kiểm tra mạng.',
+          content: 'Mạng đang chập chờn nên chưa kết nối được với LOST AI. Bạn kiểm tra sóng rồi bấm gửi lại nhé.',
           timestamp: formatNowTime(),
           isError: true,
           retryPrompt: text,
         };
         setMessages((prev) => [...prev, errorMsg]);
       } finally {
-        setIsLoading(false);
+        if (isMountedRef.current && reqId === sendReqIdRef.current) {
+          setIsLoading(false);
+        }
       }
     },
     [
@@ -1159,18 +1267,23 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
   // 1-Click Analyze GPX track of the currently viewed trail right inside Chat
   const handleAnalyzeCurrentTrailGpx = async () => {
     if (!currentTrail || !Array.isArray(currentTrail.gpxTrack) || currentTrail.gpxTrack.length < 2 || isAnalyzingGpx) {
-      triggerToast('Cung đường này chưa có dữ liệu GPX để phân tích.');
+      triggerToast('Cung này chưa có dữ liệu GPX để xem địa hình.');
       return;
     }
     setActiveSuiteTab('chat');
     setShowSettings(false);
     setIsAnalyzingGpx(true);
+    gpxAbortRef.current?.abort();
+    const gpxCtrl = new AbortController();
+    gpxAbortRef.current = gpxCtrl;
+    const reqId = ++sendReqIdRef.current;
+
     try {
       const points: Array<[number, number, number | null]> = currentTrail.gpxTrack.map(([lat, lng]) => [lat, lng, null]);
       const userMsg: RichAiChatMessage = {
         id: `user-gpx-${Date.now()}`,
         role: 'user',
-        content: `Phân tích GPX của cung đang xem: **${currentTrail.name}** (${points.length} điểm tọa độ)`,
+        content: `Xem giúp mình file GPX của cung **${currentTrail.name}** (${points.length} điểm tọa độ)`,
         timestamp: formatNowTime(),
       };
       const baseMessages = messages.filter((m) => !m.id.startsWith('welcome-') || messages.length > 1);
@@ -1179,11 +1292,16 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
 
       const cloudThreadId =
         activeThreadId && !activeThreadId.startsWith('local-') ? activeThreadId : undefined;
-      const serverRes = await analyzeGpxApi({
-        fileName: `${currentTrail.id}.gpx`,
-        points,
-        threadId: cloudThreadId,
-      });
+      const serverRes = await analyzeGpxApi(
+        {
+          fileName: `${currentTrail.id}.gpx`,
+          points,
+          threadId: cloudThreadId,
+        },
+        gpxCtrl.signal
+      );
+
+      if (!isMountedRef.current || reqId !== sendReqIdRef.current) return;
 
       if (serverRes) {
         const assistantMsg: RichAiChatMessage = {
@@ -1199,14 +1317,19 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
         const tid = serverRes.threadId || activeThreadId || `local-${Date.now()}`;
         setActiveThreadId(tid);
         persistLocalThreadSnapshot(tid, finalMsgs, `GPX: ${currentTrail.name}`);
-        triggerToast(`Đã hoàn tất phân tích GPX ${currentTrail.name}!`);
+        triggerToast(`Đã đọc xong GPX cung ${currentTrail.name}.`);
       } else {
-        triggerToast('Không thể kết nối máy chủ phân tích DEM lúc này.');
+        triggerToast('Chưa kết nối được máy chủ đọc cao độ lúc này.');
       }
-    } catch {
-      triggerToast('Lỗi khi phân tích tracklog GPX cung đường.');
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') return;
+      if (isMountedRef.current && reqId === sendReqIdRef.current) {
+        triggerToast('Không đọc được tracklog GPX của cung này.');
+      }
     } finally {
-      setIsAnalyzingGpx(false);
+      if (isMountedRef.current && reqId === sendReqIdRef.current) {
+        setIsAnalyzingGpx(false);
+      }
     }
   };
 
@@ -1216,31 +1339,42 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
     setActiveSuiteTab('chat');
     setShowSettings(false);
     setIsAnalyzingGpx(true);
+    gpxAbortRef.current?.abort();
+    const gpxCtrl = new AbortController();
+    gpxAbortRef.current = gpxCtrl;
+    const reqId = ++sendReqIdRef.current;
+
     try {
       const parsed = await parseGpxFileClient(file);
+      if (!isMountedRef.current || reqId !== sendReqIdRef.current) return;
       const userMsg: RichAiChatMessage = {
         id: `user-gpx-${Date.now()}`,
         role: 'user',
-        content: `Phân tích file GPX: **${parsed.fileName}** (${parsed.points.length} điểm GPS)`,
+        content: `Đọc giúp mình file GPX **${parsed.fileName}** (${parsed.points.length} điểm GPS)`,
         timestamp: formatNowTime(),
       };
       const baseMessages = messages.filter((m) => !m.id.startsWith('welcome-') || messages.length > 1);
       const withUser = [...baseMessages, userMsg];
       setMessages(withUser);
 
-      // Enrich on server (Open-Meteo DEM + live weather + nearest LOST trail), fallback to instant client offlineAnalysis
+      // Enrich on server (AWS Terrarium DEM + live weather + nearest LOST trail), fallback to instant client offlineAnalysis
       const cloudThreadId =
         activeThreadId && !activeThreadId.startsWith('local-') ? activeThreadId : undefined;
-      const serverRes = await analyzeGpxApi({
-        fileName: parsed.fileName,
-        points: parsed.points,
-        threadId: cloudThreadId,
-      });
+      const serverRes = await analyzeGpxApi(
+        {
+          fileName: parsed.fileName,
+          points: parsed.points,
+          threadId: cloudThreadId,
+        },
+        gpxCtrl.signal
+      );
+
+      if (!isMountedRef.current || reqId !== sendReqIdRef.current) return;
 
       const analysis = serverRes?.analysis || parsed.offlineAnalysis;
       const replyText =
         serverRes?.reply ||
-        `**PHÂN TÍCH GPX NGOẠI TUYẾN — ${analysis.fileName}**\n\n- **Cự ly**: **${analysis.distanceKm} km** | Leo tích lũy **+${analysis.elevationGainM}m** | Cao độ **${analysis.minAltitudeM}m – ${analysis.maxAltitudeM}m**.\n- **Độ khó ước tính**: **Cấp ${analysis.estimatedDifficulty}/5** (${analysis.difficultyLabel}).\n- **Thời gian Naismith/Tobler**: **${analysis.bioMetrics.recommendedMovingHours} giờ** di chuyển (~${analysis.bioMetrics.estimatedTotalTripHours}h gồm nghỉ).\n- **Nước uống**: ${analysis.waterAdvice}`;
+        `**Đọc nhanh GPX ngoại tuyến — ${analysis.fileName}**\n\n- **Quãng đường**: **${analysis.distanceKm} km** · leo dốc **+${analysis.elevationGainM}m** · cao độ **${analysis.minAltitudeM}m – ${analysis.maxAltitudeM}m**.\n- **Độ khó ước tính**: **cấp ${analysis.estimatedDifficulty}/5** (${analysis.difficultyLabel}).\n- **Thời gian dự kiến (Naismith/Tobler)**: **${analysis.bioMetrics.recommendedMovingHours} giờ** đi thực tế (~${analysis.bioMetrics.estimatedTotalTripHours}h tính cả nghỉ).\n- **Nước mang theo**: ${analysis.waterAdvice}`;
 
       const assistantMsg: RichAiChatMessage = {
         id: `assistant-gpx-${Date.now()}`,
@@ -1262,19 +1396,31 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
       const tid = serverRes?.threadId || activeThreadId || `local-${Date.now()}`;
       setActiveThreadId(tid);
       persistLocalThreadSnapshot(tid, finalMsgs, `GPX: ${parsed.fileName}`);
-      triggerToast(`Đã phân tích xong ${parsed.fileName}!`);
+      triggerToast(`Đã đọc xong ${parsed.fileName}.`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Không thể đọc tệp GPX này.';
-      triggerToast(msg);
+      if (err instanceof Error && err.name === 'AbortError') return;
+      if (isMountedRef.current && reqId === sendReqIdRef.current) {
+        const msg = err instanceof Error ? err.message : 'File GPX này bị lỗi hoặc không đúng định dạng.';
+        triggerToast(msg);
+      }
     } finally {
-      setIsAnalyzingGpx(false);
+      if (isMountedRef.current && reqId === sendReqIdRef.current) {
+        setIsAnalyzingGpx(false);
+      }
     }
   };
 
-  // Thread Sidebar Actions (monotonic request-ID prevents stale cloud fetch overwrites on rapid clicks)
+  // Thread Sidebar Actions (monotonic request-ID + abort prevents stale SSE/GPX/cloud overwrites)
   const handleSelectThread = async (threadId: string) => {
+    abortRef.current?.abort();
+    gpxAbortRef.current?.abort();
+    sendReqIdRef.current += 1;
+    setIsLoading(false);
+    setIsAnalyzingGpx(false);
+
     const reqId = ++threadLoadReqIdRef.current;
     stopTts();
+    const existingSummary = threads.find((t) => t.id === threadId);
     setActiveThreadId(threadId);
     setShowSettings(false);
     // Check per-user local cache first for 0ms render
@@ -1284,7 +1430,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
     }
     if (!threadId.startsWith('local-')) {
       const detail = await fetchAiThreadDetailApi(threadId);
-      if (reqId !== threadLoadReqIdRef.current) return;
+      if (!isMountedRef.current || reqId !== threadLoadReqIdRef.current) return;
       if (detail && Array.isArray(detail.messages) && detail.messages.length > 0) {
         const mapped: RichAiChatMessage[] = detail.messages.map((m) => ({
           id: m.id,
@@ -1296,62 +1442,120 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
           modelUsed: m.modelUsed,
           actions: m.actions,
         }));
+        const lastServerTs =
+          detail.messages[detail.messages.length - 1]?.createdAt ||
+          existingSummary?.lastMessageAt ||
+          localHit?.lastMessageAt;
         setMessages(mapped);
-        persistLocalThreadSnapshot(threadId, mapped, detail.title);
+        persistLocalThreadSnapshot(threadId, mapped, {
+          forceTitle: detail.title,
+          preserveTimestamp: lastServerTs,
+        });
       }
     }
   };
 
   const handleCreateNewThread = () => {
     abortRef.current?.abort();
+    gpxAbortRef.current?.abort();
+    sendReqIdRef.current += 1;
+    threadLoadReqIdRef.current += 1;
+    setIsLoading(false);
+    setIsAnalyzingGpx(false);
     handleRemovePendingImage();
+    revokeMessageBlobUrls(messages);
     setActiveThreadId(null);
     setMessages([buildWelcomeMessage(currentUser, currentTrail)]);
     setCheckedGearItems({});
     setShowSettings(false);
-    triggerToast('Đã tạo cuộc trò chuyện mới!');
+    triggerToast('Đã mở cuộc trò chuyện mới.');
   };
 
   const handleRenameThread = async (threadId: string, newTitle: string) => {
+    const prevThreads = threads;
+    const prevLocal = loadLocalAiThreads(storageUserId);
     setThreads((prev) => prev.map((t) => (t.id === threadId ? { ...t, title: newTitle } : t)));
-    const allLocal = loadLocalAiThreads(storageUserId).map((t) => (t.id === threadId ? { ...t, title: newTitle } : t));
-    saveLocalAiThreads(allLocal, storageUserId);
+    saveLocalAiThreads(
+      prevLocal.map((t) => (t.id === threadId ? { ...t, title: newTitle } : t)),
+      storageUserId
+    );
     if (!threadId.startsWith('local-')) {
-      await updateAiThreadApi(threadId, { title: newTitle });
+      const ok = await updateAiThreadApi(threadId, { title: newTitle });
+      if (!ok && isMountedRef.current) {
+        setThreads(prevThreads);
+        saveLocalAiThreads(prevLocal, storageUserId);
+        triggerToast('Chưa đổi được tên cuộc trò chuyện trên máy chủ.');
+      }
     }
   };
 
   const handleTogglePinThread = async (threadId: string, nextPinned: boolean) => {
+    const prevThreads = threads;
+    const prevLocal = loadLocalAiThreads(storageUserId);
     setThreads((prev) => prev.map((t) => (t.id === threadId ? { ...t, pinned: nextPinned } : t)));
-    const allLocal = loadLocalAiThreads(storageUserId).map((t) => (t.id === threadId ? { ...t, pinned: nextPinned } : t));
-    saveLocalAiThreads(allLocal, storageUserId);
+    saveLocalAiThreads(
+      prevLocal.map((t) => (t.id === threadId ? { ...t, pinned: nextPinned } : t)),
+      storageUserId
+    );
     if (!threadId.startsWith('local-')) {
-      await updateAiThreadApi(threadId, { pinned: nextPinned });
+      const ok = await updateAiThreadApi(threadId, { pinned: nextPinned });
+      if (!ok && isMountedRef.current) {
+        setThreads(prevThreads);
+        saveLocalAiThreads(prevLocal, storageUserId);
+        triggerToast('Chưa cập nhật được trạng thái ghim trên máy chủ.');
+      }
     }
   };
 
   const handleDeleteThread = async (threadId: string) => {
-    setThreads((prev) => prev.filter((t) => t.id !== threadId));
-    const allLocal = loadLocalAiThreads(storageUserId).filter((t) => t.id !== threadId);
-    saveLocalAiThreads(allLocal, storageUserId);
-    if (!threadId.startsWith('local-')) {
-      await deleteAiThreadApi(threadId);
+    const prevThreads = threads;
+    const prevLocal = loadLocalAiThreads(storageUserId);
+    const deletingActive = activeThreadId === threadId;
+    if (deletingActive) {
+      abortRef.current?.abort();
+      gpxAbortRef.current?.abort();
+      sendReqIdRef.current += 1;
+      setIsLoading(false);
+      setIsAnalyzingGpx(false);
     }
-    if (activeThreadId === threadId) {
+
+    setThreads((prev) => prev.filter((t) => t.id !== threadId));
+    saveLocalAiThreads(
+      prevLocal.filter((t) => t.id !== threadId),
+      storageUserId
+    );
+
+    if (!threadId.startsWith('local-')) {
+      const ok = await deleteAiThreadApi(threadId);
+      if (!ok && isMountedRef.current) {
+        setThreads(prevThreads);
+        saveLocalAiThreads(prevLocal, storageUserId);
+        triggerToast('Chưa xóa được cuộc trò chuyện trên máy chủ.');
+        return;
+      }
+    }
+
+    if (deletingActive) {
       handleCreateNewThread();
     } else {
-      triggerToast('Đã xóa hội thoại.');
+      triggerToast('Đã xóa cuộc trò chuyện.');
     }
   };
 
   const handleConfirmClear = async () => {
     handleRemovePendingImage();
+    revokeMessageBlobUrls(messages);
     if (activeThreadId) {
       await handleDeleteThread(activeThreadId);
     } else {
+      abortRef.current?.abort();
+      gpxAbortRef.current?.abort();
+      sendReqIdRef.current += 1;
+      setIsLoading(false);
+      setIsAnalyzingGpx(false);
       setMessages([buildWelcomeMessage(currentUser, currentTrail)]);
       setCheckedGearItems({});
-      triggerToast('Đã làm mới cuộc trò chuyện!');
+      triggerToast('Đã làm mới khung trò chuyện.');
     }
     setShowClearConfirm(false);
   };
@@ -1401,7 +1605,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
       return true;
     }
     if (isMountedRef.current) {
-      triggerToast('Trình duyệt không cho phép sao chép tự động.');
+      triggerToast('Trình duyệt chặn tự sao chép — bạn bôi đen chép tay giúp nhé.');
     }
     return false;
   };
@@ -1409,7 +1613,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
   const getPromptSvgIcon = (promptText: string) => {
     const p = promptText.toLowerCase();
     if (p.includes('cứu hộ') || p.includes('khẩn cấp') || p.includes('sốc độ cao') || p.includes('lạc đường')) {
-      return <IconShieldAlert size={13} color="var(--color-error)" />;
+      return <IconShieldAlert size={13} color="var(--color-error-text, var(--color-error))" />;
     }
     if (p.includes('săn mây') || p.includes('fansipan') || p.includes('lảo thẩn') || p.includes('tà xùa') || p.includes('go/no-go') || p.includes('sẵn sàng') || p.includes('trước khi đi')) {
       return <IconMountain size={13} color="var(--color-sky)" />;
@@ -1454,9 +1658,9 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
       setExportedBriefing(true);
       if (exportTimerRef.current) clearTimeout(exportTimerRef.current);
       exportTimerRef.current = setTimeout(() => setExportedBriefing(false), 2000);
-      triggerToast(`Đã xuất ${fileName} đọc Offline!`);
+      triggerToast(`Đã lưu file ${fileName} để đọc khi mất sóng.`);
     } catch {
-      triggerToast('Không thể xuất file bản tin lúc này.');
+      triggerToast('Chưa xuất được file ghi chú lúc này.');
     }
   };
 
@@ -1481,7 +1685,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
         tabIndex={-1}
         role="dialog"
         aria-modal="true"
-        aria-label="Trợ lý thông minh LOST AI"
+        aria-label="Bạn đồng hành đường rừng LOST AI"
         className="modal-fade-in"
         onDragOver={(e) => {
           e.preventDefault();
@@ -1502,7 +1706,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
           ) {
             void handleSelectPhotoFile(dropped);
           } else {
-            triggerToast('Hỗ trợ tệp .gpx hoặc ảnh JPG, PNG, WebP (không hỗ trợ SVG).');
+            triggerToast('Chỉ nhận file .gpx hoặc ảnh JPG, PNG, WebP thôi bạn nhé.');
           }
         }}
         style={{
@@ -1543,8 +1747,8 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
               <button
                 type="button"
                 onClick={() => setShowSidebar((prev) => !prev)}
-                title="Lịch sử hội thoại"
-                aria-label="Mở lịch sử hội thoại"
+                title="Các cuộc trò chuyện cũ"
+                aria-label="Mở danh sách trò chuyện cũ"
                 style={{
                   width: 30,
                   height: 30,
@@ -1603,12 +1807,12 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                         : '1px solid color-mix(in srgb, var(--color-primary) 35%, transparent)',
                   }}
                 >
-                  {lastModelUsed === 'gemini-live' ? 'Gemini Live' : 'AI Thực Địa'}
+                  {lastModelUsed === 'gemini-live' ? 'Gemini Live' : 'Dữ liệu thực địa'}
                 </span>
               </div>
               <div style={{ fontSize: '0.7rem', color: 'var(--color-text-dim)', display: 'flex', alignItems: 'center', gap: 5, marginTop: 1 }}>
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--color-primary)', display: 'inline-block' }} />
-                <span>Alpine Intelligence · {engineMode === 'knowledge' ? 'Offline 0ms' : engineMode === 'gemini' ? 'Ưu tiên Gemini' : 'Tự động'}</span>
+                <span>Bạn đường rừng · {engineMode === 'knowledge' ? 'Dùng ngoại tuyến' : engineMode === 'gemini' ? 'Ưu tiên Gemini' : 'Tự động'}</span>
               </div>
             </div>
           </div>
@@ -1618,8 +1822,8 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
             <button
               type="button"
               onClick={handleExportBriefingMd}
-              title="Xuất bản tin Markdown (.md) đọc Offline"
-              aria-label="Xuất bản tin Markdown đọc Offline"
+              title="Lưu ghi chú (.md) đọc khi mất sóng"
+              aria-label="Lưu ghi chú Markdown đọc ngoại tuyến"
               style={{
                 width: 30,
                 height: 30,
@@ -1662,8 +1866,8 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                 setShowSettings((prev) => !prev);
                 setShowClearConfirm(false);
               }}
-              title={showSettings ? 'Quay lại hội thoại' : 'Cài đặt mô hình & vị trí'}
-              aria-label="Cài đặt LOST AI"
+              title={showSettings ? 'Quay lại trò chuyện' : 'Chỉnh vùng & cách trả lời'}
+              aria-label="Tùy chỉnh LOST AI"
               style={{
                 width: 30,
                 height: 30,
@@ -1688,8 +1892,8 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                 setShowClearConfirm(true);
                 setShowSettings(false);
               }}
-              title="Xóa hội thoại hiện tại"
-              aria-label="Xóa hội thoại hiện tại"
+              title="Xóa cuộc trò chuyện này"
+              aria-label="Xóa cuộc trò chuyện này"
               style={{
                 width: 30,
                 height: 30,
@@ -1711,8 +1915,8 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
             <button
               type="button"
               onClick={() => setIsExpanded((prev) => !prev)}
-              title={isExpanded ? 'Thu nhỏ (Esc)' : 'Mở rộng toàn màn hình'}
-              aria-label={isExpanded ? 'Thu nhỏ cửa sổ' : 'Phóng to cửa sổ'}
+              title={isExpanded ? 'Thu gọn (Esc)' : 'Mở rộng khung'}
+              aria-label={isExpanded ? 'Thu gọn cửa sổ' : 'Mở rộng cửa sổ'}
               style={{
                 width: 30,
                 height: 30,
@@ -1734,7 +1938,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              title="Đóng cửa sổ (Esc)"
+              title="Đóng (Esc)"
               aria-label="Đóng LOST AI"
               style={{
                 width: 30,
@@ -1754,11 +1958,11 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
           </div>
         </div>
 
-        {/* 4-Mode Alpine Intelligence Command Suite Tabs */}
+        {/* 4-Mode Trail Assistant Tabs */}
         {!showSettings && (
           <div
             role="tablist"
-            aria-label="Chế độ LOST AI Command Suite"
+            aria-label="Công cụ hỗ trợ chuẩn bị chuyến đi"
             style={{
               display: 'flex',
               overflowX: 'auto',
@@ -1772,10 +1976,10 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
           >
             {(
               [
-                { id: 'chat', label: 'Trợ Lý Hội Thoại', Icon: IconBot },
-                { id: 'matchmaker', label: 'Tìm Cung Thông Minh', Icon: IconCompass },
-                { id: 'pack_audit', label: 'Kiểm Toán Balo', Icon: IconBackpack },
-                { id: 'brief', label: 'Hồ Sơ Chuyến Đi', Icon: IconFileText },
+                { id: 'chat', label: 'Hỏi đáp', Icon: IconBot },
+                { id: 'matchmaker', label: 'Chọn cung hợp sức', Icon: IconCompass },
+                { id: 'pack_audit', label: 'Cân chỉnh balo', Icon: IconBackpack },
+                { id: 'brief', label: 'Kế hoạch chuyến đi', Icon: IconFileText },
               ] as const
             ).map((tab) => {
               const isActive = activeSuiteTab === tab.id;
@@ -1860,7 +2064,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
           >
             <IconFileText size={32} color="var(--color-primary)" />
             <div style={{ fontSize: '0.96rem', fontWeight: 800, color: 'var(--color-text-main)', textAlign: 'center', padding: '0 16px' }}>
-              Thả file .GPX hoặc Ảnh thực địa (JPG/PNG/WebP) để LOST AI phân tích
+              Thả file .GPX hoặc ảnh chụp trên đường (JPG, PNG, WebP) vào đây nhé
             </div>
           </div>
         )}
@@ -1908,14 +2112,14 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                   justifyContent: 'center',
                 }}
               >
-                <IconTrash size={19} color="var(--color-error)" />
+                <IconTrash size={19} color="var(--color-error-text, var(--color-error))" />
               </div>
 
               <h3 style={{ margin: 0, fontSize: '0.98rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                Xóa Hội Thoại Này?
+                Xóa cuộc trò chuyện này?
               </h3>
               <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--color-text-muted)', lineHeight: 1.55 }}>
-                Tin nhắn trong cuộc trò chuyện hiện tại sẽ bị xóa khỏi danh sách và đặt lại về màn hình chào.
+                Các tin nhắn trong khung này sẽ bị xóa sạch và quay lại từ đầu.
               </p>
 
               <div style={{ display: 'flex', gap: 8, width: '100%', marginTop: 6 }}>
@@ -1934,7 +2138,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                     cursor: 'pointer',
                   }}
                 >
-                  Hủy bỏ
+                  Giữ lại
                 </button>
                 <button
                   type="button"
@@ -1951,7 +2155,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                     cursor: 'pointer',
                   }}
                 >
-                  Xác nhận xóa
+                  Xóa ngay
                 </button>
               </div>
             </div>
@@ -1983,9 +2187,9 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                 userCoords={getEffectiveCoords()}
                 onSelectTrail={onSelectTrail}
                 onCloseModal={onClose}
-                onAskAiPrompt={(prompt) => {
+                onAskAiPrompt={(prompt, trailId) => {
                   setActiveSuiteTab('chat');
-                  void handleSendMessage(prompt);
+                  void handleSendMessage(prompt, trailId);
                 }}
               />
             ) : !showSettings && activeSuiteTab === 'pack_audit' ? (
@@ -2001,9 +2205,9 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                 onToast={triggerToast}
                 onSelectTrail={onSelectTrail}
                 onCloseModal={onClose}
-                onAskAiPrompt={(prompt) => {
+                onAskAiPrompt={(prompt, trailId) => {
                   setActiveSuiteTab('chat');
-                  void handleSendMessage(prompt);
+                  void handleSendMessage(prompt, trailId);
                 }}
               />
             ) : showSettings ? (
@@ -2022,7 +2226,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                   <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: 'var(--color-primary)' }}>
                     <IconSettings size={16} color="var(--color-primary)" />
                     <h4 style={{ margin: 0, fontSize: '0.94rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                      Cài Đặt LOST AI
+                      Tùy chỉnh LOST AI
                     </h4>
                   </div>
                   <button
@@ -2039,7 +2243,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                       cursor: 'pointer',
                     }}
                   >
-                    Quay lại chat
+                    Quay lại trò chuyện
                   </button>
                 </div>
 
@@ -2048,18 +2252,18 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <IconMapPin size={14} color="var(--color-primary)" />
                     <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                      Khu Vực Ưu Tiên (Vị Trí Thực Địa)
+                      Khu vực bạn hay đi
                     </span>
                   </div>
                   <p style={{ margin: 0, fontSize: '0.74rem', color: 'var(--color-text-muted)', lineHeight: 1.5 }}>
-                    Mặc định dùng định vị GPS tự động. Bạn có thể chọn nhanh khu vực để AI xếp hạng cung đường gần bạn nhất:
+                    Mặc định sẽ lấy theo GPS trên máy. Bạn cũng có thể chọn sẵn vùng để mình gợi ý các cung gần chỗ bạn nhất:
                   </p>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))', gap: 7 }}>
                     {(
                       [
-                        { id: 'auto', label: 'Tự động (GPS)', desc: 'Theo tọa độ thiết bị' },
-                        { id: 'north', label: 'Hà Nội & Miền Bắc', desc: 'Fansipan, Lảo Thẩn, Tà Xùa...' },
-                        { id: 'central', label: 'Đà Nẵng & Miền Trung', desc: 'Giếng Trời, Bạch Mã, Khe Ram...' },
+                        { id: 'auto', label: 'Tự động (GPS)', desc: 'Lấy theo vị trí máy' },
+                        { id: 'north', label: 'Hà Nội & miền Bắc', desc: 'Fansipan, Lảo Thẩn, Tà Xùa...' },
+                        { id: 'central', label: 'Đà Nẵng & miền Trung', desc: 'Giếng Trời, Bạch Mã, Khe Ram...' },
                         { id: 'taynguyen', label: 'Tây Nguyên', desc: 'Bidoup, Chư Yang Sin, Thác K50...' },
                         { id: 'south', label: 'TP.HCM & Nam Bộ', desc: 'Tà Năng, Bà Đen, Chứa Chan...' },
                       ] as const
@@ -2071,8 +2275,8 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                           type="button"
                           onClick={() => {
                             setPreferredRegion(r.id);
-                            localStorage.setItem('lost_preferred_region', r.id);
-                            triggerToast(`Đã chọn vị trí: ${r.label}`);
+                            safeLocalStorageSet('lost_preferred_region', r.id);
+                            triggerToast(`Đã chuyển vùng ưu tiên: ${r.label}`);
                           }}
                           style={{
                             padding: '9px 10px',
@@ -2103,7 +2307,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <IconCpu size={14} color="var(--color-sky)" />
                     <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--color-text-main)' }}>
-                      Chế Độ Xử Lý LOST AI
+                      Cách LOST AI trả lời
                     </span>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8 }}>
@@ -2111,23 +2315,23 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                       [
                         {
                           id: 'auto',
-                          title: 'Tự Động Thông Minh',
+                          title: 'Tự động linh hoạt',
                           badge: 'Khuyên dùng',
-                          desc: 'Kết hợp Gemini Live (nếu có) cùng thẻ công cụ thực địa & fallback 0ms.',
+                          desc: 'Kết hợp Gemini khi có sóng tốt và dữ liệu thực địa sẵn có để trả lời nhanh.',
                           accent: 'var(--color-primary)',
                         },
                         {
                           id: 'knowledge',
-                          title: 'AI Thực Địa 0ms',
-                          badge: 'Siêu nhanh',
-                          desc: 'Chạy 100% trên động cơ tri thức LOST (tiết kiệm dữ liệu khi mạng yếu).',
+                          title: 'Dữ liệu thực địa',
+                          badge: 'Tiết kiệm 4G',
+                          desc: 'Dùng hoàn toàn kho dữ liệu cung đường của LOST, phản hồi tức thì khi sóng yếu.',
                           accent: 'var(--color-earth)',
                         },
                         {
                           id: 'gemini',
-                          title: 'Ưu Tiên Gemini Live',
-                          badge: 'Bảo mật Server',
-                          desc: 'Gọi trực tiếp Gemini trên máy chủ + kèm thẻ Go/No-Go, WFA, Bio-Calc.',
+                          title: 'Ưu tiên Gemini Live',
+                          badge: 'Trả lời sâu',
+                          desc: 'Gọi trực tiếp Gemini trên máy chủ kèm thẻ Go/No-Go, sơ cứu WFA và tính nước.',
                           accent: 'var(--color-sky)',
                         },
                       ] as const
@@ -2139,8 +2343,8 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                           type="button"
                           onClick={() => {
                             setEngineMode(m.id);
-                            localStorage.setItem('lost_engine_mode', m.id);
-                            triggerToast(`Đã chuyển chế độ: ${m.title}`);
+                            safeLocalStorageSet('lost_engine_mode', m.id);
+                            triggerToast(`Đã đổi sang: ${m.title}`);
                           }}
                           style={{
                             padding: 10,
@@ -2194,7 +2398,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       <IconMountain size={13} color="var(--color-sky)" />
                       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        Ngữ cảnh: <strong style={{ color: 'var(--color-text-main)' }}>{currentTrail.name}</strong> ({currentTrail.maxAltitudeM}m)
+                        Đang xem: <strong style={{ color: 'var(--color-text-main)' }}>{currentTrail.name}</strong> ({currentTrail.maxAltitudeM}m)
                       </span>
                       {activeTrailIncidentCount > 0 && (
                         <span
@@ -2230,12 +2434,12 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          Phân tích GPX
+                          Đọc GPX
                         </button>
                       )}
                       <button
                         type="button"
-                        onClick={() => void handleSendMessage(`Đánh giá Go/No-Go hôm nay cho ${currentTrail.name}`)}
+                        onClick={() => void handleSendMessage(`Hôm nay có nên leo ${currentTrail.name} không (Go/No-Go)?`)}
                         style={{
                           background: 'var(--color-sky)',
                           color: 'var(--color-on-primary)',
@@ -2247,7 +2451,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                           whiteSpace: 'nowrap',
                         }}
                       >
-                        Go/No-Go ngay
+                        Xem Go/No-Go
                       </button>
                     </div>
                   </div>
@@ -2303,8 +2507,8 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => handleToggleSpeakMessage(msg.id, msg.content)}
-                                  title={speakingMsgId === msg.id ? 'Dừng đọc giọng nói' : 'Đọc phản hồi bằng giọng tiếng Việt (vi-VN)'}
-                                  aria-label={speakingMsgId === msg.id ? 'Dừng đọc phản hồi' : 'Nghe phản hồi tiếng Việt'}
+                                  title={speakingMsgId === msg.id ? 'Dừng đọc' : 'Nghe đọc câu trả lời'}
+                                  aria-label={speakingMsgId === msg.id ? 'Dừng đọc câu trả lời' : 'Nghe đọc câu trả lời'}
                                   aria-pressed={speakingMsgId === msg.id}
                                   style={{
                                     display: 'inline-flex',
@@ -2344,8 +2548,8 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                               <button
                                 type="button"
                                 onClick={() => void handleCopyText(msg.id, msg.content)}
-                                title="Sao chép phản hồi"
-                                aria-label="Sao chép phản hồi"
+                                title="Sao chép câu trả lời"
+                                aria-label="Sao chép câu trả lời"
                                 style={{
                                   display: 'inline-flex',
                                   alignItems: 'center',
@@ -2384,7 +2588,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                             wordBreak: 'break-word',
                           }}
                         >
-                          {isUser && msg.imagePreviewUrl && (
+                          {isUser && isSafeImageUrl(msg.imagePreviewUrl) && (
                             <div style={{ marginBottom: 6 }}>
                               <img
                                 src={msg.imagePreviewUrl}
@@ -2422,7 +2626,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                               }}
                             >
                               <IconRotateCw size={12} />
-                              <span>Thử gửi lại</span>
+                              <span>Gửi lại</span>
                             </button>
                           )}
 
@@ -2436,13 +2640,14 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                                   actionIndex={actIdx}
                                   currentTrailId={currentTrail?.id}
                                   currentTrailName={currentTrail?.name}
-                                  userCoords={getEffectiveCoords()}
+                                  userCoords={userCoords}
+                                  gpsStatus={gpsStatus}
                                   checkedGearItems={checkedGearItems}
                                   copiedId={copiedId}
                                   onToggleGearCheck={(key) =>
                                     setCheckedGearItems((prev) => ({ ...prev, [key]: !prev[key] }))
                                   }
-                                  onCopyText={(id, t) => void handleCopyText(id, t)}
+                                  onCopyText={handleCopyText}
                                   onSelectTrail={onSelectTrail}
                                   onCloseModal={onClose}
                                   onSendQuickPrompt={(p) => void handleSendMessage(p)}
@@ -2492,7 +2697,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                           color: 'var(--color-text-muted)',
                         }}
                       >
-                        <span>{isAnalyzingGpx ? 'Đang phân tích cao độ & độ dốc GPX...' : 'LOST AI đang tổng hợp dữ liệu thực địa...'}</span>
+                        <span>{isAnalyzingGpx ? 'Đang đọc độ dốc và cao độ file GPX...' : 'Đang tra thông tin đường rừng...'}</span>
                         {isLoading && (
                           <button
                             type="button"
@@ -2608,7 +2813,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                           }}
                         />
                         <span>
-                          {voiceInterimText ? `Đang nghe (vi-VN): "${voiceInterimText}"` : 'Đang lắng nghe giọng nói tiếng Việt...'}
+                          {voiceInterimText ? `Đang nghe: "${voiceInterimText}"` : 'Mình đang nghe, bạn cứ nói nhé...'}
                         </span>
                       </span>
                       <button
@@ -2671,7 +2876,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                             {pendingImage.fileName}
                           </div>
                           <div style={{ fontSize: '0.66rem', color: 'var(--color-text-dim)', fontVariantNumeric: 'tabular-nums' }}>
-                            {pendingImage.width}×{pendingImage.height} · {Math.max(1, Math.round(pendingImage.byteSize / 1024))} KB · Sẵn sàng phân tích ảnh
+                            {pendingImage.width}×{pendingImage.height} · {Math.max(1, Math.round(pendingImage.byteSize / 1024))} KB · Sẵn sàng gửi ảnh
                           </div>
                         </div>
                       </div>
@@ -2728,8 +2933,8 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                       type="button"
                       onClick={() => imageInputRef.current?.click()}
                       disabled={isCompressingImage || isAnalyzingGpx || isLoading}
-                      title="Đính kèm ảnh thực địa (JPG/PNG/WebP) để phân tích an toàn (rắn, nấm, mây, trang bị)"
-                      aria-label="Đính kèm ảnh thực địa phân tích"
+                      title="Gửi ảnh chụp trên đường (rắn, nấm, bầu trời, đồ đạc...) để hỏi nhanh"
+                      aria-label="Đính kèm ảnh chụp trên đường"
                       style={{
                         width: 36,
                         height: 36,
@@ -2766,8 +2971,8 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                       type="button"
                       onClick={() => gpxInputRef.current?.click()}
                       disabled={isAnalyzingGpx || isLoading}
-                      title="Đính kèm file .GPX để phân tích cao độ & thời gian Naismith"
-                      aria-label="Tải lên file GPX phân tích"
+                      title="Gửi file .GPX để xem độ dốc và thời gian đi"
+                      aria-label="Tải lên file GPX"
                       style={{
                         width: 36,
                         height: 36,
@@ -2790,8 +2995,8 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                         type="button"
                         onClick={toggleVoiceRecognition}
                         disabled={isLoading || isAnalyzingGpx}
-                        title={isListeningVoice ? 'Dừng ghi âm giọng nói' : 'Nhập câu hỏi bằng giọng nói tiếng Việt (vi-VN)'}
-                        aria-label={isListeningVoice ? 'Dừng nhập giọng nói' : 'Nhập giọng nói tiếng Việt'}
+                        title={isListeningVoice ? 'Dừng thu giọng nói' : 'Nói để nhập câu hỏi'}
+                        aria-label={isListeningVoice ? 'Dừng thu giọng nói' : 'Nói để nhập câu hỏi'}
                         aria-pressed={isListeningVoice}
                         style={{
                           width: 36,
@@ -2846,7 +3051,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                       value={inputQuery}
                       onChange={(e) => setInputQuery(e.target.value.slice(0, MAX_INPUT_CHARS))}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
+                        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                           e.preventDefault();
                           if (isListeningVoice) stopVoiceRecognition();
                           void handleSendMessage();
@@ -2854,8 +3059,8 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                       }}
                       placeholder={
                         currentTrail
-                          ? `Hỏi Go/No-Go, so sánh cung, lịch trình về ${currentTrail.name}... (hoặc kéo thả .gpx)`
-                          : 'Hỏi so sánh cung, Go/No-Go, Naismith/nước, WFA... (hoặc đính kèm .gpx)'
+                          ? `Hỏi chuyện đường rừng, thời tiết, đồ đạc cho cung ${currentTrail.name}...`
+                          : 'Hỏi nhanh chuyện đường rừng, thời tiết, đồ đạc, sơ cứu...'
                       }
                       disabled={isLoading || isAnalyzingGpx}
                       style={{
@@ -2900,7 +3105,7 @@ export const TrekAssistantModal: React.FC<TrekAssistantModalProps> = ({
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.67rem', color: 'var(--color-text-dim)', padding: '0 2px' }}>
-                    <span>Enter gửi · Shift+Enter xuống dòng · Kéo thả ảnh hoặc .GPX</span>
+                    <span>Nhấn Enter để gửi · Shift+Enter xuống dòng · kéo thả ảnh hoặc .GPX</span>
                     <span
                       style={{
                         fontVariantNumeric: 'tabular-nums',

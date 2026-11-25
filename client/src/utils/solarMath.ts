@@ -220,17 +220,22 @@ function computeHourAngleDeg(latRad: number, declinationRad: number, targetAltDe
 }
 
 /**
- * Pure client-side NOAA solar calculator for a coordinate, Date, and timezone offset (default UTC+7 Vietnam).
+ * Pure client-side NOAA solar calculator for a coordinate, Date, timezone offset (default UTC+7 Vietnam),
+ * and optional summit altitude in meters (accounting for geometric horizon dip on high mountain peaks).
  */
 export function calculateSolarTimes(
   lat: number,
   lng: number,
   date: Date = new Date(),
-  tzOffsetHours = 7
+  tzOffsetHours = 7,
+  altitudeM = 0
 ): SolarCalculationResult {
   const safeLat = clamp(Number.isFinite(lat) ? lat : 22.3033, -89.9, 89.9);
   const safeLng = clamp(Number.isFinite(lng) ? lng : 103.775, -180, 180);
   const safeDate = date instanceof Date && !Number.isNaN(date.getTime()) ? date : new Date();
+  const safeAltitudeM = Number.isFinite(altitudeM) && altitudeM > 0 ? Math.min(9000, altitudeM) : 0;
+  // Geometric horizon dip on elevated summits: dip ≈ 0.0347 * sqrt(elevation_m) degrees
+  const horizonDipDeg = safeAltitudeM > 0 ? 0.0347 * Math.sqrt(safeAltitudeM) : 0;
 
   // Extract calendar Y/M/D and fractional hour in target timezone (tzOffsetHours)
   const shiftedMs = safeDate.getTime() + tzOffsetHours * 3_600_000;
@@ -249,13 +254,13 @@ export function calculateSolarTimes(
   const solarNoonMin = 720 - 4 * safeLng - eqTimeMinutes + tzOffsetHours * 60;
   const latRad = safeLat * DEG_TO_RAD;
 
-  // Standard solar depression/altitude angles:
+  // Standard solar depression/altitude angles adjusted for summit horizon dip:
   // Sunrise / Sunset (refraction + solar semi-diameter): -0.833 deg
   // Civil Twilight (Dawn / Dusk): -6.0 deg
   // Golden Hour threshold (sun 6 deg above horizon): +6.0 deg
-  const haSunrise = computeHourAngleDeg(latRad, declinationRad, -0.833);
-  const haCivil = computeHourAngleDeg(latRad, declinationRad, -6.0);
-  const haGolden = computeHourAngleDeg(latRad, declinationRad, 6.0);
+  const haSunrise = computeHourAngleDeg(latRad, declinationRad, -0.833 - horizonDipDeg);
+  const haCivil = computeHourAngleDeg(latRad, declinationRad, -6.0 - horizonDipDeg);
+  const haGolden = computeHourAngleDeg(latRad, declinationRad, 6.0 - horizonDipDeg);
 
   const civilDawnHours = (solarNoonMin - 4 * haCivil) / 60;
   const sunriseHours = (solarNoonMin - 4 * haSunrise) / 60;

@@ -12,7 +12,8 @@ export const errorHandler = (err: any, req: Request, res: Response, next: NextFu
   const timestamp = new Date().toISOString();
   console.error(`[Error ${timestamp}] ${req.method} ${req.originalUrl}:`, err);
 
-  let statusCode = Number(err?.statusCode || err?.status) || 500;
+  const rawStatus = Number(err?.statusCode || err?.status);
+  let statusCode = Number.isInteger(rawStatus) && rawStatus >= 400 && rawStatus <= 599 ? rawStatus : 500;
   let clientMessage = 'Đã xảy ra lỗi máy chủ nội bộ. Vui lòng thử lại sau.';
 
   if (err?.type === 'entity.parse.failed') {

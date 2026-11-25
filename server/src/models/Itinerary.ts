@@ -57,4 +57,6 @@ const itinerarySchema = new Schema<IItinerary>(
   { timestamps: true }
 );
 
+itinerarySchema.index({ creatorId: 1, updatedAt: -1, createdAt: -1 });
+
 export const ItineraryModel = model<IItinerary>('Itinerary', itinerarySchema);

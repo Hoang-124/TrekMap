@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { IconPhone, IconShieldAlert, IconAlertTriangle } from '../common/SvgIcons.js';
 
 interface SafetyPledgeSectionProps {
@@ -43,6 +43,20 @@ export const SafetyPledgeSection: React.FC<SafetyPledgeSectionProps> = React.mem
   onOpenEmergencyContacts,
   onOpenIncidentReport,
 }) => {
+  const [isDesktopSticky, setIsDesktopSticky] = useState<boolean>(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(min-width: 901px)').matches
+      : true
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(min-width: 901px)');
+    const onChange = (e: MediaQueryListEvent) => setIsDesktopSticky(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
   return (
     <section
       style={{
@@ -58,8 +72,8 @@ export const SafetyPledgeSection: React.FC<SafetyPledgeSectionProps> = React.mem
           paddingTop: 44,
         }}
       >
-        {/* LEFT STICKY EDITORIAL MANIFESTO & EMERGENCY DISPATCH */}
-        <div style={{ position: 'sticky', top: 88 }}>
+        {/* LEFT STICKY EDITORIAL MANIFESTO & EMERGENCY DISPATCH (Desktop-only sticky) */}
+        <div style={isDesktopSticky ? { position: 'sticky', top: 88 } : undefined}>
           <div className="section-eyebrow">05 / Quy ước đi rừng</div>
           <h2
             className="font-editorial"

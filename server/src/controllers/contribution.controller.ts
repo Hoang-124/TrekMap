@@ -11,8 +11,30 @@ import { sanitizeInput, isSafeHttpUrl, hasDangerousMongoKeys } from '../utils/va
 import { containsProfanity, getProfanityMatch } from '../utils/profanityFilter.js';
 import { invalidateCache } from '../middleware/cache.middleware.js';
 import { invalidateElevationCache } from '../services/elevation.service.js';
+import { invalidateAiTrailCache } from '../services/ai.service.js';
+import { cascadeDeleteTrailChildren } from './trail.controller.js';
 import { isValidObjectId } from '../utils/resolveTrail.js';
 import { recordActivity, recordAuditLog } from '../utils/audit.js';
+
+function parseStrictNumber(val: unknown): number | null {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseSafeBoolean(val: unknown, fallback: boolean): boolean {
+  if (typeof val === 'boolean') return val;
+  if (typeof val === 'string') {
+    const lower = val.trim().toLowerCase();
+    if (lower === 'true' || lower === '1') return true;
+    if (lower === 'false' || lower === '0' || lower === '') return false;
+  }
+  if (typeof val === 'number') {
+    if (val === 1) return true;
+    if (val === 0) return false;
+  }
+  return fallback;
+}
 
 const MAX_MEM_CONTRIBUTIONS = 200;
 const inMemoryContributions: any[] = [];
@@ -58,36 +80,39 @@ const ALLOWED_UPDATE_FIELDS = [
 
 function sanitizeWaypoints(raw: unknown) {
   if (!Array.isArray(raw)) return [];
-  return raw
-    .filter((w: any) => w && typeof w === 'object' && Number.isFinite(Number(w.lat)) && Number.isFinite(Number(w.lng)))
-    .slice(0, 50)
-    .map((w: any, idx: number) => ({
-      id: typeof w.id === 'string' && w.id.trim() ? sanitizeInput(w.id).slice(0, 40) : `wp-${idx + 1}`,
-      name: sanitizeInput(String(w.name || `Mốc ${idx + 1}`)).slice(0, 120),
+  const out: any[] = [];
+  for (let idx = 0; idx < raw.length && out.length < 50; idx++) {
+    const w: any = raw[idx];
+    if (!w || typeof w !== 'object') continue;
+    const lat = parseStrictNumber(w.lat);
+    const lng = parseStrictNumber(w.lng);
+    if (lat === null || lng === null || lat < -90 || lat > 90 || lng < -180 || lng > 180) continue;
+    const elev = parseStrictNumber(w.elevationM);
+    out.push({
+      id: typeof w.id === 'string' && w.id.trim() ? sanitizeInput(w.id).slice(0, 40) : `wp-${out.length + 1}`,
+      name: sanitizeInput(String(w.name || `Mốc ${out.length + 1}`)).slice(0, 120),
       type: VALID_WAYPOINT_TYPES.has(w.type) ? w.type : 'viewpoint',
       description: sanitizeInput(String(w.description || '')).slice(0, 400),
-      ...(Number.isFinite(Number(w.elevationM)) ? { elevationM: Math.round(Number(w.elevationM)) } : {}),
-      lat: Math.max(-90, Math.min(90, Number(w.lat))),
-      lng: Math.max(-180, Math.min(180, Number(w.lng))),
-    }));
+      ...(elev !== null ? { elevationM: Math.round(elev) } : {}),
+      lat,
+      lng,
+    });
+  }
+  return out;
 }
 
 function sanitizeGpxTrack(raw: unknown): [number, number][] {
   if (!Array.isArray(raw)) return [];
-  return raw
-    .filter(
-      (pt: any) =>
-        Array.isArray(pt) &&
-        pt.length >= 2 &&
-        Number.isFinite(Number(pt[0])) &&
-        Number.isFinite(Number(pt[1])) &&
-        Number(pt[0]) >= -90 &&
-        Number(pt[0]) <= 90 &&
-        Number(pt[1]) >= -180 &&
-        Number(pt[1]) <= 180
-    )
-    .slice(0, 5000)
-    .map((pt: any) => [Number(pt[0]), Number(pt[1])]);
+  const out: [number, number][] = [];
+  for (let i = 0; i < raw.length && out.length < 5000; i++) {
+    const pt: any = raw[i];
+    if (!Array.isArray(pt) || pt.length < 2) continue;
+    const lat = parseStrictNumber(pt[0]);
+    const lng = parseStrictNumber(pt[1]);
+    if (lat === null || lng === null || lat < -90 || lat > 90 || lng < -180 || lng > 180) continue;
+    out.push([lat, lng]);
+  }
+  return out;
 }
 
 function stripPrivateEmailForViewer(contrib: any, viewerId?: string, viewerRole?: string) {
@@ -99,10 +124,24 @@ function stripPrivateEmailForViewer(contrib: any, viewerId?: string, viewerRole?
 }
 
 async function publishContributionToTrail(updatedDoc: any) {
-  const startLat = Number(updatedDoc.startLat);
-  const startLng = Number(updatedDoc.startLng);
-  const endLat = Number(updatedDoc.endLat ?? startLat);
-  const endLng = Number(updatedDoc.endLng ?? startLng);
+  const startLat = parseStrictNumber(updatedDoc.startLat);
+  const startLng = parseStrictNumber(updatedDoc.startLng);
+  if (
+    startLat === null ||
+    startLng === null ||
+    startLat < -90 ||
+    startLat > 90 ||
+    startLng < -180 ||
+    startLng > 180
+  ) {
+    throw new Error('INVALID_TRAIL_COORDS: Tọa độ xuất phát không hợp lệ để xuất bản cung đường.');
+  }
+  const parsedEndLat = parseStrictNumber(updatedDoc.endLat);
+  const parsedEndLng = parseStrictNumber(updatedDoc.endLng);
+  const endLat =
+    parsedEndLat !== null && parsedEndLat >= -90 && parsedEndLat <= 90 ? parsedEndLat : startLat;
+  const endLng =
+    parsedEndLng !== null && parsedEndLng >= -180 && parsedEndLng <= 180 ? parsedEndLng : startLng;
 
   const validGpx =
     Array.isArray(updatedDoc.gpxTrack) && updatedDoc.gpxTrack.length > 0
@@ -179,7 +218,7 @@ export const getContributions = async (req: AuthRequest, res: Response) => {
     const viewerId = req.user?.userId;
     const viewerRole = req.user?.role;
     const isStaff = viewerRole === 'admin' || viewerRole === 'moderator';
-    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 200);
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit || '100'), 10) || 100, 1), 200);
 
     const dbFilter: any = isStaff
       ? {}
@@ -263,24 +302,26 @@ export const createContribution = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const distanceKm = Number(body.distanceKm);
-    const maxAltitudeM = Number(body.maxAltitudeM);
-    const elevationGainM = Number(body.elevationGainM) || 0;
-    const difficultyLevel = Math.min(Math.max(Number(body.difficultyLevel) || 3, 1), 5);
-    const startLat = Number(body.startLat);
-    const startLng = Number(body.startLng);
-    const endLat = Number(body.endLat ?? startLat);
-    const endLng = Number(body.endLng ?? startLng);
+    const distanceKm = parseStrictNumber(body.distanceKm);
+    const maxAltitudeM = parseStrictNumber(body.maxAltitudeM);
+    const elevationGainM = parseStrictNumber(body.elevationGainM) ?? 0;
+    const difficultyLevel = Math.min(Math.max(Math.round(parseStrictNumber(body.difficultyLevel) ?? 3), 1), 5);
+    const startLat = parseStrictNumber(body.startLat);
+    const startLng = parseStrictNumber(body.startLng);
+    const parsedEndLat = parseStrictNumber(body.endLat);
+    const parsedEndLng = parseStrictNumber(body.endLng);
+    const endLat = parsedEndLat ?? startLat;
+    const endLng = parsedEndLng ?? startLng;
 
-    if (!Number.isFinite(distanceKm) || distanceKm <= 0) {
-      return res.status(400).json({ success: false, message: 'Độ dài cung đường phải lớn hơn 0 km.' });
+    if (distanceKm === null || distanceKm <= 0 || distanceKm > 500) {
+      return res.status(400).json({ success: false, message: 'Độ dài cung đường phải lớn hơn 0 và không quá 500 km.' });
     }
-    if (!Number.isFinite(maxAltitudeM) || maxAltitudeM <= 0) {
-      return res.status(400).json({ success: false, message: 'Cao độ đỉnh phải lớn hơn 0 m.' });
+    if (maxAltitudeM === null || maxAltitudeM <= 0 || maxAltitudeM > 3500) {
+      return res.status(400).json({ success: false, message: 'Cao độ đỉnh phải từ 1 đến 3.500 m.' });
     }
     if (
-      !Number.isFinite(startLat) ||
-      !Number.isFinite(startLng) ||
+      startLat === null ||
+      startLng === null ||
       startLat < -90 ||
       startLat > 90 ||
       startLng < -180 ||
@@ -323,15 +364,15 @@ export const createContribution = async (req: AuthRequest, res: Response) => {
       maxAltitudeM,
       difficultyLevel,
       difficultyNote: typeof body.difficultyNote === 'string' ? sanitizeInput(body.difficultyNote).slice(0, 300) : '',
-      durationDays: Math.max(1, Number(body.durationDays) || Math.ceil(distanceKm / 12)),
+      durationDays: Math.min(30, Math.max(1, Math.round(parseStrictNumber(body.durationDays) ?? Math.ceil(distanceKm / 12)))),
       durationHoursNote:
         typeof body.durationHoursNote === 'string' && body.durationHoursNote.trim()
           ? sanitizeInput(body.durationHoursNote).slice(0, 120)
           : '1 ngày',
       startLat,
       startLng,
-      endLat: Number.isFinite(endLat) && endLat >= -90 && endLat <= 90 ? endLat : startLat,
-      endLng: Number.isFinite(endLng) && endLng >= -180 && endLng <= 180 ? endLng : startLng,
+      endLat: endLat !== null && endLat >= -90 && endLat <= 90 ? endLat : startLat,
+      endLng: endLng !== null && endLng >= -180 && endLng <= 180 ? endLng : startLng,
       description:
         typeof body.description === 'string' && body.description.trim()
           ? sanitizeInput(body.description).slice(0, 4000)
@@ -340,11 +381,11 @@ export const createContribution = async (req: AuthRequest, res: Response) => {
         typeof body.transportationInfo === 'string' ? sanitizeInput(body.transportationInfo).slice(0, 1500) : '',
       coverImage,
       galleryImages,
-      permitRequired: Boolean(body.permitRequired),
+      permitRequired: parseSafeBoolean(body.permitRequired, false),
       permitInfo: typeof body.permitInfo === 'string' ? sanitizeInput(body.permitInfo).slice(0, 500) : '',
-      hasCampsite: Boolean(body.hasCampsite),
-      hasWaterSource: Boolean(body.hasWaterSource),
-      kidFriendly: Boolean(body.kidFriendly),
+      hasCampsite: parseSafeBoolean(body.hasCampsite, false),
+      hasWaterSource: parseSafeBoolean(body.hasWaterSource, false),
+      kidFriendly: parseSafeBoolean(body.kidFriendly, false),
       rescueContact:
         body.rescueContact && typeof body.rescueContact === 'object'
           ? {
@@ -467,7 +508,127 @@ export const updateContribution = async (req: AuthRequest, res: Response) => {
     for (const key of ALLOWED_UPDATE_FIELDS) {
       if (rawBody[key] !== undefined) {
         const val = rawBody[key];
-        if (key === 'region' && !VALID_REGIONS.has(val)) continue;
+        if (key === 'region') {
+          if (typeof val !== 'string' || !VALID_REGIONS.has(val)) {
+            return res.status(400).json({ success: false, message: 'Vùng miền không hợp lệ (Miền Bắc, Miền Trung, Miền Nam).' });
+          }
+          sanitizedUpdate[key] = val;
+          continue;
+        }
+        if (key === 'name' || key === 'province' || key === 'district') {
+          if (typeof val !== 'string' || !val.trim()) {
+            return res.status(400).json({ success: false, message: `Trường ${key} không được để trống.` });
+          }
+          const maxLen = key === 'name' ? 160 : 80;
+          sanitizedUpdate[key] = sanitizeInput(val).slice(0, maxLen);
+          continue;
+        }
+        if (key === 'hamlet') {
+          sanitizedUpdate[key] = typeof val === 'string' ? sanitizeInput(val).slice(0, 100) : '';
+          continue;
+        }
+        if (key === 'difficultyNote') {
+          sanitizedUpdate[key] = typeof val === 'string' ? sanitizeInput(val).slice(0, 300) : '';
+          continue;
+        }
+        if (key === 'durationHoursNote') {
+          sanitizedUpdate[key] = typeof val === 'string' ? sanitizeInput(val).slice(0, 120) : '1 ngày';
+          continue;
+        }
+        if (key === 'description') {
+          sanitizedUpdate[key] = typeof val === 'string' ? sanitizeInput(val).slice(0, 4000) : '';
+          continue;
+        }
+        if (key === 'transportationInfo') {
+          sanitizedUpdate[key] = typeof val === 'string' ? sanitizeInput(val).slice(0, 1500) : '';
+          continue;
+        }
+        if (key === 'permitInfo') {
+          sanitizedUpdate[key] = typeof val === 'string' ? sanitizeInput(val).slice(0, 500) : '';
+          continue;
+        }
+        if (key === 'distanceKm') {
+          const n = parseStrictNumber(val);
+          if (n === null || n <= 0 || n > 500) {
+            return res.status(400).json({ success: false, message: 'Độ dài cung đường phải từ 0.1 đến 500 km.' });
+          }
+          sanitizedUpdate[key] = n;
+          continue;
+        }
+        if (key === 'maxAltitudeM') {
+          const n = parseStrictNumber(val);
+          if (n === null || n <= 0 || n > 3500) {
+            return res.status(400).json({ success: false, message: 'Cao độ đỉnh phải từ 1 đến 3.500 m.' });
+          }
+          sanitizedUpdate[key] = Math.round(n);
+          continue;
+        }
+        if (key === 'elevationGainM') {
+          const n = parseStrictNumber(val);
+          if (n === null || n < 0 || n > 15000) {
+            return res.status(400).json({ success: false, message: 'Độ dốc tích lũy không hợp lệ (0 - 15.000 m).' });
+          }
+          sanitizedUpdate[key] = Math.round(n);
+          continue;
+        }
+        if (key === 'difficultyLevel') {
+          const n = parseStrictNumber(val);
+          if (n === null || n < 1 || n > 5) {
+            return res.status(400).json({ success: false, message: 'Độ khó phải từ 1 đến 5.' });
+          }
+          sanitizedUpdate[key] = Math.round(n);
+          continue;
+        }
+        if (key === 'durationDays') {
+          const n = parseStrictNumber(val);
+          if (n === null || n < 1 || n > 30) {
+            return res.status(400).json({ success: false, message: 'Thời lượng phải từ 1 đến 30 ngày.' });
+          }
+          sanitizedUpdate[key] = Math.round(n);
+          continue;
+        }
+        if (key === 'startLat' || key === 'endLat') {
+          const n = parseStrictNumber(val);
+          if (n === null || n < -90 || n > 90) {
+            return res.status(400).json({ success: false, message: 'Vĩ độ GPS không hợp lệ (-90..90).' });
+          }
+          sanitizedUpdate[key] = n;
+          continue;
+        }
+        if (key === 'startLng' || key === 'endLng') {
+          const n = parseStrictNumber(val);
+          if (n === null || n < -180 || n > 180) {
+            return res.status(400).json({ success: false, message: 'Kinh độ GPS không hợp lệ (-180..180).' });
+          }
+          sanitizedUpdate[key] = n;
+          continue;
+        }
+        if (key === 'altNames') {
+          if (!Array.isArray(val)) {
+            return res.status(400).json({ success: false, message: 'altNames phải là danh sách chuỗi.' });
+          }
+          sanitizedUpdate[key] = val
+            .filter((s: unknown) => typeof s === 'string' && s.trim())
+            .slice(0, 10)
+            .map((s: string) => sanitizeInput(s).slice(0, 100));
+          continue;
+        }
+        if (key === 'bestMonths' || key === 'avoidMonths') {
+          if (!Array.isArray(val)) {
+            return res.status(400).json({ success: false, message: `${key} phải là danh sách tháng (1-12).` });
+          }
+          sanitizedUpdate[key] = Array.from(
+            new Set(val.map(Number).filter((m: number) => Number.isInteger(m) && m >= 1 && m <= 12))
+          );
+          continue;
+        }
+        if (key === 'permitRequired' || key === 'hasCampsite' || key === 'hasWaterSource' || key === 'kidFriendly') {
+          if (typeof val !== 'boolean') {
+            return res.status(400).json({ success: false, message: `Trường ${key} phải là kiểu boolean.` });
+          }
+          sanitizedUpdate[key] = val;
+          continue;
+        }
         if (key === 'coverImage') {
           if (typeof val === 'string' && (val === '' || isSafeHttpUrl(val))) {
             sanitizedUpdate[key] = val.trim();
@@ -496,8 +657,24 @@ export const updateContribution = async (req: AuthRequest, res: Response) => {
           };
           continue;
         }
-        sanitizedUpdate[key] = typeof val === 'string' ? sanitizeInput(val) : val;
       }
+    }
+
+    const profanityText = [
+      sanitizedUpdate.name,
+      sanitizedUpdate.description,
+      sanitizedUpdate.difficultyNote,
+      sanitizedUpdate.transportationInfo,
+      sanitizedUpdate.permitInfo,
+    ]
+      .filter((s): s is string => typeof s === 'string' && s.length > 0)
+      .join(' ');
+    if (profanityText && containsProfanity(profanityText)) {
+      const matched = getProfanityMatch(profanityText);
+      return res.status(400).json({
+        success: false,
+        message: `Hồ sơ đóng góp chứa từ ngữ không phù hợp ("${matched}").`,
+      });
     }
 
     // If owner edits a rejected contribution, reset status back to pending for re-review
@@ -509,6 +686,7 @@ export const updateContribution = async (req: AuthRequest, res: Response) => {
       sanitizedUpdate.status = rawBody.status;
     }
 
+    const previousStatus = existing.status;
     const wantsApproval = sanitizedUpdate.status === 'approved' && existing.status !== 'approved';
     const wantsRejection = sanitizedUpdate.status === 'rejected' && existing.status !== 'rejected';
 
@@ -546,16 +724,27 @@ export const updateContribution = async (req: AuthRequest, res: Response) => {
       updatedDoc = existing;
     }
 
-    invalidateCache('/api/trails');
-
-    // Publish or sync TrailModel when approved
+    // Publish or sync TrailModel when approved — fail explicitly & roll back approval if Trail publish throws!
     if (updatedDoc && updatedDoc.status === 'approved' && mongoose.connection.readyState === 1) {
       try {
         await publishContributionToTrail(updatedDoc);
-      } catch (trailErr) {
+      } catch (trailErr: any) {
         console.error('[MongoDB Trail Publish Error]:', trailErr);
+        if (firstTimeApproved) {
+          await Contribution.updateOne({ id }, { $set: { status: previousStatus } }).catch(() => {});
+        }
+        const isInvalidCoords = String(trailErr?.message || '').startsWith('INVALID_TRAIL_COORDS');
+        return res.status(isInvalidCoords ? 400 : 500).json({
+          success: false,
+          message: isInvalidCoords
+            ? 'Không thể duyệt cung đường do tọa độ GPS không hợp lệ. Vui lòng chỉnh sửa tọa độ trước khi phê duyệt.'
+            : 'Không thể xuất bản cung đường sang danh mục công khai (đã hoàn tác trạng thái phê duyệt).',
+        });
       }
+      invalidateAiTrailCache();
     }
+
+    invalidateCache('/api/trails');
 
     if (firstTimeApproved && updatedDoc) {
       await recordAuditLog(req, 'APPROVE_CONTRIBUTION', 'contributions', `Phê duyệt cung đường ${updatedDoc.name} (${updatedDoc.id})`);
@@ -664,8 +853,12 @@ export const deleteContribution = async (req: AuthRequest, res: Response) => {
     if (mongoose.connection.readyState === 1) {
       await Contribution.findOneAndDelete({ id });
       if (isStaff && existing.status === 'approved') {
-        await TrailModel.findOneAndDelete({ id: existing.id }).catch(() => {});
+        const deletedTrail = await TrailModel.findOneAndDelete({ id: existing.id }).catch(() => null);
+        if (deletedTrail?._id) {
+          await cascadeDeleteTrailChildren(deletedTrail._id, existing.id);
+        }
         invalidateElevationCache(String(existing.id));
+        invalidateAiTrailCache();
       }
     }
 

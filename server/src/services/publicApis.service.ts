@@ -20,6 +20,36 @@ interface CacheEntry<T> {
   data: T;
   timestamp: number;
   ttlMs?: number;
+  lastModified?: string;
+}
+
+function toStrictNumber(val: unknown): number {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') return NaN;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function isValidCoord(lat: number, lng: number): boolean {
+  return Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+}
+
+function setBoundedCache<T>(map: Map<string, CacheEntry<T>>, key: string, entry: CacheEntry<T>, maxEntries: number) {
+  map.delete(key);
+  map.set(key, entry);
+  if (map.size > maxEntries) {
+    const now = Date.now();
+    for (const [k, v] of map.entries()) {
+      if (v.ttlMs && now - v.timestamp >= v.ttlMs) {
+        map.delete(k);
+        if (map.size <= maxEntries) break;
+      }
+    }
+    while (map.size > maxEntries) {
+      const oldestKey = map.keys().next().value;
+      if (!oldestKey) break;
+      map.delete(oldestKey);
+    }
+  }
 }
 
 export interface NormalizedLiveWeatherPayload {
@@ -99,7 +129,7 @@ export function normalizeMetNorwayForecast(rawJson: any): NormalizedLiveWeatherP
   const timeseries: any[] = rawJson?.properties?.timeseries;
   if (!Array.isArray(timeseries) || timeseries.length === 0) return null;
 
-  const coordElev = Number(rawJson?.geometry?.coordinates?.[2]);
+  const coordElev = toStrictNumber(rawJson?.geometry?.coordinates?.[2]);
   const elevation = Number.isFinite(coordElev) ? Math.round(coordElev) : 0;
 
   interface DayAcc {
@@ -124,12 +154,12 @@ export function normalizeMetNorwayForecast(rawJson: any): NormalizedLiveWeatherP
     const next6 = entry?.data?.next_6_hours;
     const next12 = entry?.data?.next_12_hours;
 
-    const temp = Number(instant.air_temperature);
-    const t6Min = Number(next6?.details?.air_temperature_min);
-    const t6Max = Number(next6?.details?.air_temperature_max);
-    const windMs = Number(instant.wind_speed);
+    const temp = toStrictNumber(instant.air_temperature);
+    const t6Min = toStrictNumber(next6?.details?.air_temperature_min);
+    const t6Max = toStrictNumber(next6?.details?.air_temperature_max);
+    const windMs = toStrictNumber(instant.wind_speed);
     const windKmH = Number.isFinite(windMs) ? windMs * 3.6 : NaN;
-    const humidity = Number(instant.relative_humidity);
+    const humidity = toStrictNumber(instant.relative_humidity);
 
     const symbol =
       next1?.summary?.symbol_code ||
@@ -166,8 +196,8 @@ export function normalizeMetNorwayForecast(rawJson: any): NormalizedLiveWeatherP
     }
 
     // Avoid double-counting overlapping next_1_hours & next_6_hours precipitation blocks
-    const p1 = Number(next1?.details?.precipitation_amount);
-    const p6 = Number(next6?.details?.precipitation_amount);
+    const p1 = toStrictNumber(next1?.details?.precipitation_amount);
+    const p6 = toStrictNumber(next6?.details?.precipitation_amount);
     if (Number.isFinite(p1) && p1 >= 0) {
       acc.precipMm += p1;
     } else if (Number.isFinite(p6) && p6 >= 0 && tsMs - acc.last6hPrecipMs >= 5 * 60 * 60 * 1000) {
@@ -208,18 +238,15 @@ export function normalizeMetNorwayForecast(rawJson: any): NormalizedLiveWeatherP
     first?.data?.next_6_hours?.summary?.symbol_code ||
     first?.data?.next_12_hours?.summary?.symbol_code ||
     '';
-  const curTemp = Number.isFinite(Number(firstInstant.air_temperature))
-    ? Math.round(Number(firstInstant.air_temperature) * 10) / 10
-    : tempMaxs[0];
-  const curWindKmH = Number.isFinite(Number(firstInstant.wind_speed))
-    ? Math.round(Number(firstInstant.wind_speed) * 3.6 * 10) / 10
-    : windMaxs[0];
-  const curHumidity = Number.isFinite(Number(firstInstant.relative_humidity))
-    ? Math.round(Number(firstInstant.relative_humidity))
-    : humMaxs[0];
-  const curCloud = Number.isFinite(Number(firstInstant.cloud_area_fraction))
-    ? Math.round(Number(firstInstant.cloud_area_fraction))
-    : 45;
+  const rawCurTemp = toStrictNumber(firstInstant.air_temperature);
+  const rawCurWind = toStrictNumber(firstInstant.wind_speed);
+  const rawCurHum = toStrictNumber(firstInstant.relative_humidity);
+  const rawCurCloud = toStrictNumber(firstInstant.cloud_area_fraction);
+
+  const curTemp = Number.isFinite(rawCurTemp) ? Math.round(rawCurTemp * 10) / 10 : tempMaxs[0];
+  const curWindKmH = Number.isFinite(rawCurWind) ? Math.round(rawCurWind * 3.6 * 10) / 10 : windMaxs[0];
+  const curHumidity = Number.isFinite(rawCurHum) ? Math.round(rawCurHum) : humMaxs[0];
+  const curCloud = Number.isFinite(rawCurCloud) ? Math.round(rawCurCloud) : 45;
   const curWmo = mapMetSymbolToWmoCode(firstSymbol);
 
   return {
@@ -253,14 +280,18 @@ export function normalizeMetNorwayForecast(rawJson: any): NormalizedLiveWeatherP
   };
 }
 
-// 1. MET Norway Locationforecast 2.0 (CC BY 4.0) with 30-60min TTL Cache & Singleflight Deduplication
+// 1. MET Norway Locationforecast 2.0 (CC BY 4.0) with 30-60min TTL Cache, If-Modified-Since & Singleflight Deduplication
 export async function getLiveWeatherForecast(lat: number, lng: number): Promise<NormalizedLiveWeatherPayload | null> {
+  if (!isValidCoord(lat, lng)) return null;
   const safeLat = Math.round(lat * 10000) / 10000;
   const safeLng = Math.round(lng * 10000) / 10000;
   const cacheKey = `${safeLat.toFixed(2)},${safeLng.toFixed(2)}`;
   const cached = weatherCache.get(cacheKey);
   const now = Date.now();
   if (cached && now - cached.timestamp < (cached.ttlMs ?? WEATHER_DEFAULT_CACHE_TTL_MS)) {
+    // Refresh LRU order on hit
+    weatherCache.delete(cacheKey);
+    weatherCache.set(cacheKey, cached);
     return cached.data;
   }
 
@@ -272,17 +303,18 @@ export async function getLiveWeatherForecast(lat: number, lng: number): Promise<
   const reqPromise = (async (): Promise<NormalizedLiveWeatherPayload | null> => {
     try {
       const url = `https://api.met.no/weatherapi/locationforecast/2.0/complete?lat=${safeLat.toFixed(4)}&lon=${safeLng.toFixed(4)}`;
+      const reqHeaders: Record<string, string> = {
+        'User-Agent': MET_NORWAY_USER_AGENT,
+        Accept: 'application/json',
+      };
+      if (cached?.lastModified) {
+        reqHeaders['If-Modified-Since'] = cached.lastModified;
+      }
+
       const res = await fetch(url, {
-        headers: {
-          'User-Agent': MET_NORWAY_USER_AGENT,
-          Accept: 'application/json',
-        },
+        headers: reqHeaders,
         signal: AbortSignal.timeout(6500),
       });
-      if (!res.ok) throw new Error(`MET Norway HTTP ${res.status}`);
-      const rawJson = await res.json();
-      const normalized = normalizeMetNorwayForecast(rawJson);
-      if (!normalized) throw new Error('MET Norway invalid payload');
 
       // Honor MET Norway Expires header while enforcing at least 30m cache TTL
       let ttlMs = WEATHER_DEFAULT_CACHE_TTL_MS;
@@ -295,11 +327,37 @@ export async function getLiveWeatherForecast(lat: number, lng: number): Promise<
         }
       }
 
-      weatherCache.set(cacheKey, { data: normalized, timestamp: Date.now(), ttlMs });
-      if (weatherCache.size > 200) {
-        const oldestKey = weatherCache.keys().next().value;
-        if (oldestKey) weatherCache.delete(oldestKey);
+      if (res.status === 304 && cached) {
+        res.body?.cancel().catch(() => {});
+        const refreshed: CacheEntry<NormalizedLiveWeatherPayload> = {
+          data: cached.data,
+          timestamp: Date.now(),
+          ttlMs,
+          lastModified: res.headers.get('last-modified') || cached.lastModified,
+        };
+        setBoundedCache(weatherCache, cacheKey, refreshed, 200);
+        return cached.data;
       }
+
+      if (!res.ok) {
+        res.body?.cancel().catch(() => {});
+        throw new Error(`MET Norway HTTP ${res.status}`);
+      }
+      const rawJson = await res.json();
+      const normalized = normalizeMetNorwayForecast(rawJson);
+      if (!normalized) throw new Error('MET Norway invalid payload');
+
+      setBoundedCache(
+        weatherCache,
+        cacheKey,
+        {
+          data: normalized,
+          timestamp: Date.now(),
+          ttlMs,
+          lastModified: res.headers.get('last-modified') || undefined,
+        },
+        200
+      );
       return normalized;
     } catch (err) {
       if (cached) return cached.data;
@@ -331,19 +389,30 @@ export async function getSunriseSunsetData(lat: number, lng: number) {
 }
 
 const geocodeCache = new Map<string, CacheEntry<any>>();
+const geocodeInFlight = new Map<string, Promise<any>>();
 const GEOCODE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const NOMINATIM_MIN_INTERVAL_MS = 1100; // Strict >1.0s per OSMF Nominatim Usage Policy
+const MAX_NOMINATIM_QUEUE_DEPTH = 25;
 let lastNominatimRequestAt = 0;
+let nominatimQueuePending = 0;
 let nominatimQueueTail: Promise<void> = Promise.resolve();
 
 function scheduleNominatimSlot<T>(task: () => Promise<T>): Promise<T> {
+  if (nominatimQueuePending >= MAX_NOMINATIM_QUEUE_DEPTH) {
+    return Promise.reject(new Error('Nominatim queue capacity exceeded'));
+  }
+  nominatimQueuePending += 1;
   const run = nominatimQueueTail.then(async () => {
-    const elapsed = Date.now() - lastNominatimRequestAt;
-    if (elapsed < NOMINATIM_MIN_INTERVAL_MS) {
-      await new Promise((resolve) => setTimeout(resolve, NOMINATIM_MIN_INTERVAL_MS - elapsed));
+    try {
+      const elapsed = Date.now() - lastNominatimRequestAt;
+      if (elapsed < NOMINATIM_MIN_INTERVAL_MS) {
+        await new Promise((resolve) => setTimeout(resolve, NOMINATIM_MIN_INTERVAL_MS - elapsed));
+      }
+      lastNominatimRequestAt = Date.now();
+      return await task();
+    } finally {
+      nominatimQueuePending = Math.max(0, nominatimQueuePending - 1);
     }
-    lastNominatimRequestAt = Date.now();
-    return task();
   });
   nominatimQueueTail = run.then(
     () => undefined,
@@ -352,72 +421,86 @@ function scheduleNominatimSlot<T>(task: () => Promise<T>): Promise<T> {
   return run;
 }
 
-// 3. OpenStreetMap Nominatim Reverse Geocoding API with strict 1.1s global queue & 24-hour cache
+// 3. OpenStreetMap Nominatim Reverse Geocoding API with strict 1.1s global queue, in-flight dedup & 24-hour cache
 export async function reverseGeocodeLocation(lat: number, lng: number) {
+  if (!isValidCoord(lat, lng)) return null;
   const cacheKey = `${lat.toFixed(4)},${lng.toFixed(4)}`;
   const cached = geocodeCache.get(cacheKey);
   const now = Date.now();
   if (cached && now - cached.timestamp < GEOCODE_CACHE_TTL_MS) {
+    geocodeCache.delete(cacheKey);
+    geocodeCache.set(cacheKey, cached);
     return cached.data;
   }
 
-  try {
-    return await scheduleNominatimSlot(async () => {
-      // Double-check cache after waiting in queue in case an identical coord finished first
-      const reCached = geocodeCache.get(cacheKey);
-      if (reCached && Date.now() - reCached.timestamp < GEOCODE_CACHE_TTL_MS) {
-        return reCached.data;
-      }
-
-      const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=vi&zoom=18&addressdetails=1`;
-      const res = await fetch(url, {
-        headers: { 'User-Agent': MET_NORWAY_USER_AGENT },
-        signal: AbortSignal.timeout(4500),
-      });
-      if (!res.ok) throw new Error(`Nominatim HTTP ${res.status}`);
-      const json: any = await res.json();
-      if (json && json.address) {
-        const addr = json.address;
-        const wardOrQuarter =
-          addr.quarter ||
-          addr.suburb ||
-          addr.ward ||
-          addr.neighbourhood ||
-          addr.village ||
-          addr.hamlet ||
-          addr.town ||
-          addr.residential ||
-          '';
-        const district = addr.city_district || addr.district || addr.county || addr.town || '';
-        const state = addr.city || addr.state || addr.province || '';
-
-        const parts: string[] = [];
-        if (wardOrQuarter) parts.push(wardOrQuarter);
-        if (district && district !== wardOrQuarter) parts.push(district);
-        if (state && state !== district && state !== wardOrQuarter) parts.push(state);
-
-        const data = {
-          displayName: json.display_name,
-          formattedAddress: parts.length > 0 ? parts.join(', ') : json.display_name,
-          province: state,
-          district,
-          village: wardOrQuarter,
-          attribution: NOMINATIM_ATTRIBUTION,
-        };
-        geocodeCache.set(cacheKey, { data, timestamp: Date.now() });
-        if (geocodeCache.size > 500) {
-          const oldestKey = geocodeCache.keys().next().value;
-          if (oldestKey) geocodeCache.delete(oldestKey);
-        }
-        return data;
-      }
-      return null;
-    });
-  } catch (err) {
-    if (cached) return cached.data;
-    console.warn('Nominatim Geocoding API unreachable:', err);
-    return null;
+  // Deduplicate concurrent identical requests BEFORE entering the 1.1s throttle queue
+  const pending = geocodeInFlight.get(cacheKey);
+  if (pending) {
+    return pending;
   }
+
+  const reqPromise = (async () => {
+    try {
+      return await scheduleNominatimSlot(async () => {
+        const reCached = geocodeCache.get(cacheKey);
+        if (reCached && Date.now() - reCached.timestamp < GEOCODE_CACHE_TTL_MS) {
+          return reCached.data;
+        }
+
+        const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=vi&zoom=18&addressdetails=1`;
+        const res = await fetch(url, {
+          headers: { 'User-Agent': MET_NORWAY_USER_AGENT },
+          signal: AbortSignal.timeout(4500),
+        });
+        if (!res.ok) {
+          res.body?.cancel().catch(() => {});
+          throw new Error(`Nominatim HTTP ${res.status}`);
+        }
+        const json: any = await res.json();
+        if (json && json.address) {
+          const addr = json.address;
+          const wardOrQuarter =
+            addr.quarter ||
+            addr.suburb ||
+            addr.ward ||
+            addr.neighbourhood ||
+            addr.village ||
+            addr.hamlet ||
+            addr.town ||
+            addr.residential ||
+            '';
+          const district = addr.city_district || addr.district || addr.county || addr.town || '';
+          const state = addr.city || addr.state || addr.province || '';
+
+          const parts: string[] = [];
+          if (wardOrQuarter) parts.push(wardOrQuarter);
+          if (district && district !== wardOrQuarter) parts.push(district);
+          if (state && state !== district && state !== wardOrQuarter) parts.push(state);
+
+          const data = {
+            displayName: json.display_name,
+            formattedAddress: parts.length > 0 ? parts.join(', ') : json.display_name,
+            province: state,
+            district,
+            village: wardOrQuarter,
+            attribution: NOMINATIM_ATTRIBUTION,
+          };
+          setBoundedCache(geocodeCache, cacheKey, { data, timestamp: Date.now(), ttlMs: GEOCODE_CACHE_TTL_MS }, 500);
+          return data;
+        }
+        return null;
+      });
+    } catch (err) {
+      if (cached) return cached.data;
+      console.warn('Nominatim Geocoding API unreachable or queue full:', err);
+      return null;
+    } finally {
+      geocodeInFlight.delete(cacheKey);
+    }
+  })();
+
+  geocodeInFlight.set(cacheKey, reqPromise);
+  return reqPromise;
 }
 
 // 4. NASA EONET Natural Hazards scoped strictly to Vietnam geographic bounding box (Rule 11)
@@ -429,18 +512,33 @@ const VIETNAM_MAX_LNG = 110.5;
 
 let cachedNasaEvents: any[] = [];
 let lastNasaFetchTime = 0;
+let nasaBackoffUntil = 0;
+let nasaInFlight: Promise<any[]> | null = null;
+const NASA_CACHE_TTL_MS = 600_000;
+const NASA_FAILURE_BACKOFF_MS = 60_000;
 
 export async function getNaturalHazardsAlerts() {
   const now = Date.now();
-  if (lastNasaFetchTime > 0 && now - lastNasaFetchTime < 600_000) {
+  if (lastNasaFetchTime > 0 && now - lastNasaFetchTime < NASA_CACHE_TTL_MS) {
     return cachedNasaEvents;
   }
+  if (now < nasaBackoffUntil) {
+    return cachedNasaEvents;
+  }
+  if (nasaInFlight) {
+    return nasaInFlight;
+  }
 
-  try {
-    // EONET v3 bbox format: minLon,maxLat,maxLon,minLat
-    const url = `https://eonet.gsfc.nasa.gov/api/v3/events?status=open&bbox=${VIETNAM_MIN_LNG},${VIETNAM_MAX_LAT},${VIETNAM_MAX_LNG},${VIETNAM_MIN_LAT}&limit=10`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(3500) });
-    if (res && res.ok) {
+  nasaInFlight = (async () => {
+    try {
+      // EONET v3 bbox format: minLon,maxLat,maxLon,minLat
+      const url = `https://eonet.gsfc.nasa.gov/api/v3/events?status=open&bbox=${VIETNAM_MIN_LNG},${VIETNAM_MAX_LAT},${VIETNAM_MAX_LNG},${VIETNAM_MIN_LAT}&limit=10`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(3500) });
+      if (!res || !res.ok) {
+        res?.body?.cancel().catch(() => {});
+        nasaBackoffUntil = Date.now() + NASA_FAILURE_BACKOFF_MS;
+        return cachedNasaEvents;
+      }
       const json: any = await res.json();
       if (json && Array.isArray(json.events)) {
         cachedNasaEvents = json.events
@@ -459,8 +557,8 @@ export async function getNaturalHazardsAlerts() {
           })
           .filter((evt: any) => {
             if (!Array.isArray(evt.coordinates) || evt.coordinates.length < 2) return false;
-            const lng = Number(evt.coordinates[0]);
-            const lat = Number(evt.coordinates[1]);
+            const lng = toStrictNumber(evt.coordinates[0]);
+            const lat = toStrictNumber(evt.coordinates[1]);
             return (
               Number.isFinite(lat) &&
               Number.isFinite(lng) &&
@@ -470,14 +568,20 @@ export async function getNaturalHazardsAlerts() {
               lng <= VIETNAM_MAX_LNG
             );
           });
-        lastNasaFetchTime = now;
+        lastNasaFetchTime = Date.now();
         return cachedNasaEvents;
       }
+      nasaBackoffUntil = Date.now() + NASA_FAILURE_BACKOFF_MS;
+    } catch {
+      // Back off 60s on timeout/outage so GET /api/incidents stays fast
+      nasaBackoffUntil = Date.now() + NASA_FAILURE_BACKOFF_MS;
+    } finally {
+      nasaInFlight = null;
     }
-  } catch {
-    // Return cached Vietnam events on timeout
-  }
-  return cachedNasaEvents;
+    return cachedNasaEvents;
+  })();
+
+  return nasaInFlight;
 }
 
 // 5. Commercial-Compliant Driving Routing (OpenRouteService / Self-Hosted OSRM / Internal Terrain Estimator)
@@ -500,11 +604,7 @@ function formatTravelDuration(totalMinutes: number): string {
 }
 
 function storeRoutingCache(key: string, data: DrivingRouteResult, ttlMs: number) {
-  routingCache.set(key, { data, timestamp: Date.now(), ttlMs });
-  if (routingCache.size > 500) {
-    const oldest = routingCache.keys().next().value;
-    if (oldest) routingCache.delete(oldest);
-  }
+  setBoundedCache(routingCache, key, { data, timestamp: Date.now(), ttlMs }, 500);
 }
 
 export async function calculateDrivingRoute(
@@ -513,10 +613,20 @@ export async function calculateDrivingRoute(
   destLat: number,
   destLng: number
 ): Promise<DrivingRouteResult> {
+  if (!isValidCoord(startLat, startLng) || !isValidCoord(destLat, destLng)) {
+    return {
+      roadDistanceKm: 0,
+      travelDurationMin: 1,
+      travelDurationFormatted: '1 phút',
+      attribution: TERRAIN_ROUTING_ATTRIBUTION,
+    };
+  }
   const cacheKey = `${startLat.toFixed(3)},${startLng.toFixed(3)}->${destLat.toFixed(3)},${destLng.toFixed(3)}`;
   const now = Date.now();
   const cached = routingCache.get(cacheKey);
   if (cached && now - cached.timestamp < (cached.ttlMs ?? ROUTING_LIVE_TTL_MS)) {
+    routingCache.delete(cacheKey);
+    routingCache.set(cacheKey, cached);
     return cached.data;
   }
 
@@ -546,9 +656,11 @@ export async function calculateDrivingRoute(
       if (res.ok) {
         const json: any = await res.json();
         const summary = json?.routes?.[0]?.summary;
-        if (summary && Number.isFinite(Number(summary.distance)) && Number.isFinite(Number(summary.duration))) {
-          const roadDistanceKm = Math.round((Number(summary.distance) / 1000) * 10) / 10;
-          const totalMinutes = Math.max(1, Math.round(Number(summary.duration) / 60));
+        const distM = toStrictNumber(summary?.distance);
+        const durS = toStrictNumber(summary?.duration);
+        if (Number.isFinite(distM) && Number.isFinite(durS)) {
+          const roadDistanceKm = Math.round((distM / 1000) * 10) / 10;
+          const totalMinutes = Math.max(1, Math.round(durS / 60));
           const result: DrivingRouteResult = {
             roadDistanceKm,
             travelDurationMin: totalMinutes,
@@ -558,21 +670,27 @@ export async function calculateDrivingRoute(
           storeRoutingCache(cacheKey, result, ROUTING_LIVE_TTL_MS);
           return result;
         }
+      } else {
+        res.body?.cancel().catch(() => {});
       }
     } catch {
-      // Fall through to deterministic estimator
+      // Fall through to self-hosted OSRM or deterministic estimator
     }
-  } else if (selfHostedOsrmUrl && /^https?:\/\//i.test(selfHostedOsrmUrl)) {
-    // Priority 2: User-operated self-hosted OSRM instance
+  }
+
+  // Priority 2: User-operated self-hosted OSRM instance (also serves as fallback if ORS fails/429s)
+  if (selfHostedOsrmUrl && /^https?:\/\//i.test(selfHostedOsrmUrl)) {
     try {
       const url = `${selfHostedOsrmUrl}/route/v1/driving/${startLng},${startLat};${destLng},${destLat}?overview=false`;
       const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
       if (res.ok) {
         const json: any = await res.json();
         const route = json?.routes?.[0];
-        if (route && Number.isFinite(Number(route.distance)) && Number.isFinite(Number(route.duration))) {
-          const roadDistanceKm = Math.round((Number(route.distance) / 1000) * 10) / 10;
-          const totalMinutes = Math.max(1, Math.round(Number(route.duration) / 60));
+        const distM = toStrictNumber(route?.distance);
+        const durS = toStrictNumber(route?.duration);
+        if (Number.isFinite(distM) && Number.isFinite(durS)) {
+          const roadDistanceKm = Math.round((distM / 1000) * 10) / 10;
+          const totalMinutes = Math.max(1, Math.round(durS / 60));
           const result: DrivingRouteResult = {
             roadDistanceKm,
             travelDurationMin: totalMinutes,
@@ -582,6 +700,8 @@ export async function calculateDrivingRoute(
           storeRoutingCache(cacheKey, result, ROUTING_LIVE_TTL_MS);
           return result;
         }
+      } else {
+        res.body?.cancel().catch(() => {});
       }
     } catch {
       // Fall through to deterministic estimator

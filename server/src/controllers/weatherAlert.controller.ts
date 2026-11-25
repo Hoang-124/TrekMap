@@ -1,8 +1,9 @@
 import { Response } from 'express';
 import mongoose, { Types } from 'mongoose';
 import { WeatherAlertSubModel, type IWeatherAlertSub, type WeatherAlertVerdict } from '../models/WeatherAlertSub.js';
+import { UserModel } from '../models/User.js';
 import { AuthRequest } from '../middleware/auth.middleware.js';
-import { resolveTrailByIdOrSlug } from '../utils/resolveTrail.js';
+import { isValidObjectId, resolveTrailByIdOrSlug } from '../utils/resolveTrail.js';
 import { computeTrailGoNoGo, getVietnamTodayIso, isValidCalendarDateIso } from '../services/goNoGo.service.js';
 import { sendNotification } from '../utils/notification.js';
 
@@ -237,7 +238,7 @@ function serializeSub(
 export const getMyWeatherAlerts = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
-    if (!userId || !Types.ObjectId.isValid(userId)) {
+    if (!userId || !isValidObjectId(userId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để xem danh sách cảnh báo thời tiết.' });
     }
     if (mongoose.connection.readyState !== 1) {
@@ -275,7 +276,7 @@ export const getMyWeatherAlerts = async (req: AuthRequest, res: Response) => {
 export const upsertWeatherAlert = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
-    if (!userId || !Types.ObjectId.isValid(userId)) {
+    if (!userId || !isValidObjectId(userId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để đăng ký cảnh báo thời tiết.' });
     }
     if (mongoose.connection.readyState !== 1) {
@@ -468,7 +469,7 @@ export const upsertWeatherAlert = async (req: AuthRequest, res: Response) => {
 export const deleteWeatherAlert = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
-    if (!userId || !Types.ObjectId.isValid(userId)) {
+    if (!userId || !isValidObjectId(userId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập.' });
     }
     if (mongoose.connection.readyState !== 1) {
@@ -660,7 +661,41 @@ export async function processScheduledWeatherAlerts(): Promise<{ evaluated: numb
     return { evaluated: 0, notified: 0 };
   }
 
-  const outcomes = await mapWithConcurrency(activeSubs as any[], EVAL_CONCURRENCY, (sub) =>
+  // Skip alerts belonging to banned or deleted accounts so cron doesn't waste MET Norway quota
+  const uniqueUserIds = Array.from(
+    new Set(activeSubs.map((s: any) => String(s.userId || '')).filter((uid) => Types.ObjectId.isValid(uid)))
+  ).map((uid) => new Types.ObjectId(uid));
+
+  const validUsers =
+    uniqueUserIds.length > 0
+      ? await UserModel.find({ _id: { $in: uniqueUserIds }, isBanned: { $ne: true } })
+          .select('_id')
+          .lean()
+      : [];
+  const validUserIdSet = new Set(validUsers.map((u: any) => String(u._id)));
+
+  const eligibleSubs: any[] = [];
+  const staleSubIds: any[] = [];
+  for (const sub of activeSubs as any[]) {
+    if (validUserIdSet.has(String(sub.userId || ''))) {
+      eligibleSubs.push(sub);
+    } else if (sub._id) {
+      staleSubIds.push(sub._id);
+    }
+  }
+
+  if (staleSubIds.length > 0) {
+    await WeatherAlertSubModel.updateMany(
+      { _id: { $in: staleSubIds } },
+      { $set: { isActive: false, lastEvaluatedAt: now } }
+    ).catch(() => {});
+  }
+
+  if (eligibleSubs.length === 0) {
+    return { evaluated: 0, notified: 0 };
+  }
+
+  const outcomes = await mapWithConcurrency(eligibleSubs, EVAL_CONCURRENCY, (sub) =>
     evaluateAndDispatchSingleSub(sub, now, todayIso, cooldownCutoff)
   );
 
@@ -679,7 +714,7 @@ export async function processScheduledWeatherAlerts(): Promise<{ evaluated: numb
 export const evaluateMyWeatherAlerts = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user?.userId;
-    if (!userId || !Types.ObjectId.isValid(userId)) {
+    if (!userId || !isValidObjectId(userId)) {
       return res.status(401).json({ success: false, message: 'Yêu cầu đăng nhập để kiểm tra cảnh báo thời tiết.' });
     }
     if (mongoose.connection.readyState !== 1) {

@@ -1,10 +1,14 @@
+import 'dotenv/config';
+import fs from 'fs';
+import path from 'path';
 import express, { Request, Response } from 'express';
 import { createServer } from 'http';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import mongoose from 'mongoose';
-import { initSocketServer } from './config/socket.js';
+import { initSocketServer, getIO } from './config/socket.js';
+import { pingDB } from './config/db.js';
 import { getAllowedOrigins } from './config/cors.js';
+import { getMailerReadiness } from './utils/mailer.js';
 
 import authRoutes from './routes/auth.routes.js';
 import forumRoutes from './routes/forum.routes.js';
@@ -37,22 +41,57 @@ import { globalRateLimiter } from './middleware/rateLimiter.middleware.js';
 import { gzipCompression } from './middleware/compression.middleware.js';
 import { errorHandler } from './middleware/errorHandler.middleware.js';
 
-dotenv.config();
-
 export const app = express();
 export const httpServer = createServer(app);
 
 // Hide framework fingerprint
 app.disable('x-powered-by');
 
-// Configure reverse proxy trust explicitly via env (never blind `true`)
-const trustProxyEnv = process.env.TRUST_PROXY;
-if (trustProxyEnv) {
-  const parsed = Number(trustProxyEnv);
-  app.set('trust proxy', Number.isFinite(parsed) ? parsed : trustProxyEnv === 'loopback' ? 'loopback' : 1);
-} else {
-  app.set('trust proxy', false);
+export const SERVER_VERSION: string = (() => {
+  try {
+    const pkgPath = path.resolve(__dirname, '../package.json');
+    const pkgRaw = fs.readFileSync(pkgPath, 'utf8');
+    const parsed = JSON.parse(pkgRaw) as { version?: unknown };
+    if (typeof parsed.version === 'string' && parsed.version.trim()) {
+      return parsed.version.trim();
+    }
+  } catch {
+    // Fallback to aligned package version if package.json cannot be read
+  }
+  return '2.6.0';
+})();
+
+/**
+ * Strictly parses the TRUST_PROXY environment variable for Express `trust proxy`.
+ * Fails closed (`false`) for disabled, empty, or invalid inputs so `TRUST_PROXY=false`
+ * can never silently trust spoofable `X-Forwarded-For` headers.
+ */
+export function parseTrustProxySetting(raw?: string): boolean | number | string {
+  const normalized = String(raw ?? '').trim().toLowerCase();
+  if (!normalized || normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'off') {
+    return false;
+  }
+  if (normalized === 'true') {
+    return 1;
+  }
+  if (normalized === 'loopback' || normalized === 'linklocal' || normalized === 'uniquelocal') {
+    return normalized;
+  }
+  if (/^\d+$/.test(normalized)) {
+    const hops = Number(normalized);
+    if (!Number.isSafeInteger(hops) || hops <= 0) {
+      return false;
+    }
+    return Math.min(hops, 10);
+  }
+  console.warn(
+    `[Security Config Warning]: Invalid TRUST_PROXY value "${raw}"; failing closed to trust proxy = false.`
+  );
+  return false;
 }
+
+// Configure reverse proxy trust explicitly via env (never blind `true`)
+app.set('trust proxy', parseTrustProxySetting(process.env.TRUST_PROXY));
 
 // Initialize real-time Socket.io server instance
 initSocketServer(httpServer);
@@ -90,13 +129,21 @@ app.use(
 const largeJsonParser = express.json({ limit: '10mb' });
 const defaultJsonParser = express.json({ limit: '512kb' });
 app.use((req, res, next) => {
-  const p = req.path || '';
+  const p = (req.path || '').replace(/\/+$/, '') || '/';
   if (
     p === '/api/upload' ||
     p === '/api/auth/profile' ||
-    p.startsWith('/api/custom-routes') ||
+    p === '/api/custom-routes' ||
+    p.startsWith('/api/custom-routes/') ||
     p === '/api/ai/analyze-image' ||
-    p === '/api/ai/analyze-gpx'
+    p === '/api/ai/analyze-gpx' ||
+    p === '/api/contributions' ||
+    p.startsWith('/api/contributions/') ||
+    p === '/api/admin/trails' ||
+    p.startsWith('/api/admin/trails/') ||
+    p === '/api/trip-reports' ||
+    p.startsWith('/api/trip-reports/') ||
+    p === '/api/checkins'
   ) {
     return largeJsonParser(req, res, next);
   }
@@ -108,28 +155,62 @@ app.use(gzipCompression);
 // Global Rate Limiter
 app.use(globalRateLimiter);
 
-// Comprehensive Health Check Endpoints (returns 503 when DB degraded, zero internal memory leak)
+// Comprehensive Health & Readiness Check Endpoints (returns 503 when DB degraded, zero internal memory/secret leak)
+const dbStatusMap: Record<number, string> = {
+  0: 'Disconnected',
+  1: 'Connected',
+  2: 'Connecting',
+  3: 'Disconnecting',
+};
+
 const healthHandler = (_req: Request, res: Response) => {
   const dbState = mongoose.connection.readyState;
-  const dbStatusMap: Record<number, string> = {
-    0: 'Disconnected',
-    1: 'Connected',
-    2: 'Connecting',
-    3: 'Disconnecting',
-  };
   const isHealthy = dbState === 1;
 
+  res.setHeader('Cache-Control', 'no-store');
   res.status(isHealthy ? 200 : 503).json({
     app: 'LOST API Server',
     status: isHealthy ? 'Online' : 'Degraded',
-    version: '3.0.0 (Hardened Security, Real-time Socket.IO & Expedition Hubs)',
+    version: `${SERVER_VERSION} (Hardened Security, Real-time Socket.IO & Expedition Hubs)`,
     database: dbStatusMap[dbState] || 'Unknown',
+    timestamp: new Date().toISOString(),
+  });
+};
+
+const readinessHandler = async (_req: Request, res: Response) => {
+  const dbState = mongoose.connection.readyState;
+  const dbPing = await pingDB(2500);
+  const smtp = getMailerReadiness();
+  const socketReady = Boolean(getIO());
+  const ready = dbState === 1 && dbPing.ok;
+
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(ready ? 200 : 503).json({
+    app: 'LOST API Server',
+    ready,
+    status: ready ? 'Ready' : 'NotReady',
+    checks: {
+      database: {
+        state: dbStatusMap[dbState] || 'Unknown',
+        ok: dbPing.ok,
+        latencyMs: dbPing.latencyMs,
+      },
+      smtp: {
+        configured: smtp.configured,
+        mode: smtp.mode,
+      },
+      socket: {
+        initialized: socketReady,
+      },
+    },
+    uptimeSeconds: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
   });
 };
 
 app.get('/', healthHandler);
 app.get('/api/health', healthHandler);
+app.get('/api/health/ready', readinessHandler);
 
 // Modular Express Routers
 app.use('/api/auth', authRoutes);
